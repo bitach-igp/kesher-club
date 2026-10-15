@@ -1,0 +1,19 @@
+{
+  "name": "kesher-club",
+  "private": true,
+  "packageManager": "pnpm@10.28.0",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "trace": "node tools/trace-check.mjs"
+  },
+  "devDependencies": {
+    "turbo": "2.5.4",
+    "typescript": "5.8.3",
+    "vitest": "3.2.4",
+    "fast-check": "4.1.1"
+  }
+}

@@ -1,0 +1,104 @@
+openapi: 3.1.0
+info:
+  title: Kesher Club API
+  version: 0.1.0
+  description: Source of truth for the API (Tab 3 §5). Full path list grows with each task.
+  contact:
+    name: Kesher engineering
+servers:
+  - url: https://api.kesher.example/v1
+paths:
+  /me/capabilities:
+    get:
+      operationId: getCapabilities
+      summary: Entitlements and live features for the signed-in member
+      description: The app renders only what this returns (flags + entitlements).
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Capabilities
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Capabilities" }
+        default: { $ref: "#/components/responses/Problem" }
+  /transfers:
+    post:
+      operationId: createTransfer
+      summary: Send money to another member (P2P)
+      description: Requires a step-up token younger than 5 minutes (REQ-AUTH-006) and an Idempotency-Key (REQ-PAY-005).
+      security: [{ bearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TransferRequest" }
+      responses:
+        "201":
+          description: Transfer created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Transfer" }
+        default: { $ref: "#/components/responses/Problem" }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated key; replays return the original response for 24 h.
+      schema: { type: string, minLength: 8, maxLength: 128 }
+  responses:
+    Problem:
+      description: RFC 9457 problem details
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+  schemas:
+    Money:
+      type: object
+      required: [minor, currency]
+      properties:
+        minor: { type: string, pattern: "^-?\\d+$", description: Minor units as a string (bigint-safe) }
+        currency: { type: string, enum: [USD, ILS] }
+    Capabilities:
+      type: object
+      required: [features, entitlements]
+      properties:
+        features: { type: object, additionalProperties: { type: boolean } }
+        entitlements:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              remaining: { type: number }
+              resetsAt: { type: string, format: date-time }
+    TransferRequest:
+      type: object
+      required: [toPartyId, amount]
+      properties:
+        toPartyId: { type: string, format: uuid }
+        amount: { $ref: "#/components/schemas/Money" }
+        note: { type: string, maxLength: 140 }
+    Transfer:
+      type: object
+      required: [id, state, amount]
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string, enum: [created, submitted, pending, pending_hold, settled, failed, reversed] }
+        amount: { $ref: "#/components/schemas/Money" }
+    Problem:
+      type: object
+      required: [type, title, status, code]
+      properties:
+        type: { type: string, format: uri }
+        title: { type: string }
+        status: { type: integer }
+        code:
+          type: string
+          enum: [UNAUTHENTICATED, STEP_UP_REQUIRED, RECOVERY_HOLD, FORBIDDEN, NOT_FOUND, VALIDATION_FAILED, INSUFFICIENT_FUNDS, LIMIT_EXCEEDED, QUOTE_EXPIRED, CARD_FROZEN, FEATURE_OFF, PROVIDER_UNAVAILABLE, IDEMPOTENCY_CONFLICT, RATE_LIMITED, AGENT_NOT_ALLOWED]
+        detail: { type: string }
+        traceId: { type: string }

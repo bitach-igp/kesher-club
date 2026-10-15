@@ -1,0 +1,240 @@
+[
+  {
+    "key": "auth.passkey.primary",
+    "defaultProd": true,
+    "owner": "Zvi",
+    "gates": "Passkey as main credential",
+    "turnOnTrigger": ""
+  },
+  {
+    "key": "auth.social.enabled",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Sign in with Apple + Google (both or neither)",
+    "turnOnTrigger": "ADR-004 accepted; SIWA key rotation job live"
+  },
+  {
+    "key": "auth.orgSso",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Institution SAML/OIDC + SCIM",
+    "turnOnTrigger": "First institution asks; vendor contract"
+  },
+  {
+    "key": "billing.stripe",
+    "defaultProd": true,
+    "owner": "Ezra",
+    "gates": "Subscriptions",
+    "turnOnTrigger": "Stripe live keys"
+  },
+  {
+    "key": "billing.applePay",
+    "defaultProd": true,
+    "owner": "Ezra",
+    "gates": "Apple Pay in Payment Element",
+    "turnOnTrigger": "Domain verified with Stripe"
+  },
+  {
+    "key": "billing.googlePay",
+    "defaultProd": true,
+    "owner": "Ezra",
+    "gates": "Google Pay in Payment Element",
+    "turnOnTrigger": "Domain verified with Stripe"
+  },
+  {
+    "key": "esim.airalo",
+    "defaultProd": false,
+    "owner": "Kathleen",
+    "gates": "eSIM purchase",
+    "turnOnTrigger": "Airalo agreement + sandbox certification"
+  },
+  {
+    "key": "esim.holafly",
+    "defaultProd": false,
+    "owner": "Kathleen",
+    "gates": "Unlimited eSIM SKU",
+    "turnOnTrigger": "Holafly agreement"
+  },
+  {
+    "key": "insurance.coverGenius",
+    "defaultProd": false,
+    "owner": "Kathleen",
+    "gates": "Supplemental cover",
+    "turnOnTrigger": "Distribution agreement + disclosures approved"
+  },
+  {
+    "key": "concierge.partner",
+    "defaultProd": false,
+    "owner": "Kathleen",
+    "gates": "Partner case bridge",
+    "turnOnTrigger": "SLA signed"
+  },
+  {
+    "key": "wallet.enabled",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "Wallet, balances, loads",
+    "turnOnTrigger": "Program agreement + bank approval"
+  },
+  {
+    "key": "card.virtual",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "Virtual card",
+    "turnOnTrigger": "Bank approval"
+  },
+  {
+    "key": "card.physical",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "Physical card ordering",
+    "turnOnTrigger": "Card art approved by network"
+  },
+  {
+    "key": "card.pushProvisioning",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Add to Apple Wallet / Google Pay",
+    "turnOnTrigger": "Processor entitlements + Apple Lab certification"
+  },
+  {
+    "key": "card.webPushProvisioning",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Add to wallet from web",
+    "turnOnTrigger": "Processor WPP enabled"
+  },
+  {
+    "key": "card.agentic",
+    "defaultProd": false,
+    "owner": "Noah",
+    "gates": "Agent-initiated purchases",
+    "turnOnTrigger": "Processor agentic tokens + parent controls UI"
+  },
+  {
+    "key": "card.paymentPasskey",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Network payment passkeys for 3DS",
+    "turnOnTrigger": "Processor enrolment API for our BIN"
+  },
+  {
+    "key": "p2p.enabled",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "Member transfers",
+    "turnOnTrigger": "Bank approves book transfers"
+  },
+  {
+    "key": "fx.enabled",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "USD/ILS conversion",
+    "turnOnTrigger": "ILS purse or Nium FX live"
+  },
+  {
+    "key": "payouts.nium",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "ILS payouts",
+    "turnOnTrigger": "Nium contract + KYB"
+  },
+  {
+    "key": "institutions.money",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "Master accounts, allowances, collections",
+    "turnOnTrigger": "wallet.enabled + institution agreement"
+  },
+  {
+    "key": "funding.ach",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "ACH loads via Plaid",
+    "turnOnTrigger": "Bank hold policy; Plaid contract"
+  },
+  {
+    "key": "funding.rtp",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "RTP/FedNow loads",
+    "turnOnTrigger": "Sponsor bank confirms rail"
+  },
+  {
+    "key": "mcp.enabled",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Remote MCP, read-only",
+    "turnOnTrigger": "Pentest of /mcp passed"
+  },
+  {
+    "key": "mcp.write.enabled",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Tier 1 MCP tools",
+    "turnOnTrigger": "60 days read-only, no incidents"
+  },
+  {
+    "key": "mcp.money.propose",
+    "defaultProd": false,
+    "owner": "Noah",
+    "gates": "Tier 2 propose-only money tools",
+    "turnOnTrigger": "Bank sign-off on agent intent flow"
+  },
+  {
+    "key": "notify.whatsapp",
+    "defaultProd": false,
+    "owner": "Kathleen",
+    "gates": "WhatsApp utility templates",
+    "turnOnTrigger": "Meta verification + templates approved"
+  },
+  {
+    "key": "wallet.pass",
+    "defaultProd": false,
+    "owner": "Kathleen",
+    "gates": "Club pass in Wallet",
+    "turnOnTrigger": "Pass Type ID cert"
+  },
+  {
+    "key": "webhooks.outbound",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Standard Webhooks to institutions",
+    "turnOnTrigger": "First integrating institution"
+  },
+  {
+    "key": "kyc.mdl",
+    "defaultProd": false,
+    "owner": "Noah",
+    "gates": "mDL / Digital Credentials KYC",
+    "turnOnTrigger": "KYC vendor + bank accept mDL for CIP"
+  },
+  {
+    "key": "il.payinit",
+    "defaultProd": false,
+    "owner": "Noah",
+    "gates": "Israeli pay-by-bank",
+    "turnOnTrigger": "Licensed PISP partner; directive final"
+  },
+  {
+    "key": "us.openbanking1033",
+    "defaultProd": false,
+    "owner": "Noah",
+    "gates": "1033 data access",
+    "turnOnTrigger": "Compliance dates reinstated"
+  },
+  {
+    "key": "bit.interop",
+    "defaultProd": false,
+    "owner": "Noah",
+    "gates": "Bit/PayBox interoperability",
+    "turnOnTrigger": "Public interop API exists"
+  },
+  {
+    "key": "ui.hebrew",
+    "defaultProd": true,
+    "owner": "Kathleen",
+    "gates": "Hebrew locale",
+    "turnOnTrigger": ""
+  }
+]
