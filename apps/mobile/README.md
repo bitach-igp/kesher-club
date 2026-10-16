@@ -30,5 +30,6 @@ Expo app: member mode and funder mode. Screens M01-M34 and P01-P18 (Tab 2).
 ## Tests
 
 `pnpm --filter @kesher/mobile test` runs the view-model tests on Node and screen smoke tests
-through react-native-web in jsdom (`// @vitest-environment jsdom`). Maestro flows for the
-TST-*-Maestro rows run on the desktop against a dev build (handoff request to follow).
+through react-native-web in jsdom (`// @vitest-environment jsdom`). The Maestro rows of
+TST-AUTH-001 and TST-ESIM-001 need an Expo dev build and a phone; they are not in the repo yet
+(the Expo project config and the Maestro flows come with the first dev build).

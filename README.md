@@ -25,8 +25,13 @@ vendor sandbox, and flip a flag. See `docs/constitution.md` and the live spec.
 | `config/flags.json` | The only flag registry |
 
 ## Status
-- Working with tests: `@kesher/domain` (money, errors, ledger invariants) and `@kesher/ports` (registry, eSIM port, simulator, contract suite).
-- Everything else is scaffolded with task cards. Start at `specs/tasks/T-0001.md`.
+- 55 of the 56 task cards in `specs/tasks` are implemented with their tests; `pnpm typecheck`,
+  `pnpm test`, `pnpm lint`, `pnpm trace` and `pnpm db:lint` are green at the root.
+- Open: T-0118 (OrgIdP vendor adapter) waits on ADR-004; the port and simulator exist.
+- Deferred by ADR: NestJS binding (ADR-001), Temporal hosting (ADR-002); the E04/E05 money epics
+  (wallet, cards, P2P, FX, payouts) are not yet broken into cards (ADR-006), which is why
+  `pnpm trace` lists their REQs as "not yet in any task".
+- Desktop-only steps go through `handoff/` (see `handoff/README.md`).
 
 ## Quick start
 ```
