@@ -15,5 +15,9 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.10"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
   }
 }
