@@ -7,7 +7,7 @@ import { PGlite } from '@electric-sql/pglite';
 import type { Database, QueryResult, SqlClient } from './db.ts';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../..');
-const SCHEMA_ORDER = ['ledger', 'identity', 'org', 'billing', 'addons', 'notify', 'audit', 'agent'];
+const SCHEMA_ORDER = ['ledger', 'identity', 'org', 'billing', 'legal', 'addons', 'notify', 'audit', 'agent'];
 
 export interface TestDatabase extends Database {
   /** Runs `fn` with `set role` applied, then resets. */

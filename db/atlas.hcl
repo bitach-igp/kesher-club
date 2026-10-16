@@ -13,7 +13,7 @@ variable "url" {
 
 locals {
   // Order matters: later schemas reference earlier ones.
-  schemas = ["ledger", "identity", "org", "billing", "addons", "notify", "audit", "agent"]
+  schemas = ["ledger", "identity", "org", "billing", "legal", "addons", "notify", "audit", "agent"]
 }
 
 // Dev database for `migrate diff` and lint, isolated in Docker so a lint can never touch real data.
