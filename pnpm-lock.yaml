@@ -180,6 +180,9 @@ importers:
       '@kesher/ports':
         specifier: workspace:*
         version: link:../ports
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
 
   packages/domain:
     dependencies:
