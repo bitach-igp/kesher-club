@@ -81,3 +81,20 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm audit --audit-level high
+
+  terraform:
+    name: terraform validate + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - run: terraform fmt -check -recursive infra
+      - name: Validate every root without a backend
+        run: |
+          for d in infra/terraform/bootstrap infra/terraform/envs/shared infra/terraform/envs/staging infra/terraform/envs/prod infra/preview; do
+            (cd "$d" && terraform init -backend=false -input=false >/dev/null && terraform validate)
+          done
+      - name: Module tests (plan mode, mocked provider)
+        run: cd infra/terraform && terraform init -backend=false -input=false >/dev/null && terraform test

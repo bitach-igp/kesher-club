@@ -1,0 +1,211 @@
+# Preview environment per PR (T-0010, Tab 3 §9). On open/synchronize: build the api and worker
+# images, apply infra/preview with -var pr_number, post the URL on the PR, then run the
+# Schemathesis contract job against it. On close: destroy. Credentials come from GitHub OIDC
+# through aws-actions/configure-aws-credentials; there are no static keys anywhere.
+name: preview
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+# One group per PR: a second push waits for the running apply instead of cancelling it, because
+# a cancelled apply would leave the state lock held and the preview half-built.
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TERRAFORM_VERSION: "1.9.8"
+  PR_NUMBER: ${{ github.event.pull_request.number }}
+  IMAGE_TAG: pr-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+
+jobs:
+  deploy:
+    name: build · apply · comment
+    # Fork PRs cannot mint an OIDC token for this repository's role.
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.url.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assume the CI role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: preview-pr-${{ github.event.pull_request.number }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR (club-shared)
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ vars.AWS_SHARED_ACCOUNT_ID }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push api image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/api/Dockerfile
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/kesher/api:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+          provenance: false
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/worker/Dockerfile
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/kesher/worker:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=worker
+          cache-to: type=gha,scope=worker,mode=max
+          provenance: false
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init (per-PR state)
+        working-directory: infra/preview
+        run: terraform init -backend-config=backend.hcl -backend-config="key=preview/pr-${PR_NUMBER}.tfstate"
+
+      - name: Terraform apply
+        working-directory: infra/preview
+        run: |
+          terraform apply -auto-approve \
+            -var "pr_number=${PR_NUMBER}" \
+            -var "image_tag=${IMAGE_TAG}" \
+            -var "staging_account_id=${{ vars.AWS_STAGING_ACCOUNT_ID }}" \
+            -var "shared_account_id=${{ vars.AWS_SHARED_ACCOUNT_ID }}"
+
+      - name: Read preview URL
+        id: url
+        working-directory: infra/preview
+        run: echo "url=$(terraform output -raw preview_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the api to answer
+        run: |
+          url="${{ steps.url.outputs.url }}/healthz"
+          for i in $(seq 1 60); do
+            if curl -fsS --max-time 10 "$url" >/dev/null; then echo "healthy after ${i} tries"; exit 0; fi
+            sleep 15
+          done
+          echo "preview never became healthy at $url" >&2
+          exit 1
+
+      - name: Comment the URL on the PR
+        uses: actions/github-script@v7
+        env:
+          PREVIEW_URL: ${{ steps.url.outputs.url }}
+        with:
+          script: |
+            const marker = '<!-- kesher-preview -->';
+            const body = [
+              marker,
+              `**Preview environment** for \`${process.env.IMAGE_TAG}\``,
+              '',
+              `API: ${process.env.PREVIEW_URL}/v1`,
+              `Health: ${process.env.PREVIEW_URL}/healthz`,
+              '',
+              'Providers run in simulator mode (`PROVIDER_MODE_DEFAULT=sim`). The environment is destroyed when this PR closes.',
+            ].join('\n');
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number, per_page: 100 });
+            const existing = comments.find((c) => c.body && c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+  contract:
+    name: Schemathesis against the preview
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Schemathesis
+        run: pip install "schemathesis>=3.39,<4"
+      - name: Run the API contract suite
+        continue-on-error: false
+        run: |
+          schemathesis run contracts/openapi.yaml \
+            --base-url "${{ needs.deploy.outputs.url }}/v1" \
+            --checks all \
+            --hypothesis-max-examples 50 \
+            --request-timeout 10000 \
+            --junit-xml schemathesis.xml \
+            --show-trace
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: schemathesis-pr-${{ github.event.pull_request.number }}
+          path: schemathesis.xml
+          if-no-files-found: ignore
+
+  destroy:
+    name: destroy
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assume the CI role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: preview-destroy-pr-${{ github.event.pull_request.number }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform init (per-PR state)
+        working-directory: infra/preview
+        run: terraform init -backend-config=backend.hcl -backend-config="key=preview/pr-${PR_NUMBER}.tfstate"
+
+      - name: Terraform destroy
+        working-directory: infra/preview
+        run: |
+          terraform destroy -auto-approve \
+            -var "pr_number=${PR_NUMBER}" \
+            -var "image_tag=${IMAGE_TAG}" \
+            -var "staging_account_id=${{ vars.AWS_STAGING_ACCOUNT_ID }}" \
+            -var "shared_account_id=${{ vars.AWS_SHARED_ACCOUNT_ID }}"
+
+      - name: Remove the empty state object
+        run: |
+          bucket="$(sed -n 's/^bucket *= *"\(.*\)"/\1/p' infra/preview/backend.hcl)"
+          aws s3 rm "s3://${bucket}/preview/pr-${PR_NUMBER}.tfstate"
+
+      - name: Note the teardown on the PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            await github.rest.issues.createComment({
+              owner, repo,
+              issue_number: context.payload.pull_request.number,
+              body: '<!-- kesher-preview-destroyed -->\nPreview environment destroyed (database `preview_' + context.payload.pull_request.number + '` dropped).',
+            });
