@@ -21,7 +21,7 @@ vendor sandbox, and flip a flag. See `docs/constitution.md` and the live spec.
 | `contracts/openapi.yaml` | API source of truth |
 | `db/migrations` | Atlas migrations; `ledger/0001_init.sql` ready |
 | `specs/tasks` | 56 agent-executable task cards |
-| `docs/adr` | ADR-001…011 stubs |
+| `docs/adr` | ADR-001…012 (012: core platform) |
 | `config/flags.json` | The only flag registry |
 
 ## Status
