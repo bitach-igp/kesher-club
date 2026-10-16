@@ -28,6 +28,7 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm trace
+      - run: pnpm db:lint
 
   openapi:
     name: Spectral + oasdiff
