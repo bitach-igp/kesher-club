@@ -9,6 +9,9 @@ constitution lives in `docs/constitution.md`.
 2. Touch only the files the card lists. Need another file? Stop and ask.
 3. For money and auth modules (ledger, wallet, card, p2p, payouts, fx, auth, agent), write the failing test first.
 
+## Skills
+Project skills live in `.claude/skills/` (Claude Code loads them, including in cloud sessions). Use `club-requirements`, `club-openapi`, `club-ddl`, `club-adapter`, `club-task-slicer` and `club-runbook` for those jobs, and `property-based-testing` for ledger and money invariants. See `.claude/skills/README.md`.
+
 ## Hard rules
 - Money is `Money { minor: bigint; currency }` from `@kesher/domain`. Never `number` for amounts.
 - No vendor SDK outside `packages/adapters/*`. App and domain code talk to ports in `@kesher/ports`.
