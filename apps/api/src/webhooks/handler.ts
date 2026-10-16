@@ -3,7 +3,7 @@
 // per provider that must be idempotent; its journals use `${provider}:${eventId}` as the key, so
 // a replayed webhook, processed twice, yields exactly one journal (REQ-LED-003).
 import { DomainError } from '@kesher/domain';
-import { HttpError, ok, route, type Handler, type HttpRequest } from '../http.ts';
+import { HttpError, ok, route, type Handler, type HttpRequest, type ProblemBody } from '../http.ts';
 import type { InboundEvent, InboundEventStore } from './store.ts';
 import type { WebhookVerifier } from './verify.ts';
 
@@ -24,7 +24,7 @@ export class WebhookRouter {
   }
 
   /** The HTTP handler for POST /hooks/{provider}. */
-  handler(): Handler<unknown, { eventId: string; duplicate: boolean }> {
+  handler(): Handler<unknown, { eventId: string; duplicate: boolean } | ProblemBody> {
     return route(async (req: HttpRequest) => {
       const provider = req.params['provider'] ?? '';
       const binding = this.providers.get(provider);

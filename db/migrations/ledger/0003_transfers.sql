@@ -1,4 +1,4 @@
--- T-0205 transfer state machine (REQ-PAY-001..005, SEQ-06); outbox rows go to ops.outbox
+-- T-0205 transfer state machine (REQ-PAY-001, REQ-PAY-003, REQ-PAY-005); outbox rows go to ops.outbox
 -- A transfer is the workflow's record; the journals it posts live in ledger.* and never change.
 create table ops.transfer (
   id               uuid primary key,

@@ -55,7 +55,7 @@ describe('TransferService', () => {
     expect(await transfers.expiredHolds(new Date('2026-11-01T11:59:59Z'))).toEqual([]);
     expect((await transfers.expiredHolds(new Date('2026-11-01T12:00:00Z'))).map((x) => x.id)).toContain(t.id);
     await transfers.apply(t.id, 'release_hold', now);
-    const settled = await transfers.apply(t.id, 'settle', now, { journalId: undefined });
+    const settled = await transfers.apply(t.id, 'settle', now);
     expect(settled.state).toBe('settled');
     expect((await transfers.history(t.id)).map((h) => h.to)).toEqual(['created', 'submitted', 'pending_hold', 'pending', 'settled']);
     const outbox = await db.query<{ type: string }>(`select type from ops.outbox where aggregate = 'transfer' and aggregate_id = $1 order by id`, [t.id]);
