@@ -26,7 +26,7 @@ const RP_ID = 'kesher.example';
 const ES256: EcKeyImportParams = { name: 'ECDSA', namedCurve: 'P-256' };
 const SIGN: EcdsaParams = { name: 'ECDSA', hash: 'SHA-256' };
 
-const b64u = (b: ArrayBuffer | Uint8Array): string => Buffer.from(b).toString('base64url');
+const b64u = (b: ArrayBuffer | Uint8Array): string => Buffer.from(new Uint8Array(b)).toString('base64url');
 const fromB64u = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, 'base64url'));
 const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 
