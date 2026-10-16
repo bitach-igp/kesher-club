@@ -12,3 +12,13 @@ Steps (from repo root, PowerShell on Windows unless stated):
 9. docker rm -f kesher-pg
 Expected: step 5 writes an atlas.sum next to each migration directory; step 6 reports no destructive changes; step 7 applies every schema in order with no error; step 8 lists the tables (ledger.journal, ops.transfer, org.member_spend, audit.entry, agent.grant among them).
 Report back: the console output of steps 6, 7 and 8, and commit the generated db/migrations/*/atlas.sum files on this branch.
+
+## Blocked
+Date: 2026-10-16 18:10 Asia/Jerusalem (desktop checker, first run)
+Outcome: not run. Zvi's PC has no Docker: `docker` is not on PATH, Docker Desktop is not installed
+(`C:\Program Files\Docker\Docker\resources\bin\docker.exe` missing) and WSL is not installed
+("The Windows Subsystem for Linux is not installed"). Atlas CLI is also absent. Installing Docker
+Desktop + WSL needs admin/system changes and a reboot, well over the 20-minute limit, so the checker
+will not do it unattended.
+To unblock: Zvi installs Docker Desktop (with WSL 2) and, optionally, Atlas; then re-file this
+request under handoff/desktop/ (or reply in the PR) and the next run will execute steps 1-9.
