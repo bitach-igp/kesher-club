@@ -4,12 +4,18 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 const MONEY_TOKENS = new Set(['amount', 'minor', 'price', 'cost', 'balance', 'fee', 'fees', 'markup', 'money', 'cents', 'agorot']);
-/** True when any camelCase / snake_case token of the name is a money word (so `UNBALANCED` is not). */
-const looksLikeMoney = (name) =>
-  name
+/**
+ * True when any camelCase / snake_case token of the name is a money word (so `UNBALANCED` is not).
+ * Basis points (`markupBps`, `fx_markup_bps`) and counts (`feeCount`) are integers, not money.
+ */
+const looksLikeMoney = (name) => {
+  const tokens = name
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .split(/[\s_-]+/)
-    .some((t) => MONEY_TOKENS.has(t.toLowerCase()));
+    .map((t) => t.toLowerCase());
+  if (tokens.includes('bps') || tokens.includes('count') || tokens.includes('pct') || tokens.includes('percent')) return false;
+  return tokens.some((t) => MONEY_TOKENS.has(t));
+};
 
 /** Local rule: no `number` where money lives. */
 const noMoneyNumber = {

@@ -21,7 +21,7 @@ do $$ begin
 end $$;
 
 -- Nothing is granted to PUBLIC. Each migration grants what its schema needs to club_app and club_jit.
-revoke all on database current_database() from public;
+do $$ begin execute format('revoke all on database %I from public', current_database()); end $$;
 revoke all on schema public from public;
 
 -- club_migrator owns what it creates; objects it creates default to no grants for anyone else.
