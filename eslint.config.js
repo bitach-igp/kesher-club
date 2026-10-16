@@ -65,7 +65,7 @@ const noMoneyNumber = {
 
 export default tseslint.config(
   {
-    ignores: ['**/node_modules/**', '**/dist/**', '**/.turbo/**', '**/.next/**', '.claude/**', 'pnpm-lock.yaml'],
+    ignores: ['**/node_modules/**', '**/dist/**', '**/.turbo/**', '**/.next/**', '.claude/**', 'pnpm-lock.yaml', '**/*.generated.ts'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

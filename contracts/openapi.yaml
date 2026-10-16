@@ -2,18 +2,137 @@ openapi: 3.1.0
 info:
   title: Kesher Club API
   version: 0.1.0
-  description: Source of truth for the API (Tab 3 §5). Full path list grows with each task.
+  description: |
+    Source of truth for the API (Tab 3 §5). Server validators, the TypeScript SDK (packages/sdk),
+    MCP tool schemas and docs are generated from this file. Breaking changes go to a /v2 path.
+
+    Conventions: bearer JWT (10-minute access tokens); money-moving calls need a step-up token
+    younger than 5 minutes (REQ-AUTH-006) and an Idempotency-Key (24 h replay window); every error is
+    RFC 9457 problem+json with a code from the closed set in packages/domain/src/errors.ts; lists are
+    cursor-paginated; Money is `{ minor: string, currency }` so bigint survives JSON.
   contact:
     name: Kesher engineering
 servers:
   - url: https://api.kesher.example/v1
+security:
+  - bearer: []
 paths:
+  /auth/otp:
+    post:
+      operationId: startOtp
+      summary: Start phone verification with a 6-digit OTP
+      description: REQ-AUTH-001. 5-minute expiry, 5 attempts. Public.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OtpStartRequest" }
+      responses:
+        "201":
+          description: OTP sent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OtpStart" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/otp/verify:
+    post:
+      operationId: verifyOtp
+      summary: Verify the OTP and obtain an otp-session for passkey enrolment or recovery
+      description: REQ-AUTH-001 / REQ-AUTH-003. Public.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OtpVerifyRequest" }
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OtpVerify" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/passkeys/register:
+    post:
+      operationId: registerPasskey
+      summary: Enrol a passkey (two-step; omit `response` to get options)
+      description: REQ-AUTH-001. Authenticated by the otp-session token from verifyOtp, or an access token when adding a device.
+      security: [{ otpSession: [] }, { bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasskeyRegisterRequest" }
+      responses:
+        "200":
+          description: Registration options, or the stored credential plus tokens once the response is verified
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyRegisterResult" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/passkeys/authenticate:
+    post:
+      operationId: authenticatePasskey
+      summary: Sign in with a passkey (two-step; omit `response` to get options)
+      description: REQ-AUTH-002. Public. Recovery (OTP) is a separate path and applies a 24 h hold (REQ-AUTH-003).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasskeyAuthenticateRequest" }
+      responses:
+        "200":
+          description: Authentication options, or a token pair once verified
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PasskeyAuthenticateResult" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/token/refresh:
+    post:
+      operationId: refreshToken
+      summary: Rotate the refresh token; reuse of a rotated token revokes the device family
+      description: REQ-AUTH-007. Authenticated by the refresh token.
+      security: [{ refresh: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId]
+              properties:
+                deviceId: { type: string }
+      responses:
+        "200":
+          description: New token pair
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TokenPair" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/step-up:
+    post:
+      operationId: stepUp
+      summary: Fresh passkey assertion that unlocks money actions for 5 minutes
+      description: REQ-AUTH-006. Returns a step-up token to send as `X-Step-Up`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PasskeyAuthenticateRequest" }
+      responses:
+        "200":
+          description: Step-up options or token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StepUpResult" }
+        default: { $ref: "#/components/responses/Problem" }
   /me/capabilities:
     get:
       operationId: getCapabilities
       summary: Entitlements and live features for the signed-in member
       description: The app renders only what this returns (flags + entitlements).
-      security: [{ bearer: [] }]
       responses:
         "200":
           description: Capabilities
@@ -21,14 +140,97 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Capabilities" }
         default: { $ref: "#/components/responses/Problem" }
+  /households/{id}:
+    get:
+      operationId: getHousehold
+      summary: "A funder's household: members, memberships, funding sources"
+      description: Funder role only; members see their own household through /me/capabilities.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Household
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Household" }
+        default: { $ref: "#/components/responses/Problem" }
+  /memberships:
+    post:
+      operationId: createMembership
+      summary: Start a membership (plan + member) billed to the funder
+      description: E03 billing. Idempotent.
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MembershipRequest" }
+      responses:
+        "201":
+          description: Membership created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Membership" }
+        default: { $ref: "#/components/responses/Problem" }
+  /accounts:
+    get:
+      operationId: listAccounts
+      summary: Purses for the member (USD and ILS) with settled, holds and available
+      description: REQ-WAL-001. available = settled − holds.
+      responses:
+        "200":
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Account" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /accounts/{id}/transactions:
+    get:
+      operationId: listTransactions
+      summary: Transactions on a purse, newest first
+      description: REQ-WAL-001. Merchant text sits in `untrusted` fields.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/Cursor" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: Transactions page
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TransactionPage" }
+        default: { $ref: "#/components/responses/Problem" }
+  /loads:
+    post:
+      operationId: createLoad
+      summary: Load a member's purse by card, Apple Pay, Google Pay or ACH
+      description: REQ-WAL-002/003. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Starts the LoadWorkflow keyed by the Idempotency-Key.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/LoadRequest" }
+      responses:
+        "201":
+          description: Load created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Load" }
+        default: { $ref: "#/components/responses/Problem" }
   /transfers:
     post:
       operationId: createTransfer
       summary: Send money to another member (P2P)
-      description: Requires a step-up token younger than 5 minutes (REQ-AUTH-006) and an Idempotency-Key (REQ-PAY-005).
-      security: [{ bearer: [] }]
+      description: REQ-PAY-001..005. Requires a step-up token younger than 5 minutes (REQ-AUTH-006) and an Idempotency-Key (REQ-PAY-005); the TransferWorkflow id is the key.
       parameters:
         - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
       requestBody:
         required: true
         content:
@@ -41,9 +243,292 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Transfer" }
         default: { $ref: "#/components/responses/Problem" }
+  /transfers/{id}/cancel:
+    post:
+      operationId: cancelTransfer
+      summary: Cancel a transfer while it is pending_hold
+      description: REQ-PAY-003. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "200":
+          description: Transfer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Transfer" }
+        default: { $ref: "#/components/responses/Problem" }
+  /fx/quotes:
+    post:
+      operationId: createFxQuote
+      summary: Lock a USD/ILS quote for 30 seconds
+      description: REQ-FX-001/002. Idempotent.
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FxQuoteRequest" }
+      responses:
+        "201":
+          description: Quote
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FxQuote" }
+        default: { $ref: "#/components/responses/Problem" }
+  /fx/conversions:
+    post:
+      operationId: convert
+      summary: Convert at a locked quote
+      description: REQ-FX-001. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). QUOTE_EXPIRED after 30 s.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quoteId]
+              properties:
+                quoteId: { type: string }
+      responses:
+        "201":
+          description: Conversion
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FxConversion" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cards/{id}:
+    get:
+      operationId: getCard
+      summary: Card status, controls and wallet tokens (never card data)
+      description: REQ-CRD-002/004/005.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Card
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Card" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cards/{id}/controls:
+    patch:
+      operationId: updateCardControls
+      summary: Change card controls; funder-set controls are locked for members
+      description: REQ-CRD-004/005. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CardControlsPatch" }
+      responses:
+        "200":
+          description: Card
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Card" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cards/{id}/provisioning/{wallet}:
+    post:
+      operationId: startPushProvisioning
+      summary: In-app push provisioning to Apple Wallet or Google Pay
+      description: REQ-CRD-006. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - name: wallet
+          in: path
+          required: true
+          schema: { type: string, enum: [apple, google] }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deviceId, clientData]
+              properties:
+                deviceId: { type: string }
+                clientData: { type: object, additionalProperties: { type: string } }
+      responses:
+        "200":
+          description: Provisioning payload for the OS sheet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProvisioningPayload" }
+        default: { $ref: "#/components/responses/Problem" }
+  /catalogue:
+    get:
+      operationId: listCatalogue
+      summary: Add-ons the member can buy (eSIM, insurance, …) with prices from price rules
+      description: REQ-MKT-002.
+      parameters: [{ $ref: "#/components/parameters/Cursor" }, { $ref: "#/components/parameters/Limit" }]
+      responses:
+        "200":
+          description: Catalogue page
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CataloguePage" }
+        default: { $ref: "#/components/responses/Problem" }
+  /addon-orders:
+    post:
+      operationId: createAddonOrder
+      summary: Buy an add-on; entitlement credits apply automatically
+      description: REQ-MKT-001, REQ-ESIM-001/002, REQ-INSR-001. Idempotent; starts the AddonWorkflow keyed by the Idempotency-Key.
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AddonOrderRequest" }
+      responses:
+        "201":
+          description: Order
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AddonOrder" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/rosters:
+    post:
+      operationId: importRoster
+      summary: Import a roster CSV with column mapping; all rows or none
+      description: REQ-INS-001. Org staff. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RosterImportRequest" }
+      responses:
+        "200":
+          description: Validation report or commit result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RosterImportResult" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/allowance-runs:
+    post:
+      operationId: runAllowance
+      summary: Dry-run or execute an allowance schedule for a date
+      description: REQ-INS-003/004. Org finance; over ₪5,000 needs a second approver. Idempotent; workflow id allowance:{schedule}:{date}.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AllowanceRunRequest" }
+      responses:
+        "200":
+          description: Run preview or status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AllowanceRun" }
+        default: { $ref: "#/components/responses/Problem" }
+  /payouts:
+    post:
+      operationId: createPayout
+      summary: Pay out ILS to a validated payee
+      description: REQ-PO-001/002. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). New payees over ₪2,000 cool off 24 h. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PayoutRequest" }
+      responses:
+        "201":
+          description: Payout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Payout" }
+        default: { $ref: "#/components/responses/Problem" }
+  /agent-grants:
+    get:
+      operationId: listAgentGrants
+      summary: "Every agent grant: client, scopes, last used"
+      description: REQ-AGT-008.
+      responses:
+        "200":
+          description: Grants
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AgentGrant" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /agent-grants/{id}:
+    delete:
+      operationId: revokeAgentGrant
+      summary: Revoke a grant; effective within 60 s
+      description: REQ-AGT-008.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "204":
+          description: Revoked
+        default: { $ref: "#/components/responses/Problem" }
+  /intents/{id}/approve:
+    post:
+      operationId: approveIntent
+      summary: Approve an agent's pending intent with a passkey step-up
+      description: REQ-AGT-006. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      responses:
+        "200":
+          description: Intent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PendingIntent" }
+        default: { $ref: "#/components/responses/Problem" }
+  /hooks/{provider}:
+    post:
+      operationId: providerWebhook
+      summary: Inbound provider webhook; verified, stored, deduped by event id
+      description: REQ-LED-003. Authenticated by the provider's signature header; no bearer. Always 200 once stored.
+      security: []
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z][a-z0-9-]{1,30}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {}
+      responses:
+        "200":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [eventId, duplicate]
+                properties:
+                  eventId: { type: string }
+                  duplicate: { type: boolean }
+        default: { $ref: "#/components/responses/Problem" }
 components:
   securitySchemes:
-    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT, description: 10-minute access token }
+    refresh: { type: http, scheme: bearer, bearerFormat: opaque, description: Rotating refresh token }
+    otpSession: { type: http, scheme: bearer, bearerFormat: opaque, description: Short-lived token from verifyOtp }
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -51,6 +536,27 @@ components:
       required: true
       description: Client-generated key; replays return the original response for 24 h.
       schema: { type: string, minLength: 8, maxLength: 128 }
+    StepUp:
+      name: X-Step-Up
+      in: header
+      required: true
+      description: Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006).
+      schema: { type: string }
+    Id:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
   responses:
     Problem:
       description: RFC 9457 problem details
@@ -64,32 +570,6 @@ components:
       properties:
         minor: { type: string, pattern: "^-?\\d+$", description: Minor units as a string (bigint-safe) }
         currency: { type: string, enum: [USD, ILS] }
-    Capabilities:
-      type: object
-      required: [features, entitlements]
-      properties:
-        features: { type: object, additionalProperties: { type: boolean } }
-        entitlements:
-          type: object
-          additionalProperties:
-            type: object
-            properties:
-              remaining: { type: number }
-              resetsAt: { type: string, format: date-time }
-    TransferRequest:
-      type: object
-      required: [toPartyId, amount]
-      properties:
-        toPartyId: { type: string, format: uuid }
-        amount: { $ref: "#/components/schemas/Money" }
-        note: { type: string, maxLength: 140 }
-    Transfer:
-      type: object
-      required: [id, state, amount]
-      properties:
-        id: { type: string, format: uuid }
-        state: { type: string, enum: [created, submitted, pending, pending_hold, settled, failed, reversed] }
-        amount: { $ref: "#/components/schemas/Money" }
     Problem:
       type: object
       required: [type, title, status, code]
@@ -102,3 +582,378 @@ components:
           enum: [UNAUTHENTICATED, STEP_UP_REQUIRED, RECOVERY_HOLD, FORBIDDEN, NOT_FOUND, VALIDATION_FAILED, INSUFFICIENT_FUNDS, LIMIT_EXCEEDED, QUOTE_EXPIRED, CARD_FROZEN, FEATURE_OFF, PROVIDER_UNAVAILABLE, IDEMPOTENCY_CONFLICT, RATE_LIMITED, AGENT_NOT_ALLOWED]
         detail: { type: string }
         traceId: { type: string }
+    OtpStartRequest:
+      type: object
+      required: [phone]
+      properties:
+        phone: { type: string, pattern: "^\\+[1-9]\\d{6,14}$", description: E.164 }
+        locale: { type: string, enum: [en, he], default: en }
+    OtpStart:
+      type: object
+      required: [otpId, expiresAt, attemptsAllowed]
+      properties:
+        otpId: { type: string }
+        expiresAt: { type: string, format: date-time }
+        attemptsAllowed: { type: integer }
+    OtpVerifyRequest:
+      type: object
+      required: [otpId, code]
+      properties:
+        otpId: { type: string }
+        code: { type: string, pattern: "^\\d{6}$" }
+        purpose: { type: string, enum: [register, recovery], default: register }
+    OtpVerify:
+      type: object
+      required: [verified, attemptsLeft]
+      properties:
+        verified: { type: boolean }
+        attemptsLeft: { type: integer }
+        otpSessionToken: { type: string, description: Present only when verified }
+    PasskeyRegisterRequest:
+      type: object
+      properties:
+        deviceName: { type: string, maxLength: 64 }
+        response: { type: object, description: The authenticator's registration response; omit to receive options }
+    PasskeyRegisterResult:
+      type: object
+      properties:
+        options: { type: object }
+        credentialId: { type: string }
+        tokens: { $ref: "#/components/schemas/TokenPair" }
+    PasskeyAuthenticateRequest:
+      type: object
+      properties:
+        deviceId: { type: string }
+        response: { type: object, description: The authenticator's assertion; omit to receive options }
+    PasskeyAuthenticateResult:
+      type: object
+      properties:
+        options: { type: object }
+        tokens: { $ref: "#/components/schemas/TokenPair" }
+    StepUpResult:
+      type: object
+      properties:
+        options: { type: object }
+        stepUpToken: { type: string }
+        expiresAt: { type: string, format: date-time }
+    TokenPair:
+      type: object
+      required: [accessToken, refreshToken, accessExpiresAt]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        accessExpiresAt: { type: string, format: date-time }
+        restrictedUntil: { type: string, format: date-time, description: Set during the 24 h recovery hold (REQ-AUTH-003) }
+    Capabilities:
+      type: object
+      required: [features, entitlements]
+      properties:
+        features: { type: object, additionalProperties: { type: boolean } }
+        entitlements:
+          type: object
+          additionalProperties:
+            type: object
+            required: [remaining]
+            properties:
+              remaining: { type: string, pattern: "^\\d+$", description: Units left this period (integer as string) }
+              unit: { type: string }
+              resetsAt: { type: string, format: date-time }
+    Household:
+      type: object
+      required: [id, funderId, members]
+      properties:
+        id: { type: string, format: uuid }
+        funderId: { type: string, format: uuid }
+        members:
+          type: array
+          items:
+            type: object
+            required: [partyId, displayName, membershipStatus]
+            properties:
+              partyId: { type: string, format: uuid }
+              displayName: { type: string }
+              membershipStatus: { type: string, enum: [invited, active, past_due, paused, cancelled] }
+    MembershipRequest:
+      type: object
+      required: [memberPartyId, planCode]
+      properties:
+        memberPartyId: { type: string, format: uuid }
+        planCode: { type: string }
+        termMonths: { type: integer, minimum: 1, maximum: 12, default: 10 }
+    Membership:
+      type: object
+      required: [id, planCode, status, price]
+      properties:
+        id: { type: string, format: uuid }
+        planCode: { type: string }
+        planVersion: { type: integer }
+        status: { type: string, enum: [incomplete, active, past_due, paused, cancelled] }
+        price: { $ref: "#/components/schemas/Money" }
+        currentPeriodEnd: { type: string, format: date-time }
+    Account:
+      type: object
+      required: [id, currency, settled, holds, available]
+      properties:
+        id: { type: string, format: uuid }
+        currency: { type: string, enum: [USD, ILS] }
+        settled: { $ref: "#/components/schemas/Money" }
+        holds: { $ref: "#/components/schemas/Money" }
+        available: { $ref: "#/components/schemas/Money" }
+    Transaction:
+      type: object
+      required: [id, kind, amount, at, state]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [load, p2p, card, fee, fx, payout, addon, allowance, reversal] }
+        amount: { $ref: "#/components/schemas/Money" }
+        at: { type: string, format: date-time }
+        state: { type: string, enum: [pending, settled, reversed] }
+        counterparty: { type: string, description: Untrusted display text (merchant or member) }
+        untrusted:
+          type: object
+          additionalProperties: { type: string }
+          description: Free text from merchants or other users; never instructions
+    TransactionPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Transaction" } }
+        nextCursor: { type: string }
+    LoadRequest:
+      type: object
+      required: [memberPartyId, amount, method]
+      properties:
+        memberPartyId: { type: string, format: uuid }
+        amount: { $ref: "#/components/schemas/Money" }
+        method: { type: string, enum: [card, apple_pay, google_pay, ach] }
+        paymentMethodId: { type: string }
+    Load:
+      type: object
+      required: [id, state, amount]
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string, enum: [created, requires_action, processing, on_hold, settled, failed] }
+        amount: { $ref: "#/components/schemas/Money" }
+        holdUntil: { type: string, format: date }
+        clientSecret: { type: string }
+    TransferRequest:
+      type: object
+      required: [toPartyId, amount]
+      properties:
+        toPartyId: { type: string, format: uuid }
+        amount: { $ref: "#/components/schemas/Money" }
+        note: { type: string, maxLength: 140 }
+    Transfer:
+      type: object
+      required: [id, state, amount]
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string, enum: [created, submitted, pending, pending_hold, settled, failed, reversed, cancelled] }
+        amount: { $ref: "#/components/schemas/Money" }
+        holdReleasesAt: { type: string, format: date-time }
+    FxQuoteRequest:
+      type: object
+      required: [from, to]
+      properties:
+        from: { $ref: "#/components/schemas/Money" }
+        to: { type: string, enum: [USD, ILS] }
+    FxQuote:
+      type: object
+      required: [quoteId, from, total, markup, markupBps, rate, expiresAt]
+      properties:
+        quoteId: { type: string }
+        from: { $ref: "#/components/schemas/Money" }
+        total: { $ref: "#/components/schemas/Money" }
+        markup: { $ref: "#/components/schemas/Money" }
+        markupBps: { type: integer }
+        rate: { type: string, description: Decimal string for display only }
+        expiresAt: { type: string, format: date-time }
+    FxConversion:
+      type: object
+      required: [conversionId, quoteId, from, total, status]
+      properties:
+        conversionId: { type: string }
+        quoteId: { type: string }
+        from: { $ref: "#/components/schemas/Money" }
+        total: { $ref: "#/components/schemas/Money" }
+        status: { type: string, enum: [settled, failed] }
+    CardControls:
+      type: object
+      required: [blockedMccs, atm, online, agentPurchases]
+      properties:
+        dailyLimit: { $ref: "#/components/schemas/Money" }
+        monthlyLimit: { $ref: "#/components/schemas/Money" }
+        blockedMccs: { type: array, items: { type: string, pattern: "^\\d{4}$" } }
+        allowedCountries: { type: array, items: { type: string, pattern: "^[A-Z]{2}$" } }
+        atm: { type: boolean }
+        online: { type: boolean }
+        agentPurchases:
+          type: object
+          required: [mode]
+          properties:
+            mode: { type: string, enum: [off, with_approval, under_amount] }
+            underAmount: { $ref: "#/components/schemas/Money" }
+    CardControlsPatch:
+      type: object
+      properties:
+        dailyLimit: { $ref: "#/components/schemas/Money" }
+        monthlyLimit: { $ref: "#/components/schemas/Money" }
+        blockedMccs: { type: array, items: { type: string, pattern: "^\\d{4}$" } }
+        allowedCountries: { type: array, items: { type: string, pattern: "^[A-Z]{2}$" } }
+        atm: { type: boolean }
+        online: { type: boolean }
+    Card:
+      type: object
+      required: [id, type, status, last4, controls, lockedByFunder, tokens]
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string, enum: [virtual, physical] }
+        status: { type: string, enum: [inactive, active, frozen, closed] }
+        last4: { type: string }
+        controls: { $ref: "#/components/schemas/CardControls" }
+        lockedByFunder: { type: array, items: { type: string }, description: Control keys the funder set; disabled for the member with a reason (REQ-CRD-005) }
+        tokens:
+          type: array
+          items:
+            type: object
+            required: [wallet, status, deviceId]
+            properties:
+              wallet: { type: string, enum: [apple, google] }
+              status: { type: string, enum: [active, suspended, deleted] }
+              deviceId: { type: string }
+    ProvisioningPayload:
+      type: object
+      required: [encryptedPassData, activationData, ephemeralPublicKey]
+      properties:
+        encryptedPassData: { type: string }
+        activationData: { type: string }
+        ephemeralPublicKey: { type: string }
+    CatalogueItem:
+      type: object
+      required: [sku, kind, title, price]
+      properties:
+        sku: { type: string }
+        kind: { type: string, enum: [esim, insurance, concierge] }
+        title: { type: string }
+        price: { $ref: "#/components/schemas/Money" }
+        creditApplies: { type: boolean, description: True when a monthly entitlement credit would cover it (REQ-ESIM-002) }
+        disclosures:
+          type: object
+          properties:
+            licensedEntity: { type: string }
+            policyWordingUrl: { type: string, format: uri }
+            commissionDisclosure: { type: string }
+    CataloguePage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/CatalogueItem" } }
+        nextCursor: { type: string }
+    AddonOrderRequest:
+      type: object
+      required: [sku]
+      properties:
+        sku: { type: string }
+        quantity: { type: integer, minimum: 1, default: 1 }
+        disclosuresAcknowledged: { type: boolean, description: Required for insurance (REQ-INSR-001) }
+    AddonOrder:
+      type: object
+      required: [id, sku, state, price, creditApplied]
+      properties:
+        id: { type: string, format: uuid }
+        sku: { type: string }
+        state: { type: string, enum: [created, charged, fulfilling, fulfilled, failed, refunded] }
+        price: { $ref: "#/components/schemas/Money" }
+        creditApplied: { $ref: "#/components/schemas/Money" }
+        fulfilment:
+          type: object
+          properties:
+            installUrl: { type: string, format: uri }
+            iccid: { type: string }
+            policyId: { type: string }
+    RosterImportRequest:
+      type: object
+      required: [csv, mapping, commit]
+      properties:
+        csv: { type: string, description: UTF-8 CSV content (max 2 MB) }
+        mapping:
+          type: object
+          required: [memberName, funderEmail]
+          properties:
+            memberName: { type: string, description: Column header }
+            memberPhone: { type: string }
+            funderEmail: { type: string }
+            funderPhone: { type: string }
+            programme: { type: string }
+        commit: { type: boolean, description: false = validate only }
+    RosterImportResult:
+      type: object
+      required: [importId, status, rowCount, errors]
+      properties:
+        importId: { type: string, format: uuid }
+        status: { type: string, enum: [validated, rejected, committed] }
+        rowCount: { type: integer }
+        errors:
+          type: array
+          items:
+            type: object
+            required: [row, column, message]
+            properties:
+              row: { type: integer }
+              column: { type: string }
+              message: { type: string }
+    AllowanceRunRequest:
+      type: object
+      required: [scheduleId, date, dryRun]
+      properties:
+        scheduleId: { type: string, format: uuid }
+        date: { type: string, format: date }
+        dryRun: { type: boolean }
+    AllowanceRun:
+      type: object
+      required: [workflowId, status, memberCount, total]
+      properties:
+        workflowId: { type: string, description: "Temporal id allowance:{schedule}:{date}" }
+        status: { type: string, enum: [preview, awaiting_second_approval, running, completed, failed] }
+        memberCount: { type: integer }
+        total: { $ref: "#/components/schemas/Money" }
+        failures: { type: integer }
+    PayoutRequest:
+      type: object
+      required: [payee, amount, reference]
+      properties:
+        payee:
+          type: object
+          required: [iban, name]
+          properties:
+            iban: { type: string }
+            name: { type: string }
+        amount: { $ref: "#/components/schemas/Money" }
+        reference: { type: string, maxLength: 64 }
+    Payout:
+      type: object
+      required: [id, state, amount]
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string, enum: [cooling_off, awaiting_second_approval, submitted, processing, settled, failed, reversed] }
+        amount: { $ref: "#/components/schemas/Money" }
+        scheduledFor: { type: string, format: date-time }
+    AgentGrant:
+      type: object
+      required: [id, clientName, clientId, scopes, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        clientName: { type: string }
+        clientId: { type: string, format: uri }
+        scopes: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: string, format: date-time }
+    PendingIntent:
+      type: object
+      required: [id, kind, status, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [p2p, load, limit_change] }
+        status: { type: string, enum: [pending, approved, rejected, expired] }
+        expiresAt: { type: string, format: date-time }
+        summary: { type: string }
