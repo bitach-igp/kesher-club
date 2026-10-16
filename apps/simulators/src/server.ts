@@ -1,7 +1,8 @@
 // Control panel over the simulator host (T-0009). Plain node:http, JSON in and out, plus one HTML
 // page. Local and preview only: the host never runs in staging or prod (config refuses `sim` there).
 import http from 'node:http';
-import { SimulatorHost, type Simulators } from './host.ts';
+import type { SimulatorHost} from './host.ts';
+import { type Simulators } from './host.ts';
 
 type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
 
