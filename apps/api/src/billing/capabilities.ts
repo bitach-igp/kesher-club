@@ -15,6 +15,8 @@ export interface FeatureFlags {
 interface FlagRow {
   key: string;
   defaultProd: boolean;
+  owner: string;
+  gates: string;
 }
 
 /** The registry defaults from config/flags.json. Non-prod environments may turn more on via `overrides`. */

@@ -38,3 +38,4 @@ export * from './events.simulator.ts';
 export * from './agent-gateway.ts';
 export * from './il-payinit.ts';
 export * from './il-payinit.simulator.ts';
+export * from './notify.preferences.ts';

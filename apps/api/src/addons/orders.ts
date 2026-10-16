@@ -134,7 +134,7 @@ export class AddonOrderService {
     if (postings.length >= 2) {
       journalId = (await this.ledger.post({ idempotencyKey: `addon:${o.id}:charge`, kind: 'addon', postings, metadata: { orderId: o.id, sku: o.sku, listPriceMinor: o.listPrice.minor.toString(), creditMinor: o.credit.minor.toString() } })).id;
     }
-    return this.transition(o.id, 'charged', now, { chargeJournalId: journalId });
+    return this.transition(o.id, 'charged', now, journalId ? { chargeJournalId: journalId } : {});
   }
 
   async transition(orderId: string, to: OrderState, now: Date, extra: { chargeJournalId?: string; refundJournalId?: string; fulfilment?: Record<string, unknown>; failureCode?: string; reason?: string } = {}): Promise<AddonOrder> {
