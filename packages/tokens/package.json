@@ -3,7 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Kesher Club design tokens: tokens.json compiled by Style Dictionary into CSS variables, a Tailwind preset, a React Native theme and flat JSON.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./css": "./dist/css/tokens.css",
+    "./tailwind": "./dist/tailwind/preset.js",
+    "./json": "./dist/json/tokens.flat.json",
+    "./tokens.json": "./tokens.json"
+  },
+  "files": [
+    "tokens.json",
+    "dist",
+    "src"
+  ],
   "scripts": {
+    "build": "node sd.config.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
