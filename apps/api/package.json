@@ -5,11 +5,13 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "start": "node --experimental-strip-types src/index.ts"
   },
   "dependencies": {
     "@kesher/domain": "workspace:*",
     "@kesher/ports": "workspace:*",
+    "@kesher/simulators": "workspace:*",
     "jose": "6.2.12",
     "zod": "^4.6.7"
   },

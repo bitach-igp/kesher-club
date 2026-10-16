@@ -87,6 +87,9 @@ importers:
       '@kesher/ports':
         specifier: workspace:*
         version: link:../../packages/ports
+      '@kesher/simulators':
+        specifier: workspace:*
+        version: link:../simulators
       jose:
         specifier: 6.2.12
         version: 6.2.12

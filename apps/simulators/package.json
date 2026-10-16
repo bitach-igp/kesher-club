@@ -12,5 +12,8 @@
     "@kesher/domain": "workspace:*",
     "@kesher/ports": "workspace:*",
     "zod": "^4.6.7"
+  },
+  "exports": {
+    ".": "./src/index.ts"
   }
 }
