@@ -12,6 +12,9 @@ import { JitService } from './cards/jit.ts';
 import { PhysicalCardService } from './cards/physical.ts';
 import { detailsTokenProvisioning, ProvisioningService, TOKEN_EVENT_PROVIDER } from './cards/provisioning.ts';
 import { kycHandlers } from './kyc/handlers.ts';
+import { p2pHandlers } from './p2p/handlers.ts';
+import { P2pLimitService } from './p2p/limits.ts';
+import { P2pSendService } from './p2p/send.ts';
 import { KycService } from './kyc/service.ts';
 import { CustomerReadModel } from './admin/customers.ts';
 import { ComplaintService } from './admin/complaints.ts';
@@ -22,9 +25,8 @@ import { OtpService } from './auth/otp.ts';
 import { PasskeyService } from './auth/passkeys.ts';
 import { RecoveryService } from './auth/recovery.ts';
 import { InMemoryIdentityRepository, type IdentityRepository } from './auth/repository.ts';
-import { StepUpService, requireStepUp } from './auth/step-up.ts';
+import { StepUpService } from './auth/step-up.ts';
 import { TokenService, type SigningKey } from './auth/tokens.ts';
-import { assertNotRestricted } from './auth/recovery.ts';
 import { AccountService } from './ledger/accounts.ts';
 import { PostgresLedger } from './ledger/post.ts';
 import { PlanService } from './billing/plans.ts';
@@ -48,7 +50,7 @@ import { InboundEventStore } from './webhooks/store.ts';
 import { simulatorVerifier } from './webhooks/verify.ts';
 import { OutboundEventsService } from './events/outbound.ts';
 import { ROUTES, type HandlerTable } from './routes.ts';
-import { toWire, fromWire, DomainError } from '@kesher/domain';
+import { toWire, DomainError } from '@kesher/domain';
 
 export interface AppOptions {
   db: Database;
@@ -121,10 +123,12 @@ function buildServices(o: AppOptions) {
   const loads = new LoadService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, memberships, flags, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   webhooks.bind(FUNDING_PROVIDER, { verifier: loads.webhookVerifier(), process: (e) => loads.applyWebhook(e, clock.now()).then(() => undefined) });
   const autoReload = new AutoReloadService(o.db, accounts, loads, flags);
+  const p2pLimits = new P2pLimitService(o.db, memberships, entitlements, plans);
+  const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, kyc, identity, notify: notifyPort });
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure, p2pLimits, p2p };
 }
 
 export function createApp(o: AppOptions): App {
@@ -135,21 +139,13 @@ export function createApp(o: AppOptions): App {
     ...kycHandlers(s.kyc),
     ...cardHandlers(s.cards, s.jit, s.provisioning, s.stepUp, s.physical),
     ...walletHandlers(s.loads, s.stepUp, s.flags, s.autoReload, s.closure),
+    ...p2pHandlers(s.p2p, s.stepUp, s.flags),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
     createMembership: route(async (req) => {
       const p = requirePrincipal(req);
       const b = req.body as { memberPartyId: string; planCode: string; termMonths?: number; funderEmail?: string };
       const m = await s.memberships.create({ idempotencyKey: requireIdempotencyKey(req), memberPartyId: b.memberPartyId, funderPartyId: p.partyId, funderEmail: b.funderEmail ?? `party:${p.partyId}@members.kesher.example`, planCode: b.planCode, ...(b.termMonths ? { termMonths: b.termMonths } : {}) }, req.now);
       return { status: 201, body: { id: m.id, planCode: m.planCode, planVersion: m.planVersion, status: m.status, price: toWire(m.price), ...(m.currentPeriodEnd ? { currentPeriodEnd: m.currentPeriodEnd } : {}) } };
-    }),
-    createTransfer: route(async (req) => {
-      const p = requirePrincipal(req);
-      requireStepUp(s.stepUp, req);
-      assertNotRestricted(p, 'p2p_send', req.now);
-      if (!(await s.flags.isOn('p2p.enabled'))) throw new DomainError('FEATURE_OFF', 'Member transfers are not enabled yet');
-      const b = req.body as { toPartyId: string; amount: { minor: string; currency: string }; note?: string };
-      const t = await s.transfers.create({ idempotencyKey: requireIdempotencyKey(req), kind: 'p2p', fromPartyId: p.partyId, toPartyId: b.toPartyId, amount: fromWire(b.amount), ...(b.note ? { note: b.note } : {}) }, req.now);
-      return { status: 201, body: { id: t.id, state: t.state, amount: toWire(t.amount) } };
     }),
     cancelTransfer: route(async (req) => {
       const p = requirePrincipal(req);
