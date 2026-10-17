@@ -6,11 +6,13 @@
 // Signature verification and the wire shapes belong to the port; PAN never appears here.
 import { DomainError, money, type Currency, type Money } from '@kesher/domain';
 import { CardIssuingError, type CardIssuingPort, type JitAuthorizationRequest, type JitDecision } from '@kesher/ports';
+import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { EntitlementService } from '../billing/entitlements.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import type { PlanService } from '../billing/plans.ts';
 import type { Database } from '../db.ts';
 import type { AccountService } from '../ledger/accounts.ts';
+import type { IntentService } from '../intents/service.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import { controlsFromWire, type WireControls } from './service.ts';
 
@@ -18,6 +20,8 @@ import { controlsFromWire, type WireControls } from './service.ts';
 export const CARD_SPEND_ENTITLEMENT = 'card.monthlySpendMinor';
 /** Risk rule v1: more than this many approvals on one card within a minute is a velocity decline. */
 export const VELOCITY_LIMIT_PER_MINUTE = 10;
+/** Kill switch for every agentic authorisation, whatever the funder's per-card mode (REQ-CRD-008). */
+export const AGENTIC_FLAG = 'card.agentic';
 /** Our own budget, under the processor's. Past it we decline rather than let the processor time out on us. */
 export const DECISION_BUDGET_MS = 250;
 export const holdKey = (authId: string): string => `jit:${authId}`;
@@ -30,6 +34,8 @@ export interface JitDeps {
   memberships: MembershipService;
   entitlements: EntitlementService;
   plans: PlanService;
+  flags: FeatureFlags;
+  intents: IntentService;
   budgetMs?: number;
 }
 
@@ -44,6 +50,7 @@ interface CardRow {
   id: string;
   party_id: string;
   status: 'inactive' | 'active' | 'frozen' | 'closed';
+  currency: Currency;
   controls: WireControls;
 }
 
@@ -90,9 +97,9 @@ export class JitService {
 
     // One round trip: the prior answer for a replayed authorisation id, the card, and both purses with
     // the wallet balance. A replay answers what the first one did, without a second hold.
-    const lookup = await this.d.db.query<{ prior_journal: string | null; id: string | null; party_id: string | null; status: CardRow['status'] | null; controls: WireControls | null; wallet_id: string | null; wallet_balance: string | null; pending_id: string | null; token_status: 'active' | 'suspended' | 'deleted' | null }>(
+    const lookup = await this.d.db.query<{ prior_journal: string | null; id: string | null; party_id: string | null; status: CardRow['status'] | null; currency: Currency | null; controls: WireControls | null; wallet_id: string | null; wallet_balance: string | null; pending_id: string | null; token_status: 'active' | 'suspended' | 'deleted' | null }>(
       `select (select id from ledger.journal where idempotency_key = $1) as prior_journal,
-              c.id, c.party_id, c.status, c.controls,
+              c.id, c.party_id, c.status, c.currency, c.controls,
               w.id as wallet_id, wb.balance_minor::text as wallet_balance, p.id as pending_id, t.status as token_status
          from (select 1) as one
          left join cards.card c on c.processor_card_id = $2
@@ -104,8 +111,8 @@ export class JitService {
     );
     const row = lookup.rows[0]!;
     if (row.prior_journal) return done({ approve: true, holdAmount: req.amount }, row.prior_journal);
-    if (!row.id || !row.party_id || !row.status || !row.controls || row.status === 'closed') return done(decline('UNKNOWN_CARD'));
-    const card: CardRow = { id: row.id, party_id: row.party_id, status: row.status, controls: row.controls };
+    if (!row.id || !row.party_id || !row.status || !row.controls || !row.currency || row.status === 'closed') return done(decline('UNKNOWN_CARD'));
+    const card: CardRow = { id: row.id, party_id: row.party_id, status: row.status, currency: row.currency, controls: row.controls };
     if (card.status !== 'active') return done(decline('CARD_FROZEN'));
     // A wallet token we know to be suspended or deleted pays nothing, whatever the card's own status (REQ-CRD-004).
     if (row.token_status && row.token_status !== 'active') return done(decline('CARD_FROZEN'));
@@ -114,8 +121,25 @@ export class JitService {
     if ((req.channel === 'atm' && !controls.atm) || (req.channel === 'online' && !controls.online)) return done(decline('CHANNEL_BLOCKED'));
     if (controls.blockedMccs.includes(req.merchant.mcc)) return done(decline('MCC_BLOCKED'));
     if (controls.allowedCountries && !controls.allowedCountries.includes(req.merchant.country)) return done(decline('COUNTRY_BLOCKED'));
-    // Agentic purchases: off declines here; with_approval and under_amount are T-0406.
-    if (req.agentic && controls.agentPurchases === 'off') return done(decline('AGENT_NOT_ALLOWED'));
+    // Agentic purchases (REQ-CRD-008): the flag is the kill switch; then the funder's per-card mode.
+    // off declines; under_amount approves below the threshold in the card's currency; anything else
+    // needs an approval the member gave in-app, which one authorisation then spends.
+    let approvalToSpend: string | undefined;
+    if (req.agentic) {
+      if (!(await this.d.flags.isOn(AGENTIC_FLAG, { partyId: card.party_id }))) return done(decline('AGENT_NOT_ALLOWED'));
+      const mode = controls.agentPurchases;
+      if (mode === 'off') return done(decline('AGENT_NOT_ALLOWED'));
+      const underThreshold = typeof mode === 'object' && req.amount.currency === card.currency && req.amount.minor <= mode.underMinor;
+      if (!underThreshold) {
+        const tokenId = req.tokenId ?? 'agentic';
+        const approved = await this.d.intents.approvedAgentPurchase(card.party_id, tokenId, req.merchant.mcc, req.amount, now);
+        if (!approved) {
+          await this.d.intents.openAgentPurchase({ partyId: card.party_id, cardId: card.id, tokenId, authId: req.authId, amount: req.amount, mcc: req.merchant.mcc, country: req.merchant.country, merchantName: req.merchant.name }, now);
+          return done(decline('AGENT_NOT_ALLOWED'));
+        }
+        approvalToSpend = approved.id;
+      }
+    }
 
     const currency = req.amount.currency;
     if (!row.wallet_id) return done(decline('INSUFFICIENT_FUNDS')); // no purse, nothing to spend
@@ -163,6 +187,7 @@ export class JitService {
       metadata: { cardId: card.id, authId: req.authId, mcc: req.merchant.mcc, country: req.merchant.country, channel: req.channel, ...(req.tokenId ? { tokenId: req.tokenId } : {}), ...(req.agentic ? { agentic: true } : {}) },
     });
     if (active && capped) await this.d.entitlements.consume(active, CARD_SPEND_ENTITLEMENT, req.amount.minor, holdKey(req.authId), now);
+    if (approvalToSpend) await this.d.intents.consumeAgentPurchase(approvalToSpend, req.authId);
     return done({ approve: true, holdAmount: req.amount }, journal.id);
   }
 

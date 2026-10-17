@@ -95,7 +95,7 @@ function buildServices(o: AppOptions) {
   const kyc = new KycService(o.db, o.registry.resolve<KycPort>('kyc', o.market), o.market, o.registry.bindingFor('kyc', o.market)?.provider ?? 'issuer-kyc');
   const cardIssuing = o.registry.resolve<CardIssuingPort>('card-issuing', o.market);
   const cards = new CardService(o.db, cardIssuing, kyc, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
-  const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans });
+  const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans, flags, intents });
   const provisioning = new ProvisioningService(o.db, cards, detailsTokenProvisioning(cardIssuing), flags);
   // The processor's token lifecycle events land on /hooks/card-issuing and are applied at receipt; the
   // worker's token-events job sweeps anything left pending within its cycle (REQ-CRD-007).

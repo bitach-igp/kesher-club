@@ -11,6 +11,7 @@ import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { CARD_SPEND_ENTITLEMENT, DECISION_BUDGET_MS, holdKey, JitService, VELOCITY_LIMIT_PER_MINUTE } from './jit.ts';
+import { AGENT_PURCHASE_ACTION, agentGrantIdFor } from '../intents/service.ts';
 import { controlsToWire, DEFAULT_VIRTUAL_CONTROLS } from './service.ts';
 
 let db: TestDatabase;
@@ -39,7 +40,7 @@ beforeAll(async () => {
   db = await createTestDatabase();
   host = new SimulatorHost();
   sim = host.registry.resolve<CardIssuingPort>('card-issuing', 'IL') as CardIssuingSimulator;
-  app = createApp({ db, registry: host.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags: new StaticFlags(undefined, { 'card.virtual': true }) });
+  app = createApp({ db, registry: host.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags: new StaticFlags(undefined, { 'card.virtual': true, 'card.agentic': true }) });
   const s = await app.services.kyc.start(noa, 'T2', 'kyc-noa', NOW);
   await dispatch(app, { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: 'evt-noa', sessionId: s.sessionId, status: 'approved' }), now: NOW });
   const row = (await db.query<{ id: string; processor_card_id: string }>(`select id, processor_card_id from cards.card where party_id = $1`, [noa])).rows[0]!;
@@ -153,7 +154,7 @@ describe('fail closed', () => {
   const request = (): JitAuthorizationRequest => ({ authId: uuidv7(NOW), cardId: processorCardId, amount: money(100n, 'ILS'), merchant: MERCHANT, channel: 'pos', receivedAt: NOW.toISOString() });
 
   it('any throw inside the decision is a TIMEOUT decline, never an approval or a 500', async () => {
-    const broken = new JitService({ db: { query: async () => { throw new Error('connection reset'); }, transaction: async () => { throw new Error('connection reset'); } }, port: sim, ledger: app.services.ledger, accounts: app.services.accounts, memberships: app.services.memberships, entitlements: app.services.entitlements, plans: app.services.plans });
+    const broken = new JitService({ db: { query: async () => { throw new Error('connection reset'); }, transaction: async () => { throw new Error('connection reset'); } }, port: sim, ledger: app.services.ledger, accounts: app.services.accounts, memberships: app.services.memberships, entitlements: app.services.entitlements, plans: app.services.plans, flags: app.services.flags, intents: app.services.intents });
     const out = await broken.decide(request(), NOW);
     expect(out.decision).toEqual({ approve: false, reason: 'TIMEOUT' });
     const signed = sim.authorize(processorCardId, { amount: { minor: 100n, currency: 'ILS' }, merchant: MERCHANT, channel: 'pos' });
@@ -163,7 +164,7 @@ describe('fail closed', () => {
 
   it('a dependency slower than the budget is a TIMEOUT decline within the budget', async () => {
     const slowDb = { query: (text: string, params?: readonly unknown[]) => new Promise<never>(() => void [text, params]), transaction: async () => { throw new Error('unused'); } };
-    const slow = new JitService({ db: slowDb, port: sim, ledger: app.services.ledger, accounts: app.services.accounts, memberships: app.services.memberships, entitlements: app.services.entitlements, plans: app.services.plans, budgetMs: 40 });
+    const slow = new JitService({ db: slowDb, port: sim, ledger: app.services.ledger, accounts: app.services.accounts, memberships: app.services.memberships, entitlements: app.services.entitlements, plans: app.services.plans, flags: app.services.flags, intents: app.services.intents, budgetMs: 40 });
     const started = performance.now();
     const out = await slow.decide(request(), NOW);
     expect(out.decision).toEqual({ approve: false, reason: 'TIMEOUT' });
@@ -195,5 +196,92 @@ describe('freeze and tokens (TST-CRD-004)', () => {
     await app.services.cards.setStatus(noa, cardId, 'active', 'jit-unfreeze', NOW);
     expect((await authorize({ amount: 10n, tokenId: 'tok_live' })).body).toMatchObject({ result: 'APPROVED' });
     expect((await authorize({ amount: 10n, tokenId: 'tok_susp' })).body).toEqual({ result: 'DECLINED', reason: 'CARD_FROZEN' });
+  });
+});
+
+describe('agent purchases (TST-CRD-008)', () => {
+  // A fresh card so the velocity rule and earlier holds stay out of the way; USD is the card's currency.
+  let agentParty = '';
+  let agentCard = '';
+  let agentCardId = '';
+  const agentAuth = (input: Parameters<typeof authorize>[0]) => authorize({ ...input, card: agentCard, agentic: true, tokenId: input.tokenId ?? 'tok_agent_1' });
+
+  beforeAll(async () => {
+    agentParty = uuidv7(NOW);
+    const s = await app.services.kyc.start(agentParty, 'T2', `kyc:${agentParty}`, NOW);
+    await dispatch(app, { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: `evt:${agentParty}`, sessionId: s.sessionId, status: 'approved' }), now: NOW });
+    const row = (await db.query<{ id: string; processor_card_id: string }>(`select id, processor_card_id from cards.card where party_id = $1`, [agentParty])).rows[0]!;
+    agentCard = row.processor_card_id;
+    agentCardId = row.id;
+    const partner = await app.services.accounts.systemAccount('partner_settlement', 'USD');
+    const w = await app.services.accounts.memberAccount(agentParty, 'wallet', 'USD');
+    await app.services.ledger.post({ idempotencyKey: `load:${agentParty}:usd`, kind: 'load', postings: [{ accountId: partner, currency: 'USD', amountMinor: 100_000n }, { accountId: w, currency: 'USD', amountMinor: -100_000n }] });
+    const partnerIls = await app.services.accounts.systemAccount('partner_settlement', 'ILS');
+    const wIls = await app.services.accounts.memberAccount(agentParty, 'wallet', 'ILS');
+    await app.services.ledger.post({ idempotencyKey: `load:${agentParty}:ils`, kind: 'load', postings: [{ accountId: partnerIls, currency: 'ILS', amountMinor: 100_000n }, { accountId: wIls, currency: 'ILS', amountMinor: -100_000n }] });
+  });
+  const mode = (agentPurchases: Parameters<typeof controlsToWire>[0]['agentPurchases']) => db.query(`update cards.card set controls = $2 where id = $1`, [agentCardId, JSON.stringify(controlsToWire({ ...DEFAULT_VIRTUAL_CONTROLS, agentPurchases }))]);
+  const pendingIntents = () => app.services.intents.listPending(agentParty);
+
+  it('mode off declines AGENT_NOT_ALLOWED and opens nothing; a human token on the same card is fine', async () => {
+    await mode('off');
+    expect((await agentAuth({ amount: 1_000n, currency: 'USD' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+    expect((await authorize({ amount: 1_000n, currency: 'USD', card: agentCard })).body).toMatchObject({ result: 'APPROVED' });
+    expect(await pendingIntents()).toEqual([]);
+  });
+
+  it('the card.agentic flag is the kill switch whatever the mode', async () => {
+    await mode({ underMinor: 5_000n });
+    const off = new JitService({ db, port: sim, ledger: app.services.ledger, accounts: app.services.accounts, memberships: app.services.memberships, entitlements: app.services.entitlements, plans: app.services.plans, flags: new StaticFlags(), intents: app.services.intents });
+    const out = await off.decide({ authId: uuidv7(NOW), cardId: agentCard, amount: money(100n, 'USD'), merchant: MERCHANT, channel: 'online', agentic: true, tokenId: 'tok_agent_1', receivedAt: NOW.toISOString() }, NOW);
+    expect(out.decision).toEqual({ approve: false, reason: 'AGENT_NOT_ALLOWED' });
+    expect(await pendingIntents()).toEqual([]);
+  });
+
+  it('under_amount approves below the threshold in the card\u2019s currency only; above it, or in another currency, it asks', async () => {
+    await mode({ underMinor: 5_000n });
+    expect((await agentAuth({ amount: 4_999n, currency: 'USD' })).body).toMatchObject({ result: 'APPROVED' });
+    expect((await agentAuth({ amount: 5_000n, currency: 'USD' })).body).toMatchObject({ result: 'APPROVED' });
+    expect((await agentAuth({ amount: 5_001n, currency: 'USD' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+    expect((await agentAuth({ amount: 100n, currency: 'ILS' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+    const pending = await pendingIntents();
+    expect(pending.map((i) => [i.kind, i.payload['action'], (i.payload['amount'] as { minor: string }).minor])).toEqual([
+      ['limit_change', AGENT_PURCHASE_ACTION, '5001'],
+      ['limit_change', AGENT_PURCHASE_ACTION, '100'],
+    ]);
+    expect(pending[0]!.summary).toBe("Allow your assistant's card purchase of USD 5001 minor units (MCC 5912)");
+    expect(pending[0]!.grantId).toBe(agentGrantIdFor('tok_agent_1'));
+    expect(pending[0]!.grantId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  });
+
+  it('with_approval opens one pending intent per token, MCC and amount, declines until approved, then one authorisation spends the approval', async () => {
+    await mode('with_approval');
+    await db.query(`update agent.pending_intent set status = 'expired' where party_id = $1`, [agentParty]);
+    const first = await agentAuth({ amount: 2_500n, currency: 'USD', tokenId: 'tok_agent_2' });
+    expect(first.body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+    // The agent retries: same ask, still declined, still one intent.
+    expect((await agentAuth({ amount: 2_500n, currency: 'USD', tokenId: 'tok_agent_2' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+    const pending = await pendingIntents();
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.payload).toMatchObject({ action: AGENT_PURCHASE_ACTION, tokenId: 'tok_agent_2', mcc: '5912', merchantName: 'Super-Pharm', cardId: agentCardId });
+    // The member approves in the app (the approval endpoint's step-up and ownership checks are TST-AGT-006's).
+    await db.query(`update agent.pending_intent set status = 'approved', decided_at = $2, decided_by = $3 where id = $1`, [pending[0]!.id, NOW, agentParty]);
+    // A different MCC or a larger amount is not what was approved.
+    expect((await agentAuth({ amount: 2_500n, currency: 'USD', tokenId: 'tok_agent_2', mcc: '7995' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+    expect((await agentAuth({ amount: 2_600n, currency: 'USD', tokenId: 'tok_agent_2' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+    // The approved purchase (a smaller final amount is fine) goes through once; the next one asks again.
+    const spent = await agentAuth({ amount: 2_400n, currency: 'USD', tokenId: 'tok_agent_2' });
+    expect(spent.body).toEqual({ result: 'APPROVED', holdAmount: { minor: '2400', currency: 'USD' } });
+    const consumed = await app.services.intents.get(pending[0]!.id);
+    expect(consumed?.payload['consumedAuthId']).toBe(spent.authId);
+    expect((await agentAuth({ amount: 2_400n, currency: 'USD', tokenId: 'tok_agent_2' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+    // Each distinct ask (token, MCC, amount) the member has not approved is one pending intent: the
+    // other MCC, the larger amount, and the repeat after the approval was spent.
+    const asks = (await pendingIntents()).map((i) => `${i.payload['mcc']}:${(i.payload['amount'] as { minor: string }).minor}`).sort();
+    expect(asks).toEqual(['5912:2400', '5912:2600', '7995:2500']);
+    // An approval older than its TTL is not spent.
+    const stale = (await pendingIntents()).find((i) => (i.payload['amount'] as { minor: string }).minor === '2400')!;
+    await db.query(`update agent.pending_intent set status = 'approved', decided_at = $2, decided_by = $3 where id = $1`, [stale.id, new Date(NOW.getTime() - 2 * 3_600_000), agentParty]);
+    expect((await agentAuth({ amount: 2_400n, currency: 'USD', tokenId: 'tok_agent_2' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
   });
 });
