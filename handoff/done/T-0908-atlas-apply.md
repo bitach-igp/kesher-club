@@ -14,3 +14,16 @@ Steps (from repo root, PowerShell on Windows unless stated):
 11. docker rm -f kesher-pg
 Expected: step 4 prints `ok   ledger` (6 migrations) then org, billing, legal, addons, notify, audit, agent. Step 5 reports no pending migrations for every schema. Step 6 shows ops with 12 tables (complaint added). Step 7 lists ops.complaint with status and channel checks and two indexes. Step 8 returns one row with convalidated = f. Step 9 fails with a check constraint violation on case_disposition_check (the NOT VALID constraint still guards new rows). Step 10 shows club_app with `arw` on ops.complaint.
 Report back: the console output of steps 4, 6, 7, 8, 9 and 10.
+
+## Result
+PASS — run 2026-10-18 00:06 (Asia/Jerusalem) by the desktop checker on Zvi's PC (Windows, Docker 29.8.2, postgres:16), runner worktree detached at 1a72e98 (branch head; includes ledger/0006 T-0908, identity/0001 T-0401 and ledger/0007 T-0402). One container served the T-0401, T-0402 and T-0908 requests; steps 1-5 are identical in all three.
+- Steps 1–3: container up; roles.sql applied (exit 0).
+- Step 4: `ok   ledger`, `ok   identity`, `ok   org`, `ok   billing`, `ok   legal`, `ok   addons`, `ok   notify`, `ok   audit`, `ok   agent`, exit 0. atlas_ledger revisions 0001–0007.
+- Step 5: "No migration files to execute" and `ok` for every schema, exit 0.
+- Table counts: addons 4, agent 4, audit 1, billing 5, cards 2, identity 1, ledger 3, legal 2, notify 3, ops 12, org 12.
+- Step 4 note: ledger now has 7 migrations (0007 from T-0402 on the same branch), not 6.
+- Step 7 (`\d ops.complaint`): status and channel checks; indexes complaint_party_id_idx and complaint_status_opened_at_idx (plus pkey).
+- Step 8: case_disposition_check, convalidated = f.
+- Step 9: `ERROR: new row for relation "case" violates check constraint "case_disposition_check"`, exit 1 (expected).
+- Step 10 (`\dp ops.complaint`): `club_app=arw/postgres`.
+- Step 11: container removed.
