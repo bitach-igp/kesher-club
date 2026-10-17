@@ -1,9 +1,12 @@
-// Atlas configuration (T-0005). One migration directory per schema, applied by club_migrator.
+// Atlas configuration (T-0005, T-0011). One migration directory per schema, applied by club_migrator.
 // Usage (from the repo root):
-//   atlas migrate apply  --env local            # every schema, in order
-//   atlas migrate lint   --env local --latest 1 # destructive-change and checksum lint
+//   node db/migrate.mjs --url "$ATLAS_URL"      # every schema, in dependency order (see below)
 //   atlas migrate hash   --dir file://db/migrations/ledger
-// The app role (club_app) never runs migrations; see db/roles.sql.
+//   atlas migrate lint   --dir file://db/migrations/ledger --dev-url docker://postgres/16/dev --latest 1
+// Do not apply with `--env local`: Atlas runs for_each envs in alphabetical order (addons before
+// ledger) and lint cannot select one instance of a for_each env. The envs below hold the per-schema
+// settings and lint policy that db/migrate.mjs and CI reuse. `migrate lint` needs an Atlas Pro
+// login since v0.38 (T-0012). The app role (club_app) never runs migrations; see db/roles.sql.
 
 variable "url" {
   type        = string
@@ -12,7 +15,8 @@ variable "url" {
 }
 
 locals {
-  // Order matters: later schemas reference earlier ones.
+  // Dependency order, honoured by db/migrate.mjs (for_each below does NOT honour it; toset sorts).
+  // Keep in step with SCHEMA_ORDER in db/migrate.mjs and apps/api/src/test-db.ts (a test compares them).
   schemas = ["ledger", "identity", "org", "billing", "legal", "addons", "notify", "audit", "agent"]
 }
 
