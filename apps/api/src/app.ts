@@ -1,0 +1,151 @@
+// Composition root: builds every service against a Database and a ProviderRegistry (simulators
+// in sim mode) and returns the handler table. The HTTP server (server.ts) and tests call this;
+// nothing here knows about sockets. Secrets arrive through the config loader (T-0004).
+import type { Database } from './db.ts';
+import type { AuthPort, BillingPort, EventsPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
+import { ok, requireIdempotencyKey, requirePrincipal, route, type Handler, type HttpRequest } from './http.ts';
+import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
+import { OtpService } from './auth/otp.ts';
+import { PasskeyService } from './auth/passkeys.ts';
+import { RecoveryService } from './auth/recovery.ts';
+import { InMemoryIdentityRepository, type IdentityRepository } from './auth/repository.ts';
+import { StepUpService, requireStepUp } from './auth/step-up.ts';
+import { TokenService, type SigningKey } from './auth/tokens.ts';
+import { assertNotRestricted } from './auth/recovery.ts';
+import { AccountService } from './ledger/accounts.ts';
+import { PostgresLedger } from './ledger/post.ts';
+import { PlanService } from './billing/plans.ts';
+import { EntitlementService } from './billing/entitlements.ts';
+import { MembershipService } from './billing/memberships.ts';
+import { capabilitiesHandler, type FeatureFlags } from './billing/capabilities.ts';
+import { TransferService } from './transfers/service.ts';
+import { AddonOrderService } from './addons/orders.ts';
+import { CreditService } from './addons/credit.ts';
+import { RosterService, importRosterHandler } from './institutions/roster.ts';
+import { ApprovalService } from './approvals/service.ts';
+import { AuditService } from './audit/service.ts';
+import { FlagService } from './flags/service.ts';
+import { IntentService } from './intents/service.ts';
+import { WebhookRouter } from './webhooks/handler.ts';
+import { InboundEventStore } from './webhooks/store.ts';
+import { simulatorVerifier } from './webhooks/verify.ts';
+import { OutboundEventsService } from './events/outbound.ts';
+import { ROUTES, type HandlerTable } from './routes.ts';
+import { toWire, fromWire, DomainError } from '@kesher/domain';
+
+export interface AppOptions {
+  db: Database;
+  registry: ProviderRegistry;
+  market: Market;
+  signingKey: SigningKey;
+  issuer: string;
+  identity?: IdentityRepository;
+  clock?: () => Date;
+}
+
+export interface App {
+  handlers: HandlerTable;
+  authenticate: (req: HttpRequest) => Promise<HttpRequest>;
+  services: ReturnType<typeof buildServices>;
+}
+
+function buildServices(o: AppOptions) {
+  const clock = { now: o.clock ?? (() => new Date()) };
+  const identity = o.identity ?? new InMemoryIdentityRepository();
+  const authPort = o.registry.resolve<AuthPort>('auth', o.market);
+  const billingPort = o.registry.resolve<BillingPort>('billing', o.market);
+  const notifyPort = o.registry.resolve<NotifyPort>('notify', o.market);
+  const eventsPort = o.registry.resolve<EventsPort>('events', o.market);
+
+  const tokens = new TokenService(identity, o.signingKey, { issuer: o.issuer, audience: o.issuer, clock });
+  const otp = new OtpService(authPort, identity, clock);
+  const passkeys = new PasskeyService(authPort, identity, tokens, clock, otp);
+  const stepUp = new StepUpService(authPort, identity, clock);
+  const recovery = new RecoveryService(identity, otp, passkeys, tokens, notifyPort, clock);
+  const ledger = new PostgresLedger(o.db);
+  const accounts = new AccountService(o.db, ledger);
+  const plans = new PlanService(o.db);
+  const entitlements = new EntitlementService(o.db, plans);
+  const memberships = new MembershipService(o.db, plans, billingPort);
+  const transfers = new TransferService(o.db);
+  const approvals = new ApprovalService(o.db);
+  const audit = new AuditService(o.db);
+  const flags: FeatureFlags = new FlagService(o.db, approvals, audit);
+  const orders = new AddonOrderService(o.db, ledger, accounts, new CreditService(entitlements));
+  const roster = new RosterService(o.db);
+  const intents = new IntentService(o.db, transfers, stepUp);
+  const inbound = new InboundEventStore(o.db);
+  const webhooks = new WebhookRouter(inbound);
+  const outbound = new OutboundEventsService(o.db, eventsPort);
+  if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound };
+}
+
+export function createApp(o: AppOptions): App {
+  const s = buildServices(o);
+  const handlers: HandlerTable = {
+    ...authHandlers({ otp: s.otp, passkeys: s.passkeys, recovery: s.recovery, tokens: s.tokens, stepUp: s.stepUp }),
+    getCapabilities: capabilitiesHandler({ flags: s.flags, memberships: s.memberships, entitlements: s.entitlements }),
+    listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
+    createMembership: route(async (req) => {
+      const p = requirePrincipal(req);
+      const b = req.body as { memberPartyId: string; planCode: string; termMonths?: number; funderEmail?: string };
+      const m = await s.memberships.create({ idempotencyKey: requireIdempotencyKey(req), memberPartyId: b.memberPartyId, funderPartyId: p.partyId, funderEmail: b.funderEmail ?? `party:${p.partyId}@members.kesher.example`, planCode: b.planCode, ...(b.termMonths ? { termMonths: b.termMonths } : {}) }, req.now);
+      return { status: 201, body: { id: m.id, planCode: m.planCode, planVersion: m.planVersion, status: m.status, price: toWire(m.price), ...(m.currentPeriodEnd ? { currentPeriodEnd: m.currentPeriodEnd } : {}) } };
+    }),
+    createTransfer: route(async (req) => {
+      const p = requirePrincipal(req);
+      requireStepUp(s.stepUp, req);
+      assertNotRestricted(p, 'p2p_send', req.now);
+      if (!(await s.flags.isOn('p2p.enabled'))) throw new DomainError('FEATURE_OFF', 'Member transfers are not enabled yet');
+      const b = req.body as { toPartyId: string; amount: { minor: string; currency: string }; note?: string };
+      const t = await s.transfers.create({ idempotencyKey: requireIdempotencyKey(req), kind: 'p2p', fromPartyId: p.partyId, toPartyId: b.toPartyId, amount: fromWire(b.amount), ...(b.note ? { note: b.note } : {}) }, req.now);
+      return { status: 201, body: { id: t.id, state: t.state, amount: toWire(t.amount) } };
+    }),
+    cancelTransfer: route(async (req) => {
+      const p = requirePrincipal(req);
+      requireIdempotencyKey(req);
+      const t = await s.transfers.get(req.params['id'] ?? '');
+      if (!t || t.fromPartyId !== p.partyId) throw new DomainError('NOT_FOUND', 'Transfer not found');
+      const c = await s.transfers.apply(t.id, 'cancel', req.now, { reason: 'member cancelled' });
+      return ok({ id: c.id, state: c.state, amount: toWire(c.amount) });
+    }),
+    listCatalogue: route(async (req) => {
+      requirePrincipal(req);
+      const r = await o.db.query<{ sku: string; kind: string; title: string; price_minor: string; currency: 'USD' | 'ILS'; attributes: Record<string, unknown> }>(`select sku, kind, title, price_minor::text as price_minor, currency, attributes from addons.catalogue_item where active order by kind, sku limit 100`);
+      return ok({ items: r.rows.map((x) => ({ sku: x.sku, kind: x.kind, title: x.title, price: { minor: x.price_minor, currency: x.currency }, ...(x.attributes['disclosures'] ? { disclosures: x.attributes['disclosures'] } : {}) })) });
+    }),
+    createAddonOrder: route(async (req) => {
+      const p = requirePrincipal(req);
+      const b = req.body as { sku: string; quantity?: number; disclosuresAcknowledged?: boolean };
+      const membership = await s.memberships.forMember(p.partyId);
+      const order = await s.orders.create({ idempotencyKey: requireIdempotencyKey(req), memberPartyId: p.partyId, membership, sku: b.sku, ...(b.quantity ? { quantity: b.quantity } : {}), ...(b.disclosuresAcknowledged !== undefined ? { disclosuresAcknowledged: b.disclosuresAcknowledged } : {}) }, req.now);
+      return { status: 201, body: { id: order.id, sku: order.sku, state: order.state, price: toWire(order.price), creditApplied: toWire(order.credit), ...(order.fulfilment ? { fulfilment: order.fulfilment } : {}) } };
+    }),
+    importRoster: importRosterHandler({ roster: s.roster, staffInstitution: async (partyId) => (await o.db.query<{ institution_id: string }>('select institution_id from org.staff where party_id = $1 and active', [partyId])).rows[0]?.institution_id }),
+    approveIntent: route(async (req) => {
+      const key = requireIdempotencyKey(req);
+      const r = await s.intents.approve(req, req.params['id'] ?? '', key);
+      return ok({ id: r.intent.id, kind: r.intent.kind, status: r.intent.status, expiresAt: r.intent.expiresAt, summary: r.intent.summary });
+    }),
+    listAgentGrants: route(async (req) => {
+      const p = requirePrincipal(req);
+      const r = await o.db.query<{ id: string; client_id: string; name: string; scopes: string[]; created_at: string | Date; last_used_at: string | Date | null }>(`select g.id, g.client_id, c.name, g.scopes, g.created_at, g.last_used_at from agent.grant g join agent.client c on c.client_id = g.client_id where g.party_id = $1 and g.status = 'active' order by g.created_at desc`, [p.partyId]);
+      return ok({ items: r.rows.map((g) => ({ id: g.id, clientName: g.name, clientId: g.client_id, scopes: g.scopes, createdAt: new Date(g.created_at).toISOString(), ...(g.last_used_at ? { lastUsedAt: new Date(g.last_used_at).toISOString() } : {}) })) });
+    }),
+    revokeAgentGrant: route(async (req) => {
+      const p = requirePrincipal(req);
+      const r = await o.db.query(`update agent.grant set status = 'revoked', revoked_at = $3 where id = $1 and party_id = $2 and status = 'active'`, [req.params['id'], p.partyId, req.now]);
+      if (r.rowCount === 0) throw new DomainError('NOT_FOUND', 'Grant not found');
+      return { status: 204 };
+    }),
+    providerWebhook: s.webhooks.handler() as Handler,
+  };
+  for (const r of ROUTES) if (!handlers[r.operationId]) handlers[r.operationId] = notYet(r.operationId);
+  return { handlers, authenticate: bearerMiddleware(s.tokens), services: s };
+}
+
+/** Operations whose cards wait on ADR-006 (cards, loads, fx, payouts, households) answer FEATURE_OFF, never 500. */
+const notYet = (operationId: string): Handler => route(async () => {
+  throw new DomainError('FEATURE_OFF', `${operationId} is behind a flag that is off (pending ADR-006)`);
+});

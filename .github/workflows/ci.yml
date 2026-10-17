@@ -1,3 +1,5 @@
+# CI (T-0002, Tab 3 §9): lint, typecheck, unit + contract tests, trace, Spectral + oasdiff,
+# Semgrep, tfsec and pnpm audit. Every job runs on each PR; nothing here needs a secret.
 name: ci
 on:
   pull_request:
@@ -5,8 +7,14 @@ on:
     branches: [main]
 permissions:
   contents: read
+  security-events: write
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
+  checks:
+    name: lint · typecheck · unit · trace
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,8 +24,78 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm -r --filter "./packages/*" exec tsc -p tsconfig.json --noEmit
-      - run: pnpm -r --filter "./packages/*" exec vitest run
-      - run: node tools/trace-check.mjs
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm trace
+      - run: pnpm db:lint
+
+  openapi:
+    name: Spectral + oasdiff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
       - name: Lint OpenAPI
         run: npx --yes @stoplight/spectral-cli@6.15.0 lint contracts/openapi.yaml --ruleset .spectral.yaml
+      - name: Breaking-change check against the base branch (PRs only)
+        if: github.event_name == 'pull_request'
+        run: |
+          git show "origin/${{ github.base_ref }}:contracts/openapi.yaml" > /tmp/base-openapi.yaml
+          docker run --rm -v /tmp/base-openapi.yaml:/base.yaml:ro -v "$PWD/contracts/openapi.yaml:/rev.yaml:ro" \
+            -v "$PWD/contracts/oasdiff-ignore.txt:/ignore.txt:ro" \
+            tufin/oasdiff:latest breaking /base.yaml /rev.yaml --fail-on ERR --err-ignore /ignore.txt
+
+  semgrep:
+    name: Semgrep
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      # p/typescript + p/nodejs + the weak-crypto and secrets rules from the §8 insecure-default gates.
+      - run: semgrep scan --config p/typescript --config p/nodejs --config p/secrets --config p/jwt --error --exclude .claude .
+
+  tfsec:
+    name: tfsec (infra/terraform)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: infra/terraform
+          soft_fail: false
+
+  audit:
+    name: pnpm audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level high
+
+  terraform:
+    name: terraform validate + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - run: terraform fmt -check -recursive infra
+      - name: Validate every root without a backend
+        run: |
+          for d in infra/terraform/bootstrap infra/terraform/envs/shared infra/terraform/envs/staging infra/terraform/envs/prod infra/preview; do
+            (cd "$d" && terraform init -backend=false -input=false >/dev/null && terraform validate)
+          done
+      - name: Module tests (plan mode, mocked provider)
+        run: cd infra/terraform && terraform init -backend=false -input=false >/dev/null && terraform test

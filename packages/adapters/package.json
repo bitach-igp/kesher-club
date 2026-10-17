@@ -1,0 +1,21 @@
+{
+  "name": "@kesher/adapters",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./stripe": "./src/stripe/index.ts",
+    "./airalo": "./src/airalo/index.ts",
+    "./cover-genius": "./src/cover-genius/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@kesher/domain": "workspace:*",
+    "@kesher/ports": "workspace:*",
+    "jose": "6.2.12"
+  }
+}

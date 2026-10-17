@@ -1,3 +1,4 @@
+-- T-0201 ledger core (REQ-LED-001, REQ-LED-002, REQ-LED-003)
 -- Ledger core (Tab 3 §6). Insert-only for club_app; corrections are reversing journals.
 create schema if not exists ledger; create schema if not exists ops; create schema if not exists agent;
 create type ledger.currency as enum ('USD','ILS');

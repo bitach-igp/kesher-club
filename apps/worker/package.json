@@ -1,0 +1,19 @@
+{
+  "name": "@kesher/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@kesher/api": "workspace:*",
+    "@kesher/domain": "workspace:*",
+    "@kesher/ports": "workspace:*",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.10"
+  }
+}

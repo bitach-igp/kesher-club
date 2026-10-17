@@ -1,0 +1,10 @@
+# Accepted breaking changes against the previous contract (oasdiff --err-ignore).
+# One per line: the method, the path and the full change text as oasdiff prints it (case-insensitive).
+# Add a line only with the task that made the change and why no client is broken.
+#
+# T-0007 / T-0302: entitlement counters are bigint-safe strings like every other integer amount (constitution: never number for amounts). No client consumed the number form.
+GET /me/capabilities the `entitlements/additionalProperties/remaining` response's property `type` changed from `number` to `string` for status `200`
+# T-0115 (REQ-AUTH-006): money-moving calls carry the step-up token; the skeleton predates step-up.
+POST /transfers added the new required `header` request parameter `x-step-up`
+# T-0205: transfers can be cancelled by the sender before submission; the state machine grew the value.
+POST /transfers added the new `cancelled` enum value to the `state` response property for the response status `201`
