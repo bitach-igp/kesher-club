@@ -177,3 +177,23 @@ describe('fail closed', () => {
     expect(out.journalId).toBeUndefined();
   });
 });
+
+describe('freeze and tokens (TST-CRD-004)', () => {
+  it('a suspended or deleted wallet token is declined CARD_FROZEN on an active card; an unknown token is the processor\u2019s to know', async () => {
+    await db.query(`insert into cards.card_token (token_id, card_id, wallet, device_id, status) values ('tok_susp', $1, 'apple', 'iphone-9', 'suspended'), ('tok_gone', $1, 'google', 'pixel-9', 'deleted'), ('tok_live', $1, 'apple', 'iphone-8', 'active')`, [cardId]);
+    expect((await authorize({ amount: 10n, tokenId: 'tok_susp' })).body).toEqual({ result: 'DECLINED', reason: 'CARD_FROZEN' });
+    expect((await authorize({ amount: 10n, tokenId: 'tok_gone' })).body).toEqual({ result: 'DECLINED', reason: 'CARD_FROZEN' });
+    expect((await authorize({ amount: 10n, tokenId: 'tok_live' })).body).toMatchObject({ result: 'APPROVED' });
+    expect((await authorize({ amount: 10n, tokenId: 'tok_unknown' })).body).toMatchObject({ result: 'APPROVED' });
+  });
+
+  it('a freeze through the card service declines the next authorisation and suspends the live token; unfreezing restores both', async () => {
+    const frozen = await app.services.cards.setStatus(noa, cardId, 'frozen', 'jit-freeze', NOW);
+    expect(frozen.tokens.find((t) => t.deviceId === 'iphone-8')?.status).toBe('suspended');
+    expect((await authorize({ amount: 10n })).body).toEqual({ result: 'DECLINED', reason: 'CARD_FROZEN' });
+    expect((await authorize({ amount: 10n, tokenId: 'tok_live' })).body).toEqual({ result: 'DECLINED', reason: 'CARD_FROZEN' });
+    await app.services.cards.setStatus(noa, cardId, 'active', 'jit-unfreeze', NOW);
+    expect((await authorize({ amount: 10n, tokenId: 'tok_live' })).body).toMatchObject({ result: 'APPROVED' });
+    expect((await authorize({ amount: 10n, tokenId: 'tok_susp' })).body).toEqual({ result: 'DECLINED', reason: 'CARD_FROZEN' });
+  });
+});
