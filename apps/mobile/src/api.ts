@@ -14,6 +14,12 @@ export type CatalogueItem = Schemas['CatalogueItem'];
 export type AddonOrder = Schemas['AddonOrder'];
 export type AgentGrant = Schemas['AgentGrant'];
 export type Capabilities = Schemas['Capabilities'];
+export type Card = Schemas['Card'];
+export type CardControlsPatch = Schemas['CardControlsPatch'];
+export type ShipTo = Schemas['ShipTo'];
+export type ProvisioningPayload = Schemas['ProvisioningPayload'];
+export type KycStatus = Schemas['KycStatus'];
+export type KycSessionStarted = Schemas['KycSessionStarted'];
 export type OtpPurpose = 'register' | 'recovery';
 
 export interface AuthApi {
@@ -38,6 +44,24 @@ export interface EsimUsageApi {
 export interface GrantsApi {
   listAgentGrants(): Promise<{ items: readonly AgentGrant[] }>;
   revokeAgentGrant(id: string): Promise<void>;
+}
+
+/** M06 identity verification (T-0408): start a T2 session and poll where it stands. */
+export interface KycApi {
+  status(): Promise<KycStatus>;
+  start(tier: 'T1' | 'T2', idempotencyKey: string): Promise<KycSessionStarted>;
+}
+
+/** M20–M24 card screens (T-0408). Status, controls and tokens only; the details token opens the processor's component. */
+export interface CardsApi {
+  listCards(): Promise<{ items: readonly Card[] }>;
+  getCard(id: string): Promise<Card>;
+  setStatus(id: string, status: 'frozen' | 'active' | 'closed', idempotencyKey: string, reason?: 'lost' | 'stolen' | 'damaged' | 'other'): Promise<Card>;
+  updateControls(id: string, patch: CardControlsPatch, idempotencyKey: string): Promise<Card>;
+  orderPhysical(shipTo: ShipTo, idempotencyKey: string): Promise<Card>;
+  activate(id: string, last4: string, idempotencyKey: string): Promise<Card>;
+  detailsToken(id: string): Promise<{ token: string; expiresAt: string }>;
+  startProvisioning(id: string, wallet: 'apple' | 'google', deviceId: string, clientData: Record<string, string>, idempotencyKey: string): Promise<ProvisioningPayload>;
 }
 
 export interface EmergencyCase {
@@ -71,6 +95,8 @@ export interface InvitesApi {
 export interface Api {
   auth: AuthApi;
   club: ClubApi;
+  kyc: KycApi;
+  cards: CardsApi;
   esim: EsimUsageApi;
   grants: GrantsApi;
   concierge: ConciergeApi;
@@ -100,6 +126,20 @@ export function sdkApi(client: Client, _session: Session, extras: { esim: EsimUs
       listCatalogue: () => client.get('/catalogue'),
       createAddonOrder: ({ sku }, idempotencyKey) => client.post('/addon-orders', { body: { sku, quantity: 1 }, idempotencyKey }),
       getCapabilities: () => client.get('/me/capabilities'),
+    },
+    kyc: {
+      status: () => client.get('/kyc/status'),
+      start: (tier, idempotencyKey) => client.post('/kyc/sessions', { body: { tier }, idempotencyKey }),
+    },
+    cards: {
+      listCards: () => client.get('/cards'),
+      getCard: (id) => client.get('/cards/{id}', { path: { id } }),
+      setStatus: (id, status, idempotencyKey, reason) => client.post('/cards/{id}/status', { path: { id }, body: { status, ...(reason ? { reason } : {}) }, idempotencyKey }),
+      updateControls: (id, patch, idempotencyKey) => client.patch('/cards/{id}/controls', { path: { id }, body: patch, idempotencyKey }),
+      orderPhysical: (shipTo, idempotencyKey) => client.post('/cards/physical', { body: { shipTo }, idempotencyKey }),
+      activate: (id, last4, idempotencyKey) => client.post('/cards/{id}/activate', { path: { id }, body: { last4 }, idempotencyKey }),
+      detailsToken: (id) => client.post('/cards/{id}/details-token', { path: { id } }),
+      startProvisioning: (id, wallet, deviceId, clientData, idempotencyKey) => client.post('/cards/{id}/provisioning/{wallet}', { path: { id, wallet }, body: { deviceId, clientData }, idempotencyKey }),
     },
     esim: extras.esim,
     grants: {
