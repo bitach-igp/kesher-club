@@ -32,6 +32,7 @@ import { EntitlementService } from './billing/entitlements.ts';
 import { MembershipService } from './billing/memberships.ts';
 import { capabilitiesHandler, type FeatureFlags } from './billing/capabilities.ts';
 import { TransferService } from './transfers/service.ts';
+import { AutoReloadService } from './wallet/auto-reload.ts';
 import { walletHandlers } from './wallet/handlers.ts';
 import { FUNDING_PROVIDER, LoadService } from './wallet/loads.ts';
 import { AddonOrderService } from './addons/orders.ts';
@@ -118,9 +119,10 @@ function buildServices(o: AppOptions) {
   // the service settles or fails the transfer once, whatever the webhook count (SEQ-02).
   const loads = new LoadService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, memberships, flags, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   webhooks.bind(FUNDING_PROVIDER, { verifier: loads.webhookVerifier(), process: (e) => loads.applyWebhook(e, clock.now()).then(() => undefined) });
+  const autoReload = new AutoReloadService(o.db, accounts, loads, flags);
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload };
 }
 
 export function createApp(o: AppOptions): App {
@@ -130,7 +132,7 @@ export function createApp(o: AppOptions): App {
     getCapabilities: capabilitiesHandler({ flags: s.flags, memberships: s.memberships, entitlements: s.entitlements }),
     ...kycHandlers(s.kyc),
     ...cardHandlers(s.cards, s.jit, s.provisioning, s.stepUp, s.physical),
-    ...walletHandlers(s.loads, s.stepUp, s.flags),
+    ...walletHandlers(s.loads, s.stepUp, s.flags, s.autoReload),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
     createMembership: route(async (req) => {
       const p = requirePrincipal(req);

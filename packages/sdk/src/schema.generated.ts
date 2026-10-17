@@ -24,6 +24,30 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/accounts/{id}/auto-reload": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The auto-reload rule on a purse
+         * @description REQ-WAL-004. 404 when the member has set none.
+         */
+        readonly get: operations["getAutoReload"];
+        readonly put?: never;
+        /**
+         * Set or replace the auto-reload rule on a purse
+         * @description REQ-WAL-004. Below the threshold the worker loads up to the target with the saved payment method, at most once per 24 h. Requires a step-up token younger than 5 minutes (REQ-AUTH-006); it authorises money to move later.
+         */
+        readonly post: operations["setAutoReload"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/accounts/{id}/transactions": {
         readonly parameters: {
             readonly query?: never;
@@ -1254,6 +1278,35 @@ export interface components {
             readonly ok: boolean;
             readonly reason?: string;
         };
+        readonly AutoReloadRule: {
+            /** Format: uuid */
+            readonly accountId: string;
+            /** @enum {string} */
+            readonly currency: "USD" | "ILS";
+            readonly enabled: boolean;
+            /** Format: date-time */
+            readonly lastAttemptAt?: string;
+            /** @enum {string} */
+            readonly method: "card" | "apple_pay" | "google_pay";
+            /**
+             * Format: date-time
+             * @description Present while the 24 h window since the last attempt is open
+             */
+            readonly nextEligibleAt?: string;
+            readonly paymentMethodId: string;
+            readonly target: components["schemas"]["Money"];
+            readonly threshold: components["schemas"]["Money"];
+        };
+        readonly AutoReloadRuleRequest: {
+            /** @default true */
+            readonly enabled: boolean;
+            /** @enum {string} */
+            readonly method: "card" | "apple_pay" | "google_pay";
+            /** @description The saved payment method at the funding vendor; never card data */
+            readonly paymentMethodId: string;
+            readonly target: components["schemas"]["Money"];
+            readonly threshold: components["schemas"]["Money"];
+        };
         readonly Capabilities: {
             readonly entitlements: {
                 readonly [key: string]: {
@@ -1689,6 +1742,61 @@ export interface operations {
                     readonly "application/json": {
                         readonly items: readonly components["schemas"]["Account"][];
                     };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getAutoReload: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Rule */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AutoReloadRule"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly setAutoReload: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["AutoReloadRuleRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Rule */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AutoReloadRule"];
                 };
             };
             readonly default: components["responses"]["Problem"];
