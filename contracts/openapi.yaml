@@ -133,6 +133,7 @@ paths:
       operationId: getCapabilities
       summary: Entitlements and live features for the signed-in member
       description: The app renders only what this returns (flags + entitlements).
+      security: [{ bearer: [] }]
       responses:
         "200":
           description: Capabilities
@@ -228,6 +229,7 @@ paths:
       operationId: createTransfer
       summary: Send money to another member (P2P)
       description: REQ-PAY-001..005. Requires a step-up token younger than 5 minutes (REQ-AUTH-006) and an Idempotency-Key (REQ-PAY-005); the TransferWorkflow id is the key.
+      security: [{ bearer: [] }]
       parameters:
         - { $ref: "#/components/parameters/IdempotencyKey" }
         - { $ref: "#/components/parameters/StepUp" }

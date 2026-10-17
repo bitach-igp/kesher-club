@@ -29,8 +29,9 @@ env:
 jobs:
   deploy:
     name: build · apply · comment
-    # Fork PRs cannot mint an OIDC token for this repository's role.
-    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    # Fork PRs cannot mint an OIDC token for this repository's role, and until infra/terraform/envs/shared
+    # is applied and its outputs are stored as repository variables there is nothing to deploy to.
+    if: github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && vars.AWS_CI_ROLE_ARN != ''
     runs-on: ubuntu-latest
     outputs:
       url: ${{ steps.url.outputs.url }}
@@ -164,7 +165,7 @@ jobs:
 
   destroy:
     name: destroy
-    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.action == 'closed' && github.event.pull_request.head.repo.full_name == github.repository && vars.AWS_CI_ROLE_ARN != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

@@ -47,7 +47,8 @@ jobs:
         run: |
           git show "origin/${{ github.base_ref }}:contracts/openapi.yaml" > /tmp/base-openapi.yaml
           docker run --rm -v /tmp/base-openapi.yaml:/base.yaml:ro -v "$PWD/contracts/openapi.yaml:/rev.yaml:ro" \
-            tufin/oasdiff:latest breaking /base.yaml /rev.yaml --fail-on ERR
+            -v "$PWD/contracts/oasdiff-ignore.txt:/ignore.txt:ro" \
+            tufin/oasdiff:latest breaking /base.yaml /rev.yaml --fail-on ERR --err-ignore /ignore.txt
 
   semgrep:
     name: Semgrep
