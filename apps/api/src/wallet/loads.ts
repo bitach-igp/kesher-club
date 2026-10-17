@@ -1,9 +1,12 @@
-// Loads (T-0501, REQ-WAL-002): a member tops up a purse by card, Apple Pay or Google Pay through the
-// FundingPort. Every load is a transfer of kind 'load' driven by the LoadWorkflow (SEQ-02), whose id
-// is the member's Idempotency-Key; the vendor pull carries that same key, so a rerun after any
-// failure finds the pull it already made. Money lands only when the vendor confirms: the workflow
-// posts one journal, partner_settlement → wallet, keyed `{workflowId}:settle`, so a webhook arriving
-// after a synchronous success, or twice, changes nothing (REQ-LED-003).
+// Loads (T-0501, REQ-WAL-002; T-0502, REQ-WAL-003): a member tops up a purse by card, Apple Pay or
+// Google Pay, or by ACH when funding.ach is on, through the FundingPort. Every load is a transfer of
+// kind 'load' driven by the LoadWorkflow (SEQ-02), whose id is the member's Idempotency-Key; the vendor
+// pull carries that same key, so a rerun after any failure finds the pull it already made. Money lands
+// only when the vendor confirms: the workflow posts one journal, partner_settlement → wallet, keyed
+// `{workflowId}:settle`, so a webhook arriving after a synchronous success, or twice, changes nothing
+// (REQ-LED-003). An ACH load the bank holds posts partner_settlement → pending under `{workflowId}:hold`
+// (the member sees it "on hold until" the release date) and the worker's release job moves it to the
+// wallet on that date under `{workflowId}:release`; an ACH return before then reverses the hold.
 //
 // `runLoad` is the deterministic workflow body, pure over `LoadActivities`, so Temporal (ADR-002) can
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
@@ -22,9 +25,12 @@ import type { WebhookVerifier } from '../webhooks/verify.ts';
 export const WALLET_FLAG = 'wallet.enabled';
 /** Provider name the funding webhooks arrive under: POST /hooks/funding. */
 export const FUNDING_PROVIDER = 'funding';
+export const ACH_FLAG = 'funding.ach';
 export const LOAD_METHODS: readonly FundingMethod[] = ['card', 'apple_pay', 'google_pay'];
-/** Journal kind of the settlement; one per load, ever. */
+/** Journal kinds: the settlement (one per load, ever), the ACH hold into pending, and its release into the wallet. */
 export const LOAD_JOURNAL_KIND = 'load';
+export const HOLD_JOURNAL_KIND = 'load_hold';
+export const RELEASE_JOURNAL_KIND = 'load_release';
 
 export type LoadState = 'created' | 'requires_action' | 'processing' | 'on_hold' | 'settled' | 'failed';
 
@@ -56,7 +62,11 @@ export interface LoadActivities {
   /** Remembers which vendor load belongs to the transfer so its webhooks find it. */
   link(transfer: Transfer, load: VendorLoad): Promise<void>;
   settle(transfer: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Transfer>;
+  /** The bank's hold: the money shows in the member's pending purse until `holdUntil` (REQ-WAL-003). */
   hold(transfer: Transfer, holdUntil: string, now: Date): Promise<Transfer>;
+  /** On the hold date: pending → wallet, and the transfer settles. */
+  release(transfer: Transfer, now: Date): Promise<Transfer>;
+  /** A held load that fails (an ACH return) reverses its hold journal. */
   fail(transfer: Transfer, code: string, now: Date): Promise<Transfer>;
 }
 
@@ -96,7 +106,8 @@ export async function runLoad(a: LoadActivities, input: LoadInput, workflowId: s
 export async function applyVendorState(a: LoadActivities, t: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Omit<LoadRun, 'replayed'>> {
   switch (load.status) {
     case 'succeeded':
-      return { workflowId, transfer: t.state === 'settled' ? t : await a.settle(t, load, workflowId, now) };
+      // A held load stays held: the bank's hold days govern, and the release job settles it on the date.
+      return { workflowId, transfer: t.state === 'settled' || t.state === 'pending_hold' ? t : await a.settle(t, load, workflowId, now) };
     case 'failed':
       return { workflowId, transfer: t.state === 'failed' ? t : await a.fail(t, load.failureCode ?? 'VENDOR_FAILED', now) };
     case 'on_hold':
@@ -109,6 +120,8 @@ export async function applyVendorState(a: LoadActivities, t: Transfer, load: Ven
 }
 
 export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
+export const holdKey = (workflowId: string): string => `${workflowId}:hold`;
+export const releaseKey = (workflowId: string): string => `${workflowId}:release`;
 
 interface Deps {
   db: Database;
@@ -159,9 +172,9 @@ export class LoadService implements LoadActivities {
   }
 
   async settle(transfer: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Transfer> {
-    const member = transfer.toPartyId!;
+    if (transfer.state === 'pending_hold') return this.release(transfer, now);
     const { currency } = transfer.amount;
-    const wallet = await this.d.accounts.memberAccount(member, 'wallet', currency);
+    const wallet = await this.d.accounts.memberAccount(transfer.toPartyId!, 'wallet', currency);
     const partner = await this.d.accounts.systemAccount('partner_settlement', currency);
     const journal = await this.d.ledger.post({
       idempotencyKey: settleKey(workflowId),
@@ -174,16 +187,52 @@ export class LoadService implements LoadActivities {
       ],
       metadata: { workflowId, method: load.method, provider: this.d.provider, loadId: load.loadId },
     });
-    if (transfer.state === 'pending_hold') transfer = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'vendor settled' });
     return this.d.transfers.apply(transfer.id, 'settle', now, { journalId: journal.id });
   }
 
-  hold(transfer: Transfer, holdUntil: string, now: Date): Promise<Transfer> {
-    return this.d.transfers.apply(transfer.id, 'hold', now, { holdReleasesAt: new Date(holdUntil), reason: 'vendor hold' });
+  async hold(transfer: Transfer, holdUntil: string, now: Date): Promise<Transfer> {
+    const workflowId = transfer.idempotencyKey;
+    const { currency } = transfer.amount;
+    const pending = await this.d.accounts.memberAccount(transfer.toPartyId!, 'pending', currency);
+    const partner = await this.d.accounts.systemAccount('partner_settlement', currency);
+    const journal = await this.d.ledger.post({
+      idempotencyKey: holdKey(workflowId),
+      kind: HOLD_JOURNAL_KIND,
+      transferId: transfer.id,
+      effectiveAt: now,
+      postings: [
+        { accountId: partner, currency, amountMinor: transfer.amount.minor },
+        { accountId: pending, currency, amountMinor: -transfer.amount.minor },
+      ],
+      metadata: { workflowId, provider: this.d.provider, holdUntil },
+    });
+    return this.d.transfers.apply(transfer.id, 'hold', now, { journalId: journal.id, holdReleasesAt: new Date(holdUntil), reason: 'bank hold' });
   }
 
-  fail(transfer: Transfer, code: string, now: Date): Promise<Transfer> {
-    return this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: 'vendor' });
+  async release(transfer: Transfer, now: Date): Promise<Transfer> {
+    if (transfer.state !== 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a load that is ${transfer.state}`);
+    const workflowId = transfer.idempotencyKey;
+    const { currency } = transfer.amount;
+    const pending = await this.d.accounts.memberAccount(transfer.toPartyId!, 'pending', currency);
+    const wallet = await this.d.accounts.memberAccount(transfer.toPartyId!, 'wallet', currency);
+    const journal = await this.d.ledger.post({
+      idempotencyKey: releaseKey(workflowId),
+      kind: RELEASE_JOURNAL_KIND,
+      transferId: transfer.id,
+      effectiveAt: now,
+      postings: [
+        { accountId: pending, currency, amountMinor: transfer.amount.minor },
+        { accountId: wallet, currency, amountMinor: -transfer.amount.minor },
+      ],
+      metadata: { workflowId, provider: this.d.provider, heldUntil: transfer.holdReleasesAt },
+    });
+    const released = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold days passed' });
+    return this.d.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
+  }
+
+  async fail(transfer: Transfer, code: string, now: Date): Promise<Transfer> {
+    if (transfer.state === 'pending_hold' && transfer.journalId) await this.d.ledger.reverse(transfer.journalId, `${holdKey(transfer.idempotencyKey)}:reversal`);
+    return this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: transfer.state === 'pending_hold' ? 'returned during hold' : 'vendor' });
   }
 
   // ---- webhooks ----
@@ -257,8 +306,9 @@ export class LoadService implements LoadActivities {
   private async parse(payerPartyId: string, body: unknown): Promise<LoadInput> {
     const b = (body ?? {}) as { memberPartyId?: unknown; amount?: unknown; method?: unknown; paymentMethodId?: unknown };
     if (typeof b.memberPartyId !== 'string' || !b.memberPartyId) throw new DomainError('VALIDATION_FAILED', 'memberPartyId is required');
-    if (b.method === 'ach' || b.method === 'rtp') throw new DomainError('FEATURE_OFF', 'Bank loads are not enabled yet');
-    if (typeof b.method !== 'string' || !LOAD_METHODS.includes(b.method as FundingMethod)) throw new DomainError('VALIDATION_FAILED', `method must be one of ${LOAD_METHODS.join(', ')}`);
+    if (b.method === 'ach' && !(await this.d.flags.isOn(ACH_FLAG))) throw new DomainError('FEATURE_OFF', 'Bank loads are not enabled yet');
+    if (b.method === 'rtp') throw new DomainError('FEATURE_OFF', 'Instant bank loads are not enabled yet');
+    if (typeof b.method !== 'string' || (b.method !== 'ach' && !LOAD_METHODS.includes(b.method as FundingMethod))) throw new DomainError('VALIDATION_FAILED', `method must be one of ${[...LOAD_METHODS, 'ach'].join(', ')}`);
     let amount: Money;
     try {
       amount = fromWire(b.amount as { minor: string; currency: string });

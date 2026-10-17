@@ -119,7 +119,7 @@ describe('the run (TST-WAL-002)', () => {
     expect((await transfers.history(stuck.id)).map((e) => e.to)).toEqual(['created', 'submitted', 'settled']);
   });
 
-  it('an ACH load the vendor holds goes to pending_hold with the release date, and a rerun leaves it there', async () => {
+  it('an ACH load the vendor holds goes to pending_hold with the release date and the money in pending; a rerun leaves it there', async () => {
     const sim = new FundingSimulator(fixedClock(NOW.toISOString()));
     const wf = new LoadWorkflow(service(sim, 'simulator'), sim, clock);
     const party = uuidv7(NOW);
@@ -127,6 +127,9 @@ describe('the run (TST-WAL-002)', () => {
     expect(r.transfer).toMatchObject({ state: 'pending_hold', holdReleasesAt: '2026-11-04T09:00:00.000Z' });
     expect(await wf.run(input(party, 9_000n, { method: 'ach' }), `ach-${party}`)).toMatchObject({ replayed: true, transfer: { state: 'pending_hold' } });
     expect(await available(party)).toBe(0n);
+    // The hold is in the member's pending purse (REQ-WAL-003); the release job (release-holds.ts) moves it on the date.
+    expect((await accounts.purses(party)).find((p) => p.currency === 'USD')!.holds.minor).toBe(9_000n);
+    expect(await journals(`ach-${party}`)).toBe(0);
   });
 });
 
