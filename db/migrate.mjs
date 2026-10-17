@@ -9,8 +9,11 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-export const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+// fileURLToPath, not URL.pathname: on Windows the pathname is /C:/... and the CLI guard below never matched.
+const SELF = fileURLToPath(import.meta.url);
+export const ROOT = path.resolve(path.dirname(SELF), '..');
 
 /** Dependency order. db/atlas.hcl `locals.schemas` and apps/api/src/test-db.ts must list the same. */
 export const SCHEMA_ORDER = ['ledger', 'identity', 'org', 'billing', 'legal', 'addons', 'notify', 'audit', 'agent'];
@@ -72,7 +75,7 @@ function parseArgs(argv) {
   return o;
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
+if (process.argv[1] && path.resolve(process.argv[1]) === SELF) {
   let results;
   try {
     results = run(parseArgs(process.argv.slice(2)));
