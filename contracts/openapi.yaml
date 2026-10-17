@@ -207,6 +207,39 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/TransactionPage" }
         default: { $ref: "#/components/responses/Problem" }
+  /accounts/{id}/auto-reload:
+    get:
+      operationId: getAutoReload
+      summary: The auto-reload rule on a purse
+      description: REQ-WAL-004. 404 when the member has set none.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Rule
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutoReloadRule" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: setAutoReload
+      summary: Set or replace the auto-reload rule on a purse
+      description: REQ-WAL-004. Below the threshold the worker loads up to the target with the saved payment method, at most once per 24 h. Requires a step-up token younger than 5 minutes (REQ-AUTH-006); it authorises money to move later.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AutoReloadRuleRequest" }
+      responses:
+        "200":
+          description: Rule
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AutoReloadRule" }
+        default: { $ref: "#/components/responses/Problem" }
   /loads:
     post:
       operationId: createLoad
@@ -1386,6 +1419,28 @@ components:
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/Transaction" } }
         nextCursor: { type: string }
+    AutoReloadRuleRequest:
+      type: object
+      required: [threshold, target, method, paymentMethodId]
+      properties:
+        enabled: { type: boolean, default: true }
+        threshold: { $ref: "#/components/schemas/Money" }
+        target: { $ref: "#/components/schemas/Money" }
+        method: { type: string, enum: [card, apple_pay, google_pay] }
+        paymentMethodId: { type: string, maxLength: 128, description: The saved payment method at the funding vendor; never card data }
+    AutoReloadRule:
+      type: object
+      required: [accountId, currency, enabled, threshold, target, method, paymentMethodId]
+      properties:
+        accountId: { type: string, format: uuid }
+        currency: { type: string, enum: [USD, ILS] }
+        enabled: { type: boolean }
+        threshold: { $ref: "#/components/schemas/Money" }
+        target: { $ref: "#/components/schemas/Money" }
+        method: { type: string, enum: [card, apple_pay, google_pay] }
+        paymentMethodId: { type: string }
+        lastAttemptAt: { type: string, format: date-time }
+        nextEligibleAt: { type: string, format: date-time, description: Present while the 24 h window since the last attempt is open }
     LoadRequest:
       type: object
       required: [memberPartyId, amount, method]

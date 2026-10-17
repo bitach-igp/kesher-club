@@ -1,4 +1,4 @@
-h1:ECeHTtjpt7Zht8tY+SpgrouWkC06hQ3mgmaU4XZPCyY=
+h1:R7uDVXCixe36zY2BAXswK5FmCf/aDjlJCOaxq5jSCY4=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
@@ -6,3 +6,4 @@ h1:ECeHTtjpt7Zht8tY+SpgrouWkC06hQ3mgmaU4XZPCyY=
 0005_balance_cache_ops.sql h1:QTnltVtniOgLQWdY9GDETrMMDljkJ8hoVc8ZqoIEons=
 0006_complaints.sql h1:PdYzZCq871POCqKr2R+sXrbw1DS2giSX2oPyLXAoJk8=
 0007_cards.sql h1:i+ol50v0StCLMhlUMKgnV5cTapNat250bbOKgGtduHs=
+0008_auto_reload.sql h1:xVdNR+KrOyVy3bT+oU+tfXKQ9Q9XVaj1IaySPUXZ+f8=
