@@ -79,7 +79,7 @@ export class AccountService {
   async overdrawnPurses(): Promise<{ partyId: string; accountId: string; currency: Currency; available: Money }[]> {
     const r = await this.db.query<{ owner_party_id: string; id: string; currency: Currency; balance_minor: string }>(
       `select a.owner_party_id, a.id, a.currency, b.balance_minor::text as balance_minor
-         from ledger.account a join ledger.account_balance b on b.account_id = a.id
+         from ledger.account a join ops.account_balance b on b.account_id = a.id
         where a.type = 'wallet' and b.balance_minor > 0`,
     );
     return r.rows.map((x) => ({ partyId: x.owner_party_id, accountId: x.id, currency: x.currency, available: money(-BigInt(x.balance_minor), x.currency) }));

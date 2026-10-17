@@ -1,5 +1,5 @@
 // Nightly balance proof (T-0203, ledger invariant 2; THR-03 control). Runs at 02:30 IL before the
-// reconciliation job. Compares ledger.account_balance with the sum of ledger.posting per account,
+// reconciliation job. Compares ops.account_balance with the sum of ledger.posting per account,
 // checks system totals per currency and per-journal balance, and opens an ops case per break.
 // It never "fixes" anything: corrections are reversing journals with two-person approval.
 import { uuidv7, type Currency } from '@kesher/domain';
@@ -27,14 +27,14 @@ export class BalanceProof {
   async run(now: Date): Promise<ProofReport> {
     const drift = await this.db.query<{ account_id: string; cached: string; posted: string }>(
       `select b.account_id, b.balance_minor::text as cached, coalesce(p.s, 0)::text as posted
-         from ledger.account_balance b
+         from ops.account_balance b
          left join (select account_id, sum(amount_minor) as s from ledger.posting group by account_id) p using (account_id)
         where b.balance_minor <> coalesce(p.s, 0)
         order by b.account_id`,
     );
     const breaks: BalanceBreak[] = drift.rows.map((r) => ({ accountId: r.account_id, cachedMinor: BigInt(r.cached), postedMinor: BigInt(r.posted), deltaMinor: BigInt(r.cached) - BigInt(r.posted) }));
 
-    const counted = await this.db.query<{ n: number }>('select count(*)::int as n from ledger.account_balance');
+    const counted = await this.db.query<{ n: number }>('select count(*)::int as n from ops.account_balance');
     const totals = await this.db.query<{ currency: Currency; total: string }>('select currency, coalesce(sum(amount_minor), 0)::text as total from ledger.posting group by currency');
     const systemTotals = new Map<Currency, bigint>(totals.rows.map((t) => [t.currency, BigInt(t.total)]));
     const unbalanced = await this.db.query<{ journal_id: string }>('select journal_id from ledger.posting group by journal_id, currency having sum(amount_minor) <> 0');
@@ -61,16 +61,16 @@ export class BalanceProof {
 }
 
 /**
- * Rebuilds ledger.account_balance from postings. Only the restore runbook (RUN-08) runs this, under
+ * Rebuilds ops.account_balance from postings. Only the restore runbook (RUN-08) runs this, under
  * club_migrator, with money flags off. Returns the number of rows rewritten.
  */
 export async function rebuildBalanceCache(db: Database): Promise<number> {
   const r = await db.query(
-    `insert into ledger.account_balance (account_id, balance_minor, last_posting_id, version)
+    `insert into ops.account_balance (account_id, balance_minor, last_posting_id, version)
      select a.id, coalesce(p.s, 0), coalesce(p.last_id, 0), coalesce(b.version, 0) + 1
        from ledger.account a
        left join (select account_id, sum(amount_minor) as s, max(id) as last_id from ledger.posting group by account_id) p on p.account_id = a.id
-       left join ledger.account_balance b on b.account_id = a.id
+       left join ops.account_balance b on b.account_id = a.id
      on conflict (account_id) do update
        set balance_minor = excluded.balance_minor, last_posting_id = excluded.last_posting_id, version = excluded.version`,
   );
