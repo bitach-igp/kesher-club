@@ -708,6 +708,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/jit/card-authorizations": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * The card processor's just-in-time authorisation request
+         * @description REQ-CRD-003 (SEQ-01). Authenticated by the processor's signature, verified by the card-issuing port; no bearer. Checks card status, controls, limits, the purse balance, the plan's card entitlement and a velocity rule, then posts one hold journal keyed by the authorisation id. Any failure or a run past the decision budget declines TIMEOUT. The body and the answer are in the processor's own format.
+         */
+        readonly post: operations["cardAuthorization"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/kyc/sessions": {
         readonly parameters: {
             readonly query?: never;
@@ -2461,6 +2481,31 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["PendingIntent"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly cardAuthorization: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": unknown;
+            };
+        };
+        readonly responses: {
+            /** @description The decision, in the processor's format */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": unknown;
                 };
             };
             readonly default: components["responses"]["Problem"];
