@@ -2,10 +2,12 @@
 // in sim mode) and returns the handler table. The HTTP server (server.ts) and tests call this;
 // nothing here knows about sockets. Secrets arrive through the config loader (T-0004).
 import type { Database } from './db.ts';
-import type { AuthPort, BillingPort, EventsPort, KycPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
+import type { AuthPort, BillingPort, CardIssuingPort, EventsPort, KycPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
 import { ok, requireIdempotencyKey, requirePrincipal, route, type Handler, type HttpRequest } from './http.ts';
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
+import { cardHandlers } from './cards/handlers.ts';
+import { CardService } from './cards/service.ts';
 import { kycHandlers } from './kyc/handlers.ts';
 import { KycService } from './kyc/service.ts';
 import { CustomerReadModel } from './admin/customers.ts';
@@ -51,6 +53,8 @@ export interface AppOptions {
   clock?: () => Date;
   /** Public JWKS of the admin console's staff-token key (ADR-013). Without it every /admin/* call is 401. */
   staffJwks?: readonly JWK[];
+  /** Feature flags; defaults to the two-person-approved store (FlagService). Tests inject StaticFlags. */
+  flags?: FeatureFlags;
 }
 
 export interface App {
@@ -80,18 +84,27 @@ function buildServices(o: AppOptions) {
   const transfers = new TransferService(o.db);
   const approvals = new ApprovalService(o.db);
   const audit = new AuditService(o.db);
-  const flags: FeatureFlags = new FlagService(o.db, approvals, audit);
+  const flags: FeatureFlags = o.flags ?? new FlagService(o.db, approvals, audit);
   const orders = new AddonOrderService(o.db, ledger, accounts, new CreditService(entitlements));
   const roster = new RosterService(o.db);
   const intents = new IntentService(o.db, transfers, stepUp);
   const inbound = new InboundEventStore(o.db);
   const webhooks = new WebhookRouter(inbound);
   const kyc = new KycService(o.db, o.registry.resolve<KycPort>('kyc', o.market), o.market, o.registry.bindingFor('kyc', o.market)?.provider ?? 'issuer-kyc');
-  // The KYC provider's decisions arrive on /hooks/kyc; the port verifies and parses, the service applies.
-  webhooks.bind('kyc', { verifier: kyc.webhookVerifier(), process: (e) => kyc.applyDecision(e) });
+  const cards = new CardService(o.db, o.registry.resolve<CardIssuingPort>('card-issuing', o.market), kyc, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
+  // The KYC provider's decisions arrive on /hooks/kyc; the port verifies and parses, the service applies,
+  // and a T2 approval issues the virtual card while card.virtual is on (REQ-CRD-001). A processor failure
+  // leaves the event unprocessed so replay retries it; both steps are idempotent.
+  webhooks.bind('kyc', {
+    verifier: kyc.webhookVerifier(),
+    process: async (e) => {
+      await kyc.applyDecision(e);
+      await cards.onKycDecision(e, clock.now());
+    },
+  });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards };
 }
 
 export function createApp(o: AppOptions): App {
@@ -100,6 +113,7 @@ export function createApp(o: AppOptions): App {
     ...authHandlers({ otp: s.otp, passkeys: s.passkeys, recovery: s.recovery, tokens: s.tokens, stepUp: s.stepUp }),
     getCapabilities: capabilitiesHandler({ flags: s.flags, memberships: s.memberships, entitlements: s.entitlements }),
     ...kycHandlers(s.kyc),
+    ...cardHandlers(s.cards),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
     createMembership: route(async (req) => {
       const p = requirePrincipal(req);
