@@ -1,5 +1,5 @@
-// TST-AGT-001 (PRM + 401), TST-AGT-002 (audience), TST-AGT-003 (CIMD + SSRF), TST-AGT-004 (no
-// user-token passthrough), TST-AGT-005 (scope tiers), TST-AGT-006 (T2 → pending intent, no
+// TST-AGT-001 (PRM + 401), TST-AGT-002 (audience), TST-AGT-003 (CIMD + SSRF), TST-AGT-005 (scope
+// tiers), TST-AGT-006 (T2 → pending intent, no
 // journal), TST-AGT-007 (untrusted wrapping), TST-AGT-008 (revoke → 401 within 60 s),
 // TST-AGT-009 (60/min). The port's agentGatewayContract runs first against this gateway.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -121,7 +121,7 @@ describe('/mcp specifics', () => {
     expect(intent).toMatchObject({ status: 'pending', kind: 'p2p', partyId: member, expiresAt: new Date(now.getTime() + 24 * 3_600_000).toISOString() });
   });
 
-  it('downstream calls never carry the user token (TST-AGT-004) and every call is audited with the client id (TST-AGT-009)', async () => {
+  it('tools reach the read models through the context, and every call is audited with the client id (TST-AGT-009); the no-token proof is no-token-leak.test.ts', async () => {
     const token = await tokenFor(['transactions:read']);
     providerCalls.length = 0;
     await gateway.call(`Bearer ${token}`, { name: 'list_transactions', arguments: { accountId: '11111111-1111-4111-8111-111111111111' } }, { now });
