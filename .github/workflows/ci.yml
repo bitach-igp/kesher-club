@@ -69,6 +69,9 @@ jobs:
         with:
           working_directory: infra/terraform
           soft_fail: false
+          # The action fetches the tfsec release through the GitHub API; unauthenticated calls hit the
+          # shared runner rate limit and fail before any scan runs.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
 
   audit:
     name: pnpm audit
