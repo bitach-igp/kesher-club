@@ -529,6 +529,24 @@ paths:
                   eventId: { type: string }
                   duplicate: { type: boolean }
         default: { $ref: "#/components/responses/Problem" }
+  /jit/card-authorizations:
+    post:
+      operationId: cardAuthorization
+      summary: The card processor's just-in-time authorisation request
+      description: REQ-CRD-003 (SEQ-01). Authenticated by the processor's signature, verified by the card-issuing port; no bearer. Checks card status, controls, limits, the purse balance, the plan's card entitlement and a velocity rule, then posts one hold journal keyed by the authorisation id. Any failure or a run past the decision budget declines TIMEOUT. The body and the answer are in the processor's own format.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {}
+      responses:
+        "200":
+          description: The decision, in the processor's format
+          content:
+            application/json:
+              schema: {}
+        default: { $ref: "#/components/responses/Problem" }
   /kyc/sessions:
     post:
       operationId: startKycSession

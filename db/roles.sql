@@ -32,5 +32,6 @@ alter default privileges for role club_migrator revoke all on tables from public
 alter role club_app set statement_timeout = '5s';
 alter role club_app set idle_in_transaction_session_timeout = '10s';
 alter role club_jit set statement_timeout = '200ms';
+alter role club_jit set lock_timeout = '50ms';          -- JIT (T-0403): a blocked row is a decline, never a wait past the budget
 alter role club_readonly set statement_timeout = '60s';
 alter role club_readonly set default_transaction_read_only = on;

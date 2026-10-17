@@ -41,6 +41,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'DELETE', path: '/agent-grants/{id}', operationId: 'revokeAgentGrant' },
   { method: 'POST', path: '/intents/{id}/approve', operationId: 'approveIntent' },
   { method: 'POST', path: '/hooks/{provider}', operationId: 'providerWebhook', public: true },
+  { method: 'POST', path: '/jit/card-authorizations', operationId: 'cardAuthorization', public: true },
   // Admin console (ADR-013): staff token only; the handlers refuse member and agent principals.
   { method: 'POST', path: '/kyc/sessions', operationId: 'startKycSession' },
   { method: 'GET', path: '/kyc/status', operationId: 'getKycStatus' },
