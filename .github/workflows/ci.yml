@@ -65,10 +65,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: aquasecurity/tfsec-action@v1.0.3
-        with:
-          working_directory: infra/terraform
-          soft_fail: false
+      # Not tfsec-action: it resolves the release through api.github.com, which is rate-limited for
+      # unauthenticated runner IPs and refused for authenticated ones (aquasecurity's IP allow list).
+      # A pinned release downloaded from github.com and verified against its checksum file needs neither.
+      - name: Install tfsec
+        env:
+          TFSEC_VERSION: v1.28.14
+        run: |
+          base="https://github.com/aquasecurity/tfsec/releases/download/${TFSEC_VERSION}"
+          curl -sSfL -o tfsec-linux-amd64 "${base}/tfsec-linux-amd64"
+          curl -sSfL -o tfsec_checksums.txt "${base}/tfsec_checksums.txt"
+          expected="$(grep -E ' \*?tfsec-linux-amd64$' tfsec_checksums.txt | awk '{print $1}')"
+          test -n "$expected"
+          echo "${expected}  tfsec-linux-amd64" | sha256sum -c -
+          install -m 0755 tfsec-linux-amd64 /usr/local/bin/tfsec
+          rm tfsec-linux-amd64 tfsec_checksums.txt
+      - run: tfsec infra/terraform
 
   audit:
     name: pnpm audit

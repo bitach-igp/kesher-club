@@ -7,7 +7,8 @@ plus the roles every environment needs. Rules come from the constitution (art. 3
 | Path | What |
 |---|---|
 | `roles.sql` | `club_migrator`, `club_app`, `club_jit`, `club_readonly`. Run once as a superuser before the first migration. |
-| `atlas.hcl` | Atlas envs `local`, `preview`, `staging`, `prod`; one instance per schema via `for_each`. |
+| `atlas.hcl` | Atlas envs `local`, `preview`, `staging`, `prod`; one instance per schema via `for_each` (settings and lint policy only; apply goes through `migrate.mjs`). |
+| `migrate.mjs` | Applies every schema in dependency order with the per-schema baseline (`--allow-dirty` after the first). `--docker` uses the Atlas image. Tests: `node --test db/`. |
 | `migrations/<schema>/NNNN_slug.sql` | Versioned migrations. `ledger/0001_init.sql` is the money core. |
 | `lint.mjs` | Migration lint (CI step `node db/lint.mjs`). Tests: `node --test db/`. |
 
@@ -17,10 +18,17 @@ plus the roles every environment needs. Rules come from the constitution (art. 3
 export ATLAS_URL='postgres://club_migrator:…@localhost:5432/club?sslmode=disable'
 psql "$ATLAS_URL" -f db/roles.sql                     # once per database, as a superuser
 atlas migrate hash  --dir file://db/migrations/ledger  # after adding a file
-atlas migrate lint  --env local --latest 1             # destructive-change check against a Docker dev DB
-atlas migrate apply --env local                        # applies every schema, in `locals.schemas` order
+node db/migrate.mjs --url "$ATLAS_URL"                 # applies every schema in dependency order
+node db/migrate.mjs --url "$ATLAS_URL" --dry-run       # shows what each schema would apply
 node db/lint.mjs                                       # house rules (bigint money, timestamptz, grants…)
 ```
+
+Why a runner and not `atlas migrate apply --env local`: Atlas runs `for_each` envs in alphabetical
+order, so `addons` ran before `ledger` and failed on the missing schema. The schemas also share one
+database, and Atlas refuses a "dirty" database the first time it sees a directory, so every schema
+after `ledger` is applied with `--allow-dirty`. `--docker` runs `arigaio/atlas` with the repo mounted
+for machines without an Atlas binary. `atlas migrate lint` is Atlas Pro only since v0.38; T-0012
+decides between a CI login and growing `lint.mjs`.
 
 A new migration is a new file with the next number. Never edit or delete a merged file: Atlas
 checksums (`atlas.sum`) fail the build, and `lint.mjs` R8 fails on a gap.

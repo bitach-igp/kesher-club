@@ -12,6 +12,8 @@
 | [T-0008](T-0008.md) | SETUP | Port interfaces for all 18 ports + empty contract suites | — | 1 |
 | [T-0009](T-0009.md) | SETUP | Simulator host + control panel; first simulator: Billing | — | 1 |
 | [T-0010](T-0010.md) | SETUP | Preview environments per PR | — | 1 |
+| [T-0011](T-0011.md) | SETUP | Atlas apply in dependency order with per-schema baseline | — | 2 |
+| [T-0012](T-0012.md) | SETUP | Atlas lint without Pro, and the ledger.account_balance grant vs constitution art. 3 | — | 2 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
