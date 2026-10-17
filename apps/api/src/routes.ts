@@ -24,6 +24,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/memberships', operationId: 'createMembership' },
   { method: 'GET', path: '/accounts', operationId: 'listAccounts' },
   { method: 'GET', path: '/accounts/{id}/transactions', operationId: 'listTransactions' },
+  { method: 'GET', path: '/me/closure', operationId: 'getClosure' },
+  { method: 'POST', path: '/me/closure', operationId: 'closeAccount' },
   { method: 'GET', path: '/accounts/{id}/auto-reload', operationId: 'getAutoReload' },
   { method: 'POST', path: '/accounts/{id}/auto-reload', operationId: 'setAutoReload' },
   { method: 'POST', path: '/loads', operationId: 'createLoad' },

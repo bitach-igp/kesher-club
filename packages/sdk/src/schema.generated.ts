@@ -932,6 +932,30 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/me/closure": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Where closing the account stands
+         * @description REQ-WAL-005. Pending refunds are checked with the funding vendor on each read.
+         */
+        readonly get: operations["getClosure"];
+        readonly put?: never;
+        /**
+         * Close the account, refunding what remains to where it came from
+         * @description REQ-WAL-005. Every purse is emptied by refunds against the member's loads before the account closes; holds or an overdrawn purse block it. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent.
+         */
+        readonly post: operations["closeAccount"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/memberships": {
         readonly parameters: {
             readonly query?: never;
@@ -1396,6 +1420,28 @@ export interface components {
         readonly CataloguePage: {
             readonly items: readonly components["schemas"]["CatalogueItem"][];
             readonly nextCursor?: string;
+        };
+        readonly Closure: {
+            readonly balances: readonly {
+                readonly available: components["schemas"]["Money"];
+                /** @enum {string} */
+                readonly currency: "USD" | "ILS";
+                readonly holds: components["schemas"]["Money"];
+            }[];
+            /** @enum {string} */
+            readonly blockedReason?: "HOLDS_OUTSTANDING" | "OVERDRAWN" | "NO_REFUND_SOURCE" | "REFUND_FAILED";
+            /** Format: date-time */
+            readonly closedAt?: string;
+            readonly refunds: readonly {
+                readonly amount: components["schemas"]["Money"];
+                readonly failureCode?: string;
+                /** Format: uuid */
+                readonly id: string;
+                /** @enum {string} */
+                readonly state: "pending" | "settled" | "failed";
+            }[];
+            /** @enum {string} */
+            readonly state: "open" | "refunding" | "blocked" | "closed";
         };
         readonly FxConversion: {
             readonly conversionId: string;
@@ -3002,6 +3048,53 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Capabilities"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getClosure: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Closure status */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Closure"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly closeAccount: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Closure status */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Closure"];
                 };
             };
             readonly default: components["responses"]["Problem"];

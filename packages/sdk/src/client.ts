@@ -64,6 +64,7 @@ const HEADER_OPS: Record<string, { idempotency: boolean; stepUp: boolean }> = {
   'post /kyc/sessions': { idempotency: true, stepUp: false },
   'post /loads': { idempotency: true, stepUp: true },
   'post /accounts/{id}/auto-reload': { idempotency: true, stepUp: true },
+  'post /me/closure': { idempotency: true, stepUp: true },
   'post /transfers': { idempotency: true, stepUp: true },
   'post /transfers/{id}/cancel': { idempotency: true, stepUp: false },
   'post /fx/quotes': { idempotency: true, stepUp: false },

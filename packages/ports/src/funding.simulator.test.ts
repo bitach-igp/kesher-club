@@ -10,6 +10,7 @@ fundingContract('simulator', () => new FundingSimulator(), {
   outagePaymentMethod: 'pm_outage',
   achPaymentMethod: 'pm_bank_ok',
   succeededWebhook: async (port, id) => (port as FundingSimulator).webhookFor(id, 'succeeded'),
+  norefundPaymentMethod: 'pm_norefund',
 });
 
 describe('FundingSimulator specifics', () => {
