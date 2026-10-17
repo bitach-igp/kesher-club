@@ -488,6 +488,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/cards": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The member's cards (virtual and physical), newest first
+         * @description REQ-CRD-001/009. Status, controls and wallet tokens; never card data.
+         */
+        readonly get: operations["listCards"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/cards/{id}": {
         readonly parameters: {
             readonly query?: never;
@@ -502,6 +522,26 @@ export interface paths {
         readonly get: operations["getCard"];
         readonly put?: never;
         readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/cards/{id}/activate": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Activate a delivered physical card with its last four digits
+         * @description REQ-CRD-009. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). The PIN is set inside the processor's SDK; the API records only that it was set. Idempotent.
+         */
+        readonly post: operations["activateCard"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -528,6 +568,26 @@ export interface paths {
         readonly patch: operations["updateCardControls"];
         readonly trace?: never;
     };
+    readonly "/cards/{id}/details-token": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Short-lived token for the processor's PCI component that shows the card details
+         * @description REQ-CRD-002. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). The API never sees the PAN; the token is minted by the processor and expires within a minute.
+         */
+        readonly post: operations["cardDetailsToken"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/cards/{id}/provisioning/{wallet}": {
         readonly parameters: {
             readonly query?: never;
@@ -542,6 +602,46 @@ export interface paths {
          * @description REQ-CRD-006. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent.
          */
         readonly post: operations["startPushProvisioning"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/cards/{id}/status": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Freeze, unfreeze or close (lost or stolen) a card
+         * @description REQ-CRD-004/009. Freezing is immediate and needs no step-up; unfreezing and closing require a step-up token younger than 5 minutes (REQ-AUTH-006). A freeze suspends every wallet token; closing deletes them and frees the member to order a replacement. The funder may freeze and unfreeze the member's card. Idempotent.
+         */
+        readonly post: operations["setCardStatus"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/cards/physical": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Order a physical card to a US or Israeli address
+         * @description REQ-CRD-009. Needs T2 identity verification and the card.physical flag. The address goes to the processor and is not stored; tracking comes back on the card. One physical card at a time. Idempotent by key.
+         */
+        readonly post: operations["orderPhysicalCard"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -1175,6 +1275,15 @@ export interface components {
             readonly last4: string;
             /** @description Control keys the funder set; disabled for the member with a reason (REQ-CRD-005) */
             readonly lockedByFunder: readonly string[];
+            /** @description Physical cards only; read from the processor, never stored here */
+            readonly shipping?: {
+                /** Format: date-time */
+                readonly activatedAt?: string;
+                /** @description The PIN was set at the processor during activation; the PIN itself never reaches the API */
+                readonly pinSet: boolean;
+                /** Format: uri */
+                readonly trackingUrl?: string;
+            };
             /** @enum {string} */
             readonly status: "inactive" | "active" | "frozen" | "closed";
             readonly tokens: readonly {
@@ -1201,12 +1310,20 @@ export interface components {
             readonly online: boolean;
         };
         readonly CardControlsPatch: {
+            /** @description Funder only (REQ-CRD-008) */
+            readonly agentPurchases?: {
+                /** @enum {string} */
+                readonly mode: "off" | "with_approval" | "under_amount";
+                readonly underAmount?: components["schemas"]["Money"];
+            };
             readonly allowedCountries?: readonly string[];
             readonly atm?: boolean;
             readonly blockedMccs?: readonly string[];
             readonly dailyLimit?: components["schemas"]["Money"];
             readonly monthlyLimit?: components["schemas"]["Money"];
             readonly online?: boolean;
+            /** @description Funder only; control keys to unlock for the member (REQ-CRD-005) */
+            readonly release?: readonly string[];
         };
         readonly CatalogueItem: {
             /** @description True when a monthly entitlement credit would cover it (REQ-ESIM-002) */
@@ -1462,6 +1579,17 @@ export interface components {
             readonly rowCount: number;
             /** @enum {string} */
             readonly status: "validated" | "rejected" | "committed";
+        };
+        readonly ShipTo: {
+            readonly city: string;
+            /** @enum {string} */
+            readonly country: "US" | "IL";
+            readonly line1: string;
+            readonly line2?: string;
+            readonly name: string;
+            readonly postalCode: string;
+            /** @description Required for US */
+            readonly region?: string;
         };
         readonly StepUpResult: {
             /** Format: date-time */
@@ -2170,6 +2298,29 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly listCards: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Cards */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["Card"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly getCard: {
         readonly parameters: {
             readonly query?: never;
@@ -2182,6 +2333,40 @@ export interface operations {
         readonly requestBody?: never;
         readonly responses: {
             /** @description Card */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Card"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly activateCard: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly last4: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The card, now active */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
@@ -2223,6 +2408,36 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly cardDetailsToken: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Details token */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        /** Format: date-time */
+                        readonly expiresAt: string;
+                        readonly token: string;
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly startPushProvisioning: {
         readonly parameters: {
             readonly query?: never;
@@ -2256,6 +2471,76 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["ProvisioningPayload"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly setCardStatus: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for active and closed. */
+                readonly "X-Step-Up"?: string;
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /**
+                     * @description For closed
+                     * @enum {string}
+                     */
+                    readonly reason?: "lost" | "stolen" | "damaged" | "other";
+                    /** @enum {string} */
+                    readonly status: "frozen" | "active" | "closed";
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The card after the change */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Card"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly orderPhysicalCard: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly shipTo: components["schemas"]["ShipTo"];
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The ordered card, inactive until activation */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Card"];
                 };
             };
             readonly default: components["responses"]["Problem"];

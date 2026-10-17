@@ -305,6 +305,115 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FxConversion" }
         default: { $ref: "#/components/responses/Problem" }
+  /cards:
+    get:
+      operationId: listCards
+      summary: The member's cards (virtual and physical), newest first
+      description: REQ-CRD-001/009. Status, controls and wallet tokens; never card data.
+      responses:
+        "200":
+          description: Cards
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Card" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /cards/physical:
+    post:
+      operationId: orderPhysicalCard
+      summary: Order a physical card to a US or Israeli address
+      description: REQ-CRD-009. Needs T2 identity verification and the card.physical flag. The address goes to the processor and is not stored; tracking comes back on the card. One physical card at a time. Idempotent by key.
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [shipTo]
+              properties:
+                shipTo: { $ref: "#/components/schemas/ShipTo" }
+      responses:
+        "201":
+          description: The ordered card, inactive until activation
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Card" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cards/{id}/activate:
+    post:
+      operationId: activateCard
+      summary: Activate a delivered physical card with its last four digits
+      description: REQ-CRD-009. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). The PIN is set inside the processor's SDK; the API records only that it was set. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [last4]
+              properties:
+                last4: { type: string, pattern: "^\\d{4}$" }
+      responses:
+        "200":
+          description: The card, now active
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Card" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cards/{id}/status:
+    post:
+      operationId: setCardStatus
+      summary: Freeze, unfreeze or close (lost or stolen) a card
+      description: REQ-CRD-004/009. Freezing is immediate and needs no step-up; unfreezing and closing require a step-up token younger than 5 minutes (REQ-AUTH-006). A freeze suspends every wallet token; closing deletes them and frees the member to order a replacement. The funder may freeze and unfreeze the member's card. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { name: X-Step-Up, in: header, required: false, description: Required for active and closed., schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [frozen, active, closed] }
+                reason: { type: string, enum: [lost, stolen, damaged, other], description: For closed }
+      responses:
+        "200":
+          description: The card after the change
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Card" }
+        default: { $ref: "#/components/responses/Problem" }
+  /cards/{id}/details-token:
+    post:
+      operationId: cardDetailsToken
+      summary: Short-lived token for the processor's PCI component that shows the card details
+      description: REQ-CRD-002. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). The API never sees the PAN; the token is minted by the processor and expires within a minute.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/StepUp" }
+      responses:
+        "200":
+          description: Details token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, expiresAt]
+                properties:
+                  token: { type: string }
+                  expiresAt: { type: string, format: date-time }
+        default: { $ref: "#/components/responses/Problem" }
   /cards/{id}:
     get:
       operationId: getCard
@@ -1360,6 +1469,25 @@ components:
         allowedCountries: { type: array, items: { type: string, pattern: "^[A-Z]{2}$" } }
         atm: { type: boolean }
         online: { type: boolean }
+        agentPurchases:
+          type: object
+          description: Funder only (REQ-CRD-008)
+          required: [mode]
+          properties:
+            mode: { type: string, enum: [off, with_approval, under_amount] }
+            underAmount: { $ref: "#/components/schemas/Money" }
+        release: { type: array, items: { type: string }, description: Funder only; control keys to unlock for the member (REQ-CRD-005) }
+    ShipTo:
+      type: object
+      required: [name, line1, city, postalCode, country]
+      properties:
+        name: { type: string, maxLength: 120 }
+        line1: { type: string, maxLength: 120 }
+        line2: { type: string, maxLength: 120 }
+        city: { type: string, maxLength: 80 }
+        region: { type: string, maxLength: 60, description: Required for US }
+        postalCode: { type: string, maxLength: 16 }
+        country: { type: string, enum: [US, IL] }
     Card:
       type: object
       required: [id, type, status, last4, controls, lockedByFunder, tokens]
@@ -1379,6 +1507,14 @@ components:
               wallet: { type: string, enum: [apple, google] }
               status: { type: string, enum: [active, suspended, deleted] }
               deviceId: { type: string }
+        shipping:
+          type: object
+          description: Physical cards only; read from the processor, never stored here
+          required: [pinSet]
+          properties:
+            trackingUrl: { type: string, format: uri }
+            activatedAt: { type: string, format: date-time }
+            pinSet: { type: boolean, description: The PIN was set at the processor during activation; the PIN itself never reaches the API }
     ProvisioningPayload:
       type: object
       required: [encryptedPassData, activationData, ephemeralPublicKey]
