@@ -22,8 +22,12 @@ export interface Customer360 {
   audit: CustomerRecord['audit'];
 }
 
-/** +972501234567 → •••• 4567. Only the last four digits survive; country codes narrow a person down too. */
+/**
+ * +972501234567 → •••• 4567. Only the last four digits survive; country codes narrow a person down
+ * too. A phone the API already masked (T-0907) passes through unchanged.
+ */
 export function maskPhone(e164: string): string {
+  if (/^•••• \d{4}$/.test(e164)) return e164;
   const m = /^\+\d{3,}(\d{4})$/.exec(e164);
   return m ? `•••• ${m[1]}` : '••••';
 }

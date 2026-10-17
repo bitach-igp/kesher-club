@@ -1,4 +1,5 @@
-// /admin/* handlers (T-0906, ADR-013): flags with the two-person flip, provider bindings, audit.
+// /admin/* handlers (T-0906, T-0907, ADR-013): flags with the two-person flip, provider bindings,
+// audit, customer search and the Customer 360 read model.
 // Every handler needs a staff principal; the services do the real work and the auditing.
 import { PORTS, type Market, type ProviderRegistry } from '@kesher/ports';
 import { DomainError } from '@kesher/domain';
@@ -6,6 +7,7 @@ import type { ApprovalRequest, ApprovalService } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import type { FlagService } from '../flags/service.ts';
 import { ok, route, type Handler } from '../http.ts';
+import type { CustomerReadModel } from './customers.ts';
 import { requireStaff, staffActor } from './staff-token.ts';
 
 export interface AdminDeps {
@@ -14,6 +16,7 @@ export interface AdminDeps {
   audit: AuditService;
   registry: ProviderRegistry;
   market: Market;
+  customers: CustomerReadModel;
 }
 
 const approvalBody = (a: ApprovalRequest) => ({ id: a.id, kind: a.kind, subject: a.subject, status: a.status, approvals: a.approvals, requestedBy: a.requestedBy, expiresAt: new Date(a.expiresAt).toISOString(), payload: a.payload });
@@ -69,6 +72,20 @@ export function adminHandlers(d: AdminDeps): Record<string, Handler> {
     verifyAdminAudit: route(async (req) => {
       requireStaff(req);
       return ok(await d.audit.verify());
+    }),
+
+    listAdminCustomers: route(async (req) => {
+      requireStaff(req);
+      const q = (req.query['q'] ?? '').trim();
+      if (!q || q.length > 200) throw new DomainError('VALIDATION_FAILED', 'q must be 1 to 200 characters');
+      return ok({ items: await d.customers.search(q) });
+    }),
+
+    getAdminCustomer: route(async (req) => {
+      requireStaff(req);
+      const c = await d.customers.get(req.params['id'] ?? '');
+      if (!c) throw new DomainError('NOT_FOUND', 'Customer not found');
+      return ok(c);
     }),
   };
 }
