@@ -87,3 +87,32 @@ Sandbox credentials (names only): `XCOVER_SANDBOX_PARTNER_CODE`, `XCOVER_SANDBOX
 
 Tests: `insuranceContract('cover-genius', …)` against `src/cover-genius/fake-xcover.ts` (signature
 verification, quote expiry, cancel-once), with the `always_down` policy type as the outage fixture.
+
+## workos — `WorkOsOrgIdPAdapter` (OrgIdPPort) · T-0118 · REQ-AUTH-008 · ADR-004
+
+Flag: `auth.orgSso`.
+
+WorkOS SSO and Directory Sync, one connection per institution. `startSso` probes
+`GET /connections?organization_id=…` (an inactive connection is `PROVIDER_UNAVAILABLE`, a missing
+one `UNKNOWN_ORG`) and returns `GET /sso/authorize?…&organization=<org_…>`; `handleCallback` checks
+the state (single use, 10-minute TTL) before `POST /sso/token` (client id + API key), and refuses a
+profile whose `organization_id` is not the one the state was issued for. The IdP's `idp_id` is the
+port's `subject`, so SSO and SCIM agree on who a person is.
+
+Deprovisioning: the institution's IdP pushes SCIM to WorkOS; WorkOS posts `dsync.user.*` webhooks to
+our `/hooks/workos` route, which stores the raw event in `ops.inbound_event` after
+`verifyWebhookSignature` (`WorkOS-Signature: t=…, v1=HMAC-SHA256(secret, "<t>.<body>")`, 5-minute
+tolerance). The worker then calls `parseScimEvent(orgId, bearer, event)` with the organisation's
+configured SCIM bearer; the adapter maps the envelope (or an already-normalised event) to the port's
+`ScimEvent`, dedupes by WorkOS event id, and remembers deactivations so the next SSO callback for that
+subject is refused even before the directory catches up (REQ-AUTH-008's 15 minutes). `listDirectory`
+pages `GET /directory_users?directory=…` and overlays those deactivations; organisations without
+Directory Sync report webhook-driven deactivations only.
+
+Per-organisation configuration (`orgs`): our org id → `workosOrganizationId`, optional
+`directoryId`, and the inbound `scimBearer`. Secrets (names only): `WORKOS_CLIENT_ID`,
+`WORKOS_API_KEY`, `WORKOS_WEBHOOK_SECRET`.
+
+Tests: `orgIdPContract('workos', …)` against `src/workos/fake-workos.ts` (connections, token
+exchange, paged directory, signed webhooks; `org_outage` has an inactive connection), plus URL,
+state-expiry, cross-organisation, webhook-mapping, pagination and signature tests.
