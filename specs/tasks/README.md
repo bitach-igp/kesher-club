@@ -33,11 +33,31 @@
 | [T-0302](T-0302.md) | BIL | Plans, versions, entitlement templates, can() + /me/capabilities | — | 3 |
 | [T-0303](T-0303.md) | BIL | Dunning, pause/resume, 10-month term | — | 3 |
 | [T-0304](T-0304.md) | BIL | Legal CMS: versions, consent, re-accept | — | 3 |
+| [T-0401](T-0401.md) | CRD | KYC sessions and tiers over KycPort (simulator) | — | 4 |
+| [T-0402](T-0402.md) | CRD | Virtual card issue within 60 s of T2 approval; details token only | REQ-CRD-001, REQ-CRD-002 | 5 |
+| [T-0403](T-0403.md) | CRD | JIT authorisation decision, fail closed, p99 < 300 ms | REQ-CRD-003 | 5 |
+| [T-0404](T-0404.md) | CRD | Freeze cascade to tokens; funder controls override and lock | REQ-CRD-004, REQ-CRD-005 | 5 |
+| [T-0405](T-0405.md) | CRD | Push provisioning + token lifecycle webhooks | REQ-CRD-006, REQ-CRD-007 | 5 |
+| [T-0406](T-0406.md) | CRD | Agent purchases: off / with approval / under amount | REQ-CRD-008 | 6 |
+| [T-0407](T-0407.md) | CRD | Physical cards: order, tracking, activation, PIN | REQ-CRD-009 | 6 |
+| [T-0408](T-0408.md) | CRD | Mobile screens M06, M20–M24 | — | 6 |
+| [T-0501](T-0501.md) | WAL | Loads by card, Apple Pay, Google Pay + load workflow | REQ-WAL-002 | 5 |
+| [T-0502](T-0502.md) | WAL | ACH holds and release | REQ-WAL-003 | 5 |
+| [T-0503](T-0503.md) | WAL | Auto-reload, once per 24 h | REQ-WAL-004 | 6 |
+| [T-0504](T-0504.md) | WAL | Closure refund or withdrawal | REQ-WAL-005 | 6 |
+| [T-0505](T-0505.md) | PAY | P2P send: limits, idempotency, journals, notify | REQ-PAY-001, REQ-PAY-002, REQ-PAY-005 | 6 |
+| [T-0506](T-0506.md) | PAY | New-pair 2 h hold with cancel | REQ-PAY-003 | 6 |
+| [T-0507](T-0507.md) | PAY | Requests and splits, 14-day expiry | REQ-PAY-004 | 6 |
+| [T-0508](T-0508.md) | PAY | Mobile screens M12–M19 | — | 6 |
+| [T-0509](T-0509.md) | FX | Quotes with 30 s lock, plan markup on the journal, M11 | REQ-FX-001, REQ-FX-002 | 6 |
+| [T-0510](T-0510.md) | PO | Payouts: payee validation, cool-off, two-person approval, auto-reverse | REQ-PO-001, REQ-PO-002 | 8 |
+| [T-0511](T-0511.md) | WAL | Mobile screens M08–M10 | — | 5 |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
 | [T-0604](T-0604.md) | INS | Allowance schedules + dry run + workflow | REQ-INS-003 | 8 |
 | [T-0605](T-0605.md) | INS | Two-person approval service | REQ-INS-004, REQ-ADM-002 | 8 |
+| [T-0606](T-0606.md) | INS | Collections receipts + monthly reconciliation export | REQ-INS-006 | 8 |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
@@ -54,11 +74,15 @@
 | [T-0903](T-0903.md) | ADM | Hash-chained audit + verification | REQ-ADM-001 | 9 |
 | [T-0904](T-0904.md) | ADM | Compliance alerts + complaint SLAs | REQ-CMP-002 | 9 |
 | [T-0905](T-0905.md) | ADM | Two-person flag flip | REQ-ADM-002 | 9 |
+| [T-0906](T-0906.md) | ADM | Admin API: staff token, flags, bindings, audit (ADR-013) | REQ-ADM-001, REQ-ADM-002 | 5 |
+| [T-0907](T-0907.md) | ADM | Admin API: customer search + Customer 360 | — | 5 |
+| [T-0908](T-0908.md) | ADM | Complaints table, admin complaint + alert endpoints | REQ-CMP-002 | 5 |
+| [T-0909](T-0909.md) | CMP | Monitoring rules v1: velocity, structuring, fan-in/out | REQ-CMP-001 | 6 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |
 | [T-1004](T-1004.md) | AGT | T0 tools from OpenAPI + untrusted wrapping | REQ-AGT-007 | 10 |
 | [T-1005](T-1005.md) | AGT | Pending-intent service + approval | REQ-AGT-006 | 10 |
 | [T-1006](T-1006.md) | AGT | Grants screen, revoke, rate limits | REQ-AGT-008, REQ-AGT-009 | 10 |
-
-E04 (card + push provisioning) and E05 (P2P, FX, payouts) are generated once ADR-006 picks the processor.
+| [T-1007](T-1007.md) | AGT | Provider calls never carry a user token | REQ-AGT-004 | 10 |
+E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
