@@ -9,6 +9,7 @@ import { adminHandlers } from './admin/handlers.ts';
 import { cardHandlers } from './cards/handlers.ts';
 import { CardService } from './cards/service.ts';
 import { JitService } from './cards/jit.ts';
+import { detailsTokenProvisioning, ProvisioningService, TOKEN_EVENT_PROVIDER } from './cards/provisioning.ts';
 import { kycHandlers } from './kyc/handlers.ts';
 import { KycService } from './kyc/service.ts';
 import { CustomerReadModel } from './admin/customers.ts';
@@ -95,6 +96,10 @@ function buildServices(o: AppOptions) {
   const cardIssuing = o.registry.resolve<CardIssuingPort>('card-issuing', o.market);
   const cards = new CardService(o.db, cardIssuing, kyc, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
   const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans });
+  const provisioning = new ProvisioningService(o.db, cards, detailsTokenProvisioning(cardIssuing), flags);
+  // The processor's token lifecycle events land on /hooks/card-issuing and are applied at receipt; the
+  // worker's token-events job sweeps anything left pending within its cycle (REQ-CRD-007).
+  webhooks.bind(TOKEN_EVENT_PROVIDER, { verifier: ProvisioningService.verifier(o.registry.bindingFor('card-issuing', o.market)?.mode), process: (e) => provisioning.applyTokenEvent(e, clock.now()).then(() => undefined) });
   // The KYC provider's decisions arrive on /hooks/kyc; the port verifies and parses, the service applies,
   // and a T2 approval issues the virtual card while card.virtual is on (REQ-CRD-001). A processor failure
   // leaves the event unprocessed so replay retries it; both steps are idempotent.
@@ -107,7 +112,7 @@ function buildServices(o: AppOptions) {
   });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning };
 }
 
 export function createApp(o: AppOptions): App {
@@ -116,7 +121,7 @@ export function createApp(o: AppOptions): App {
     ...authHandlers({ otp: s.otp, passkeys: s.passkeys, recovery: s.recovery, tokens: s.tokens, stepUp: s.stepUp }),
     getCapabilities: capabilitiesHandler({ flags: s.flags, memberships: s.memberships, entitlements: s.entitlements }),
     ...kycHandlers(s.kyc),
-    ...cardHandlers(s.cards, s.jit),
+    ...cardHandlers(s.cards, s.jit, s.provisioning, s.stepUp),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
     createMembership: route(async (req) => {
       const p = requirePrincipal(req);
