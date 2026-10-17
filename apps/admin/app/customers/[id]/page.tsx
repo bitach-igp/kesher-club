@@ -2,11 +2,11 @@
 // assistant grants and the audit trail. Everything the member or a merchant typed is text.
 import { notFound } from 'next/navigation';
 import { customer360 } from '../../../src/customers/customer360.ts';
-import { getAdminData } from '../../../src/data/memory.ts';
+import { getAdminData } from '../../../src/data/index.ts';
 
 export default async function CustomerPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const record = await getAdminData().getCustomer(id);
+  const record = await (await getAdminData()).getCustomer(id);
   if (!record) notFound();
   const v = customer360(record, new Date());
   return (

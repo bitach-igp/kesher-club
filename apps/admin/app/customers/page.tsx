@@ -1,10 +1,10 @@
 // A01 customer search.
-import { getAdminData } from '../../src/data/memory.ts';
+import { getAdminData } from '../../src/data/index.ts';
 
 export default async function CustomersPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const sp = await searchParams;
   const q = typeof sp['q'] === 'string' ? sp['q'] : '';
-  const results = await getAdminData().searchCustomers(q);
+  const results = await (await getAdminData()).searchCustomers(q);
   return (
     <>
       <h1>Customer 360</h1>

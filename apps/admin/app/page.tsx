@@ -1,11 +1,11 @@
 // Home: the queues at a glance.
 import { queue } from '../src/compliance/alerts.ts';
 import { complaintSla } from '../src/compliance/sla.ts';
-import { getAdminData } from '../src/data/memory.ts';
+import { getAdminData } from '../src/data/index.ts';
 import { providerRows } from '../src/providers/bindings.ts';
 
 export default async function HomePage() {
-  const data = getAdminData();
+  const data = await getAdminData();
   const now = new Date();
   const [alerts, complaints, bindings, flags] = await Promise.all([data.listAlerts(), data.listComplaints(), data.listBindings(), data.listFlags()]);
   const open = complaints.filter((c) => c.status === 'open' || c.status === 'acknowledged').map((c) => complaintSla(c, now));

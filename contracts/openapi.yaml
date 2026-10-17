@@ -14,6 +14,9 @@ info:
     name: Kesher engineering
 servers:
   - url: https://api.kesher.example/v1
+tags:
+  - name: admin
+    description: Admin console operations (ADR-013). Staff token only; never on the MCP surface.
 security:
   - bearer: []
 paths:
@@ -526,11 +529,133 @@ paths:
                   eventId: { type: string }
                   duplicate: { type: boolean }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/flags:
+    get:
+      operationId: listAdminFlags
+      tags: [admin]
+      summary: Every feature flag with its registry default, live value and any pending flip
+      description: ADR-013, REQ-ADM-002. Staff token only.
+      security: [{ staff: [] }]
+      responses:
+        "200":
+          description: Flags
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AdminFlag" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/flags/{key}/flips:
+    post:
+      operationId: proposeFlagFlip
+      tags: [admin]
+      summary: Propose a flag flip; the proposer counts as the first approver
+      description: REQ-ADM-002. A second, distinct admin approves through approveFlagFlip; the flip applies then and is audited. Staff token only.
+      security: [{ staff: [] }]
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[a-z][a-zA-Z0-9.]{2,60}$" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to, reason]
+              properties:
+                to: { type: boolean }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201":
+          description: Approval request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApprovalRequest" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/flag-flips/{id}/approve:
+    post:
+      operationId: approveFlagFlip
+      tags: [admin]
+      summary: Second approval of a flag flip
+      description: REQ-ADM-002. Must come from a different admin than the proposer. Staff token only.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Approval request after the decision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ApprovalRequest" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/bindings:
+    get:
+      operationId: listAdminBindings
+      tags: [admin]
+      summary: Every port with the provider and mode bound for this market
+      description: ADR-013; the Providers & Flags screen. Staff token only.
+      security: [{ staff: [] }]
+      responses:
+        "200":
+          description: Bindings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ProviderBinding" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/audit:
+    get:
+      operationId: listAdminAudit
+      tags: [admin]
+      summary: Audit entries for one subject, newest first
+      description: REQ-ADM-001. Staff token only.
+      security: [{ staff: [] }]
+      parameters:
+        - name: subject
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 200 }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/audit/verify:
+    post:
+      operationId: verifyAdminAudit
+      tags: [admin]
+      summary: Walk the audit hash chain and report the first break
+      description: REQ-ADM-001. Staff token only.
+      security: [{ staff: [] }]
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuditVerification" }
+        default: { $ref: "#/components/responses/Problem" }
 components:
   securitySchemes:
     bearer: { type: http, scheme: bearer, bearerFormat: JWT, description: 10-minute access token }
     refresh: { type: http, scheme: bearer, bearerFormat: opaque, description: Rotating refresh token }
     otpSession: { type: http, scheme: bearer, bearerFormat: opaque, description: Short-lived token from verifyOtp }
+    staff: { type: http, scheme: bearer, bearerFormat: JWT, description: 5-minute staff token signed by the admin console (ADR-013) }
   parameters:
     IdempotencyKey:
       name: Idempotency-Key
@@ -566,6 +691,65 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
   schemas:
+    AdminFlag:
+      type: object
+      required: [key, value, default, owner, gates, money]
+      properties:
+        key: { type: string }
+        value: { type: boolean }
+        default: { type: boolean }
+        owner: { type: string }
+        gates: { type: string }
+        money: { type: boolean }
+        changedAt: { type: string, format: date-time }
+        pendingFlip: { $ref: "#/components/schemas/ApprovalRequest" }
+    ApprovalRequest:
+      type: object
+      required: [id, kind, subject, status, approvals, requestedBy, expiresAt, payload]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction] }
+        subject: { type: string }
+        status: { type: string, enum: [pending, awaiting_second_approval, approved, rejected, expired] }
+        approvals: { type: integer, minimum: 0 }
+        requestedBy: { type: string }
+        expiresAt: { type: string, format: date-time }
+        payload: { type: object, additionalProperties: true }
+    ProviderBinding:
+      type: object
+      required: [capability, port, direction, vendors, flags, market]
+      properties:
+        capability: { type: string }
+        port: { type: string }
+        direction: { type: string, enum: [out, in, out+in] }
+        vendors: { type: array, items: { type: string } }
+        flags: { type: array, items: { type: string } }
+        market: { type: string, enum: [US, IL] }
+        provider: { type: string }
+        mode: { type: string, enum: [sim, sandbox, live] }
+    AuditEntry:
+      type: object
+      required: [seq, id, at, actorId, actorRole, action, subject, reason, payload, hash, prevHash]
+      properties:
+        seq: { type: integer }
+        id: { type: string, format: uuid }
+        at: { type: string, format: date-time }
+        actorId: { type: string }
+        actorRole: { type: string }
+        action: { type: string }
+        subject: { type: string }
+        reason: { type: string }
+        payload: { type: object, additionalProperties: true }
+        hash: { type: string }
+        prevHash: { type: string }
+    AuditVerification:
+      type: object
+      required: [ok, entries]
+      properties:
+        ok: { type: boolean }
+        entries: { type: integer }
+        brokenAtSeq: { type: integer }
+        reason: { type: string }
     Money:
       type: object
       required: [minor, currency]

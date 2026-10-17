@@ -108,7 +108,7 @@ export interface AdminData {
 
 export class AdminDataError extends Error {
   constructor(
-    readonly code: 'NOT_FOUND' | 'CONFLICT' | 'FORBIDDEN' | 'GATES_INCOMPLETE' | 'SAME_APPROVER',
+    readonly code: 'NOT_FOUND' | 'CONFLICT' | 'FORBIDDEN' | 'GATES_INCOMPLETE' | 'SAME_APPROVER' | 'UNAVAILABLE',
     message: string,
   ) {
     super(message);

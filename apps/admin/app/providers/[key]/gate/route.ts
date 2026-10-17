@@ -1,4 +1,4 @@
-import { getAdminData } from '../../../../src/data/memory.ts';
+import { getAdminData } from '../../../../src/data/index.ts';
 import { adminAction, field } from '../../../../src/ui/handler.ts';
 
 export async function POST(request: Request, ctx: { params: Promise<{ key: string }> }): Promise<Response> {
@@ -6,5 +6,5 @@ export async function POST(request: Request, ctx: { params: Promise<{ key: strin
   const form = await request.formData();
   const gate = field(form, 'gate') ?? '';
   const ticked = field(form, 'ticked') === 'true';
-  return adminAction(`/providers/${encodeURIComponent(key)}`, (by, now) => getAdminData().tickGate(key, gate, ticked, by, now));
+  return adminAction(`/providers/${encodeURIComponent(key)}`, async (by, now) => (await getAdminData()).tickGate(key, gate, ticked, by, now));
 }

@@ -1,10 +1,10 @@
 // A07 Providers & Flags (T-0902): every port with its binding, the flags that gate it, release
 // gate progress, pending two-person flips, and the kill switch.
-import { getAdminData } from '../../src/data/memory.ts';
+import { getAdminData } from '../../src/data/index.ts';
 import { providerRows } from '../../src/providers/bindings.ts';
 
 export default async function ProvidersPage() {
-  const data = getAdminData();
+  const data = await getAdminData();
   const rows = providerRows(await data.listBindings(), await data.listFlags());
   return (
     <>

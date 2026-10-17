@@ -1,11 +1,11 @@
 // A03 complaints with SLA timers (T-0904, REQ-CMP-002): acknowledge 2 business days, resolve 15.
 // Red from day 13. Export for the bank in one click.
 import { complaintSla, RESOLVE_BUSINESS_DAYS, sortBySla } from '../../../src/compliance/sla.ts';
-import { getAdminData } from '../../../src/data/memory.ts';
+import { getAdminData } from '../../../src/data/index.ts';
 
 export default async function ComplaintsPage() {
   const now = new Date();
-  const rows = sortBySla((await getAdminData().listComplaints()).map((c) => ({ c, sla: complaintSla(c, now) })));
+  const rows = sortBySla((await (await getAdminData()).listComplaints()).map((c) => ({ c, sla: complaintSla(c, now) })));
   return (
     <>
       <h1>Complaints</h1>

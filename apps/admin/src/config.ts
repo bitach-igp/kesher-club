@@ -31,9 +31,33 @@ export const adminConfigSchema = z.object({
   ADMIN_OIDC_CLIENT_ID: z.string().min(1),
   ADMIN_OIDC_CLIENT_SECRET: z.string().min(1),
   ADMIN_OIDC_JWKS_URL: z.string().url(),
+  /** `api` talks to /admin/* (ADR-013); `memory` is the seeded store, allowed in local and preview only. */
+  ADMIN_DATA: z.enum(['api', 'memory']),
+  ADMIN_API_URL: z.string().url().optional(),
+  /** Private ES256 JWK (JSON) that signs 5-minute staff tokens; its public half is the API's staff JWKS. */
+  ADMIN_API_SIGNING_KEY: z
+    .string()
+    .optional()
+    .transform((raw, ctx): Record<string, unknown> | undefined => {
+      if (raw === undefined) return undefined;
+      try {
+        const jwk = JSON.parse(raw) as Record<string, unknown>;
+        if (jwk['kty'] !== 'EC' || jwk['crv'] !== 'P-256' || typeof jwk['d'] !== 'string') ctx.addIssue({ code: 'custom', message: 'must be a private P-256 JWK' });
+        return jwk;
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'must be JSON' });
+        return undefined;
+      }
+    }),
+  ADMIN_API_SIGNING_KID: z.string().min(1).optional(),
+}).superRefine((c, ctx) => {
+  if (c.ADMIN_DATA === 'memory' && c.ADMIN_ENVIRONMENT !== 'local' && c.ADMIN_ENVIRONMENT !== 'preview') ctx.addIssue({ code: 'custom', path: ['ADMIN_DATA'], message: 'memory data is allowed in local and preview only' });
+  if (c.ADMIN_DATA === 'api') for (const k of ['ADMIN_API_URL', 'ADMIN_API_SIGNING_KEY', 'ADMIN_API_SIGNING_KID'] as const) if (c[k] === undefined) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required when ADMIN_DATA=api` });
 });
 
-export type AdminConfig = z.infer<typeof adminConfigSchema>;
+type ParsedAdminConfig = z.infer<typeof adminConfigSchema>;
+/** After the refinement, `api` mode carries its three settings. */
+export type AdminConfig = (ParsedAdminConfig & { ADMIN_DATA: 'memory' }) | (ParsedAdminConfig & { ADMIN_DATA: 'api'; ADMIN_API_URL: string; ADMIN_API_SIGNING_KEY: Record<string, unknown>; ADMIN_API_SIGNING_KID: string });
 
 /** The keys this app reads. Listed explicitly so the edge bundle inlines them. */
 export const readAdminEnv = (): Record<string, string | undefined> => ({
@@ -46,10 +70,14 @@ export const readAdminEnv = (): Record<string, string | undefined> => ({
   ADMIN_OIDC_CLIENT_ID: process.env.ADMIN_OIDC_CLIENT_ID,
   ADMIN_OIDC_CLIENT_SECRET: process.env.ADMIN_OIDC_CLIENT_SECRET,
   ADMIN_OIDC_JWKS_URL: process.env.ADMIN_OIDC_JWKS_URL,
+  ADMIN_DATA: process.env.ADMIN_DATA,
+  ADMIN_API_URL: process.env.ADMIN_API_URL,
+  ADMIN_API_SIGNING_KEY: process.env.ADMIN_API_SIGNING_KEY,
+  ADMIN_API_SIGNING_KID: process.env.ADMIN_API_SIGNING_KID,
 });
 
 /** Parses an env record. Throws ConfigError (listing every missing key) rather than defaulting. */
-export const parseAdminConfig = (env: Record<string, string | undefined>): AdminConfig => loadConfig(adminConfigSchema, env);
+export const parseAdminConfig = (env: Record<string, string | undefined>): AdminConfig => loadConfig(adminConfigSchema, env) as AdminConfig;
 
 let cached: AdminConfig | undefined;
 

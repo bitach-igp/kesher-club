@@ -183,9 +183,3 @@ export function memoryAdminData(): AdminData {
 
 const summary = (c: CustomerRecord) => ({ partyId: c.partyId, displayName: c.displayName, phone: c.phone, email: c.email, locale: c.locale, mode: c.mode, createdAt: c.createdAt });
 
-let singleton: AdminData | undefined;
-/** One store per server process: route handlers and pages see the same state. */
-export function getAdminData(): AdminData {
-  singleton ??= memoryAdminData();
-  return singleton;
-}
