@@ -41,6 +41,9 @@ importers:
       '@kesher/ports':
         specifier: workspace:*
         version: link:../../packages/ports
+      '@kesher/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@kesher/tokens':
         specifier: workspace:*
         version: link:../../packages/tokens

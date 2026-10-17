@@ -1,6 +1,6 @@
 // One flag: the switch-on checklist (release gates), the two-person flip, and the kill switch.
 import { notFound } from 'next/navigation';
-import { getAdminData } from '../../../src/data/memory.ts';
+import { getAdminData } from '../../../src/data/index.ts';
 import { isMoneyFlag } from '../../../src/providers/money-flags.ts';
 import { APPROVALS_REQUIRED, evaluateFlip, gatesFor } from '../../../src/providers/release-gates.ts';
 import { currentActor } from '../../../src/ui/actor.ts';
@@ -8,7 +8,7 @@ import { currentActor } from '../../../src/ui/actor.ts';
 export default async function FlagPage({ params, searchParams }: { params: Promise<{ key: string }>; searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const { key } = await params;
   const sp = await searchParams;
-  const flag = await getAdminData().getFlag(key);
+  const flag = await (await getAdminData()).getFlag(key);
   if (!flag) notFound();
   const actor = await currentActor();
   const gates = gatesFor(key);

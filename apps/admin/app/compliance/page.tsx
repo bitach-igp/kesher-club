@@ -1,10 +1,10 @@
 // A02 Compliance alerts queue (T-0904): severity first, then age; decide with a note.
 import { ageHours, ALERT_LABEL, queue } from '../../src/compliance/alerts.ts';
-import { getAdminData } from '../../src/data/memory.ts';
+import { getAdminData } from '../../src/data/index.ts';
 
 export default async function CompliancePage() {
   const now = new Date();
-  const alerts = queue(await getAdminData().listAlerts());
+  const alerts = queue(await (await getAdminData()).listAlerts());
   return (
     <>
       <h1>Compliance alerts</h1>

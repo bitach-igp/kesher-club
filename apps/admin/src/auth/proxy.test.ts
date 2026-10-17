@@ -73,7 +73,8 @@ describe('admin proxy (TST-AUTH-009)', () => {
     expect(await reason('not.a.jwt')).toBe('invalid');
   });
 
-  it('boot config: every OIDC and VPN setting is required; nothing falls back to a default', () => {
+  it('boot config: every OIDC, VPN and data setting is required; nothing falls back to a default', async () => {
+    const signing = await exportJWK((await generateKeyPair('ES256', { extractable: true })).privateKey);
     const env = {
       NODE_ENV: 'production',
       ADMIN_ENVIRONMENT: 'production',
@@ -84,9 +85,18 @@ describe('admin proxy (TST-AUTH-009)', () => {
       ADMIN_OIDC_CLIENT_ID: 'client',
       ADMIN_OIDC_CLIENT_SECRET: 'secret',
       ADMIN_OIDC_JWKS_URL: `${ISSUER}/keys`,
+      ADMIN_DATA: 'api',
+      ADMIN_API_URL: 'https://api.kesher.example/v1',
+      ADMIN_API_SIGNING_KEY: JSON.stringify(signing),
+      ADMIN_API_SIGNING_KID: 'admin-1',
     };
     expect(parseAdminConfig(env).ADMIN_VPN_CIDRS.map((c) => c.text)).toEqual(['10.8.0.0/16', 'fd00:1234::/48']);
     expect(() => parseAdminConfig({ ...env, ADMIN_OIDC_CLIENT_SECRET: undefined })).toThrow(/ADMIN_OIDC_CLIENT_SECRET/);
     expect(() => parseAdminConfig({ ...env, ADMIN_VPN_CIDRS: '0.0.0.0/33' })).toThrow();
+    // ADR-013: the API binding needs its URL and signing key; the seeded store is for local and preview only.
+    expect(() => parseAdminConfig({ ...env, ADMIN_API_SIGNING_KEY: undefined })).toThrow(/ADMIN_API_SIGNING_KEY/);
+    expect(() => parseAdminConfig({ ...env, ADMIN_API_SIGNING_KEY: JSON.stringify({ kty: 'EC', crv: 'P-256', x: 'a', y: 'b' }) })).toThrow(/private/);
+    expect(() => parseAdminConfig({ ...env, ADMIN_DATA: 'memory' })).toThrow(/local and preview/);
+    expect(parseAdminConfig({ ...env, ADMIN_DATA: 'memory', ADMIN_ENVIRONMENT: 'preview', NODE_ENV: 'preview' }).ADMIN_DATA).toBe('memory');
   });
 });

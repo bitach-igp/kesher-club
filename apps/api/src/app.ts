@@ -5,6 +5,9 @@ import type { Database } from './db.ts';
 import type { AuthPort, BillingPort, EventsPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
 import { ok, requireIdempotencyKey, requirePrincipal, route, type Handler, type HttpRequest } from './http.ts';
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
+import { adminHandlers } from './admin/handlers.ts';
+import { StaffTokenVerifier, staffBearerMiddleware } from './admin/staff-token.ts';
+import type { JWK } from 'jose';
 import { OtpService } from './auth/otp.ts';
 import { PasskeyService } from './auth/passkeys.ts';
 import { RecoveryService } from './auth/recovery.ts';
@@ -41,6 +44,8 @@ export interface AppOptions {
   issuer: string;
   identity?: IdentityRepository;
   clock?: () => Date;
+  /** Public JWKS of the admin console's staff-token key (ADR-013). Without it every /admin/* call is 401. */
+  staffJwks?: readonly JWK[];
 }
 
 export interface App {
@@ -140,9 +145,17 @@ export function createApp(o: AppOptions): App {
       return { status: 204 };
     }),
     providerWebhook: s.webhooks.handler() as Handler,
+    ...adminHandlers({ flags: s.flags as FlagService, approvals: s.approvals, audit: s.audit, registry: o.registry, market: o.market }),
   };
   for (const r of ROUTES) if (!handlers[r.operationId]) handlers[r.operationId] = notYet(r.operationId);
-  return { handlers, authenticate: bearerMiddleware(s.tokens), services: s };
+  const staff = staffBearerMiddleware(o.staffJwks && o.staffJwks.length ? new StaffTokenVerifier({ jwks: o.staffJwks, clock: s.clock }) : undefined);
+  const member = bearerMiddleware(s.tokens);
+  // Staff tokens are recognised by audience and verified against the console's key; everything else is a member token.
+  const authenticate = async (req: HttpRequest) => {
+    const r = await staff(req);
+    return r.principal ? r : member(r);
+  };
+  return { handlers, authenticate, services: s };
 }
 
 /** Operations whose cards wait on ADR-006 (cards, loads, fx, payouts, households) answer FEATURE_OFF, never 500. */

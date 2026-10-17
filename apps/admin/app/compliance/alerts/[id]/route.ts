@@ -1,4 +1,4 @@
-import { getAdminData } from '../../../../src/data/memory.ts';
+import { getAdminData } from '../../../../src/data/index.ts';
 import { problem } from '../../../../src/ui/actor.ts';
 import { adminAction, field } from '../../../../src/ui/handler.ts';
 
@@ -10,5 +10,5 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   const decision = field(form, 'decision');
   const note = field(form, 'note');
   if (!decision || !DECISIONS.has(decision) || !note) return problem(400, 'VALIDATION_FAILED', 'A decision and a note are required');
-  return adminAction('/compliance', (by, now) => getAdminData().decideAlert(id, decision as 'cleared' | 'escalated' | 'in_review', by, note, now));
+  return adminAction('/compliance', async (by, now) => (await getAdminData()).decideAlert(id, decision as 'cleared' | 'escalated' | 'in_review', by, note, now));
 }

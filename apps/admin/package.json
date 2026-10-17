@@ -13,6 +13,7 @@
   "dependencies": {
     "@kesher/domain": "workspace:*",
     "@kesher/ports": "workspace:*",
+    "@kesher/sdk": "workspace:*",
     "@kesher/tokens": "workspace:*",
     "jose": "6.2.12",
     "next": "^16.4.2",

@@ -5,6 +5,10 @@ import { DomainError, ERROR_CODES } from '@kesher/domain';
 import { randomUUID } from 'node:crypto';
 
 export interface Principal {
+  /** `staff` for admin-console tokens (ADR-013); absent or `member` for member tokens. */
+  kind?: 'member' | 'staff';
+  /** The IdP subject behind a staff principal (its partyId is derived from it). */
+  subject?: string;
   partyId: string;
   /** Roles on this token: member, funder, org_staff, org_finance, admin. */
   roles: readonly string[];
@@ -98,6 +102,8 @@ export function makeRequest<B>(partial: Partial<HttpRequest<B>> & { method: Http
 
 export const requirePrincipal = (req: HttpRequest): Principal => {
   if (!req.principal) throw new DomainError('UNAUTHENTICATED', 'Sign in required');
+  // Staff tokens open /admin/* only (ADR-013); a staff principal has no member accounts to act on.
+  if (req.principal.kind === 'staff') throw new DomainError('FORBIDDEN', 'Staff tokens are accepted on admin operations only');
   return req.principal;
 };
 

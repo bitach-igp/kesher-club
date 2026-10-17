@@ -64,6 +64,126 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/audit": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Audit entries for one subject, newest first
+         * @description REQ-ADM-001. Staff token only.
+         */
+        readonly get: operations["listAdminAudit"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/audit/verify": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Walk the audit hash chain and report the first break
+         * @description REQ-ADM-001. Staff token only.
+         */
+        readonly post: operations["verifyAdminAudit"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/bindings": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Every port with the provider and mode bound for this market
+         * @description ADR-013; the Providers & Flags screen. Staff token only.
+         */
+        readonly get: operations["listAdminBindings"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/flag-flips/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second approval of a flag flip
+         * @description REQ-ADM-002. Must come from a different admin than the proposer. Staff token only.
+         */
+        readonly post: operations["approveFlagFlip"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/flags": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Every feature flag with its registry default, live value and any pending flip
+         * @description ADR-013, REQ-ADM-002. Staff token only.
+         */
+        readonly get: operations["listAdminFlags"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/flags/{key}/flips": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Propose a flag flip; the proposer counts as the first approver
+         * @description REQ-ADM-002. A second, distinct admin approves through approveFlagFlip; the flip applies then and is audited. Staff token only.
+         */
+        readonly post: operations["proposeFlagFlip"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/agent-grants": {
         readonly parameters: {
             readonly query?: never;
@@ -599,6 +719,17 @@ export interface components {
             readonly quantity: number;
             readonly sku: string;
         };
+        readonly AdminFlag: {
+            /** Format: date-time */
+            readonly changedAt?: string;
+            readonly default: boolean;
+            readonly gates: string;
+            readonly key: string;
+            readonly money: boolean;
+            readonly owner: string;
+            readonly pendingFlip?: components["schemas"]["ApprovalRequest"];
+            readonly value: boolean;
+        };
         readonly AgentGrant: {
             /** Format: uri */
             readonly clientId: string;
@@ -626,6 +757,45 @@ export interface components {
             readonly dryRun: boolean;
             /** Format: uuid */
             readonly scheduleId: string;
+        };
+        readonly ApprovalRequest: {
+            readonly approvals: number;
+            /** Format: date-time */
+            readonly expiresAt: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** @enum {string} */
+            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction";
+            readonly payload: {
+                readonly [key: string]: unknown;
+            };
+            readonly requestedBy: string;
+            /** @enum {string} */
+            readonly status: "pending" | "awaiting_second_approval" | "approved" | "rejected" | "expired";
+            readonly subject: string;
+        };
+        readonly AuditEntry: {
+            readonly action: string;
+            readonly actorId: string;
+            readonly actorRole: string;
+            /** Format: date-time */
+            readonly at: string;
+            readonly hash: string;
+            /** Format: uuid */
+            readonly id: string;
+            readonly payload: {
+                readonly [key: string]: unknown;
+            };
+            readonly prevHash: string;
+            readonly reason: string;
+            readonly seq: number;
+            readonly subject: string;
+        };
+        readonly AuditVerification: {
+            readonly brokenAtSeq?: number;
+            readonly entries: number;
+            readonly ok: boolean;
+            readonly reason?: string;
         };
         readonly Capabilities: {
             readonly entitlements: {
@@ -866,6 +1036,19 @@ export interface components {
             /** Format: uri */
             readonly type: string;
         };
+        readonly ProviderBinding: {
+            readonly capability: string;
+            /** @enum {string} */
+            readonly direction: "out" | "in" | "out+in";
+            readonly flags: readonly string[];
+            /** @enum {string} */
+            readonly market: "US" | "IL";
+            /** @enum {string} */
+            readonly mode?: "sim" | "sandbox" | "live";
+            readonly port: string;
+            readonly provider?: string;
+            readonly vendors: readonly string[];
+        };
         readonly ProvisioningPayload: {
             readonly activationData: string;
             readonly encryptedPassData: string;
@@ -1049,6 +1232,152 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["AddonOrder"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminAudit: {
+        readonly parameters: {
+            readonly query: {
+                readonly limit?: number;
+                readonly subject: string;
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Entries */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["AuditEntry"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly verifyAdminAudit: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Verification result */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AuditVerification"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminBindings: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Bindings */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["ProviderBinding"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveFlagFlip: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Approval request after the decision */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ApprovalRequest"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminFlags: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Flags */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["AdminFlag"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly proposeFlagFlip: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly key: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly reason: string;
+                    readonly to: boolean;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Approval request */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ApprovalRequest"];
                 };
             };
             readonly default: components["responses"]["Problem"];
