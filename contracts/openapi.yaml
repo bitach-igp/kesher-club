@@ -529,6 +529,42 @@ paths:
                   eventId: { type: string }
                   duplicate: { type: boolean }
         default: { $ref: "#/components/responses/Problem" }
+  /kyc/sessions:
+    post:
+      operationId: startKycSession
+      summary: Start an identity verification session (T1 or T2) with the issuer's KYC provider
+      description: Enabling for REQ-CRD-001. Returns the provider session and a short-lived client token for the capture SDK; the token is never stored or shown again. A tier already approved cannot be started again. Idempotent by key.
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tier]
+              properties:
+                tier: { type: string, enum: [T1, T2] }
+      responses:
+        "201":
+          description: Session started (or the same session, by idempotency key)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KycSessionStarted" }
+        default: { $ref: "#/components/responses/Problem" }
+  /kyc/status:
+    get:
+      operationId: getKycStatus
+      summary: Where the member's identity verification stands
+      description: Enabling for REQ-CRD-001. The latest session's status and the highest approved tier. Never carries images, document data or the client token.
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KycStatus" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/flags:
     get:
       operationId: listAdminFlags
@@ -847,6 +883,31 @@ components:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
   schemas:
+    KycSession:
+      type: object
+      required: [sessionId, tier, status, reasons, startedAt, expiresAt]
+      properties:
+        sessionId: { type: string }
+        tier: { type: string, enum: [T1, T2] }
+        status: { type: string, enum: [pending, approved, rejected, review] }
+        reasons: { type: array, items: { type: string }, description: Provider reason codes, no PII }
+        startedAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+    KycSessionStarted:
+      allOf:
+        - $ref: "#/components/schemas/KycSession"
+        - type: object
+          required: [clientToken]
+          properties:
+            clientToken: { type: string, description: For the provider's capture SDK; short-lived, returned once }
+    KycStatus:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [none, pending, approved, rejected, review] }
+        approvedTier: { type: string, enum: [T1, T2] }
+        current: { $ref: "#/components/schemas/KycSession" }
     AdminFlag:
       type: object
       required: [key, value, default, owner, gates, money]

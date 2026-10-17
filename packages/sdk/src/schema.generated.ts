@@ -708,6 +708,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/kyc/sessions": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Start an identity verification session (T1 or T2) with the issuer's KYC provider
+         * @description Enabling for REQ-CRD-001. Returns the provider session and a short-lived client token for the capture SDK; the token is never stored or shown again. A tier already approved cannot be started again. Idempotent by key.
+         */
+        readonly post: operations["startKycSession"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/kyc/status": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Where the member's identity verification stands
+         * @description Enabling for REQ-CRD-001. The latest session's status and the highest approved tier. Never carries images, document data or the client token.
+         */
+        readonly get: operations["getKycStatus"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/loads": {
         readonly parameters: {
             readonly query?: never;
@@ -1203,6 +1243,32 @@ export interface components {
                 /** Format: uuid */
                 readonly partyId: string;
             }[];
+        };
+        readonly KycSession: {
+            /** Format: date-time */
+            readonly decidedAt?: string;
+            /** Format: date-time */
+            readonly expiresAt: string;
+            /** @description Provider reason codes */
+            readonly reasons: readonly string[];
+            readonly sessionId: string;
+            /** Format: date-time */
+            readonly startedAt: string;
+            /** @enum {string} */
+            readonly status: "pending" | "approved" | "rejected" | "review";
+            /** @enum {string} */
+            readonly tier: "T1" | "T2";
+        };
+        readonly KycSessionStarted: components["schemas"]["KycSession"] & {
+            /** @description For the provider's capture SDK; short-lived */
+            readonly clientToken: string;
+        };
+        readonly KycStatus: {
+            /** @enum {string} */
+            readonly approvedTier?: "T1" | "T2";
+            readonly current?: components["schemas"]["KycSession"];
+            /** @enum {string} */
+            readonly status: "none" | "pending" | "approved" | "rejected" | "review";
         };
         readonly Load: {
             readonly amount: components["schemas"]["Money"];
@@ -2395,6 +2461,58 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["PendingIntent"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly startKycSession: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @enum {string} */
+                    readonly tier: "T1" | "T2";
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Session started (or the same session, by idempotency key) */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["KycSessionStarted"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getKycStatus: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Status */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["KycStatus"];
                 };
             };
             readonly default: components["responses"]["Problem"];

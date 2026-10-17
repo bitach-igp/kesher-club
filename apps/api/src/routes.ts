@@ -42,6 +42,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/intents/{id}/approve', operationId: 'approveIntent' },
   { method: 'POST', path: '/hooks/{provider}', operationId: 'providerWebhook', public: true },
   // Admin console (ADR-013): staff token only; the handlers refuse member and agent principals.
+  { method: 'POST', path: '/kyc/sessions', operationId: 'startKycSession' },
+  { method: 'GET', path: '/kyc/status', operationId: 'getKycStatus' },
   { method: 'GET', path: '/admin/flags', operationId: 'listAdminFlags' },
   { method: 'POST', path: '/admin/flags/{key}/flips', operationId: 'proposeFlagFlip' },
   { method: 'POST', path: '/admin/flag-flips/{id}/approve', operationId: 'approveFlagFlip' },

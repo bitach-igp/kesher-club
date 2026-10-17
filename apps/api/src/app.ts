@@ -2,10 +2,12 @@
 // in sim mode) and returns the handler table. The HTTP server (server.ts) and tests call this;
 // nothing here knows about sockets. Secrets arrive through the config loader (T-0004).
 import type { Database } from './db.ts';
-import type { AuthPort, BillingPort, EventsPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
+import type { AuthPort, BillingPort, EventsPort, KycPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
 import { ok, requireIdempotencyKey, requirePrincipal, route, type Handler, type HttpRequest } from './http.ts';
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
+import { kycHandlers } from './kyc/handlers.ts';
+import { KycService } from './kyc/service.ts';
 import { CustomerReadModel } from './admin/customers.ts';
 import { ComplaintService } from './admin/complaints.ts';
 import { AlertService } from './admin/alerts.ts';
@@ -84,9 +86,12 @@ function buildServices(o: AppOptions) {
   const intents = new IntentService(o.db, transfers, stepUp);
   const inbound = new InboundEventStore(o.db);
   const webhooks = new WebhookRouter(inbound);
+  const kyc = new KycService(o.db, o.registry.resolve<KycPort>('kyc', o.market), o.market, o.registry.bindingFor('kyc', o.market)?.provider ?? 'issuer-kyc');
+  // The KYC provider's decisions arrive on /hooks/kyc; the port verifies and parses, the service applies.
+  webhooks.bind('kyc', { verifier: kyc.webhookVerifier(), process: (e) => kyc.applyDecision(e) });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc };
 }
 
 export function createApp(o: AppOptions): App {
@@ -94,6 +99,7 @@ export function createApp(o: AppOptions): App {
   const handlers: HandlerTable = {
     ...authHandlers({ otp: s.otp, passkeys: s.passkeys, recovery: s.recovery, tokens: s.tokens, stepUp: s.stepUp }),
     getCapabilities: capabilitiesHandler({ flags: s.flags, memberships: s.memberships, entitlements: s.entitlements }),
+    ...kycHandlers(s.kyc),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
     createMembership: route(async (req) => {
       const p = requirePrincipal(req);
