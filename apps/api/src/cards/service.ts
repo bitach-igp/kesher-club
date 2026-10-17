@@ -1,4 +1,4 @@
-// Cards (T-0402, REQ-CRD-001/002) over CardIssuingPort. A virtual card is issued by one workflow per
+// Cards (T-0402, REQ-CRD-001/002; T-0404, REQ-CRD-004/005) over CardIssuingPort. A virtual card is issued by one workflow per
 // party, `card-issue:{partyId}`, within 60 s of the T2 approval that unlocks it; the worker hosts the
 // workflow (apps/worker/src/cards/issue-workflow.ts) and this service is its activities, each
 // idempotent by the key it receives. Reads return status, controls and wallet tokens; the PAN, CVV and
@@ -9,8 +9,12 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import type { KycService } from '../kyc/service.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
+import { applyPatch, type Actor, type ControlsPatch } from './controls.ts';
 
 export const ISSUE_FLAG = 'card.virtual';
+/** last_event_id markers on cards.card_token for the freeze cascade (REQ-CRD-004). */
+export const FREEZE_MARKER = 'card.frozen';
+export const UNFREEZE_MARKER = 'card.unfrozen';
 export const ISSUE_SLA_MS = 60_000;
 export const issueWorkflowId = (partyId: string): string => `card-issue:${partyId}`;
 
@@ -168,8 +172,50 @@ export class CardService {
     return this.provider(() => this.port.showDetailsToken(r.rows[0]!.processor_card_id));
   }
 
-  private async view(r: Row): Promise<CardView> {
-    const tokens = await this.db.query<{ wallet: 'apple' | 'google'; status: 'active' | 'suspended' | 'deleted'; device_id: string }>(`select wallet, status, device_id from cards.card_token where card_id = $1 order by updated_at`, [r.id]);
+  // ---- controls and status (T-0404) ----------------------------------------------------------
+
+  /** The member who owns the card, or the funder of that member's membership (REQ-CRD-005). */
+  async actorFor(partyId: string, cardId: string): Promise<{ card: Row; by: Actor } | undefined> {
+    const r = await this.db.query<Row>(`select * from cards.card where id = $1`, [cardId]);
+    const card = r.rows[0];
+    if (!card) return undefined;
+    if (card.party_id === partyId) return { card, by: 'member' };
+    const funder = await this.db.query(`select 1 from billing.membership where member_party_id = $1 and funder_party_id = $2 and status <> 'cancelled' limit 1`, [card.party_id, partyId]);
+    return funder.rows.length ? { card, by: 'funder' } : undefined;
+  }
+
+  /** Applies a patch for the member or the funder, tells the processor, records the result. Idempotent by key. */
+  async updateControls(partyId: string, cardId: string, patch: ControlsPatch, idempotencyKey: string, now: Date): Promise<CardView> {
+    const who = await this.actorFor(partyId, cardId);
+    if (!who) throw new DomainError('NOT_FOUND', 'Card not found');
+    if (who.card.status === 'closed') throw new DomainError('VALIDATION_FAILED', 'Card is closed');
+    const applied = applyPatch(controlsFromWire(who.card.controls), who.card.locked_by_funder, patch, who.by);
+    const card = await this.provider(() => this.port.updateControls(who.card.processor_card_id, applied.controls, idempotencyKey));
+    const r = await this.db.query<Row>(`update cards.card set controls = $2, locked_by_funder = $3, updated_at = $4 where id = $1 returning *`, [cardId, JSON.stringify(controlsToWire(card.controls)), applied.lockedByFunder, now]);
+    return this.view(r.rows[0]!);
+  }
+
+  /**
+   * Freeze or unfreeze (REQ-CRD-004). A freeze reaches the processor, our record, and every active
+   * wallet token, which is suspended under the marker `card.frozen`; an unfreeze revives only the
+   * tokens that marker suspended, never one the processor or the wallet suspended on its own.
+   */
+  async setStatus(partyId: string, cardId: string, status: 'frozen' | 'active', idempotencyKey: string, now: Date): Promise<CardView> {
+    const who = await this.actorFor(partyId, cardId);
+    if (!who) throw new DomainError('NOT_FOUND', 'Card not found');
+    if (who.card.status === 'closed' || who.card.status === 'inactive') throw new DomainError('VALIDATION_FAILED', `A ${who.card.status} card cannot be ${status === 'frozen' ? 'frozen' : 'unfrozen'}`);
+    if (who.card.status === status) return this.view(who.card);
+    const card = await this.provider(() => this.port.setStatus(who.card.processor_card_id, status, idempotencyKey));
+    return this.db.transaction(async (tx) => {
+      const r = await tx.query<Row>(`update cards.card set status = $2, updated_at = $3 where id = $1 returning *`, [cardId, card.status, now]);
+      if (status === 'frozen') await tx.query(`update cards.card_token set status = 'suspended', last_event_id = $2, updated_at = $3 where card_id = $1 and status = 'active'`, [cardId, FREEZE_MARKER, now]);
+      else await tx.query(`update cards.card_token set status = 'active', last_event_id = $2, updated_at = $3 where card_id = $1 and status = 'suspended' and last_event_id = $4`, [cardId, UNFREEZE_MARKER, now, FREEZE_MARKER]);
+      return this.view(r.rows[0]!, tx);
+    });
+  }
+
+  private async view(r: Row, db: Pick<Database, 'query'> = this.db): Promise<CardView> {
+    const tokens = await db.query<{ wallet: 'apple' | 'google'; status: 'active' | 'suspended' | 'deleted'; device_id: string }>(`select wallet, status, device_id from cards.card_token where card_id = $1 order by token_id`, [r.id]);
     return { id: r.id, type: r.type, status: r.status, last4: r.last4, controls: r.controls, lockedByFunder: r.locked_by_funder, tokens: tokens.rows.map((t) => ({ wallet: t.wallet, status: t.status, deviceId: t.device_id })) };
   }
 

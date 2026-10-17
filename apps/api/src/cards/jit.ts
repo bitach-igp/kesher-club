@@ -90,22 +90,25 @@ export class JitService {
 
     // One round trip: the prior answer for a replayed authorisation id, the card, and both purses with
     // the wallet balance. A replay answers what the first one did, without a second hold.
-    const lookup = await this.d.db.query<{ prior_journal: string | null; id: string | null; party_id: string | null; status: CardRow['status'] | null; controls: WireControls | null; wallet_id: string | null; wallet_balance: string | null; pending_id: string | null }>(
+    const lookup = await this.d.db.query<{ prior_journal: string | null; id: string | null; party_id: string | null; status: CardRow['status'] | null; controls: WireControls | null; wallet_id: string | null; wallet_balance: string | null; pending_id: string | null; token_status: 'active' | 'suspended' | 'deleted' | null }>(
       `select (select id from ledger.journal where idempotency_key = $1) as prior_journal,
               c.id, c.party_id, c.status, c.controls,
-              w.id as wallet_id, wb.balance_minor::text as wallet_balance, p.id as pending_id
+              w.id as wallet_id, wb.balance_minor::text as wallet_balance, p.id as pending_id, t.status as token_status
          from (select 1) as one
          left join cards.card c on c.processor_card_id = $2
          left join ledger.account w on w.owner_party_id = c.party_id and w.currency = $3 and w.type = 'wallet'
          left join ops.account_balance wb on wb.account_id = w.id
-         left join ledger.account p on p.owner_party_id = c.party_id and p.currency = $3 and p.type = 'pending'`,
-      [holdKey(req.authId), req.cardId, req.amount.currency],
+         left join ledger.account p on p.owner_party_id = c.party_id and p.currency = $3 and p.type = 'pending'
+         left join cards.card_token t on t.card_id = c.id and t.token_id = $4`,
+      [holdKey(req.authId), req.cardId, req.amount.currency, req.tokenId ?? ''],
     );
     const row = lookup.rows[0]!;
     if (row.prior_journal) return done({ approve: true, holdAmount: req.amount }, row.prior_journal);
     if (!row.id || !row.party_id || !row.status || !row.controls || row.status === 'closed') return done(decline('UNKNOWN_CARD'));
     const card: CardRow = { id: row.id, party_id: row.party_id, status: row.status, controls: row.controls };
     if (card.status !== 'active') return done(decline('CARD_FROZEN'));
+    // A wallet token we know to be suspended or deleted pays nothing, whatever the card's own status (REQ-CRD-004).
+    if (row.token_status && row.token_status !== 'active') return done(decline('CARD_FROZEN'));
 
     const controls = controlsFromWire(card.controls);
     if ((req.channel === 'atm' && !controls.atm) || (req.channel === 'online' && !controls.online)) return done(decline('CHANNEL_BLOCKED'));
@@ -139,10 +142,13 @@ export class JitService {
       this.d.memberships.forMember(card.party_id),
     ]);
     if ((recent.rows[0]?.n ?? 0) >= VELOCITY_LIMIT_PER_MINUTE) return done(decline('LIMIT_EXCEEDED'));
-    const plan = membership ? await this.d.plans.get(membership.planCode, membership.planVersion) : undefined;
+    // The plan's card cap governs an active membership; a paused, past-due or cancelled one leaves the
+    // member's own money to the balance check alone.
+    const active = membership?.status === 'active' ? membership : undefined;
+    const plan = active ? await this.d.plans.get(active.planCode, active.planVersion) : undefined;
     const capped = Boolean(plan?.entitlements[CARD_SPEND_ENTITLEMENT]);
-    if (membership && capped) {
-      const e = await this.d.entitlements.can(membership, CARD_SPEND_ENTITLEMENT, req.amount.minor, now);
+    if (active && capped) {
+      const e = await this.d.entitlements.can(active, CARD_SPEND_ENTITLEMENT, req.amount.minor, now);
       if (!e.allowed) return done(decline('LIMIT_EXCEEDED'));
     }
 
@@ -156,7 +162,7 @@ export class JitService {
       ],
       metadata: { cardId: card.id, authId: req.authId, mcc: req.merchant.mcc, country: req.merchant.country, channel: req.channel, ...(req.tokenId ? { tokenId: req.tokenId } : {}), ...(req.agentic ? { agentic: true } : {}) },
     });
-    if (membership && capped) await this.d.entitlements.consume(membership, CARD_SPEND_ENTITLEMENT, req.amount.minor, holdKey(req.authId), now);
+    if (active && capped) await this.d.entitlements.consume(active, CARD_SPEND_ENTITLEMENT, req.amount.minor, holdKey(req.authId), now);
     return done({ approve: true, holdAmount: req.amount }, journal.id);
   }
 
