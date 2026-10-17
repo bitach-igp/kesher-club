@@ -25,9 +25,11 @@ vendor sandbox, and flip a flag. See `docs/constitution.md` and the live spec.
 | `config/flags.json` | The only flag registry |
 
 ## Status
-- All 56 task cards in `specs/tasks` are implemented with their tests; `pnpm typecheck`,
+- The first 58 task cards in `specs/tasks` are implemented with their tests; `pnpm typecheck`,
   `pnpm test`, `pnpm lint`, `pnpm trace` and `pnpm db:lint` are green at the root.
-- ADR-004 is decided: WorkOS for institution SSO and SCIM (`packages/adapters/src/workos`).
+- ADR-004 is decided (WorkOS for institution SSO and SCIM) and ADR-013 (the admin console talks to
+  the API). ADR-006's build decision: the money epics E04/E05 run against the simulators; their 25
+  cards (T-04xx, T-05xx, T-0606, T-0906–T-0909, T-1007) are the open work.
 - Deferred by ADR: NestJS binding (ADR-001), Temporal hosting (ADR-002); the E04/E05 money epics
   (wallet, cards, P2P, FX, payouts) are not yet broken into cards (ADR-006), which is why
   `pnpm trace` lists their REQs as "not yet in any task".
