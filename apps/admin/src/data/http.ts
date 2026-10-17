@@ -1,10 +1,11 @@
-// AdminData over the API (T-0906, ADR-013): the console's server side calls /admin/* through the
-// typed SDK with a fresh staff token per call. Flags, bindings and audit land here; customers,
-// alerts and complaints follow with T-0907 and T-0908 and answer UNAVAILABLE until then.
+// AdminData over the API (T-0906, T-0907, ADR-013): the console's server side calls /admin/*
+// through the typed SDK with a fresh staff token per call. Flags, bindings, audit and customers
+// land here; alerts and complaints follow with T-0908 and answer UNAVAILABLE until then.
+import { fromWire } from '@kesher/domain';
 import { ApiError, createClient, type Client, type Schemas } from '@kesher/sdk';
 import type { StaffSigner } from '../auth/staff-token.ts';
 import { gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type FlagState, type ProviderBinding } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type CustomerRecord, type CustomerSummary, type FlagState, type ProviderBinding } from './types.ts';
 
 export interface HttpAdminDataOptions {
   baseUrl: string;
@@ -25,6 +26,23 @@ export const flagState = (f: Schemas['AdminFlag']): FlagState => ({
   gatesTicked: f.value ? gatesFor(f.key).map((g) => g.id) : [],
   ...(f.pendingFlip ? { pendingFlip: { requestId: f.pendingFlip.id, to: (f.pendingFlip.payload as { to?: boolean }).to === true, requestedBy: f.pendingFlip.requestedBy, approvals: [f.pendingFlip.requestedBy], requestedAt: f.pendingFlip.expiresAt } } : {}),
   ...(f.changedAt ? { lastChangedAt: f.changedAt } : {}),
+});
+
+/** The API already masks the phone; the console keeps the masked form and has no email to show. */
+export const customerSummary = (c: Schemas['AdminCustomerSummary']): CustomerSummary => ({ partyId: c.partyId, displayName: c.displayName, phone: c.phoneMasked, locale: c.locale, mode: c.mode, createdAt: c.createdAt });
+
+export const customerRecord = (c: Schemas['AdminCustomer']): CustomerRecord => ({
+  ...customerSummary(c),
+  kyc: { status: c.kyc.status, provider: c.kyc.provider, checkedAt: c.kyc.checkedAt },
+  // The API names the other party by id; the console shows the institution and leaves the funder's name to the roster.
+  memberships: c.memberships.map((m) => ({ id: m.id, planCode: m.planCode, status: m.status, institutionName: m.institutionName, currentPeriodEnd: m.currentPeriodEnd })),
+  accounts: c.purses.map((p) => ({ id: p.id, currency: p.currency, available: fromWire(p.available), holds: fromWire(p.holds) })),
+  cards: c.cards.map((k) => ({ id: k.id, last4: k.last4, type: k.type, status: k.status, tokens: k.tokens })),
+  cases: c.openCases.map((k) => ({ id: k.id, kind: k.kind, severity: k.severity, status: k.status, openedAt: k.openedAt })),
+  consents: c.consents.map((x) => ({ document: x.document, version: String(x.version), acceptedAt: x.acceptedAt })),
+  grants: c.grants.map((g) => ({ id: g.id, clientName: g.clientName, scopes: [...g.scopes], lastUsedAt: g.lastUsedAt, revokedAt: g.revokedAt })),
+  audit: c.audit.map((e) => ({ at: e.at, actor: e.actorId, action: e.action, detail: e.reason })),
+  restrictedUntil: c.restrictedUntil,
 });
 
 const mapError = (e: unknown): never => {
@@ -53,8 +71,20 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData {
   };
 
   const data: AdminData = {
-    searchCustomers: async () => notYet('Customer search'),
-    getCustomer: async () => notYet('Customer 360'),
+    async searchCustomers(query) {
+      const q = query.trim();
+      if (!q) return [];
+      const r = await run(() => client.get('/admin/customers', { query: { q } }));
+      return r.items.map(customerSummary);
+    },
+    async getCustomer(partyId) {
+      try {
+        return customerRecord(await run(() => client.get('/admin/customers/{id}', { path: { id: partyId } })));
+      } catch (e) {
+        if (e instanceof AdminDataError && e.code === 'NOT_FOUND') return undefined;
+        throw e;
+      }
+    },
     listAlerts: async () => notYet('Alerts'),
     decideAlert: async () => notYet('Alerts'),
     listComplaints: async () => notYet('Complaints'),

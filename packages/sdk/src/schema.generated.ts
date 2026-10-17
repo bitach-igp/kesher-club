@@ -124,6 +124,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/customers": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Customer search by exact phone, party id, invite email or roster name
+         * @description T-0907 (A01). Results carry the phone's last four digits only; the operator must know the full number to search by it. Staff token only.
+         */
+        readonly get: operations["listAdminCustomers"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/customers/{id}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Customer 360 read model
+         * @description T-0907 (A01). Identity (masked), memberships, purses, open cases, consents, assistant grants and the audit tail. Cards stay empty until the card programme (E04); no PAN is ever carried. Staff token only.
+         */
+        readonly get: operations["getAdminCustomer"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/flag-flips/{id}/approve": {
         readonly parameters: {
             readonly query?: never;
@@ -719,6 +759,111 @@ export interface components {
             readonly quantity: number;
             readonly sku: string;
         };
+        readonly AdminCustomer: components["schemas"]["AdminCustomerSummary"] & {
+            /** @description Newest first, at most 20 */
+            readonly audit: readonly {
+                readonly action: string;
+                readonly actorId: string;
+                readonly actorRole: string;
+                /** Format: date-time */
+                readonly at: string;
+                readonly reason: string;
+            }[];
+            readonly cards: readonly {
+                readonly id: string;
+                readonly last4: string;
+                /** @enum {string} */
+                readonly status: "inactive" | "active" | "frozen" | "closed";
+                readonly tokens: number;
+                /** @enum {string} */
+                readonly type: "virtual" | "physical";
+            }[];
+            readonly consents: readonly {
+                /** Format: date-time */
+                readonly acceptedAt: string;
+                readonly document: string;
+                readonly hash: string;
+                readonly version: number;
+            }[];
+            readonly grants: readonly {
+                /** Format: uri */
+                readonly clientId: string;
+                readonly clientName: string;
+                /** Format: date-time */
+                readonly createdAt: string;
+                /** Format: uuid */
+                readonly id: string;
+                /** Format: date-time */
+                readonly lastUsedAt?: string;
+                /** Format: date-time */
+                readonly revokedAt?: string;
+                readonly scopes: readonly string[];
+            }[];
+            readonly kyc: {
+                /** Format: date-time */
+                readonly checkedAt?: string;
+                readonly provider?: string;
+                /** @enum {string} */
+                readonly status: "none" | "pending" | "verified" | "rejected";
+            };
+            readonly memberships: readonly {
+                /** Format: uuid */
+                readonly counterpartyId: string;
+                /** Format: date-time */
+                readonly currentPeriodEnd?: string;
+                /** Format: uuid */
+                readonly id: string;
+                readonly institutionName?: string;
+                readonly planCode: string;
+                /**
+                 * @description This party's side of the membership
+                 * @enum {string}
+                 */
+                readonly role: "member" | "funder";
+                /** @enum {string} */
+                readonly status: "incomplete" | "active" | "past_due" | "paused" | "cancelled";
+            }[];
+            readonly openCases: readonly {
+                /** Format: uuid */
+                readonly id: string;
+                readonly kind: string;
+                /** Format: date-time */
+                readonly openedAt: string;
+                /** @enum {string} */
+                readonly severity: "low" | "medium" | "high" | "critical";
+                /** @enum {string} */
+                readonly status: "open" | "investigating";
+            }[];
+            readonly purses: readonly {
+                readonly available: components["schemas"]["Money"];
+                /** @enum {string} */
+                readonly currency: "USD" | "ILS";
+                readonly holds: components["schemas"]["Money"];
+                /** Format: uuid */
+                readonly id: string;
+            }[];
+            /**
+             * Format: date-time
+             * @description Recovery hold (REQ-AUTH-009) still in force
+             */
+            readonly restrictedUntil?: string;
+        };
+        readonly AdminCustomerSummary: {
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** @description Roster name when known */
+            readonly displayName: string;
+            /** @enum {string} */
+            readonly locale: "en" | "he";
+            /** @enum {string} */
+            readonly mode: "member" | "funder" | "both";
+            /** Format: uuid */
+            readonly partyId: string;
+            /** @description Last four digits only */
+            readonly phoneMasked: string;
+            /** @enum {string} */
+            readonly status: "pending" | "active" | "restricted" | "closed";
+        };
         readonly AdminFlag: {
             /** Format: date-time */
             readonly changedAt?: string;
@@ -1302,6 +1447,54 @@ export interface operations {
                     readonly "application/json": {
                         readonly items: readonly components["schemas"]["ProviderBinding"][];
                     };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminCustomers: {
+        readonly parameters: {
+            readonly query: {
+                readonly q: string;
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Matching customers (at most 20) */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["AdminCustomerSummary"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getAdminCustomer: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Customer 360 */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AdminCustomer"];
                 };
             };
             readonly default: components["responses"]["Problem"];

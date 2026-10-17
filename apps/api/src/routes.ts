@@ -47,6 +47,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/admin/flag-flips/{id}/approve', operationId: 'approveFlagFlip' },
   { method: 'GET', path: '/admin/bindings', operationId: 'listAdminBindings' },
   { method: 'GET', path: '/admin/audit', operationId: 'listAdminAudit' },
+  { method: 'GET', path: '/admin/customers', operationId: 'listAdminCustomers' },
+  { method: 'GET', path: '/admin/customers/{id}', operationId: 'getAdminCustomer' },
   { method: 'POST', path: '/admin/audit/verify', operationId: 'verifyAdminAudit' },
 ];
 
