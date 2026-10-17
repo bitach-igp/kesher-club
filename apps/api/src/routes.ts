@@ -49,6 +49,12 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/admin/audit', operationId: 'listAdminAudit' },
   { method: 'GET', path: '/admin/customers', operationId: 'listAdminCustomers' },
   { method: 'GET', path: '/admin/customers/{id}', operationId: 'getAdminCustomer' },
+  { method: 'GET', path: '/admin/complaints', operationId: 'listAdminComplaints' },
+  { method: 'POST', path: '/admin/complaints', operationId: 'openAdminComplaint' },
+  { method: 'POST', path: '/admin/complaints/{id}/acknowledge', operationId: 'acknowledgeAdminComplaint' },
+  { method: 'POST', path: '/admin/complaints/{id}/resolve', operationId: 'resolveAdminComplaint' },
+  { method: 'GET', path: '/admin/alerts', operationId: 'listAdminAlerts' },
+  { method: 'POST', path: '/admin/alerts/{id}/decisions', operationId: 'decideAdminAlert' },
   { method: 'POST', path: '/admin/audit/verify', operationId: 'verifyAdminAudit' },
 ];
 

@@ -64,6 +64,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/alerts": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Monitoring alerts, undecided first by severity then age
+         * @description REQ-CMP-001. Alerts are ops cases of the monitoring kinds; summary may quote member or merchant text. Staff token only.
+         */
+        readonly get: operations["listAdminAlerts"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/alerts/{id}/decisions": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Record a disposition on an alert
+         * @description REQ-CMP-001. in_review keeps the alert open and can be decided again; cleared and escalated are final. Every decision carries a note and is audited. Staff token only.
+         */
+        readonly post: operations["decideAdminAlert"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/audit": {
         readonly parameters: {
             readonly query?: never;
@@ -118,6 +158,70 @@ export interface paths {
         readonly get: operations["listAdminBindings"];
         readonly put?: never;
         readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/complaints": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Every complaint, open ones first by age
+         * @description REQ-CMP-002. The same rows feed the bank's export; the console computes both SLA clocks from openedAt. Summary is member text. Staff token only.
+         */
+        readonly get: operations["listAdminComplaints"];
+        readonly put?: never;
+        /**
+         * Log a complaint on a member's behalf
+         * @description REQ-CMP-002. Phone, email, bank and regulator complaints reach staff first; openedAt may be back-dated to when the complaint arrived (never the future) so the SLA clocks are honest. Staff token only.
+         */
+        readonly post: operations["openAdminComplaint"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/complaints/{id}/acknowledge": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Acknowledge an open complaint; stamps the staff subject and the API clock
+         * @description REQ-CMP-002. Only an open complaint can be acknowledged; the acknowledger becomes its owner. Staff token only.
+         */
+        readonly post: operations["acknowledgeAdminComplaint"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/complaints/{id}/resolve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Resolve an open or acknowledged complaint
+         * @description REQ-CMP-002. Resolving an open complaint acknowledges it in the same stroke. Staff token only.
+         */
+        readonly post: operations["resolveAdminComplaint"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -759,6 +863,54 @@ export interface components {
             readonly quantity: number;
             readonly sku: string;
         };
+        readonly AdminAlert: {
+            /** Format: date-time */
+            readonly decidedAt?: string;
+            readonly decidedBy?: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** @enum {string} */
+            readonly kind: "structuring" | "sanctions_hit" | "kyc_manual_review" | "velocity" | "recon_break";
+            readonly note?: string;
+            /** Format: date-time */
+            readonly openedAt: string;
+            /** Format: uuid */
+            readonly partyId?: string;
+            /** @enum {string} */
+            readonly severity: "low" | "medium" | "high" | "critical";
+            /** @enum {string} */
+            readonly status: "open" | "in_review" | "cleared" | "escalated";
+            /** @description May quote member or merchant text; render as text */
+            readonly summary: string;
+        };
+        readonly AdminComplaint: {
+            /** Format: date-time */
+            readonly acknowledgedAt?: string;
+            readonly acknowledgedBy?: string;
+            readonly category: string;
+            /** @enum {string} */
+            readonly channel: "app" | "email" | "phone" | "bank" | "regulator";
+            readonly escalatedToBank: boolean;
+            /** Format: uuid */
+            readonly id: string;
+            /** @description Staff subject */
+            readonly loggedBy: string;
+            /**
+             * Format: date-time
+             * @description Both SLA clocks start here
+             */
+            readonly openedAt: string;
+            readonly owner?: string;
+            /** Format: uuid */
+            readonly partyId: string;
+            /** Format: date-time */
+            readonly resolvedAt?: string;
+            readonly resolvedBy?: string;
+            /** @enum {string} */
+            readonly status: "open" | "acknowledged" | "resolved" | "withdrawn";
+            /** @description Member text; render */
+            readonly summary: string;
+        };
         readonly AdminCustomer: components["schemas"]["AdminCustomerSummary"] & {
             /** @description Newest first, at most 20 */
             readonly audit: readonly {
@@ -1382,6 +1534,60 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly listAdminAlerts: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Alerts */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["AdminAlert"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly decideAdminAlert: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @enum {string} */
+                    readonly decision: "in_review" | "cleared" | "escalated";
+                    readonly note: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Alert after the decision */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AdminAlert"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly listAdminAudit: {
         readonly parameters: {
             readonly query: {
@@ -1447,6 +1653,112 @@ export interface operations {
                     readonly "application/json": {
                         readonly items: readonly components["schemas"]["ProviderBinding"][];
                     };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminComplaints: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Complaints */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["AdminComplaint"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly openAdminComplaint: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly category: string;
+                    /** @enum {string} */
+                    readonly channel: "app" | "email" | "phone" | "bank" | "regulator";
+                    /** @default false */
+                    readonly escalatedToBank?: boolean;
+                    /** Format: date-time */
+                    readonly openedAt?: string;
+                    /** Format: uuid */
+                    readonly partyId: string;
+                    /** @description Member text; stored and shown as text */
+                    readonly summary: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Complaint */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AdminComplaint"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly acknowledgeAdminComplaint: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Complaint */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AdminComplaint"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly resolveAdminComplaint: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Complaint */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AdminComplaint"];
                 };
             };
             readonly default: components["responses"]["Problem"];

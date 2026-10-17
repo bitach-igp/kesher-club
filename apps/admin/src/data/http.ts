@@ -1,11 +1,11 @@
-// AdminData over the API (T-0906, T-0907, ADR-013): the console's server side calls /admin/*
-// through the typed SDK with a fresh staff token per call. Flags, bindings, audit and customers
-// land here; alerts and complaints follow with T-0908 and answer UNAVAILABLE until then.
+// AdminData over the API (T-0906, T-0907, T-0908, ADR-013): the console's server side calls
+// /admin/* through the typed SDK with a fresh staff token per call. The API stamps actors from the
+// token and timestamps from its own clock, so the `by` and `now` the screens pass stay local.
 import { fromWire } from '@kesher/domain';
 import { ApiError, createClient, type Client, type Schemas } from '@kesher/sdk';
 import type { StaffSigner } from '../auth/staff-token.ts';
 import { gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type CustomerRecord, type CustomerSummary, type FlagState, type ProviderBinding } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type FlagState, type ProviderBinding } from './types.ts';
 
 export interface HttpAdminDataOptions {
   baseUrl: string;
@@ -43,6 +43,33 @@ export const customerRecord = (c: Schemas['AdminCustomer']): CustomerRecord => (
   grants: c.grants.map((g) => ({ id: g.id, clientName: g.clientName, scopes: [...g.scopes], lastUsedAt: g.lastUsedAt, revokedAt: g.revokedAt })),
   audit: c.audit.map((e) => ({ at: e.at, actor: e.actorId, action: e.action, detail: e.reason })),
   restrictedUntil: c.restrictedUntil,
+});
+
+export const complaint = (c: Schemas['AdminComplaint']): Complaint => ({
+  id: c.id,
+  partyId: c.partyId,
+  channel: c.channel,
+  category: c.category,
+  summary: c.summary,
+  openedAt: c.openedAt,
+  acknowledgedAt: c.acknowledgedAt,
+  resolvedAt: c.resolvedAt,
+  status: c.status,
+  owner: c.owner,
+  escalatedToBank: c.escalatedToBank,
+});
+
+export const alert = (a: Schemas['AdminAlert']): Alert => ({
+  id: a.id,
+  kind: a.kind,
+  severity: a.severity,
+  status: a.status,
+  partyId: a.partyId,
+  summary: a.summary,
+  openedAt: a.openedAt,
+  decidedBy: a.decidedBy,
+  decidedAt: a.decidedAt,
+  note: a.note,
 });
 
 const mapError = (e: unknown): never => {
@@ -85,11 +112,21 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData {
         throw e;
       }
     },
-    listAlerts: async () => notYet('Alerts'),
-    decideAlert: async () => notYet('Alerts'),
-    listComplaints: async () => notYet('Complaints'),
-    acknowledgeComplaint: async () => notYet('Complaints'),
-    resolveComplaint: async () => notYet('Complaints'),
+    async listAlerts() {
+      return (await run(() => client.get('/admin/alerts'))).items.map(alert);
+    },
+    async decideAlert(id, decision, _by, note) {
+      return alert(await run(() => client.post('/admin/alerts/{id}/decisions', { path: { id }, body: { decision, note } })));
+    },
+    async listComplaints() {
+      return (await run(() => client.get('/admin/complaints'))).items.map(complaint);
+    },
+    async acknowledgeComplaint(id) {
+      return complaint(await run(() => client.post('/admin/complaints/{id}/acknowledge', { path: { id } })));
+    },
+    async resolveComplaint(id) {
+      return complaint(await run(() => client.post('/admin/complaints/{id}/resolve', { path: { id } })));
+    },
 
     async listBindings(): Promise<ProviderBinding[]> {
       const r = await run(() => client.get('/admin/bindings'));

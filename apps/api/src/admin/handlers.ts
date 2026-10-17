@@ -1,5 +1,5 @@
-// /admin/* handlers (T-0906, T-0907, ADR-013): flags with the two-person flip, provider bindings,
-// audit, customer search and the Customer 360 read model.
+// /admin/* handlers (T-0906, T-0907, T-0908, ADR-013): flags with the two-person flip, provider
+// bindings, audit, customer search and the Customer 360 read model, complaints and alerts.
 // Every handler needs a staff principal; the services do the real work and the auditing.
 import { PORTS, type Market, type ProviderRegistry } from '@kesher/ports';
 import { DomainError } from '@kesher/domain';
@@ -7,6 +7,8 @@ import type { ApprovalRequest, ApprovalService } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import type { FlagService } from '../flags/service.ts';
 import { ok, route, type Handler } from '../http.ts';
+import type { AlertService, Disposition } from './alerts.ts';
+import type { ComplaintChannel, ComplaintService } from './complaints.ts';
 import type { CustomerReadModel } from './customers.ts';
 import { requireStaff, staffActor } from './staff-token.ts';
 
@@ -17,7 +19,12 @@ export interface AdminDeps {
   registry: ProviderRegistry;
   market: Market;
   customers: CustomerReadModel;
+  complaints: ComplaintService;
+  alerts: AlertService;
 }
+
+/** Staff identity for the complaint and alert services: SSO subject for stamps, party id and role for the audit chain. */
+const staffSubject = (p: ReturnType<typeof requireStaff>) => ({ subject: p.subject ?? p.partyId, partyId: p.partyId, role: 'admin' });
 
 const approvalBody = (a: ApprovalRequest) => ({ id: a.id, kind: a.kind, subject: a.subject, status: a.status, approvals: a.approvals, requestedBy: a.requestedBy, expiresAt: new Date(a.expiresAt).toISOString(), payload: a.payload });
 
@@ -86,6 +93,44 @@ export function adminHandlers(d: AdminDeps): Record<string, Handler> {
       const c = await d.customers.get(req.params['id'] ?? '');
       if (!c) throw new DomainError('NOT_FOUND', 'Customer not found');
       return ok(c);
+    }),
+
+    listAdminComplaints: route(async (req) => {
+      requireStaff(req);
+      return ok({ items: await d.complaints.list() });
+    }),
+
+    openAdminComplaint: route(async (req) => {
+      const p = requireStaff(req);
+      const b = req.body as { partyId?: unknown; channel?: unknown; category?: unknown; summary?: unknown; escalatedToBank?: unknown; openedAt?: unknown };
+      if (typeof b.partyId !== 'string' || typeof b.channel !== 'string' || typeof b.category !== 'string' || typeof b.summary !== 'string') throw new DomainError('VALIDATION_FAILED', 'partyId, channel, category and summary are required');
+      if (b.escalatedToBank !== undefined && typeof b.escalatedToBank !== 'boolean') throw new DomainError('VALIDATION_FAILED', 'escalatedToBank must be a boolean');
+      const openedAt = b.openedAt === undefined ? undefined : new Date(String(b.openedAt));
+      if (openedAt && Number.isNaN(openedAt.getTime())) throw new DomainError('VALIDATION_FAILED', 'openedAt must be a date-time');
+      const c = await d.complaints.open({ partyId: b.partyId, channel: b.channel as ComplaintChannel, category: b.category, summary: b.summary, ...(b.escalatedToBank !== undefined ? { escalatedToBank: b.escalatedToBank } : {}), ...(openedAt ? { openedAt } : {}) }, staffSubject(p), req.now);
+      return { status: 201, body: c };
+    }),
+
+    acknowledgeAdminComplaint: route(async (req) => {
+      const p = requireStaff(req);
+      return ok(await d.complaints.acknowledge(req.params['id'] ?? '', staffSubject(p), req.now));
+    }),
+
+    resolveAdminComplaint: route(async (req) => {
+      const p = requireStaff(req);
+      return ok(await d.complaints.resolve(req.params['id'] ?? '', staffSubject(p), req.now));
+    }),
+
+    listAdminAlerts: route(async (req) => {
+      requireStaff(req);
+      return ok({ items: await d.alerts.list() });
+    }),
+
+    decideAdminAlert: route(async (req) => {
+      const p = requireStaff(req);
+      const b = req.body as { decision?: unknown; note?: unknown };
+      if (typeof b.decision !== 'string' || typeof b.note !== 'string') throw new DomainError('VALIDATION_FAILED', 'decision and note are required');
+      return ok(await d.alerts.decide(req.params['id'] ?? '', b.decision as Disposition, b.note, staffSubject(p), req.now));
     }),
   };
 }

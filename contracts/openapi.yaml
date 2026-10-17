@@ -688,6 +688,124 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AdminCustomer" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/complaints:
+    get:
+      operationId: listAdminComplaints
+      tags: [admin]
+      summary: Every complaint, open ones first by age
+      description: REQ-CMP-002. The same rows feed the bank's export; the console computes both SLA clocks from openedAt. Summary is member text. Staff token only.
+      security: [{ staff: [] }]
+      responses:
+        "200":
+          description: Complaints
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AdminComplaint" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: openAdminComplaint
+      tags: [admin]
+      summary: Log a complaint on a member's behalf
+      description: REQ-CMP-002. Phone, email, bank and regulator complaints reach staff first; openedAt may be back-dated to when the complaint arrived (never the future) so the SLA clocks are honest. Staff token only.
+      security: [{ staff: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [partyId, channel, category, summary]
+              properties:
+                partyId: { type: string, format: uuid }
+                channel: { type: string, enum: [app, email, phone, bank, regulator] }
+                category: { type: string, minLength: 1, maxLength: 80 }
+                summary: { type: string, minLength: 1, maxLength: 2000, description: Member text; stored and shown as text }
+                escalatedToBank: { type: boolean, default: false }
+                openedAt: { type: string, format: date-time }
+      responses:
+        "201":
+          description: Complaint
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminComplaint" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/complaints/{id}/acknowledge:
+    post:
+      operationId: acknowledgeAdminComplaint
+      tags: [admin]
+      summary: Acknowledge an open complaint; stamps the staff subject and the API clock
+      description: REQ-CMP-002. Only an open complaint can be acknowledged; the acknowledger becomes its owner. Staff token only.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Complaint
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminComplaint" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/complaints/{id}/resolve:
+    post:
+      operationId: resolveAdminComplaint
+      tags: [admin]
+      summary: Resolve an open or acknowledged complaint
+      description: REQ-CMP-002. Resolving an open complaint acknowledges it in the same stroke. Staff token only.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Complaint
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminComplaint" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/alerts:
+    get:
+      operationId: listAdminAlerts
+      tags: [admin]
+      summary: Monitoring alerts, undecided first by severity then age
+      description: REQ-CMP-001. Alerts are ops cases of the monitoring kinds; summary may quote member or merchant text. Staff token only.
+      security: [{ staff: [] }]
+      responses:
+        "200":
+          description: Alerts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AdminAlert" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/alerts/{id}/decisions:
+    post:
+      operationId: decideAdminAlert
+      tags: [admin]
+      summary: Record a disposition on an alert
+      description: REQ-CMP-001. in_review keeps the alert open and can be decided again; cleared and escalated are final. Every decision carries a note and is audited. Staff token only.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, note]
+              properties:
+                decision: { type: string, enum: [in_review, cleared, escalated] }
+                note: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: Alert after the decision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminAlert" }
+        default: { $ref: "#/components/responses/Problem" }
 components:
   securitySchemes:
     bearer: { type: http, scheme: bearer, bearerFormat: JWT, description: 10-minute access token }
@@ -870,6 +988,38 @@ components:
                   actorRole: { type: string }
                   action: { type: string }
                   reason: { type: string }
+    AdminComplaint:
+      type: object
+      required: [id, partyId, channel, category, summary, status, openedAt, loggedBy, escalatedToBank]
+      properties:
+        id: { type: string, format: uuid }
+        partyId: { type: string, format: uuid }
+        channel: { type: string, enum: [app, email, phone, bank, regulator] }
+        category: { type: string }
+        summary: { type: string, description: Member text; render, never interpret }
+        status: { type: string, enum: [open, acknowledged, resolved, withdrawn] }
+        openedAt: { type: string, format: date-time, description: Both SLA clocks start here }
+        loggedBy: { type: string, description: Staff subject, or "member" when filed from the app }
+        acknowledgedAt: { type: string, format: date-time }
+        acknowledgedBy: { type: string }
+        resolvedAt: { type: string, format: date-time }
+        resolvedBy: { type: string }
+        owner: { type: string }
+        escalatedToBank: { type: boolean }
+    AdminAlert:
+      type: object
+      required: [id, kind, severity, status, summary, openedAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [structuring, sanctions_hit, kyc_manual_review, velocity, recon_break] }
+        severity: { type: string, enum: [low, medium, high, critical] }
+        status: { type: string, enum: [open, in_review, cleared, escalated] }
+        partyId: { type: string, format: uuid }
+        summary: { type: string, description: May quote member or merchant text; render as text }
+        openedAt: { type: string, format: date-time }
+        decidedBy: { type: string }
+        decidedAt: { type: string, format: date-time }
+        note: { type: string }
     AuditEntry:
       type: object
       required: [seq, id, at, actorId, actorRole, action, subject, reason, payload, hash, prevHash]
