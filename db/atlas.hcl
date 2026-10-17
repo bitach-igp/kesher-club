@@ -1,12 +1,12 @@
-// Atlas configuration (T-0005, T-0011). One migration directory per schema, applied by club_migrator.
-// Usage (from the repo root):
+// Atlas configuration (T-0005, T-0011, T-0012). One migration directory per schema, applied by
+// club_migrator. Usage (from the repo root):
 //   node db/migrate.mjs --url "$ATLAS_URL"      # every schema, in dependency order (see below)
 //   atlas migrate hash   --dir file://db/migrations/ledger
-//   atlas migrate lint   --dir file://db/migrations/ledger --dev-url docker://postgres/16/dev --latest 1
+//   node db/lint.mjs                            # house rules + Squawk (destructive/locking changes)
 // Do not apply with `--env local`: Atlas runs for_each envs in alphabetical order (addons before
-// ledger) and lint cannot select one instance of a for_each env. The envs below hold the per-schema
-// settings and lint policy that db/migrate.mjs and CI reuse. `migrate lint` needs an Atlas Pro
-// login since v0.38 (T-0012). The app role (club_app) never runs migrations; see db/roles.sql.
+// ledger); db/migrate.mjs honours the order below. Migration safety lint is Squawk (T-0012), not
+// `atlas migrate lint`, which is Atlas Pro only since v0.38. The envs below hold the per-schema
+// settings. The app role (club_app) never runs migrations; see db/roles.sql.
 
 variable "url" {
   type        = string
@@ -20,7 +20,7 @@ locals {
   schemas = ["ledger", "identity", "org", "billing", "legal", "addons", "notify", "audit", "agent"]
 }
 
-// Dev database for `migrate diff` and lint, isolated in Docker so a lint can never touch real data.
+// Dev database for `migrate diff`, isolated in Docker so a diff can never touch real data.
 locals {
   dev_url = "docker://postgres/16/dev?search_path=public"
 }
@@ -34,23 +34,6 @@ env "local" {
     revisions_schema = "atlas_${each.value}"
     // Forward-only: a changed or deleted historical file fails the checksum check.
     format = atlas
-  }
-  lint {
-    // Expand/contract: a destructive statement needs an explicit `-- atlas:nolint destructive` after review.
-    destructive {
-      error = true
-    }
-    data_depend {
-      error = true
-    }
-    incompatible {
-      error = true
-    }
-    naming {
-      error   = true
-      match   = "^[a-z][a-z0-9_]*$"
-      message = "snake_case only"
-    }
   }
 }
 
@@ -73,11 +56,6 @@ env "staging" {
     revisions_schema = "atlas_${each.value}"
   }
   // Staging and prod only ever run the expand step from CI; contract steps are a second, later release.
-  lint {
-    destructive {
-      error = true
-    }
-  }
 }
 
 env "prod" {
@@ -88,10 +66,5 @@ env "prod" {
     dir              = "file://db/migrations/${each.value}"
     revisions_schema = "atlas_${each.value}"
     // Prod applies exactly one planned baseline at a time; `--baseline` is passed by the release job.
-  }
-  lint {
-    destructive {
-      error = true
-    }
   }
 }

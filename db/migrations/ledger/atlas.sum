@@ -1,5 +1,6 @@
-h1:+G5OngZQS3+PTlhzdO9cUISUr87SQdYU9JySFxRm2j8=
+h1:c39tv6d4WS/fEEQeT4NPc11Vf6vDMmOaUTlYYf0KLOM=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
 0004_approvals.sql h1:vXh4OrEHZ1gSe6tCBxOIeB66856DrGgpAYw5AzRdQoE=
+0005_balance_cache_ops.sql h1:QTnltVtniOgLQWdY9GDETrMMDljkJ8hoVc8ZqoIEons=

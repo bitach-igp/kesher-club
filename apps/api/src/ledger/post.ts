@@ -1,5 +1,5 @@
 // Ledger core on Postgres (T-0201, REQ-LED-001/002/003): the reference Ledger from @kesher/domain
-// ported to ledger.journal / ledger.posting / ledger.account_balance. Insert-only; the deferred
+// ported to ledger.journal / ledger.posting with the balance cache in ops.account_balance. Insert-only; the deferred
 // trigger ledger.assert_balanced() is the last line of defence; the balance cache is the one
 // UPDATE the app role may run. Same idempotency key → the original journal, always.
 import { DomainError, uuidv7, type Currency, type Posting } from '@kesher/domain';
@@ -62,11 +62,11 @@ export class PostgresLedger {
             [id, p.accountId, p.currency, p.amountMinor.toString()],
           );
           await tx.query(
-            `insert into ledger.account_balance (account_id, balance_minor, last_posting_id, version) values ($1, $2, $3, 1)
+            `insert into ops.account_balance (account_id, balance_minor, last_posting_id, version) values ($1, $2, $3, 1)
              on conflict (account_id) do update
-               set balance_minor = ledger.account_balance.balance_minor + excluded.balance_minor,
+               set balance_minor = ops.account_balance.balance_minor + excluded.balance_minor,
                    last_posting_id = excluded.last_posting_id,
-                   version = ledger.account_balance.version + 1`,
+                   version = ops.account_balance.version + 1`,
             [p.accountId, p.amountMinor.toString(), r.rows[0]!.id],
           );
         }
@@ -95,7 +95,7 @@ export class PostgresLedger {
 
   async balance(accountId: string, currency: Currency): Promise<bigint> {
     const r = await this.db.query<{ balance_minor: string | bigint; currency: Currency }>(
-      `select b.balance_minor::text as balance_minor, a.currency from ledger.account_balance b join ledger.account a on a.id = b.account_id where b.account_id = $1`,
+      `select b.balance_minor::text as balance_minor, a.currency from ops.account_balance b join ledger.account a on a.id = b.account_id where b.account_id = $1`,
       [accountId],
     );
     const row = r.rows[0];

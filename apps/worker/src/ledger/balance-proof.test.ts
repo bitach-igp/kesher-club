@@ -40,7 +40,7 @@ describe('nightly balance proof', () => {
   it('detects a tampered cache row, reports the exact delta, and opens an ops case (THR-03)', async () => {
     const { wallet } = await seed();
     // Simulate an insider edit under the migrator role (the app role cannot do this: TST-LED-002).
-    await db.query('update ledger.account_balance set balance_minor = balance_minor + 1 where account_id = $1', [wallet]);
+    await db.query('update ops.account_balance set balance_minor = balance_minor + 1 where account_id = $1', [wallet]);
     const report = await new BalanceProof(db).run(new Date('2026-11-02T03:00:00Z'));
     expect(report.ok).toBe(false);
     expect(report.breaks).toEqual([{ accountId: wallet, cachedMinor: -4_999n, postedMinor: -5_000n, deltaMinor: 1n }]);
@@ -53,7 +53,7 @@ describe('nightly balance proof', () => {
 
   it('rebuildBalanceCache restores the cache from postings (used only by the restore runbook, RUN-08)', async () => {
     const { wallet } = await seed();
-    await db.query('update ledger.account_balance set balance_minor = 123 where account_id = $1', [wallet]);
+    await db.query('update ops.account_balance set balance_minor = 123 where account_id = $1', [wallet]);
     const rebuilt = await rebuildBalanceCache(db);
     expect(rebuilt).toBeGreaterThan(0);
     const report = await new BalanceProof(db).run(new Date('2026-11-03T03:00:00Z'));

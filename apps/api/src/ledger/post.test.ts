@@ -74,9 +74,12 @@ describe('PostgresLedger.post()', () => {
       await expect(app.query('delete from ledger.journal')).rejects.toMatchObject({ code: '42501' });
       await expect(app.query('truncate ledger.posting')).rejects.toMatchObject({ code: '42501' });
       await expect(app.query('update ledger.account set currency = $1', ['ILS'])).rejects.toMatchObject({ code: '42501' });
-      // What it may do: read, insert, and maintain the balance cache.
+      // What it may do: read and insert in ledger, and maintain the balance cache, which lives in ops.
       expect((await app.query('select count(*) from ledger.journal')).rowCount).toBe(1);
-      await expect(app.query('update ledger.account_balance set version = version')).resolves.toBeTruthy();
+      await expect(app.query('update ops.account_balance set version = version')).resolves.toBeTruthy();
+      // The cache is gone from the ledger schema altogether (T-0012): nothing there is updatable.
+      expect((await app.query(`select count(*)::int as n from information_schema.tables where table_schema = 'ledger' and table_name = 'account_balance'`)).rows).toEqual([{ n: 0 }]);
+      expect((await app.query(`select count(*)::int as n from information_schema.role_table_grants where grantee = 'club_app' and table_schema = 'ledger' and privilege_type in ('UPDATE','DELETE','TRUNCATE')`)).rows).toEqual([{ n: 0 }]);
     });
   });
 
@@ -151,7 +154,7 @@ describe('PostgresLedger.post()', () => {
 
   it('account_balance equals the sum of postings for every account (invariant 2, the nightly proof query)', async () => {
     const breaks = await db.query(
-      `select b.account_id from ledger.account_balance b
+      `select b.account_id from ops.account_balance b
          join (select account_id, coalesce(sum(amount_minor),0) as s from ledger.posting group by account_id) s using (account_id)
         where b.balance_minor <> s.s`,
     );
