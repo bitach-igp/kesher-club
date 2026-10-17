@@ -1,0 +1,313 @@
+// Loads (T-0501, REQ-WAL-002): a member tops up a purse by card, Apple Pay or Google Pay through the
+// FundingPort. Every load is a transfer of kind 'load' driven by the LoadWorkflow (SEQ-02), whose id
+// is the member's Idempotency-Key; the vendor pull carries that same key, so a rerun after any
+// failure finds the pull it already made. Money lands only when the vendor confirms: the workflow
+// posts one journal, partner_settlement → wallet, keyed `{workflowId}:settle`, so a webhook arriving
+// after a synchronous success, or twice, changes nothing (REQ-LED-003).
+//
+// `runLoad` is the deterministic workflow body, pure over `LoadActivities`, so Temporal (ADR-002) can
+// host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
+// client secret leaves in the response and is never stored or logged.
+import { DomainError, fromWire, toWire, type Money } from '@kesher/domain';
+import { FundingError, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
+import type { FeatureFlags } from '../billing/capabilities.ts';
+import type { MembershipService } from '../billing/memberships.ts';
+import type { Database } from '../db.ts';
+import type { AccountService } from '../ledger/accounts.ts';
+import type { PostgresLedger } from '../ledger/post.ts';
+import type { Transfer, TransferService } from '../transfers/service.ts';
+import type { InboundEvent } from '../webhooks/store.ts';
+import type { WebhookVerifier } from '../webhooks/verify.ts';
+
+export const WALLET_FLAG = 'wallet.enabled';
+/** Provider name the funding webhooks arrive under: POST /hooks/funding. */
+export const FUNDING_PROVIDER = 'funding';
+export const LOAD_METHODS: readonly FundingMethod[] = ['card', 'apple_pay', 'google_pay'];
+/** Journal kind of the settlement; one per load, ever. */
+export const LOAD_JOURNAL_KIND = 'load';
+
+export type LoadState = 'created' | 'requires_action' | 'processing' | 'on_hold' | 'settled' | 'failed';
+
+export interface LoadInput {
+  /** Who pays (their payment method, the vendor's customer). */
+  payerPartyId: string;
+  /** Whose purse is loaded: the payer, or a member the payer funds. */
+  memberPartyId: string;
+  method: FundingMethod;
+  amount: Money;
+  paymentMethodId?: string;
+}
+
+/** The OpenAPI `Load`. */
+export interface LoadView {
+  id: string;
+  state: LoadState;
+  amount: ReturnType<typeof toWire>;
+  holdUntil?: string;
+  clientSecret?: string;
+}
+
+export interface LoadActivities {
+  /** The transfer for this workflow id, created on the first run and found on every later one. */
+  begin(input: LoadInput, workflowId: string, now: Date): Promise<Transfer>;
+  submit(transfer: Transfer, now: Date): Promise<Transfer>;
+  /** The vendor pull, keyed by the workflow id: safe to repeat. */
+  pull(input: LoadInput, workflowId: string): Promise<VendorLoad>;
+  /** Remembers which vendor load belongs to the transfer so its webhooks find it. */
+  link(transfer: Transfer, load: VendorLoad): Promise<void>;
+  settle(transfer: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Transfer>;
+  hold(transfer: Transfer, holdUntil: string, now: Date): Promise<Transfer>;
+  fail(transfer: Transfer, code: string, now: Date): Promise<Transfer>;
+}
+
+export interface LoadRun {
+  workflowId: string;
+  transfer: Transfer;
+  /** Set while the vendor still needs the member (payment sheet) or time (processing). */
+  awaiting?: 'action' | 'vendor';
+  /** For the payment sheet; in the response only. */
+  clientSecret?: string;
+  /** True when the run found a transfer a previous run had already finished. */
+  replayed: boolean;
+}
+
+/**
+ * The workflow body. created → submitted → (vendor) → settled | failed | pending_hold, or left
+ * submitted while the vendor is still working; a rerun resumes from wherever the record stands.
+ */
+export async function runLoad(a: LoadActivities, input: LoadInput, workflowId: string, now: Date): Promise<LoadRun> {
+  let t = await a.begin(input, workflowId, now);
+  if (t.state === 'settled' || t.state === 'failed' || t.state === 'cancelled' || t.state === 'reversed' || t.state === 'pending_hold') return { workflowId, transfer: t, replayed: true };
+  const replayed = t.state !== 'created';
+  if (t.state === 'created') t = await a.submit(t, now);
+  let load: VendorLoad;
+  try {
+    load = await a.pull(input, workflowId);
+  } catch (e) {
+    if (e instanceof FundingError && e.code === 'DECLINED') return { workflowId, transfer: await a.fail(t, e.code, now), replayed };
+    // Anything else (outage, bad input) leaves the transfer submitted: the same key reruns the pull.
+    throw e;
+  }
+  await a.link(t, load);
+  return { ...(await applyVendorState(a, t, load, workflowId, now)), replayed };
+}
+
+/** Moves the transfer to where the vendor says the load stands. Idempotent: a state already reached is left alone. */
+export async function applyVendorState(a: LoadActivities, t: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Omit<LoadRun, 'replayed'>> {
+  switch (load.status) {
+    case 'succeeded':
+      return { workflowId, transfer: t.state === 'settled' ? t : await a.settle(t, load, workflowId, now) };
+    case 'failed':
+      return { workflowId, transfer: t.state === 'failed' ? t : await a.fail(t, load.failureCode ?? 'VENDOR_FAILED', now) };
+    case 'on_hold':
+      return { workflowId, transfer: t.state === 'pending_hold' || !load.holdUntil ? t : await a.hold(t, load.holdUntil, now) };
+    case 'requires_action':
+      return { workflowId, transfer: t, awaiting: 'action', ...(load.clientSecret ? { clientSecret: load.clientSecret } : {}) };
+    case 'processing':
+      return { workflowId, transfer: t, awaiting: 'vendor' };
+  }
+}
+
+export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
+
+interface Deps {
+  db: Database;
+  port: FundingPort;
+  ledger: PostgresLedger;
+  accounts: AccountService;
+  transfers: TransferService;
+  memberships: MembershipService;
+  flags: FeatureFlags;
+  /** Registry provider name, the key space of ops.external_ref. */
+  provider: string;
+}
+
+export class LoadService implements LoadActivities {
+  constructor(private readonly d: Deps) {}
+
+  /** POST /loads: the gate, the eligibility, then the workflow, synchronously, so the payment sheet's secret can go back. */
+  async request(payerPartyId: string, body: unknown, key: string, now: Date): Promise<LoadView> {
+    if (!(await this.d.flags.isOn(WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
+    const input = await this.parse(payerPartyId, body);
+    const run = await runLoad(this, input, key, now);
+    return this.view(run);
+  }
+
+  // ---- activities ----
+
+  async begin(input: LoadInput, workflowId: string, now: Date): Promise<Transfer> {
+    const t = await this.d.transfers.create({ idempotencyKey: workflowId, kind: 'load', fromPartyId: input.payerPartyId, toPartyId: input.memberPartyId, amount: input.amount }, now);
+    if (t.kind !== 'load') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
+    return t;
+  }
+
+  submit(transfer: Transfer, now: Date): Promise<Transfer> {
+    return this.d.transfers.apply(transfer.id, 'submit', now);
+  }
+
+  async pull(input: LoadInput, workflowId: string): Promise<VendorLoad> {
+    try {
+      return await this.d.port.createLoad({ customerId: input.payerPartyId, method: input.method, amount: input.amount, ...(input.paymentMethodId ? { paymentMethodId: input.paymentMethodId } : {}) }, workflowId);
+    } catch (e) {
+      if (e instanceof FundingError && e.code === 'DECLINED') throw e;
+      throw mapFundingError(e);
+    }
+  }
+
+  async link(transfer: Transfer, load: VendorLoad): Promise<void> {
+    await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('transfer', $1, $2, $3) on conflict do nothing`, [transfer.id, this.d.provider, load.loadId]);
+  }
+
+  async settle(transfer: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Transfer> {
+    const member = transfer.toPartyId!;
+    const { currency } = transfer.amount;
+    const wallet = await this.d.accounts.memberAccount(member, 'wallet', currency);
+    const partner = await this.d.accounts.systemAccount('partner_settlement', currency);
+    const journal = await this.d.ledger.post({
+      idempotencyKey: settleKey(workflowId),
+      kind: LOAD_JOURNAL_KIND,
+      transferId: transfer.id,
+      effectiveAt: now,
+      postings: [
+        { accountId: partner, currency, amountMinor: transfer.amount.minor },
+        { accountId: wallet, currency, amountMinor: -transfer.amount.minor },
+      ],
+      metadata: { workflowId, method: load.method, provider: this.d.provider, loadId: load.loadId },
+    });
+    if (transfer.state === 'pending_hold') transfer = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'vendor settled' });
+    return this.d.transfers.apply(transfer.id, 'settle', now, { journalId: journal.id });
+  }
+
+  hold(transfer: Transfer, holdUntil: string, now: Date): Promise<Transfer> {
+    return this.d.transfers.apply(transfer.id, 'hold', now, { holdReleasesAt: new Date(holdUntil), reason: 'vendor hold' });
+  }
+
+  fail(transfer: Transfer, code: string, now: Date): Promise<Transfer> {
+    return this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: 'vendor' });
+  }
+
+  // ---- webhooks ----
+
+  /** Verifies through the port. A bad signature is refused; an unknown load is acknowledged and ignored. */
+  webhookVerifier(): WebhookVerifier {
+    return {
+      verify: async (headers, rawBody) => {
+        const { eventId, body } = eventIdOf(rawBody);
+        try {
+          const { eventId: id, load } = await this.d.port.parseWebhook(headers, rawBody);
+          const { clientSecret: _secret, ...rest } = load;
+          return { ok: true, eventId: id, payload: { eventId: id, load: { ...rest, amount: toWire(load.amount) } } };
+        } catch (e) {
+          if (e instanceof FundingError && e.code === 'BAD_SIGNATURE') return { ok: false, eventId, payload: body, reason: 'bad signature' };
+          if (e instanceof FundingError && e.code === 'UNKNOWN_LOAD') return { ok: true, eventId, payload: { eventId, ignored: 'unknown load' } };
+          if (e instanceof FundingError) return { ok: true, eventId, payload: { eventId, error: e.code } };
+          throw e;
+        }
+      },
+    };
+  }
+
+  /** Settles, holds or fails the transfer the vendor load belongs to; a repeat is a no-op. */
+  async applyWebhook(event: InboundEvent, now: Date): Promise<Transfer | undefined> {
+    const p = event.payload as { load?: Omit<VendorLoad, 'amount'> & { amount: { minor: string; currency: string } }; error?: string } | undefined;
+    if (p?.error) throw new DomainError('VALIDATION_FAILED', `Funding webhook rejected by the port: ${p.error}`);
+    if (!p?.load) return undefined;
+    const load: VendorLoad = { ...p.load, amount: fromWire(p.load.amount) };
+    const transfer = await this.byVendorLoad(load.loadId);
+    if (!transfer) return undefined;
+    if (load.amount.minor !== transfer.amount.minor || load.amount.currency !== transfer.amount.currency) throw new DomainError('VALIDATION_FAILED', 'Webhook amount differs from the transfer');
+    if (transfer.state === 'failed' || transfer.state === 'cancelled' || transfer.state === 'reversed') return transfer;
+    return (await applyVendorState(this, transfer, load, transfer.idempotencyKey, now)).transfer;
+  }
+
+  // ---- lookups ----
+
+  async byVendorLoad(loadId: string): Promise<Transfer | undefined> {
+    const r = await this.d.db.query<{ entity_id: string }>(`select entity_id from ops.external_ref where entity_type = 'transfer' and provider = $1 and external_id = $2`, [this.d.provider, loadId]);
+    return r.rows[0] ? this.d.transfers.get(r.rows[0].entity_id) : undefined;
+  }
+
+  async vendorLoadOf(transferId: string): Promise<string | undefined> {
+    const r = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'transfer' and entity_id = $1 and provider = $2`, [transferId, this.d.provider]);
+    return r.rows[0]?.external_id;
+  }
+
+  /** Loads the vendor has not finished: submitted longer than `olderThanMs` ago. The worker asks the vendor about them. */
+  async stale(now: Date, olderThanMs: number, limit = 100): Promise<Transfer[]> {
+    const r = await this.d.db.query<{ id: string }>(`select id from ops.transfer where kind = 'load' and state = 'submitted' and updated_at <= $1 order by updated_at limit $2`, [new Date(now.getTime() - olderThanMs), limit]);
+    const out: Transfer[] = [];
+    for (const row of r.rows) {
+      const t = await this.d.transfers.get(row.id);
+      if (t) out.push(t);
+    }
+    return out;
+  }
+
+  view(run: Omit<LoadRun, 'replayed'>): LoadView {
+    const t = run.transfer;
+    return {
+      id: t.id,
+      state: loadState(t, run.awaiting),
+      amount: toWire(t.amount),
+      ...(t.state === 'pending_hold' && t.holdReleasesAt ? { holdUntil: t.holdReleasesAt.slice(0, 10) } : {}),
+      ...(run.clientSecret ? { clientSecret: run.clientSecret } : {}),
+    };
+  }
+
+  private async parse(payerPartyId: string, body: unknown): Promise<LoadInput> {
+    const b = (body ?? {}) as { memberPartyId?: unknown; amount?: unknown; method?: unknown; paymentMethodId?: unknown };
+    if (typeof b.memberPartyId !== 'string' || !b.memberPartyId) throw new DomainError('VALIDATION_FAILED', 'memberPartyId is required');
+    if (b.method === 'ach' || b.method === 'rtp') throw new DomainError('FEATURE_OFF', 'Bank loads are not enabled yet');
+    if (typeof b.method !== 'string' || !LOAD_METHODS.includes(b.method as FundingMethod)) throw new DomainError('VALIDATION_FAILED', `method must be one of ${LOAD_METHODS.join(', ')}`);
+    let amount: Money;
+    try {
+      amount = fromWire(b.amount as { minor: string; currency: string });
+    } catch {
+      throw new DomainError('VALIDATION_FAILED', 'amount must be { minor, currency } in USD or ILS');
+    }
+    if (amount.minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'Amount must be positive');
+    if (b.paymentMethodId !== undefined && typeof b.paymentMethodId !== 'string') throw new DomainError('VALIDATION_FAILED', 'paymentMethodId must be a string');
+    if (b.memberPartyId !== payerPartyId) {
+      const m = await this.d.memberships.forMember(b.memberPartyId);
+      if (!m || m.funderPartyId !== payerPartyId || m.status !== 'active') throw new DomainError('FORBIDDEN', 'You can load your own purse or one you fund');
+    }
+    return { payerPartyId, memberPartyId: b.memberPartyId, method: b.method as FundingMethod, amount, ...(typeof b.paymentMethodId === 'string' ? { paymentMethodId: b.paymentMethodId } : {}) };
+  }
+}
+
+export function loadState(t: Transfer, awaiting?: 'action' | 'vendor'): LoadState {
+  switch (t.state) {
+    case 'created':
+      return 'created';
+    case 'submitted':
+      return awaiting === 'action' ? 'requires_action' : 'processing';
+    case 'pending':
+    case 'pending_hold':
+      return 'on_hold';
+    case 'settled':
+    case 'reversed':
+      return 'settled';
+    case 'failed':
+    case 'cancelled':
+      return 'failed';
+  }
+}
+
+function mapFundingError(e: unknown): Error {
+  if (e instanceof FundingError) {
+    if (e.code === 'PROVIDER_UNAVAILABLE') return new DomainError('PROVIDER_UNAVAILABLE', 'Funding is temporarily unavailable; try again with the same key');
+    if (e.code === 'UNSUPPORTED_METHOD') return new DomainError('VALIDATION_FAILED', 'This funding method is not supported');
+    if (e.code === 'VALIDATION_FAILED') return new DomainError('VALIDATION_FAILED', e.message);
+  }
+  return e as Error;
+}
+
+/** The vendor's event id from the raw body, for the forensic record of a refused webhook. */
+function eventIdOf(rawBody: string): { eventId: string; body: unknown } {
+  try {
+    const b = JSON.parse(rawBody) as { eventId?: unknown; id?: unknown } | null;
+    return { eventId: typeof b?.eventId === 'string' ? b.eventId : typeof b?.id === 'string' ? b.id : '', body: b ?? {} };
+  } catch {
+    return { eventId: '', body: { raw: rawBody.slice(0, 2_000) } };
+  }
+}
