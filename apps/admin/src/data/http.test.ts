@@ -4,10 +4,14 @@ import { describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, jwtVerify } from 'jose';
 import { money } from '@kesher/domain';
 import { STAFF_AUDIENCE, STAFF_ISSUER, staffSigner } from '../auth/staff-token.ts';
+import { complaintSla, exportForBank } from '../compliance/sla.ts';
 import { customer360 } from '../customers/customer360.ts';
 import { flagState, httpAdminData } from './http.ts';
 
 const NOA = '01932e5a-0000-7000-8000-000000000001';
+const cmp1 = { id: '01932e5a-0000-7000-8000-00000000c001', partyId: NOA, channel: 'phone', category: 'card_decline', summary: 'Card declined at pharmacy twice', status: 'open', openedAt: '2026-10-28T10:00:00Z', loggedBy: 'ops-1', escalatedToBank: false };
+const cmp2 = { id: '01932e5a-0000-7000-8000-00000000c002', partyId: NOA, channel: 'bank', category: 'disclosure', summary: 'Terms as PDF', status: 'resolved', openedAt: '2026-09-20T10:00:00Z', loggedBy: 'ops-1', acknowledgedAt: '2026-09-22T09:00:00Z', acknowledgedBy: 'cmp-1', resolvedAt: '2026-10-05T12:00:00Z', resolvedBy: 'cmp-1', owner: 'cmp-1', escalatedToBank: true };
+const alert1 = { id: '01932e5a-0000-7000-8000-00000000a001', kind: 'structuring', severity: 'high', status: 'open', partyId: NOA, summary: '10 sends of ₪490 within one hour', openedAt: '2026-10-31T11:00:00Z' };
 const noaSummary = { partyId: NOA, displayName: 'Noa Example', phoneMasked: '•••• 4567', status: 'active', locale: 'he', mode: 'member', createdAt: '2026-10-01T09:00:00Z' };
 const noa360 = {
   ...noaSummary,
@@ -43,6 +47,11 @@ async function setup() {
     if (url.pathname === '/admin/customers') return Response.json({ items: url.searchParams.get('q') === 'noa' ? [noaSummary] : [] });
     if (url.pathname === `/admin/customers/${NOA}`) return Response.json(noa360);
     if (url.pathname.startsWith('/admin/customers/')) return Response.json({ type: 'about:blank', title: 'Not found', status: 404, code: 'NOT_FOUND', detail: 'Customer not found' }, { status: 404, headers: { 'content-type': 'application/problem+json' } });
+    if (url.pathname === '/admin/complaints') return Response.json({ items: [cmp1, cmp2] });
+    if (url.pathname === `/admin/complaints/${cmp1.id}/acknowledge`) return Response.json({ ...cmp1, status: 'acknowledged', acknowledgedAt: '2026-11-02T09:00:00Z', acknowledgedBy: 'zvi', owner: 'zvi' });
+    if (url.pathname === `/admin/complaints/${cmp2.id}/resolve`) return Response.json({ type: 'about:blank', title: 'Conflict', status: 409, code: 'IDEMPOTENCY_CONFLICT', detail: 'Complaint already closed' }, { status: 409, headers: { 'content-type': 'application/problem+json' } });
+    if (url.pathname === '/admin/alerts') return Response.json({ items: [alert1] });
+    if (url.pathname === `/admin/alerts/${alert1.id}/decisions`) return Response.json({ ...alert1, status: 'cleared', decidedBy: 'zvi', decidedAt: '2026-11-02T09:00:00Z', note: 'tuition' });
     if (url.pathname === '/admin/audit') return Response.json({ items: [{ seq: 1, id: 'e1', at: '2026-11-01T09:00:00Z', actorId: 'p-ops-2', actorRole: 'admin', action: 'flag.flip', subject: url.searchParams.get('subject'), reason: 'go live', payload: {}, hash: 'h', prevHash: 'genesis' }] });
     return new Response('nope', { status: 500 });
   };
@@ -85,7 +94,28 @@ describe('httpAdminData', () => {
     await data.killSwitch('billing.stripe', { subject: 'zvi', roles: ['ops'] }, new Date());
     expect(calls.find((c) => c.url === '/admin/flags/billing.stripe/flips')?.body).toEqual({ to: false, reason: 'Proposed from the admin console' });
     await expect(data.proposeFlip('not.a.flag', true, { subject: 'zvi', roles: [] }, new Date())).rejects.toMatchObject({ code: 'NOT_FOUND' });
-    await expect(data.listAlerts()).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+  });
+
+  it('reads and decides alerts, reads, acknowledges and resolves complaints, and feeds the bank export from the same rows', async () => {
+    const { data, calls } = await setup();
+    const by = { subject: 'zvi', roles: ['ops'] };
+    expect(await data.listAlerts()).toEqual([{ id: alert1.id, kind: 'structuring', severity: 'high', status: 'open', partyId: NOA, summary: '10 sends of ₪490 within one hour', openedAt: '2026-10-31T11:00:00Z', decidedBy: undefined, decidedAt: undefined, note: undefined }]);
+    expect(await data.decideAlert(alert1.id, 'cleared', by, 'tuition', new Date())).toMatchObject({ status: 'cleared', decidedBy: 'zvi', note: 'tuition' });
+    expect(calls.at(-1)).toMatchObject({ method: 'POST', url: `/admin/alerts/${alert1.id}/decisions`, body: { decision: 'cleared', note: 'tuition' } });
+
+    const complaints = await data.listComplaints();
+    expect(complaints.map((c) => [c.id, c.status, c.owner])).toEqual([
+      [cmp1.id, 'open', undefined],
+      [cmp2.id, 'resolved', 'cmp-1'],
+    ]);
+    expect(await data.acknowledgeComplaint(cmp1.id, by, new Date())).toMatchObject({ status: 'acknowledged', acknowledgedAt: '2026-11-02T09:00:00Z', owner: 'zvi' });
+    await expect(data.resolveComplaint(cmp2.id, by, new Date())).rejects.toMatchObject({ code: 'CONFLICT' });
+    // The SLA clocks run from the API's openedAt; the export has one row per listed complaint.
+    const now = new Date('2026-11-02T09:00:00Z');
+    expect(complaintSla(complaints[0]!, now)).toMatchObject({ ackDue: '2026-10-30T23:59:59.999Z', ackBreached: true, resolveColour: 'green' });
+    const csv = exportForBank(complaints, now).trim().split('\r\n');
+    expect(csv).toHaveLength(1 + complaints.length);
+    expect(csv[1]).toContain(`${cmp1.id},${NOA},phone,card_decline,Card declined at pharmacy twice,2026-10-28T10:00:00Z,`);
   });
 
   it('searches and reads customers through the API, keeping the phone masked end to end', async () => {

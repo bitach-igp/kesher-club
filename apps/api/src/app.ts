@@ -7,6 +7,8 @@ import { ok, requireIdempotencyKey, requirePrincipal, route, type Handler, type 
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
 import { CustomerReadModel } from './admin/customers.ts';
+import { ComplaintService } from './admin/complaints.ts';
+import { AlertService } from './admin/alerts.ts';
 import { StaffTokenVerifier, staffBearerMiddleware } from './admin/staff-token.ts';
 import type { JWK } from 'jose';
 import { OtpService } from './auth/otp.ts';
@@ -146,7 +148,7 @@ export function createApp(o: AppOptions): App {
       return { status: 204 };
     }),
     providerWebhook: s.webhooks.handler() as Handler,
-    ...adminHandlers({ flags: s.flags as FlagService, approvals: s.approvals, audit: s.audit, registry: o.registry, market: o.market, customers: new CustomerReadModel({ db: o.db, identity: s.identity, ledger: s.ledger, audit: s.audit }) }),
+    ...adminHandlers({ flags: s.flags as FlagService, approvals: s.approvals, audit: s.audit, registry: o.registry, market: o.market, customers: new CustomerReadModel({ db: o.db, identity: s.identity, ledger: s.ledger, audit: s.audit }), complaints: new ComplaintService(o.db, s.audit), alerts: new AlertService(o.db, s.audit) }),
   };
   for (const r of ROUTES) if (!handlers[r.operationId]) handlers[r.operationId] = notYet(r.operationId);
   const staff = staffBearerMiddleware(o.staffJwks && o.staffJwks.length ? new StaffTokenVerifier({ jwks: o.staffJwks, clock: s.clock }) : undefined);
