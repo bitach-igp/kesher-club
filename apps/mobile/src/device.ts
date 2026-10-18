@@ -26,10 +26,30 @@ export interface Clipboard {
   copy(text: string): Promise<void>;
 }
 
+export type ScanResult = { status: 'granted'; payload: string } | { status: 'denied' } | { status: 'unavailable' } | { status: 'cancelled' };
+export interface Camera {
+  /** Asks for camera permission if needed and scans one QR code (M19). */
+  scanOnce(): Promise<ScanResult>;
+}
+
+export interface Contact {
+  name: string;
+  /** E.164 where the OS gives one; the API resolves it, the app never guesses. */
+  phone: string;
+}
+export type ContactsResult = { status: 'granted'; contact: Contact } | { status: 'denied' } | { status: 'cancelled' };
+export interface Contacts {
+  /** Asks for contacts permission if needed and lets the member pick one (M13). */
+  pickOne(): Promise<ContactsResult>;
+}
+
 export interface Device {
   info: DeviceInfo;
   location: Location;
   clipboard: Clipboard;
+  /** Absent on devices without a camera (the pay screens treat it as unavailable). */
+  camera?: Camera;
+  contacts?: Contacts;
 }
 
 export const DeviceContext = createContext<Device | undefined>(undefined);
@@ -47,12 +67,18 @@ export function supportsOneTapInstall(info: DeviceInfo): boolean {
   return major > 17 || (major === 17 && minor >= 4);
 }
 
-export function fakeDevice(over: Partial<DeviceInfo> = {}, location: LocationResult = { status: 'granted', position: { lat: 31.77, lng: 35.21, accuracyM: 12 } }): Device & { copied: string[] } {
+export function fakeDevice(
+  over: Partial<DeviceInfo> = {},
+  location: LocationResult = { status: 'granted', position: { lat: 31.77, lng: 35.21, accuracyM: 12 } },
+  extras: { scan?: ScanResult; contact?: ContactsResult } = {},
+): Device & { copied: string[] } {
   const copied: string[] = [];
   return {
     info: { platform: 'ios', osVersion: '17.4', esimCapable: true, ...over },
     location: { requestOnce: async () => location },
     clipboard: { copy: async (t) => void copied.push(t) },
+    ...(extras.scan ? { camera: { scanOnce: async () => extras.scan! } } : {}),
+    ...(extras.contact ? { contacts: { pickOne: async () => extras.contact! } } : {}),
     copied,
   };
 }
