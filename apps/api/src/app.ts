@@ -42,6 +42,7 @@ import { PlanService } from './billing/plans.ts';
 import { EntitlementService } from './billing/entitlements.ts';
 import { MembershipService } from './billing/memberships.ts';
 import { capabilitiesHandler, type FeatureFlags } from './billing/capabilities.ts';
+import { statusHandler } from './status/handler.ts';
 import { TransferService } from './transfers/service.ts';
 import { AutoReloadService } from './wallet/auto-reload.ts';
 import { ClosureService } from './wallet/closure.ts';
@@ -159,6 +160,7 @@ export function createApp(o: AppOptions): App {
   const handlers: HandlerTable = {
     ...authHandlers({ otp: s.otp, passkeys: s.passkeys, recovery: s.recovery, tokens: s.tokens, stepUp: s.stepUp }),
     getCapabilities: capabilitiesHandler({ flags: s.flags, memberships: s.memberships, entitlements: s.entitlements }),
+    getStatus: statusHandler({ flags: s.flags, registry: o.registry, market: o.market }),
     ...kycHandlers(s.kyc),
     ...cardHandlers(s.cards, s.jit, s.provisioning, s.stepUp, s.physical),
     ...walletHandlers(s.loads, s.stepUp, s.flags, s.autoReload, s.closure),

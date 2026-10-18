@@ -24,6 +24,8 @@ export type Account = Schemas['Account'];
 export type Transfer = Schemas['Transfer'];
 export type TransferPreview = Schemas['TransferPreview'];
 export type Preferences = Schemas['Preferences'];
+export type ServiceStatus = Schemas['ServiceStatus'];
+export type CapabilityState = Schemas['CapabilityState'];
 export type ReceiveCurrency = Preferences['receiveCurrency'];
 export type PaymentRequest = Schemas['PaymentRequest'];
 export type PaidPaymentRequest = Schemas['PaidPaymentRequest'];
@@ -91,6 +93,11 @@ export interface PayApi {
   declineRequest(id: string, idempotencyKey: string): Promise<PaymentRequest>;
 }
 
+/** The public status of each money capability and the incident while one is switched off (T-0911). */
+export interface StatusApi {
+  get(): Promise<ServiceStatus>;
+}
+
 /** M33 receiving currency (T-0514): which purse money sent to the member lands in. */
 export interface PreferencesApi {
   get(): Promise<Preferences>;
@@ -144,6 +151,7 @@ export interface Api {
   cards: CardsApi;
   pay: PayApi;
   preferences: PreferencesApi;
+  status: StatusApi;
   wallet: WalletApi;
   fx: FxApi;
   esim: EsimUsageApi;
@@ -200,6 +208,9 @@ export function sdkApi(client: Client, _session: Session, extras: { esim: EsimUs
       createSplit: (input, idempotencyKey) => client.post('/splits', { body: input, idempotencyKey }),
       payRequest: (id, idempotencyKey) => client.post('/requests/{id}/pay', { path: { id }, idempotencyKey }),
       declineRequest: (id, idempotencyKey) => client.post('/requests/{id}/decline', { path: { id }, idempotencyKey }),
+    },
+    status: {
+      get: () => client.get('/status'),
     },
     preferences: {
       get: () => client.get('/me/preferences'),

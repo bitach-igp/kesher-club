@@ -2,9 +2,11 @@
 // with an on-hold row when money is reserved; the identity card while verification is unfinished; the
 // frozen-card banner; transactions grouped by day with a kind filter and a text search; a declined card
 // purchase explained from the server's reason code. Merchant and member text (`counterparty`,
-// `untrusted.*`) is data: searched and shown as written, never parsed for meaning.
+// `untrusted.*`) is data: searched and shown as written, never parsed for meaning. T-0911: the public
+// status names each money capability ok, degraded or off; a degraded one shows the incident banner (plain
+// text, never a link) and its quick action is hidden, as are actions for anything not ok.
 import { format, fromWire, money, type Currency, type Money } from '@kesher/domain';
-import { errorIs, type Account, type Card, type CardsApi, type KycApi, type KycStatus, type Transaction, type WalletApi } from '../../src/api.ts';
+import { errorIs, type Account, type Card, type CardsApi, type KycApi, type KycStatus, type ServiceStatus, type StatusApi, type Transaction, type WalletApi } from '../../src/api.ts';
 import { intlLocale, type CopyKey, type Locale } from '../../src/i18n.ts';
 import { createStore, type Store } from '../../src/model.ts';
 import type { Router } from '../../src/navigation.ts';
@@ -46,12 +48,15 @@ export interface HomeState {
   query: string;
   busy: boolean;
   error?: CopyKey | undefined;
+  /** GET /status; undefined while unknown, and then no quick action shows (the server gates anyway). */
+  service?: ServiceStatus | undefined;
 }
 
 export interface HomeDeps {
   wallet: WalletApi;
   kyc: KycApi;
   cards: CardsApi;
+  status?: StatusApi;
   router: Router;
   now: () => Date;
   locale?: Locale;
@@ -88,6 +93,25 @@ export function kycCard(status: KycStatus | undefined): { body: CopyKey; action:
 }
 
 export const frozenCard = (cards: readonly Card[]): Card | undefined => cards.find((c) => c.status === 'frozen');
+
+export type QuickAction = 'send' | 'convert' | 'card';
+export const QUICK_ACTIONS: readonly { action: QuickAction; capability: keyof ServiceStatus['capabilities']; label: CopyKey; href: string }[] = [
+  { action: 'send', capability: 'p2p', label: 'home.quick.send', href: '/pay/recipient' },
+  { action: 'convert', capability: 'fx', label: 'home.quick.convert', href: '/convert' },
+  { action: 'card', capability: 'card', label: 'home.quick.card', href: '/card' },
+];
+
+/** The quick actions whose capability is ok; none while the status is unknown. */
+export const quickActions = (status: ServiceStatus | undefined): typeof QUICK_ACTIONS => (status ? QUICK_ACTIONS.filter((q) => status.capabilities[q.capability] === 'ok') : []);
+
+/**
+ * The incident banner while a capability is degraded: the admin's title and body as plain strings,
+ * rendered as text. No href and no action: a URL inside the body stays words on the screen.
+ */
+export function incidentBanner(status: ServiceStatus | undefined): { title: string; body: string } | undefined {
+  if (!status?.incident || !Object.values(status.capabilities).includes('degraded')) return undefined;
+  return { title: status.incident.title, body: status.incident.body };
+}
 
 export function matchesFilter(tx: Transaction, filter: TxFilter): boolean {
   if (filter === 'all') return true;
@@ -190,9 +214,10 @@ export function createHomeModel(deps: HomeDeps): HomeModel {
           deps.kyc.status().catch(() => undefined),
           deps.cards.listCards().catch(() => ({ items: [] as readonly Card[] })),
         ]);
+        const service = deps.status ? await deps.status.get().catch(() => undefined) : undefined;
         const rows = purseRows(accounts.items);
         const selected = store.get().selectedAccountId ?? rows[0]?.accountId;
-        store.patch({ mode: 'ready', accounts: [...accounts.items], kyc, cards: [...cards.items], selectedAccountId: selected });
+        store.patch({ mode: 'ready', accounts: [...accounts.items], kyc, cards: [...cards.items], selectedAccountId: selected, service });
         if (selected) await page(selected);
       } catch (e) {
         store.patch({ mode: 'error', error: errorIs(e, { status: 503 }) ? 'common.error.unavailable' : 'common.error.generic' });

@@ -131,6 +131,19 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/StepUpResult" }
         default: { $ref: "#/components/responses/Problem" }
+  /status:
+    get:
+      operationId: getStatus
+      summary: The public state of each money capability, and the incident while one is switched off
+      description: T-0911 (CLUB-39). Public. A capability is off when its flag is off, degraded when an admin switched it off with an incident through the two-person flag flip, and ok when its flag is on and its provider is bound. No secrets and no provider names. The incident is plain text for the in-app banner.
+      security: []
+      responses:
+        "200":
+          description: Status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ServiceStatus" }
+        default: { $ref: "#/components/responses/Problem" }
   /me/capabilities:
     get:
       operationId: getCapabilities
@@ -1094,6 +1107,13 @@ paths:
               properties:
                 to: { type: boolean }
                 reason: { type: string, minLength: 1, maxLength: 500 }
+                incident:
+                  type: object
+                  description: Member-facing copy GET /status shows while the flag stays off (T-0911). Only with to=false. Plain text.
+                  required: [title, body]
+                  properties:
+                    title: { type: string, minLength: 1, maxLength: 80 }
+                    body: { type: string, minLength: 1, maxLength: 280 }
       responses:
         "201":
           description: Approval request
@@ -1915,6 +1935,29 @@ components:
         from: { $ref: "#/components/schemas/Money" }
         total: { $ref: "#/components/schemas/Money" }
         status: { type: string, enum: [settled, failed] }
+    CapabilityState:
+      type: string
+      enum: [ok, degraded, "off"]
+    ServiceStatus:
+      type: object
+      required: [capabilities]
+      properties:
+        capabilities:
+          type: object
+          required: [wallet, card, p2p, fx, payouts]
+          properties:
+            wallet: { $ref: "#/components/schemas/CapabilityState" }
+            card: { $ref: "#/components/schemas/CapabilityState" }
+            p2p: { $ref: "#/components/schemas/CapabilityState" }
+            fx: { $ref: "#/components/schemas/CapabilityState" }
+            payouts: { $ref: "#/components/schemas/CapabilityState" }
+        incident:
+          type: object
+          required: [title, body, since]
+          properties:
+            title: { type: string }
+            body: { type: string, description: Plain text, shown as written; never a link }
+            since: { type: string, format: date-time }
     Preferences:
       type: object
       required: [receiveCurrency]

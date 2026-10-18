@@ -1,15 +1,41 @@
 // Feature flags (T-0905, REQ-ADM-002, ADR-005 shape): config/flags.json is the registry;
 // ops.flag_state holds environment overrides. Flipping a money flag (or any flag, in prod) needs
 // an approved two-person request; the flip writes the state and the audit entry in one
-// transaction. Unknown flag → off. Reads are cached per request, not across requests.
+// transaction. Unknown flag → off. Reads are cached per request, not across requests. A flip to off
+// may carry an incident (T-0911): member-facing copy that GET /status shows while the kill switch holds.
 import { DomainError } from '@kesher/domain';
 import type { Database } from '../db.ts';
-import type { ApprovalService } from '../approvals/service.ts';
+import type { ApprovalRequest, ApprovalService } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import { loadRegistry, type FeatureFlags } from '../billing/capabilities.ts';
 
 export const MONEY_FLAG = /^(wallet\.|card\.|p2p\.|fx\.|payouts\.|funding\.|institutions\.money|mcp\.money)/;
 export const isMoneyFlag = (key: string): boolean => MONEY_FLAG.test(key);
+
+/** Member-facing copy on a kill-switch flip, plain text, shown by GET /status while the flag stays off. */
+export interface Incident {
+  key: string;
+  title: string;
+  body: string;
+  since: string;
+}
+export const INCIDENT_TITLE_MAX = 80;
+export const INCIDENT_BODY_MAX = 280;
+
+/** Validates incident copy: only on a switch-off, both parts present and short, no control characters. */
+export function parseIncident(value: boolean, raw: unknown): { title: string; body: string } | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (value) throw new DomainError('VALIDATION_FAILED', 'An incident goes with switching a flag off');
+  const r = raw as { title?: unknown; body?: unknown };
+  const clean = (v: unknown, max: number, name: string) => {
+    if (typeof v !== 'string') throw new DomainError('VALIDATION_FAILED', `incident.${name} is required`);
+    const s = v.trim();
+    // eslint-disable-next-line no-control-regex
+    if (!s || s.length > max || /[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/.test(s)) throw new DomainError('VALIDATION_FAILED', `incident.${name} must be 1 to ${max} characters of plain text`);
+    return s;
+  };
+  return { title: clean(r.title, INCIDENT_TITLE_MAX, 'title'), body: clean(r.body, INCIDENT_BODY_MAX, 'body') };
+}
 
 export interface FlagView {
   key: string;
@@ -51,15 +77,42 @@ export class FlagService implements FeatureFlags {
   }
 
   /** Step 1: an admin proposes a flip. Money flags need a second admin (REQ-ADM-002). */
-  async propose(key: string, value: boolean, by: { partyId: string; role: string }, reason: string, now: Date) {
+  async propose(key: string, value: boolean, by: { partyId: string; role: string }, reason: string, now: Date, incidentInput?: unknown) {
     if (!this.registry.has(key)) throw new DomainError('NOT_FOUND', `Unknown flag ${key}; flags live only in config/flags.json`);
     if (by.role !== 'admin') throw new DomainError('FORBIDDEN', 'Only admins change flags');
+    const incident = parseIncident(value, incidentInput);
     const current = await this.isOn(key);
     if (current === value) throw new DomainError('IDEMPOTENCY_CONFLICT', `Flag ${key} is already ${value}`);
-    const req = await this.approvals.request({ kind: 'flag_flip', subject: `${key}:${value}:${now.toISOString().slice(0, 10)}`, scope: 'platform', requestedBy: by, payload: { key, from: current, to: value, reason } }, now);
+    const req = await this.approvals.request({ kind: 'flag_flip', subject: await this.subject(key, value, now), scope: 'platform', requestedBy: by, payload: { key, from: current, to: value, reason, ...(incident ? { incident } : {}) } }, now);
+    if (req.status !== 'pending' && req.status !== 'awaiting_second_approval') throw new DomainError('IDEMPOTENCY_CONFLICT', `A flip of ${key} from its current state was already ${req.status} today`);
     const afterFirst = req.approvals === 0 ? await this.approvals.decide(req.id, by, 'approve', now, reason) : req;
     if (afterFirst.status === 'approved') await this.flip(key, value, afterFirst.id, by, reason, now);
     return afterFirst;
+  }
+
+  /** The open proposal to flip `key` to `value` from its current state, if one is waiting for a second admin. */
+  async pendingFlip(key: string, value: boolean, now: Date): Promise<ApprovalRequest | undefined> {
+    const open = await this.approvals.find('flag_flip', await this.subject(key, value, now));
+    return open && (open.status === 'pending' || open.status === 'awaiting_second_approval') ? open : undefined;
+  }
+
+  /**
+   * A flip's approval subject names the state being changed (its last flip, or the registry default) and
+   * the day: a duplicate proposal from the same state finds the pending one, and every flip after a change
+   * is a fresh request. Keyed on the day alone, an on → off → on day handed the second "on" the morning's
+   * already-approved request, and one admin flipped the flag.
+   */
+  private async subject(key: string, value: boolean, now: Date): Promise<string> {
+    const since = (await this.db.query<{ changed_at: string | Date }>('select changed_at from ops.flag_state where key = $1', [key])).rows[0]?.changed_at;
+    return `${key}:${value}:${since ? new Date(since).toISOString() : 'default'}:${now.toISOString().slice(0, 10)}`;
+  }
+
+  /** Flags held off by an approved flip that carried an incident, with when the switch happened. */
+  async incidents(): Promise<Incident[]> {
+    const r = await this.db.query<{ key: string; changed_at: string | Date; payload: { incident?: { title: string; body: string } } }>(
+      `select s.key, s.changed_at, r.payload from ops.flag_state s join ops.approval_request r on r.id = s.approval_id where s.value = false`,
+    );
+    return r.rows.filter((x) => x.payload.incident).map((x) => ({ key: x.key, title: x.payload.incident!.title, body: x.payload.incident!.body, since: new Date(x.changed_at).toISOString() }));
   }
 
   /** Step 2: a second, distinct admin approves; the flip happens only then. */

@@ -1,11 +1,12 @@
 // Home view model (T-0511): balances per currency with on-hold rows, the identity card while
 // verification is unfinished, the frozen-card banner, transactions grouped by day with filter and
-// search, a declined purchase's reason copy, and merchant text treated as data.
+// search, a declined purchase's reason copy, and merchant text treated as data. T-0911: the incident
+// banner and the quick actions from the public status.
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
-import type { Account, Card, CardsApi, KycApi, KycStatus, Transaction, WalletApi } from '../../src/api.ts';
+import type { Account, CapabilityState, Card, CardsApi, KycApi, KycStatus, ServiceStatus, Transaction, WalletApi } from '../../src/api.ts';
 import { memoryRouter } from '../../src/navigation.ts';
-import { createHomeModel, declinedCopy, filterTransactions, frozenCard, groupByDay, kycCard, purseRows, signedAmount } from './home.model.ts';
+import { createHomeModel, declinedCopy, filterTransactions, frozenCard, groupByDay, incidentBanner, kycCard, purseRows, quickActions, signedAmount } from './home.model.ts';
 
 const NOW = new Date('2026-11-10T09:00:00Z');
 const acc = (id: string, currency: 'ILS' | 'USD', available: string, holds = '0'): Account => ({ id, currency, settled: { minor: (BigInt(available) + BigInt(holds)).toString(), currency }, holds: { minor: holds, currency }, available: { minor: available, currency } });
@@ -168,5 +169,38 @@ describe('the model', () => {
     const d = createHomeModel({ ...down, router: memoryRouter(), now: () => NOW });
     await d.load();
     expect(d.store.get()).toMatchObject({ mode: 'error', error: 'common.error.unavailable' });
+  });
+});
+
+describe('service status (T-0911)', () => {
+  const all = (state: CapabilityState): ServiceStatus['capabilities'] => ({ wallet: state, card: state, p2p: state, fx: state, payouts: state });
+  const outage: ServiceStatus = {
+    capabilities: { ...all('ok'), p2p: 'degraded' },
+    incident: { title: 'Transfers are paused', body: 'Your money is safe. Details: https://status.example/x', since: '2026-11-10T08:00:00Z' },
+  };
+
+  it('a degraded capability shows the banner with the incident copy as plain text and hides its quick action', () => {
+    expect(incidentBanner(outage)).toEqual({ title: 'Transfers are paused', body: 'Your money is safe. Details: https://status.example/x' });
+    // Two strings and nothing else: no href, no action, so the URL stays words on the screen.
+    expect(Object.keys(incidentBanner(outage)!)).toEqual(['title', 'body']);
+    expect(quickActions(outage).map((q) => q.action)).toEqual(['convert', 'card']);
+  });
+
+  it('all ok shows every quick action and no banner; off hides the action without a banner; unknown shows none', () => {
+    expect(incidentBanner({ capabilities: all('ok') })).toBeUndefined();
+    expect(quickActions({ capabilities: all('ok') }).map((q) => q.href)).toEqual(['/pay/recipient', '/convert', '/card']);
+    expect(quickActions({ capabilities: { ...all('ok'), fx: 'off', card: 'off' } }).map((q) => q.action)).toEqual(['send']);
+    expect(incidentBanner({ capabilities: { ...all('ok'), fx: 'off' }, incident: outage.incident! })).toBeUndefined();
+    expect(quickActions(undefined)).toEqual([]);
+  });
+
+  it('the model loads the status beside the balances; a status outage costs only the quick actions', async () => {
+    const m = createHomeModel({ ...fakes(), status: { get: async () => outage }, router: memoryRouter(), now: () => NOW });
+    await m.load();
+    expect(m.store.get()).toMatchObject({ mode: 'ready', service: outage });
+    const down = createHomeModel({ ...fakes(), status: { get: async () => Promise.reject(Object.assign(new Error('503'), { status: 503 })) }, router: memoryRouter(), now: () => NOW });
+    await down.load();
+    expect(down.store.get().mode).toBe('ready');
+    expect(down.store.get().service).toBeUndefined();
   });
 });

@@ -1,5 +1,7 @@
 // M08 home: balances per purse (with the on-hold row when money is reserved), the identity card while
 // verification is unfinished, the frozen-card banner, and recent activity. Merchant text is data.
+// T-0911: the incident banner while a money capability is degraded (text only) and the quick actions
+// for capabilities that are ok.
 import { useEffect, useMemo } from 'react';
 import { useApi } from '../../src/api.ts';
 import { useNow } from '../../src/clock.ts';
@@ -7,14 +9,14 @@ import { Banner, Button, Card, ListRow, Screen, Skeleton, Txt } from '../../src/
 import { t, useLocale } from '../../src/i18n.ts';
 import { useStore } from '../../src/model.ts';
 import { useRouter } from '../../src/navigation.ts';
-import { createHomeModel, declinedCopy, fmt, frozenCard, kycCard, purseRows, signedAmount, type HomeModel } from './home.model.ts';
+import { createHomeModel, declinedCopy, fmt, frozenCard, incidentBanner, kycCard, purseRows, quickActions, signedAmount, type HomeModel } from './home.model.ts';
 
 export function useHomeModel(): HomeModel {
   const api = useApi();
   const router = useRouter();
   const now = useNow();
   const locale = useLocale();
-  return useMemo(() => createHomeModel({ wallet: api.wallet, kyc: api.kyc, cards: api.cards, router, now, locale }), [api, router, now, locale]);
+  return useMemo(() => createHomeModel({ wallet: api.wallet, kyc: api.kyc, cards: api.cards, status: api.status, router, now, locale }), [api, router, now, locale]);
 }
 
 export default function HomeScreen() {
@@ -43,8 +45,12 @@ export function HomeView({ model }: { model: HomeModel }) {
   const identity = kycCard(s.kyc);
   const frozen = frozenCard(s.cards);
   const recent = model.groups().flatMap((g) => g.items).slice(0, 5);
+  const incident = incidentBanner(s.service);
+  const actions = quickActions(s.service);
   return (
     <Screen title={t('home.title', locale)} testID="screen-home">
+      {/* Staff-written incident copy, shown as text: no action, no link. */}
+      {incident ? <Banner tone="warning" title={incident.title} body={incident.body} testID="home-incident" /> : null}
       {identity ? <Banner tone={identity.tone} title={t('home.kyc.title', locale)} body={t(identity.body, locale)} {...(identity.action ? { action: { label: t('home.kyc.action', locale), onPress: model.goVerify } } : {})} testID="home-kyc" /> : null}
       {frozen ? <Banner tone="danger" body={t('home.card.frozen', locale)} action={{ label: t('home.card.action', locale), onPress: model.goCard }} testID="home-frozen" /> : null}
       {purseRows(s.accounts).map((p) => (
@@ -63,6 +69,14 @@ export function HomeView({ model }: { model: HomeModel }) {
           <Button label={t('home.seeAll', locale)} variant="tertiary" onPress={() => model.goWallet(p.accountId)} testID={`home-wallet-${p.currency}`} />
         </Card>
       ))}
+      {actions.length ? (
+        <Card testID="home-quick">
+          <Txt variant="headline">{t('home.quick.title', locale)}</Txt>
+          {actions.map((q, i) => (
+            <ListRow key={q.action} title={t(q.label, locale)} onPress={() => router.push(q.href)} last={i === actions.length - 1} testID={`home-quick-${q.action}`} />
+          ))}
+        </Card>
+      ) : null}
       <Card testID="home-recent">
         <Txt variant="headline">{t('home.recent', locale)}</Txt>
         {s.activityUnavailable ? <Txt tone="secondary">{t('home.unavailable', locale)}</Txt> : null}
