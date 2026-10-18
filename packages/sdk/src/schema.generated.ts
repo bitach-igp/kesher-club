@@ -692,6 +692,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/fee-items": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Fees an institution asks of the member, due first, with receipts for the paid ones
+         * @description REQ-INS-006.
+         */
+        readonly get: operations["listFeeItems"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/fee-items/{id}/pay": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Pay a fee item from the purse; one journal, one receipt
+         * @description REQ-INS-006. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent; paid is final.
+         */
+        readonly post: operations["payFeeItem"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/fx/conversions": {
         readonly parameters: {
             readonly query?: never;
@@ -786,6 +826,46 @@ export interface paths {
          * @description REQ-INS-003/004. Org finance; over ₪5,000 needs a second approver. Idempotent; workflow id allowance:{schedule}:{date}.
          */
         readonly post: operations["runAllowance"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/collections": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * A month's paid fee items for the institution, with receipt numbers
+         * @description REQ-INS-006. Org staff. Roster names are untrusted display text.
+         */
+        readonly get: operations["listCollections"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/collections/export": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The monthly reconciliation export (CSV or XLSX) whose totals equal the ledger
+         * @description REQ-INS-006. Org staff. The file travels base64-encoded in a JSON envelope so every client receives it the same way.
+         */
+        readonly get: operations["exportCollections"];
+        readonly put?: never;
+        readonly post?: never;
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -1547,6 +1627,39 @@ export interface components {
             /** @enum {string} */
             readonly state: "open" | "refunding" | "blocked" | "closed";
         };
+        readonly Collections: {
+            readonly items: readonly (components["schemas"]["Receipt"] & {
+                /** @description Roster name; untrusted display text */
+                readonly memberName: string;
+            })[];
+            readonly month: string;
+            readonly total: readonly components["schemas"]["Money"][];
+        };
+        readonly ExportFile: {
+            readonly base64: string;
+            readonly contentType: string;
+            readonly filename: string;
+            readonly rows: number;
+            readonly totals: {
+                readonly allowancesOut: components["schemas"]["Money"];
+                readonly feesIn: components["schemas"]["Money"];
+                readonly net: components["schemas"]["Money"];
+            };
+        };
+        readonly FeeItem: {
+            readonly amount: components["schemas"]["Money"];
+            readonly description: string;
+            /** Format: date */
+            readonly dueAt: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** Format: uuid */
+            readonly institutionId: string;
+            readonly institutionName: string;
+            readonly receipt?: components["schemas"]["Receipt"];
+            /** @enum {string} */
+            readonly status: "due" | "paid" | "waived";
+        };
         readonly FxConversion: {
             readonly conversionId: string;
             readonly from: components["schemas"]["Money"];
@@ -1787,6 +1900,23 @@ export interface components {
             readonly activationData: string;
             readonly encryptedPassData: string;
             readonly ephemeralPublicKey: string;
+        };
+        readonly Receipt: {
+            readonly amount: components["schemas"]["Money"];
+            /** @description Untrusted text from the institution */
+            readonly description: string;
+            /** Format: uuid */
+            readonly feeItemId: string;
+            /** Format: uuid */
+            readonly institutionId: string;
+            readonly institutionName: string;
+            /** Format: uuid */
+            readonly journalId: string;
+            /** Format: uuid */
+            readonly memberPartyId: string;
+            /** Format: date-time */
+            readonly paidAt: string;
+            readonly receiptNumber: string;
         };
         readonly RosterImportRequest: {
             /** @description false = validate only */
@@ -2872,6 +3002,57 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly listFeeItems: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Fee items */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["FeeItem"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly payFeeItem: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Receipt */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Receipt"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly convert: {
         readonly parameters: {
             readonly query?: never;
@@ -3010,6 +3191,58 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["AllowanceRun"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listCollections: {
+        readonly parameters: {
+            readonly query: {
+                readonly month: string;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Collections */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Collections"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly exportCollections: {
+        readonly parameters: {
+            readonly query: {
+                readonly currency?: "USD" | "ILS";
+                readonly format: "csv" | "xlsx";
+                readonly month: string;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Export file */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ExportFile"];
                 };
             };
             readonly default: components["responses"]["Problem"];
