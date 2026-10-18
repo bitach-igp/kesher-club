@@ -34,20 +34,19 @@ export function adminHandlers(d: AdminDeps): Record<string, Handler> {
       requireStaff(req);
       const items = await d.flags.list();
       const pending = await Promise.all(items.map(async (f) => {
-        // A pending flip is an approval request on this flag whose subject carries today's date.
-        const open = await d.approvals.find('flag_flip', `${f.key}:${!f.value}:${req.now.toISOString().slice(0, 10)}`);
-        return open && (open.status === 'pending' || open.status === 'awaiting_second_approval') ? approvalBody(open) : undefined;
+        const open = await d.flags.pendingFlip(f.key, !f.value, req.now);
+        return open ? approvalBody(open) : undefined;
       }));
       return ok({ items: items.map((f, i) => ({ ...f, ...(pending[i] ? { pendingFlip: pending[i] } : {}) })) });
     }),
 
     proposeFlagFlip: route(async (req) => {
       const p = requireStaff(req, 'admin');
-      const b = req.body as { to?: unknown; reason?: unknown };
+      const b = req.body as { to?: unknown; reason?: unknown; incident?: unknown };
       if (typeof b.to !== 'boolean') throw new DomainError('VALIDATION_FAILED', 'to must be a boolean');
       const reason = typeof b.reason === 'string' ? b.reason.trim().slice(0, 500) : '';
       if (!reason) throw new DomainError('VALIDATION_FAILED', 'A reason is required');
-      const r = await d.flags.propose(req.params['key'] ?? '', b.to, staffActor(p), reason, req.now);
+      const r = await d.flags.propose(req.params['key'] ?? '', b.to, staffActor(p), reason, req.now, b.incident);
       return { status: 201, body: approvalBody(r) };
     }),
 

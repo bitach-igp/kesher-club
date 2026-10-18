@@ -160,6 +160,10 @@ const en = {
   'emergency.notReady': 'Opening the call. You can also dial {phone} directly.',
 
   'grants.title': 'Assistants',
+  'home.quick.title': 'Quick actions',
+  'home.quick.send': 'Send money',
+  'home.quick.convert': 'Convert currency',
+  'home.quick.card': 'Your card',
   'currency.title': 'Receiving currency',
   'currency.subtitle': 'Money sent to you lands in this purse. A payment in the other currency converts at the club rate.',
   'currency.asSent': 'As sent',
@@ -597,6 +601,10 @@ const he: Record<CopyKey, string> = {
   'emergency.notReady': 'פותחים את השיחה. אפשר גם לחייג ישירות {phone}.',
 
   'grants.title': 'עוזרים',
+  'home.quick.title': 'פעולות מהירות',
+  'home.quick.send': 'שליחת כסף',
+  'home.quick.convert': 'המרת מטבע',
+  'home.quick.card': 'הכרטיס שלכם',
   'currency.title': 'מטבע הקבלה',
   'currency.subtitle': 'כסף שנשלח אליכם נכנס לארנק הזה. תשלום במטבע האחר מומר לפי שער המועדון.',
   'currency.asSent': 'כפי שנשלח',

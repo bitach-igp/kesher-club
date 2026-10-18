@@ -1268,6 +1268,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/status": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The public state of each money capability, and the incident while one is switched off
+         * @description T-0911 (CLUB-39). Public. A capability is off when its flag is off, degraded when an admin switched it off with an incident through the two-person flag flip, and ok when its flag is on and its provider is bound. No secrets and no provider names. The incident is plain text for the in-app banner.
+         */
+        readonly get: operations["getStatus"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/transfers": {
         readonly parameters: {
             readonly query?: never;
@@ -1637,6 +1657,8 @@ export interface components {
                 readonly [key: string]: boolean;
             };
         };
+        /** @enum {string} */
+        readonly CapabilityState: "ok" | "degraded" | "off";
         readonly Card: {
             readonly controls: components["schemas"]["CardControls"];
             /** Format: uuid */
@@ -2093,6 +2115,22 @@ export interface components {
             readonly rowCount: number;
             /** @enum {string} */
             readonly status: "validated" | "rejected" | "committed";
+        };
+        readonly ServiceStatus: {
+            readonly capabilities: {
+                readonly card: components["schemas"]["CapabilityState"];
+                readonly fx: components["schemas"]["CapabilityState"];
+                readonly p2p: components["schemas"]["CapabilityState"];
+                readonly payouts: components["schemas"]["CapabilityState"];
+                readonly wallet: components["schemas"]["CapabilityState"];
+            };
+            readonly incident?: {
+                /** @description Plain text */
+                readonly body: string;
+                /** Format: date-time */
+                readonly since: string;
+                readonly title: string;
+            };
         };
         readonly ShipTo: {
             readonly city: string;
@@ -2686,6 +2724,11 @@ export interface operations {
         readonly requestBody: {
             readonly content: {
                 readonly "application/json": {
+                    /** @description Member-facing copy GET /status shows while the flag stays off (T-0911). Only with to=false. Plain text. */
+                    readonly incident?: {
+                        readonly body: string;
+                        readonly title: string;
+                    };
                     readonly reason: string;
                     readonly to: boolean;
                 };
@@ -4026,6 +4069,27 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Split"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getStatus: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Status */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ServiceStatus"];
                 };
             };
             readonly default: components["responses"]["Problem"];
