@@ -5,7 +5,7 @@
 import { DomainError, uuidv7, type Currency, type Money } from '@kesher/domain';
 import { isPgError, PG, type Database } from '../db.ts';
 
-export type ApprovalKind = 'allowance_run' | 'payout' | 'flag_flip' | 'provider_binding' | 'ledger_correction';
+export type ApprovalKind = 'allowance_run' | 'payout' | 'flag_flip' | 'provider_binding' | 'ledger_correction' | 'fx_rate';
 export type ApprovalStatus = 'pending' | 'awaiting_second_approval' | 'approved' | 'rejected' | 'expired';
 
 /** ₪5,000 (REQ-INS-004): institution money over this needs a second finance approver. */
@@ -49,7 +49,7 @@ interface Row {
 
 /** How many distinct approvers an action needs. */
 export function approversRequired(kind: ApprovalKind, amount?: Money): number {
-  if (kind === 'flag_flip' || kind === 'provider_binding' || kind === 'ledger_correction') return 2;
+  if (kind === 'flag_flip' || kind === 'provider_binding' || kind === 'ledger_correction' || kind === 'fx_rate') return 2;
   if (amount && amount.currency === 'ILS' && amount.minor > SECOND_APPROVER_THRESHOLD_ILS_MINOR) return 2;
   if (amount && amount.currency === 'USD' && amount.minor > SECOND_APPROVER_THRESHOLD_ILS_MINOR / 4n) return 2; // ~₪5,000 at 1:4 as a conservative floor
   return 1;
@@ -92,6 +92,7 @@ export class ApprovalService {
       if (r.status === 'expired') throw new DomainError('IDEMPOTENCY_CONFLICT', 'Request expired');
       // Distinct approvers are guaranteed by unique (request_id, decided_by): one person decides once.
       if ((r.kind === 'flag_flip' || r.kind === 'provider_binding') && by.role !== 'admin') throw new DomainError('FORBIDDEN', 'Only admins approve flag and binding changes');
+      if (r.kind === 'fx_rate' && by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only finance approves club rates');
       if ((r.kind === 'allowance_run' || r.kind === 'payout') && r.required >= 2 && reason !== 'requested' && by.role !== 'finance' && by.role !== 'org_admin') throw new DomainError('FORBIDDEN', 'A finance-role approver is required');
       try {
         await tx.query('insert into ops.approval_decision (id, request_id, decided_by, role, decision, reason, at) values ($1, $2, $3, $4, $5, $6, $7)', [uuidv7(now), requestId, by.partyId, by.role, decision, reason ?? null, now]);

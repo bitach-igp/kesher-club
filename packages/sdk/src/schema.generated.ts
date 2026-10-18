@@ -352,6 +352,70 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/fx/rates": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The club rate in force and its history for a pair
+         * @description REQ-FX-003, REQ-ADM-003 (ADR-007). The current rate is the active version valid now; a port-sourced rate past its 15-minute window is not current. Staff token only.
+         */
+        readonly get: operations["listAdminFxRates"];
+        readonly put?: never;
+        /**
+         * Propose a manual club rate; the proposer counts as the first finance approver
+         * @description REQ-ADM-003. A second, distinct finance approver activates it through approveAdminFxRate; activation supersedes the rate in force and is audited. Staff token with the finance role.
+         */
+        readonly post: operations["proposeAdminFxRate"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/fx/rates/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second finance approval of a manual rate; activates it
+         * @description REQ-ADM-003. Must come from a different finance user than the proposer. Staff token with the finance role.
+         */
+        readonly post: operations["approveAdminFxRate"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/fx/rates/{id}/reject": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Withdraw or refuse a proposed manual rate
+         * @description REQ-ADM-003. Staff token with the finance role.
+         */
+        readonly post: operations["rejectAdminFxRate"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/agent-grants": {
         readonly parameters: {
             readonly query?: never;
@@ -1454,7 +1518,7 @@ export interface components {
             /** Format: uuid */
             readonly id: string;
             /** @enum {string} */
-            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction";
+            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction" | "fx_rate";
             readonly payload: {
                 readonly [key: string]: unknown;
             };
@@ -1683,6 +1747,31 @@ export interface components {
             readonly from: components["schemas"]["Money"];
             /** @enum {string} */
             readonly to: "USD" | "ILS";
+        };
+        readonly FxRate: {
+            readonly approval?: components["schemas"]["ApprovalRequest"];
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** @description ILS per one USD */
+            readonly mid: string;
+            /** @enum {string} */
+            readonly pair: "USD/ILS";
+            readonly proposedBy: string;
+            readonly reason?: string;
+            /** @enum {string} */
+            readonly source: "port" | "manual";
+            /** @enum {string} */
+            readonly status: "proposed" | "active" | "superseded" | "rejected";
+            /** Format: date-time */
+            readonly validFrom?: string;
+            /**
+             * Format: date-time
+             * @description Absent on a manual rate
+             */
+            readonly validUntil?: string;
+            readonly version: number;
         };
         readonly Household: {
             /** Format: uuid */
@@ -2534,6 +2623,120 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["ApprovalRequest"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminFxRates: {
+        readonly parameters: {
+            readonly query?: {
+                readonly pair?: "USD/ILS";
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Current rate and history, newest first */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly current?: components["schemas"]["FxRate"];
+                        readonly items: readonly components["schemas"]["FxRate"][];
+                        /** @enum {string} */
+                        readonly pair: "USD/ILS";
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly proposeAdminFxRate: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @description ILS per one USD */
+                    readonly mid: string;
+                    /**
+                     * @default USD/ILS
+                     * @enum {string}
+                     */
+                    readonly pair?: "USD/ILS";
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The proposed rate and its approval request */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FxRate"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveAdminFxRate: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The rate after the decision */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FxRate"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly rejectAdminFxRate: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The rejected rate */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FxRate"];
                 };
             };
             readonly default: components["responses"]["Problem"];

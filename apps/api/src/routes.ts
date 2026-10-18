@@ -78,6 +78,10 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/admin/alerts', operationId: 'listAdminAlerts' },
   { method: 'POST', path: '/admin/alerts/{id}/decisions', operationId: 'decideAdminAlert' },
   { method: 'POST', path: '/admin/audit/verify', operationId: 'verifyAdminAudit' },
+  { method: 'GET', path: '/admin/fx/rates', operationId: 'listAdminFxRates' },
+  { method: 'POST', path: '/admin/fx/rates', operationId: 'proposeAdminFxRate' },
+  { method: 'POST', path: '/admin/fx/rates/{id}/approve', operationId: 'approveAdminFxRate' },
+  { method: 'POST', path: '/admin/fx/rates/{id}/reject', operationId: 'rejectAdminFxRate' },
 ];
 
 export type HandlerTable = Partial<Record<string, Handler>>;

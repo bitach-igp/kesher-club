@@ -914,6 +914,94 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/KycStatus" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/fx/rates:
+    get:
+      operationId: listAdminFxRates
+      tags: [admin]
+      summary: The club rate in force and its history for a pair
+      description: REQ-FX-003, REQ-ADM-003 (ADR-007). The current rate is the active version valid now; a port-sourced rate past its 15-minute window is not current. Staff token only.
+      security: [{ staff: [] }]
+      parameters:
+        - name: pair
+          in: query
+          required: false
+          schema: { type: string, enum: ["USD/ILS"], default: "USD/ILS" }
+      responses:
+        "200":
+          description: Current rate and history, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pair, items]
+                properties:
+                  pair: { type: string, enum: ["USD/ILS"] }
+                  current: { $ref: "#/components/schemas/FxRate" }
+                  items: { type: array, items: { $ref: "#/components/schemas/FxRate" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: proposeAdminFxRate
+      tags: [admin]
+      summary: Propose a manual club rate; the proposer counts as the first finance approver
+      description: REQ-ADM-003. A second, distinct finance approver activates it through approveAdminFxRate; activation supersedes the rate in force and is audited. Staff token with the finance role.
+      security: [{ staff: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mid, reason]
+              properties:
+                pair: { type: string, enum: ["USD/ILS"], default: "USD/ILS" }
+                mid: { type: string, pattern: "^\\d{1,6}(\\.\\d{1,6})?$", description: ILS per one USD, a decimal with up to six places }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201":
+          description: The proposed rate and its approval request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FxRate" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/fx/rates/{id}/approve:
+    post:
+      operationId: approveAdminFxRate
+      tags: [admin]
+      summary: Second finance approval of a manual rate; activates it
+      description: REQ-ADM-003. Must come from a different finance user than the proposer. Staff token with the finance role.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The rate after the decision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FxRate" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/fx/rates/{id}/reject:
+    post:
+      operationId: rejectAdminFxRate
+      tags: [admin]
+      summary: Withdraw or refuse a proposed manual rate
+      description: REQ-ADM-003. Staff token with the finance role.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: The rejected rate
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FxRate" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/flags:
     get:
       operationId: listAdminFlags
@@ -1274,7 +1362,7 @@ components:
       required: [id, kind, subject, status, approvals, requestedBy, expiresAt, payload]
       properties:
         id: { type: string, format: uuid }
-        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction] }
+        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction, fx_rate] }
         subject: { type: string }
         status: { type: string, enum: [pending, awaiting_second_approval, approved, rejected, expired] }
         approvals: { type: integer, minimum: 0 }
@@ -1761,6 +1849,22 @@ components:
         from: { $ref: "#/components/schemas/Money" }
         total: { $ref: "#/components/schemas/Money" }
         status: { type: string, enum: [settled, failed] }
+    FxRate:
+      type: object
+      required: [id, pair, version, mid, source, status, proposedBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        pair: { type: string, enum: ["USD/ILS"] }
+        version: { type: integer, minimum: 1 }
+        mid: { type: string, description: ILS per one USD, six decimal places; a display string, money never flows through it }
+        source: { type: string, enum: [port, manual] }
+        status: { type: string, enum: [proposed, active, superseded, rejected] }
+        validFrom: { type: string, format: date-time }
+        validUntil: { type: string, format: date-time, description: Absent on a manual rate, which holds until superseded }
+        proposedBy: { type: string }
+        reason: { type: string }
+        createdAt: { type: string, format: date-time }
+        approval: { $ref: "#/components/schemas/ApprovalRequest" }
     CardControls:
       type: object
       required: [blockedMccs, atm, online, agentPurchases]

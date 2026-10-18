@@ -144,6 +144,7 @@ export const SQUAWK = Object.freeze({
   excludedPaths: Object.freeze([
     ['db/migrations/ledger/0003_transfers.sql', 'applied pre-launch; its index on a 0001 table had no live rows to lock'],
     ['db/migrations/ledger/0012_fee_transfers.sql', 'pre-launch, no live rows in ops.transfer or ops.case: the kind check is dropped only to be re-added as a superset in the same transaction, and the ops.case index locks nothing'],
+    ['db/migrations/ledger/0013_fx_rates.sql', 'pre-launch, no live rows in ops.approval_request: its kind check is dropped only to be re-added as a superset in the same transaction'],
   ]),
 });
 
