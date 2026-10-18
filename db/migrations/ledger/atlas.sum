@@ -1,4 +1,4 @@
-h1:ijXAu4tA2fZf/mYIFCQTo7ZCYIJ0qGIBqlrtPoKNoHw=
+h1:EmofIgsJ+Sak8LB+1b3aQbRBn+oOVgbRhuqeHD/JG6s=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
@@ -9,3 +9,4 @@ h1:ijXAu4tA2fZf/mYIFCQTo7ZCYIJ0qGIBqlrtPoKNoHw=
 0008_auto_reload.sql h1:xVdNR+KrOyVy3bT+oU+tfXKQ9Q9XVaj1IaySPUXZ+f8=
 0009_risk_tiers.sql h1:rY/n5bVMR3eiWuQX+tO5+9iuyH/go0oM+AK1oWmHjpk=
 0010_payment_requests.sql h1:DG9hEVnSVENBPlpYzBUap/f2qiX/2l7HVDle5Q1BtG4=
+0011_payees.sql h1:16VkspbRF5HfyAwfJny/n+uqkAwk4q3XKxb9AMVBcJQ=
