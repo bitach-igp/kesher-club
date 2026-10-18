@@ -26,6 +26,8 @@ export type PaymentRequest = Schemas['PaymentRequest'];
 export type PaidPaymentRequest = Schemas['PaidPaymentRequest'];
 export type Split = Schemas['Split'];
 export type MoneyWire = Schemas['Money'];
+export type FxQuote = Schemas['FxQuote'];
+export type FxConversion = Schemas['FxConversion'];
 export type OtpPurpose = 'register' | 'recovery';
 
 export interface AuthApi {
@@ -82,6 +84,12 @@ export interface PayApi {
   declineRequest(id: string, idempotencyKey: string): Promise<PaymentRequest>;
 }
 
+/** M11 convert (T-0509): a 30 s quote and the conversion at it. */
+export interface FxApi {
+  quote(input: { from: MoneyWire; to: 'USD' | 'ILS' }, idempotencyKey: string): Promise<FxQuote>;
+  convert(quoteId: string, idempotencyKey: string): Promise<FxConversion>;
+}
+
 export interface EmergencyCase {
   caseId: string;
   callbackSlaMinutes: number;
@@ -116,6 +124,7 @@ export interface Api {
   kyc: KycApi;
   cards: CardsApi;
   pay: PayApi;
+  fx: FxApi;
   esim: EsimUsageApi;
   grants: GrantsApi;
   concierge: ConciergeApi;
@@ -169,6 +178,10 @@ export function sdkApi(client: Client, _session: Session, extras: { esim: EsimUs
       createSplit: (input, idempotencyKey) => client.post('/splits', { body: input, idempotencyKey }),
       payRequest: (id, idempotencyKey) => client.post('/requests/{id}/pay', { path: { id }, idempotencyKey }),
       declineRequest: (id, idempotencyKey) => client.post('/requests/{id}/decline', { path: { id }, idempotencyKey }),
+    },
+    fx: {
+      quote: (input, idempotencyKey) => client.post('/fx/quotes', { body: input, idempotencyKey }),
+      convert: (quoteId, idempotencyKey) => client.post('/fx/conversions', { body: { quoteId }, idempotencyKey }),
     },
     esim: extras.esim,
     grants: {

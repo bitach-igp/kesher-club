@@ -5,6 +5,9 @@ import type { Database } from '../db.ts';
 
 export type EntitlementPeriod = 'month' | 'term' | 'none';
 
+/** FX markup when a plan version names none, and for members without an active plan (REQ-FX-002). */
+export const DEFAULT_FX_MARKUP_BPS = 75n;
+
 export interface EntitlementTemplate {
   /** Integer as a string (bigint-safe in jsonb). */
   limit: string;
@@ -52,7 +55,7 @@ export class PlanService {
       const version = (last.rows[0]?.v ?? 0) + 1;
       await tx.query(
         `insert into billing.plan_version (plan_code, version, price_minor, currency, term_months, entitlements, fx_markup_bps, effective_from) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [input.planCode, version, input.price.minor.toString(), input.price.currency, input.termMonths, JSON.stringify(input.entitlements), Number(input.fxMarkupBps ?? 75n), input.effectiveFrom],
+        [input.planCode, version, input.price.minor.toString(), input.price.currency, input.termMonths, JSON.stringify(input.entitlements), Number(input.fxMarkupBps ?? DEFAULT_FX_MARKUP_BPS), input.effectiveFrom],
       );
       return (await this.get(input.planCode, version, tx))!;
     });
