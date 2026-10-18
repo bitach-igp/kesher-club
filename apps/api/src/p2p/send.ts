@@ -130,6 +130,23 @@ export class P2pSendService implements SendActivities {
     return view((await runSend(this, input, key, now)).transfer);
   }
 
+  /**
+   * POST /transfers/preview (T-0518): what a send of this amount to this member would land as, priced by
+   * the very function the send prices with, so the confirm sheet and the journal cannot disagree. The
+   * same eligibility as a send (so a stranger's preference cannot be probed); nothing is created, and
+   * neither the limits nor the balance are judged: the send itself does that.
+   */
+  async preview(fromPartyId: string, body: unknown, now: Date): Promise<TransferPreview> {
+    const input = parse(fromPartyId, body);
+    await this.eligible(input);
+    const c = await this.price(input, now);
+    return {
+      amount: toWire(input.amount),
+      received: toWire(c?.received ?? input.amount),
+      ...(c ? { rate: rateString(c.rateScaled), rateVersion: c.rateVersion } : {}),
+    };
+  }
+
   /** Both sides verified members (REQ-PAY-001): an active account with identity approved. */
   async eligible(input: SendInput): Promise<void> {
     if (input.fromPartyId === input.toPartyId) throw new DomainError('VALIDATION_FAILED', 'You cannot send money to yourself');
@@ -313,6 +330,15 @@ function conversionMetadata(t: Transfer): Record<string, unknown> {
     received: toWire(c.received),
     markup: toWire(money(markup, c.received.currency)),
   };
+}
+
+/** The OpenAPI `TransferPreview`. */
+export interface TransferPreview {
+  amount: ReturnType<typeof toWire>;
+  received: ReturnType<typeof toWire>;
+  /** The club rate the send converts at, before the recipient's plan fee; absent when nothing converts. */
+  rate?: string;
+  rateVersion?: number;
 }
 
 /** The OpenAPI `Transfer`. */

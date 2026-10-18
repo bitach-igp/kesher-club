@@ -2,6 +2,7 @@
 // hold (a recovered account cannot send for 24 h), then the flag, then the Idempotency-Key that names
 // the SendWorkflow. Cancelling (T-0506, REQ-PAY-003) takes back a send still in its new-pair hold. Requests
 // and splits (T-0507, REQ-PAY-004) need only the key; paying one is a send and needs the step-up too.
+// The preview (T-0518, REQ-PAY-006) moves nothing, so it needs the bearer and the flag only.
 import { DomainError } from '@kesher/domain';
 import { assertNotRestricted } from '../auth/recovery.ts';
 import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
@@ -59,6 +60,12 @@ export function p2pHandlers(send: P2pSendService, stepUp: StepUpService, flags: 
       if (!(await flags.isOn(P2P_FLAG))) throw new DomainError('FEATURE_OFF', 'Member transfers are not enabled yet');
       const key = requireIdempotencyKey(req);
       return created(await send.send(p.partyId, req.body, key, req.now));
+    }),
+    previewTransfer: route(async (req) => {
+      const p = requirePrincipal(req);
+      assertNotRestricted(p, 'p2p_send', req.now);
+      await gate();
+      return ok(await send.preview(p.partyId, req.body, req.now));
     }),
     cancelTransfer: route(async (req) => {
       const p = requirePrincipal(req);

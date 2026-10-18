@@ -60,6 +60,7 @@
 | [T-0515](T-0515.md) | PAY | Cross-currency send at the club rate | REQ-PAY-006 | 9 |
 | [T-0516](T-0516.md) | PAY | Mobile purse choice, received-amount preview, receiving currency setting | REQ-PAY-006, REQ-PAY-007 | 9 |
 | [T-0517](T-0517.md) | WAL | Loads into the chosen purse; cross-currency loads at the club rate | REQ-WAL-006 | 9 |
+| [T-0518](T-0518.md) | PAY | Send preview: what a send lands as, priced as the send prices it | REQ-PAY-006 | 9 |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
