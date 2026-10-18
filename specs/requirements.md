@@ -22,6 +22,7 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-WAL-003 | P2 | ACH loads held for the bank's hold days |
 | REQ-WAL-004 | P2 | Auto-reload to target, at most once per 24 h |
 | REQ-WAL-005 | P1 | Balance withdrawn or refunded on closure |
+| REQ-WAL-006 | P2 | Loads credit the chosen purse; cross-currency loads convert at the club rate |
 | REQ-CRD-001 | P2 | Virtual card within 60 s of T2 approval |
 | REQ-CRD-002 | P2 | PAN/CVV only via the processor PCI component |
 | REQ-CRD-003 | P2 | JIT decision under 300 ms p99 |
@@ -36,6 +37,8 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-PAY-003 | P2 | New counterparty over 500 ILS holds 2 h |
 | REQ-PAY-004 | P2 | Requests and splits expire in 14 days |
 | REQ-PAY-005 | P2 | Retries never create two transfers |
+| REQ-PAY-006 | P2 | Send from a chosen purse; recipient credited in their receiving currency at the club rate |
+| REQ-PAY-007 | P2 | Receiving currency preference: USD, ILS or as sent |
 | REQ-INS-001 | P1 | Roster CSV import, all or nothing |
 | REQ-INS-002 | P1 | Invites and onboarding funnel |
 | REQ-INS-003 | P2 | Allowance runs with dry run, one workflow per date |
@@ -44,6 +47,8 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-INS-006 | P2 | Collections receipts and monthly export |
 | REQ-FX-001 | P2 | Quotes lock 30 s with rate, markup, total |
 | REQ-FX-002 | P2 | Markup from plan config stored on the journal |
+| REQ-FX-003 | P2 | Conversions use the club-published, versioned rate; the version is on the quote and the journal |
+| REQ-FX-004 | P2 | A rate past its validity is never used; without a valid rate, quotes answer PROVIDER_UNAVAILABLE |
 | REQ-PO-001 | P2 | Payee validation and 24 h cooling-off |
 | REQ-PO-002 | P2 | Failed payout auto-reverses and notifies |
 | REQ-MKT-001 | P1 | addon_order lifecycle posts cost, price, commission |
@@ -65,5 +70,6 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-NOT-002 | P1 | Standard Webhooks outbound with retries |
 | REQ-ADM-001 | P1 | Hash-chained admin audit |
 | REQ-ADM-002 | P1 | Two-person money flag flips |
+| REQ-ADM-003 | P2 | Finance publishes club rates through the admin API; manual rates need two finance approvers and an audit entry |
 | REQ-CMP-001 | P2 | Monitoring alerts with dispositions |
 | REQ-CMP-002 | P1 | Complaint SLA timers and export |
