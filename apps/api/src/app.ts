@@ -2,7 +2,7 @@
 // in sim mode) and returns the handler table. The HTTP server (server.ts) and tests call this;
 // nothing here knows about sockets. Secrets arrive through the config loader (T-0004).
 import type { Database } from './db.ts';
-import type { AuthPort, BillingPort, CardIssuingPort, EventsPort, FundingPort, KycPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
+import type { AuthPort, BillingPort, CardIssuingPort, EventsPort, FundingPort, FxPort, KycPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
 import { ok, requireIdempotencyKey, requirePrincipal, route, type Handler, type HttpRequest } from './http.ts';
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
@@ -11,6 +11,8 @@ import { CardService } from './cards/service.ts';
 import { JitService } from './cards/jit.ts';
 import { PhysicalCardService } from './cards/physical.ts';
 import { detailsTokenProvisioning, ProvisioningService, TOKEN_EVENT_PROVIDER } from './cards/provisioning.ts';
+import { fxHandlers } from './fx/handlers.ts';
+import { FxService } from './fx/service.ts';
 import { kycHandlers } from './kyc/handlers.ts';
 import { p2pHandlers } from './p2p/handlers.ts';
 import { P2pHoldService } from './p2p/holds.ts';
@@ -129,10 +131,11 @@ function buildServices(o: AppOptions) {
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
   const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort });
   const requests = new PaymentRequestService(o.db, p2p, identity);
+  const fx = new FxService({ port: o.registry.resolve<FxPort>('fx', o.market), ledger, accounts, transfers, memberships, plans, flags });
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure, p2pLimits, p2p, requests };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx };
 }
 
 export function createApp(o: AppOptions): App {
@@ -144,6 +147,7 @@ export function createApp(o: AppOptions): App {
     ...cardHandlers(s.cards, s.jit, s.provisioning, s.stepUp, s.physical),
     ...walletHandlers(s.loads, s.stepUp, s.flags, s.autoReload, s.closure),
     ...p2pHandlers(s.p2p, s.stepUp, s.flags, s.requests),
+    ...fxHandlers(s.fx, s.stepUp),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
     createMembership: route(async (req) => {
       const p = requirePrincipal(req);
