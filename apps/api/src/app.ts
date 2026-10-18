@@ -13,6 +13,7 @@ import { PhysicalCardService } from './cards/physical.ts';
 import { detailsTokenProvisioning, ProvisioningService, TOKEN_EVENT_PROVIDER } from './cards/provisioning.ts';
 import { kycHandlers } from './kyc/handlers.ts';
 import { p2pHandlers } from './p2p/handlers.ts';
+import { P2pHoldService } from './p2p/holds.ts';
 import { P2pLimitService } from './p2p/limits.ts';
 import { P2pSendService } from './p2p/send.ts';
 import { KycService } from './kyc/service.ts';
@@ -124,7 +125,8 @@ function buildServices(o: AppOptions) {
   webhooks.bind(FUNDING_PROVIDER, { verifier: loads.webhookVerifier(), process: (e) => loads.applyWebhook(e, clock.now()).then(() => undefined) });
   const autoReload = new AutoReloadService(o.db, accounts, loads, flags);
   const p2pLimits = new P2pLimitService(o.db, memberships, entitlements, plans);
-  const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, kyc, identity, notify: notifyPort });
+  const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
+  const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort });
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
@@ -146,14 +148,6 @@ export function createApp(o: AppOptions): App {
       const b = req.body as { memberPartyId: string; planCode: string; termMonths?: number; funderEmail?: string };
       const m = await s.memberships.create({ idempotencyKey: requireIdempotencyKey(req), memberPartyId: b.memberPartyId, funderPartyId: p.partyId, funderEmail: b.funderEmail ?? `party:${p.partyId}@members.kesher.example`, planCode: b.planCode, ...(b.termMonths ? { termMonths: b.termMonths } : {}) }, req.now);
       return { status: 201, body: { id: m.id, planCode: m.planCode, planVersion: m.planVersion, status: m.status, price: toWire(m.price), ...(m.currentPeriodEnd ? { currentPeriodEnd: m.currentPeriodEnd } : {}) } };
-    }),
-    cancelTransfer: route(async (req) => {
-      const p = requirePrincipal(req);
-      requireIdempotencyKey(req);
-      const t = await s.transfers.get(req.params['id'] ?? '');
-      if (!t || t.fromPartyId !== p.partyId) throw new DomainError('NOT_FOUND', 'Transfer not found');
-      const c = await s.transfers.apply(t.id, 'cancel', req.now, { reason: 'member cancelled' });
-      return ok({ id: c.id, state: c.state, amount: toWire(c.amount) });
     }),
     listCatalogue: route(async (req) => {
       requirePrincipal(req);

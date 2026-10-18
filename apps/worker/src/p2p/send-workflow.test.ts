@@ -11,6 +11,7 @@ import { PlanService } from '@kesher/api/billing/plans';
 import { KycService } from '@kesher/api/kyc/service';
 import { AccountService } from '@kesher/api/ledger/accounts';
 import { PostgresLedger } from '@kesher/api/ledger/post';
+import { P2pHoldService } from '@kesher/api/p2p/holds';
 import { P2pLimitService } from '@kesher/api/p2p/limits';
 import { P2pSendService, settleKey, type SendActivities, type SendInput } from '@kesher/api/p2p/send';
 import { TransferService } from '@kesher/api/transfers/service';
@@ -49,7 +50,7 @@ beforeAll(async () => {
   const plans = new PlanService(db);
   const memberships = new MembershipService(db, plans, new BillingSimulator());
   notify = new NotifySimulator();
-  send = new P2pSendService({ db, ledger, accounts, transfers, limits: new P2pLimitService(db, memberships, new EntitlementService(db, plans), plans), kyc: new KycService(db, new KycSimulator(fixedClock(NOW.toISOString())), 'IL'), identity, notify });
+  send = new P2pSendService({ db, ledger, accounts, transfers, limits: new P2pLimitService(db, memberships, new EntitlementService(db, plans), plans), holds: new P2pHoldService(db, ledger, accounts, transfers), kyc: new KycService(db, new KycSimulator(fixedClock(NOW.toISOString())), 'IL'), identity, notify });
 }, 60_000);
 afterAll(async () => db.close());
 
@@ -92,6 +93,9 @@ describe('the run (TST-PAY-001, TST-PAY-005)', () => {
       },
       recordUsage: (t, w, n) => send.recordUsage(t, w, n),
       notify: (t, w, n) => send.notify(t, w, n),
+      shouldHold: (t) => send.shouldHold(t),
+      hold: (t, w, n) => send.hold(t, w, n),
+      release: (t, w, n) => send.release(t, w, n),
     };
     const { runSend } = await import('@kesher/api/p2p/send');
     await expect(runSend(flaky, input(a, b, 4_000n), key, now)).rejects.toThrow('process died');
