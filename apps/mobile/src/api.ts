@@ -22,6 +22,9 @@ export type KycStatus = Schemas['KycStatus'];
 export type KycSessionStarted = Schemas['KycSessionStarted'];
 export type Account = Schemas['Account'];
 export type Transfer = Schemas['Transfer'];
+export type TransferPreview = Schemas['TransferPreview'];
+export type Preferences = Schemas['Preferences'];
+export type ReceiveCurrency = Preferences['receiveCurrency'];
 export type PaymentRequest = Schemas['PaymentRequest'];
 export type PaidPaymentRequest = Schemas['PaidPaymentRequest'];
 export type Split = Schemas['Split'];
@@ -78,12 +81,20 @@ export interface CardsApi {
 export interface PayApi {
   listAccounts(): Promise<{ items: readonly Account[] }>;
   send(input: { toPartyId: string; amount: MoneyWire; note?: string }, idempotencyKey: string): Promise<Transfer>;
+  /** What a send would land as in the recipient's purse, priced as the send prices it (T-0518). Moves nothing. */
+  preview(input: { toPartyId: string; amount: MoneyWire }): Promise<TransferPreview>;
   cancelTransfer(id: string, idempotencyKey: string): Promise<Transfer>;
   listRequests(): Promise<{ items: readonly PaymentRequest[] }>;
   createRequest(input: { payerPartyId: string; amount: MoneyWire; note?: string }, idempotencyKey: string): Promise<PaymentRequest>;
   createSplit(input: { total: MoneyWire; participants: string[]; note?: string }, idempotencyKey: string): Promise<Split>;
   payRequest(id: string, idempotencyKey: string): Promise<PaidPaymentRequest>;
   declineRequest(id: string, idempotencyKey: string): Promise<PaymentRequest>;
+}
+
+/** M33 receiving currency (T-0514): which purse money sent to the member lands in. */
+export interface PreferencesApi {
+  get(): Promise<Preferences>;
+  set(receiveCurrency: ReceiveCurrency): Promise<Preferences>;
 }
 
 /** M08–M10 home, balance and transaction detail (T-0511): purses, the transaction history per purse, identity and card status. */
@@ -132,6 +143,7 @@ export interface Api {
   kyc: KycApi;
   cards: CardsApi;
   pay: PayApi;
+  preferences: PreferencesApi;
   wallet: WalletApi;
   fx: FxApi;
   esim: EsimUsageApi;
@@ -181,12 +193,17 @@ export function sdkApi(client: Client, _session: Session, extras: { esim: EsimUs
     pay: {
       listAccounts: () => client.get('/accounts'),
       send: (input, idempotencyKey) => client.post('/transfers', { body: input, idempotencyKey }),
+      preview: (input) => client.post('/transfers/preview', { body: input }),
       cancelTransfer: (id, idempotencyKey) => client.post('/transfers/{id}/cancel', { path: { id }, idempotencyKey }),
       listRequests: () => client.get('/requests'),
       createRequest: (input, idempotencyKey) => client.post('/requests', { body: input, idempotencyKey }),
       createSplit: (input, idempotencyKey) => client.post('/splits', { body: input, idempotencyKey }),
       payRequest: (id, idempotencyKey) => client.post('/requests/{id}/pay', { path: { id }, idempotencyKey }),
       declineRequest: (id, idempotencyKey) => client.post('/requests/{id}/decline', { path: { id }, idempotencyKey }),
+    },
+    preferences: {
+      get: () => client.get('/me/preferences'),
+      set: (receiveCurrency) => client.patch('/me/preferences', { body: { receiveCurrency } }),
     },
     wallet: {
       listAccounts: () => client.get('/accounts'),
