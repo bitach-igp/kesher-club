@@ -20,6 +20,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/auth/token/refresh', operationId: 'refreshToken', public: true },
   { method: 'POST', path: '/auth/step-up', operationId: 'stepUp' },
   { method: 'GET', path: '/me/capabilities', operationId: 'getCapabilities' },
+  { method: 'GET', path: '/me/preferences', operationId: 'getPreferences' },
+  { method: 'PATCH', path: '/me/preferences', operationId: 'updatePreferences' },
   { method: 'GET', path: '/households/{id}', operationId: 'getHousehold' },
   { method: 'POST', path: '/memberships', operationId: 'createMembership' },
   { method: 'GET', path: '/accounts', operationId: 'listAccounts' },

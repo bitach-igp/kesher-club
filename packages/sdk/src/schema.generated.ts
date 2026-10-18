@@ -1100,6 +1100,30 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/me/preferences": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The member's receiving currency
+         * @description REQ-PAY-007 (ADR-007). `as_sent`, the default, keeps the sender's currency; USD or ILS converts a send in the other currency at the club rate.
+         */
+        readonly get: operations["getPreferences"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        /**
+         * Set the receiving currency
+         * @description REQ-PAY-007. Bearer only; a preference moves no money by itself. Unknown values answer VALIDATION_FAILED.
+         */
+        readonly patch: operations["updatePreferences"];
+        readonly trace?: never;
+    };
     readonly "/memberships": {
         readonly parameters: {
             readonly query?: never;
@@ -1963,6 +1987,12 @@ export interface components {
             /** @enum {string} */
             readonly status: "pending" | "approved" | "rejected" | "expired";
             readonly summary?: string;
+        };
+        readonly Preferences: {
+            /** @enum {string} */
+            readonly receiveCurrency: "USD" | "ILS" | "as_sent";
+            /** Format: date-time */
+            readonly updatedAt?: string;
         };
         readonly Problem: {
             /** @enum {string} */
@@ -3686,6 +3716,55 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Closure"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getPreferences: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Preferences */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Preferences"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly updatePreferences: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @enum {string} */
+                    readonly receiveCurrency: "USD" | "ILS" | "as_sent";
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Preferences after the change */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Preferences"];
                 };
             };
             readonly default: components["responses"]["Problem"];
