@@ -3,9 +3,10 @@
 // ACH is `us_bank_account` and lands `on_hold` for 3 business days; RTP is not offered by Stripe
 // and is refused with UNSUPPORTED_METHOD. Idempotency: Stripe's Idempotency-Key plus a local
 // IdempotencyStore. Webhooks: Stripe-Signature verified, deduped by event id, amount cross-checked
-// against the load this adapter created when it knows it.
+// against the load this adapter created when it knows it. Refunds (REQ-WAL-005) are Stripe Refunds
+// against the PaymentIntent; a refund Stripe refuses comes back `failed` with its failure_reason.
 import { money, type Currency, type Money } from '@kesher/domain';
-import { addBusinessDays, type Clock, FundingError, type FundingMethod, type FundingPort, IdempotencyStore, type Load, type LoadStatus } from '@kesher/ports';
+import { addBusinessDays, type Clock, FundingError, type FundingMethod, type FundingPort, IdempotencyStore, type Load, type LoadStatus, type Refund, type RefundStatus } from '@kesher/ports';
 import { int, isRecord, str, StripeApiError, StripeClient, StripeTransportError } from './client.ts';
 import { DEFAULT_TOLERANCE_SECONDS, headerValue, STRIPE_SIGNATURE_HEADER, verifyStripeSignature } from './signature.ts';
 
@@ -30,6 +31,7 @@ export class StripeFundingAdapter implements FundingPort {
   private readonly client: StripeClient;
   private readonly clock: Clock;
   private readonly idem = new IdempotencyStore<Load>();
+  private readonly refundIdem = new IdempotencyStore<Refund>();
   private readonly events = new Map<string, { eventId: string; load: Load }>();
   /** Loads created by this instance, for the webhook amount cross-check. Holds no PII. */
   private readonly known = new Map<string, { amount: Money; method: FundingMethod; holdUntil?: string }>();
@@ -78,6 +80,21 @@ export class StripeFundingAdapter implements FundingPort {
   async getLoad(loadId: string): Promise<Load> {
     const pi = await this.call(() => this.client.get(`/v1/payment_intents/${encodeURIComponent(loadId)}`), { missing: () => new FundingError('UNKNOWN_LOAD', loadId) });
     return mapPaymentIntent(pi, this.known.get(loadId));
+  }
+
+  async refund(input: { loadId: string; amount: Money }, idempotencyKey: string): Promise<Refund> {
+    if (input.amount.minor <= 0n) throw new FundingError('VALIDATION_FAILED', 'Refund amount must be positive');
+    return this.refundIdem.run(idempotencyKey, async () => {
+      const r = await this.call(() => this.client.post('/v1/refunds', { payment_intent: input.loadId, amount: input.amount.minor, metadata: { refundKey: idempotencyKey } }, idempotencyKey), {
+        missing: () => new FundingError('UNKNOWN_LOAD', input.loadId),
+      });
+      return mapRefund(r, input.loadId);
+    });
+  }
+
+  async getRefund(refundId: string): Promise<Refund> {
+    const r = await this.call(() => this.client.get(`/v1/refunds/${encodeURIComponent(refundId)}`), { missing: () => new FundingError('UNKNOWN_REFUND', refundId) });
+    return mapRefund(r);
   }
 
   async parseWebhook(headers: Record<string, string>, rawBody: string): Promise<{ eventId: string; load: Load }> {
@@ -146,6 +163,34 @@ function methodOf(pi: Record<string, unknown>, hint: FundingMethod | undefined):
   if (types.includes('us_bank_account')) return 'ach';
   if (types.includes('card')) return 'card';
   throw unexpected('payment intent without a recognisable method');
+}
+
+/** Maps a Stripe Refund to the port's Refund. Unknown statuses fail secure. */
+export function mapRefund(r: Record<string, unknown>, loadHint?: string): Refund {
+  const refundId = str(r['id']);
+  const amount = int(r['amount']);
+  const currency = toCurrency(r['currency']);
+  const loadId = str(r['payment_intent']) ?? loadHint;
+  if (!refundId || amount === undefined || !currency || !loadId) throw unexpected('refund without id/amount/currency/payment_intent');
+  const vendorStatus = str(r['status']);
+  let status: RefundStatus;
+  switch (vendorStatus) {
+    case 'succeeded':
+      status = 'succeeded';
+      break;
+    case 'pending':
+    case 'requires_action':
+      status = 'pending';
+      break;
+    case 'failed':
+    case 'canceled':
+      status = 'failed';
+      break;
+    default:
+      throw unexpected(`refund status ${String(vendorStatus)}`);
+  }
+  const failureCode = status === 'failed' ? (str(r['failure_reason']) ?? 'refund_failed') : undefined;
+  return { refundId, loadId, amount: money(amount, currency), status, ...(failureCode ? { failureCode } : {}) };
 }
 
 /** Maps a Stripe PaymentIntent to the port's Load. Unknown statuses fail secure. */

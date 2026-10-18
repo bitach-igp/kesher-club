@@ -9,6 +9,8 @@ export interface FundingContractOptions {
   outagePaymentMethod?: string;
   achPaymentMethod?: string;
   succeededWebhook: (port: FundingPort, loadId: string) => Promise<{ headers: Record<string, string>; rawBody: string }>;
+  /** A payment method whose loads cannot be refunded (the vendor answers failed). */
+  norefundPaymentMethod?: string;
 }
 
 export function fundingContract(name: string, make: () => FundingPort, opts: FundingContractOptions): void {
@@ -68,5 +70,30 @@ export function fundingContract(name: string, make: () => FundingPort, opts: Fun
     it('unknown loads are typed errors', async () => {
       await expect(make().getLoad('nope')).rejects.toBeInstanceOf(FundingError);
     });
+
+    it('refunds a settled load to its source, partially and idempotently, never past what remains (REQ-WAL-005)', async () => {
+      const port = make();
+      const l = await port.createLoad({ customerId: 'c1', method: 'card', amount, paymentMethodId: opts.goodPaymentMethod }, 'L-r');
+      const a = await port.refund({ loadId: l.loadId, amount: money(3_000n, 'USD') }, 'R-1');
+      expect(a).toMatchObject({ loadId: l.loadId, amount: money(3_000n, 'USD') });
+      expect(['pending', 'succeeded']).toContain(a.status);
+      expect(await port.refund({ loadId: l.loadId, amount: money(3_000n, 'USD') }, 'R-1')).toEqual(a);
+      expect((await port.getRefund(a.refundId)).refundId).toBe(a.refundId);
+      await expect(port.refund({ loadId: l.loadId, amount: money(7_001n, 'USD') }, 'R-2')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      expect((await port.refund({ loadId: l.loadId, amount: money(7_000n, 'USD') }, 'R-3')).amount).toEqual(money(7_000n, 'USD'));
+      await expect(port.refund({ loadId: l.loadId, amount: money(0n, 'USD') }, 'R-4')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      await expect(port.refund({ loadId: 'nope', amount: money(100n, 'USD') }, 'R-5')).rejects.toMatchObject({ code: 'UNKNOWN_LOAD' });
+      await expect(port.getRefund('nope')).rejects.toBeInstanceOf(FundingError);
+    });
+
+    if (opts.norefundPaymentMethod) {
+      it('a refund the vendor refuses comes back failed with a code, not as an exception', async () => {
+        const port = make();
+        const l = await port.createLoad({ customerId: 'c1', method: 'card', amount, paymentMethodId: opts.norefundPaymentMethod! }, 'L-nr');
+        const r = await port.refund({ loadId: l.loadId, amount }, 'R-nr');
+        expect(r.status).toBe('failed');
+        expect(r.failureCode).toBeTruthy();
+      });
+    }
   });
 }

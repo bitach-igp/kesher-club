@@ -207,6 +207,32 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/TransactionPage" }
         default: { $ref: "#/components/responses/Problem" }
+  /me/closure:
+    get:
+      operationId: getClosure
+      summary: Where closing the account stands
+      description: REQ-WAL-005. Pending refunds are checked with the funding vendor on each read.
+      responses:
+        "200":
+          description: Closure status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Closure" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: closeAccount
+      summary: Close the account, refunding what remains to where it came from
+      description: REQ-WAL-005. Every purse is emptied by refunds against the member's loads before the account closes; holds or an overdrawn purse block it. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      responses:
+        "200":
+          description: Closure status
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Closure" }
+        default: { $ref: "#/components/responses/Problem" }
   /accounts/{id}/auto-reload:
     get:
       operationId: getAutoReload
@@ -1419,6 +1445,32 @@ components:
       properties:
         items: { type: array, items: { $ref: "#/components/schemas/Transaction" } }
         nextCursor: { type: string }
+    Closure:
+      type: object
+      required: [state, balances, refunds]
+      properties:
+        state: { type: string, enum: [open, refunding, blocked, closed] }
+        balances:
+          type: array
+          items:
+            type: object
+            required: [currency, available, holds]
+            properties:
+              currency: { type: string, enum: [USD, ILS] }
+              available: { $ref: "#/components/schemas/Money" }
+              holds: { $ref: "#/components/schemas/Money" }
+        refunds:
+          type: array
+          items:
+            type: object
+            required: [id, amount, state]
+            properties:
+              id: { type: string, format: uuid }
+              amount: { $ref: "#/components/schemas/Money" }
+              state: { type: string, enum: [pending, settled, failed] }
+              failureCode: { type: string }
+        blockedReason: { type: string, enum: [HOLDS_OUTSTANDING, OVERDRAWN, NO_REFUND_SOURCE, REFUND_FAILED] }
+        closedAt: { type: string, format: date-time }
     AutoReloadRuleRequest:
       type: object
       required: [threshold, target, method, paymentMethodId]

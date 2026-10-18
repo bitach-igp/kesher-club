@@ -39,6 +39,16 @@ interface Sub {
   metadata: Record<string, string>;
 }
 
+interface Rf {
+  id: string;
+  payment_intent: string;
+  amount: bigint;
+  currency: string;
+  status: 'succeeded' | 'pending' | 'failed';
+  failure_reason?: string;
+  metadata: Record<string, string>;
+}
+
 interface Pi {
   id: string;
   amount: bigint;
@@ -59,6 +69,7 @@ export class FakeStripe {
   private readonly customers = new Map<string, { id: string; email: string; metadata: Record<string, string> }>();
   private readonly subs = new Map<string, Sub>();
   private readonly pis = new Map<string, Pi>();
+  private readonly refunds = new Map<string, Rf>();
   private readonly idem = new Map<string, { fingerprint: string; reply: Reply }>();
   private readonly clock: Clock;
   private readonly secretKey: string;
@@ -152,6 +163,11 @@ export class FakeStripe {
     if (resource === 'payment_intents' && id && method === 'GET') {
       const pi = this.pis.get(id);
       return pi ? ok(this.piJson(pi)) : missing('payment_intent', id);
+    }
+    if (resource === 'refunds' && method === 'POST' && !id) return this.createRefund(form);
+    if (resource === 'refunds' && id && method === 'GET') {
+      const r = this.refunds.get(id);
+      return r ? ok(this.refundJson(r)) : missing('refund', id);
     }
     return err(404, 'invalid_request_error', `Unrecognized request URL (${method}: ${path})`);
   }
@@ -273,7 +289,37 @@ export class FakeStripe {
     return ok(this.piJson(pi));
   }
 
+  private createRefund(form: Form): Reply {
+    const piId = s(form['payment_intent']);
+    if (!piId) return err(400, 'invalid_request_error', 'Missing required param: payment_intent', 'parameter_missing', 'payment_intent');
+    const pi = this.pis.get(piId);
+    if (!pi) return missing('payment_intent', piId, 'payment_intent');
+    if (pi.status !== 'succeeded') return err(400, 'invalid_request_error', 'This PaymentIntent could not be refunded because it has a status of ' + pi.status, 'payment_intent_unexpected_state', 'payment_intent');
+    const amountStr = s(form['amount']);
+    const amount = amountStr === undefined ? pi.amount : /^\d+$/.test(amountStr) ? BigInt(amountStr) : -1n;
+    if (amount <= 0n) return err(400, 'invalid_request_error', 'Invalid positive integer', 'parameter_invalid_integer', 'amount');
+    let taken = 0n;
+    for (const r of this.refunds.values()) if (r.payment_intent === piId && r.status !== 'failed') taken += r.amount;
+    if (amount > pi.amount - taken) return err(400, 'invalid_request_error', 'Refund amount (' + amount + ') is greater than unrefunded amount on charge (' + (pi.amount - taken) + ')', 'amount_too_large', 'amount');
+    const refused = pi.payment_method === 'pm_card_norefund';
+    const r: Rf = { id: this.id('re'), payment_intent: piId, amount, currency: pi.currency, status: refused ? 'failed' : pi.payment_method === 'pm_card_slowrefund' ? 'pending' : 'succeeded', ...(refused ? { failure_reason: 'expired_or_canceled_card' } : {}), metadata: stringMap(form['metadata']) };
+    this.refunds.set(r.id, r);
+    return ok(this.refundJson(r));
+  }
+
+  /** Control hook: finishes a pending refund. */
+  settleRefund(refundId: string, outcome: 'succeeded' | 'failed' = 'succeeded'): void {
+    const r = this.refunds.get(refundId);
+    if (!r) throw new Error(`fake stripe: no refund ${refundId}`);
+    r.status = outcome;
+    if (outcome === 'failed') r.failure_reason = 'expired_or_canceled_card';
+  }
+
   // ---- serialisation ----
+
+  private refundJson(r: Rf): Json {
+    return { id: r.id, object: 'refund', payment_intent: r.payment_intent, amount: r.amount, currency: r.currency, status: r.status, failure_reason: r.failure_reason ?? null, metadata: r.metadata, created: this.now() };
+  }
 
   private subJson(sub: Sub): Json {
     return {

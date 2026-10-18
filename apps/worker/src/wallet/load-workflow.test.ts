@@ -47,6 +47,12 @@ class ScriptedVendor implements FundingPort {
   async parseWebhook(): Promise<{ eventId: string; load: Load }> {
     throw new FundingError('BAD_SIGNATURE', 'not used here');
   }
+  async refund(): Promise<never> {
+    throw new FundingError('VALIDATION_FAILED', 'not used here');
+  }
+  async getRefund(id: string): Promise<never> {
+    throw new FundingError('UNKNOWN_REFUND', id);
+  }
 }
 
 function service(port: FundingPort, provider: string): LoadService {
@@ -70,7 +76,7 @@ afterAll(async () => db.close());
 describe('the run (TST-WAL-002)', () => {
   it('settles a $100 Apple Pay load with one journal, the vendor pull keyed by the workflow id; every rerun is a replay', async () => {
     const sim = new FundingSimulator(fixedClock(NOW.toISOString()));
-    const recording: FundingPort = { createLoad: (i, k) => (keysSeen.push(k), sim.createLoad(i, k)), getLoad: (id) => sim.getLoad(id), parseWebhook: (h, b) => sim.parseWebhook(h, b) };
+    const recording: FundingPort = { createLoad: (i, k) => (keysSeen.push(k), sim.createLoad(i, k)), getLoad: (id) => sim.getLoad(id), parseWebhook: (h, b) => sim.parseWebhook(h, b), refund: (i, k) => sim.refund(i, k), getRefund: (id) => sim.getRefund(id) };
     const wf = new LoadWorkflow(service(recording, 'simulator'), recording, clock);
     const party = uuidv7(NOW);
     const key = `load-${party}`;

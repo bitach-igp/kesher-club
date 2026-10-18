@@ -1,4 +1,5 @@
-// /loads (T-0501, REQ-WAL-002) and /accounts/{id}/auto-reload (T-0503, REQ-WAL-004). The flag answers first (FEATURE_OFF, never 500), then the fresh
+// /loads (T-0501, REQ-WAL-002), /accounts/{id}/auto-reload (T-0503, REQ-WAL-004) and /me/closure (T-0504,
+// REQ-WAL-005). The flag answers first (FEATURE_OFF, never 500), then the fresh
 // step-up (REQ-AUTH-006), then the Idempotency-Key that names the LoadWorkflow. A load stays open
 // during a recovery hold: money coming in is never restricted (REQ-AUTH-008).
 import { DomainError } from '@kesher/domain';
@@ -6,9 +7,10 @@ import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import { created, ok, requireIdempotencyKey, requirePrincipal, route, type Handler } from '../http.ts';
 import type { AutoReloadService } from './auto-reload.ts';
+import type { ClosureService } from './closure.ts';
 import { WALLET_FLAG, type LoadService } from './loads.ts';
 
-export function walletHandlers(loads: LoadService, stepUp: StepUpService, flags: FeatureFlags, autoReload: AutoReloadService): Record<string, Handler> {
+export function walletHandlers(loads: LoadService, stepUp: StepUpService, flags: FeatureFlags, autoReload: AutoReloadService, closure: ClosureService): Record<string, Handler> {
   return {
     createLoad: route(async (req) => {
       const p = requirePrincipal(req);
@@ -27,6 +29,14 @@ export function walletHandlers(loads: LoadService, stepUp: StepUpService, flags:
       requireStepUp(stepUp, req);
       requireIdempotencyKey(req);
       return ok(await autoReload.set(p.partyId, req.params['id'] ?? '', req.body, req.now));
+    }),
+    // Closing is always open to the member: no wallet flag, since a purse may hold money from before a flag was turned off.
+    getClosure: route(async (req) => ok(await closure.status(requirePrincipal(req).partyId, req.now))),
+    closeAccount: route(async (req) => {
+      const p = requirePrincipal(req);
+      requireStepUp(stepUp, req);
+      requireIdempotencyKey(req);
+      return ok(await closure.close(p.partyId, req.now));
     }),
   };
 }

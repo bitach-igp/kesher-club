@@ -28,6 +28,7 @@ fundingContract('stripe', make, {
   outagePaymentMethod: 'pm_outage',
   achPaymentMethod: 'pm_us_bank_ok',
   succeededWebhook: async (port, loadId) => fakes.get(port)!.settlePaymentIntent(loadId),
+  norefundPaymentMethod: 'pm_card_norefund',
 });
 
 describe('StripeFundingAdapter specifics', () => {
@@ -87,6 +88,20 @@ describe('StripeFundingAdapter specifics', () => {
     const l = await port.createLoad({ customerId: 'c', method: 'card', amount, paymentMethodId: 'pm_card_ok' }, 'k');
     const tampered = JSON.stringify({ id: 'evt_t', type: 'payment_intent.succeeded', data: { object: { id: l.loadId, amount: stripeInt(999n), currency: 'usd', status: 'succeeded', metadata: { method: 'card' } } } });
     await expect(port.parseWebhook(fake.sign(tampered), tampered)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+
+  it('refunds post to /v1/refunds against the PaymentIntent with the key; a pending refund is read back by id', async () => {
+    const { fake, port } = harness();
+    const l = await port.createLoad({ customerId: 'c', method: 'card', amount, paymentMethodId: 'pm_card_slowrefund' }, 'k');
+    const r = await port.refund({ loadId: l.loadId, amount: money(2_500n, 'USD') }, 'rk');
+    expect(r).toMatchObject({ loadId: l.loadId, amount: money(2_500n, 'USD'), status: 'pending' });
+    const call = fake.calls.find((x) => x.path === '/v1/refunds')!;
+    expect(call.form['payment_intent']).toBe(l.loadId);
+    expect(call.form['amount']).toBe('2500');
+    expect(call.idempotencyKey).toBe('rk');
+    fake.settleRefund(r.refundId);
+    expect((await port.getRefund(r.refundId)).status).toBe('succeeded');
+    await expect(port.getRefund('re_nope')).rejects.toMatchObject({ code: 'UNKNOWN_REFUND' });
   });
 
   it('unknown payment methods and unknown statuses fail secure', async () => {

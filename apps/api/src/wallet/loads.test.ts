@@ -228,6 +228,12 @@ describe('requires_action (a scripted vendor)', () => {
       if (!l) throw new FundingError('UNKNOWN_LOAD', id);
       return { ...l };
     },
+    async refund() {
+      throw new FundingError('VALIDATION_FAILED', 'not in this script');
+    },
+    async getRefund(id) {
+      throw new FundingError('UNKNOWN_REFUND', id);
+    },
     async parseWebhook(headers, rawBody) {
       if (headers['x-sig'] !== 'ok') throw new FundingError('BAD_SIGNATURE', 'nope');
       const b = JSON.parse(rawBody) as { eventId: string; loadId: string; status: VendorLoad['status'] };
