@@ -4,8 +4,11 @@
 // step-up and a retry, so a double tap or a flaky network is one transfer (REQ-PAY-005). Server
 // refusals become copy with the server's own numbers (the remaining amount, the available balance);
 // nothing here recomputes a limit. Request notes and recipient names are data, rendered as written.
+// Currencies (T-0516, REQ-PAY-006/007): M14 offers the purses the member holds and opens on one with
+// money in it; M15 shows what the recipient receives from the server's preview (T-0518), which prices
+// exactly as the send does, and the sent sheet shows both amounts from the transfer itself.
 import { format, fromWire, money, toWire, type Currency, type Money } from '@kesher/domain';
-import { errorIs, type Account, type MoneyWire, type PayApi, type PaymentRequest, type Split, type Transfer } from '../../src/api.ts';
+import { errorIs, type Account, type MoneyWire, type PayApi, type PaymentRequest, type Split, type Transfer, type TransferPreview } from '../../src/api.ts';
 import type { Camera, Contacts } from '../../src/device.ts';
 import { intlLocale, type CopyKey, type Locale } from '../../src/i18n.ts';
 import { createStore, type Store } from '../../src/model.ts';
@@ -30,6 +33,9 @@ export interface PayState {
   /** Fixed for the life of one confirm sheet; cleared when the sheet closes or the send completes. */
   confirmKey?: string | undefined;
   result?: Transfer | undefined;
+  /** M15: the server's preview of what the recipient receives; refreshed each time the sheet opens. */
+  preview?: TransferPreview | undefined;
+  previewing: boolean;
   split: { totalText: string; participants: string[]; created?: Split | undefined };
   qrAmountText: string;
   error?: Problem | undefined;
@@ -135,6 +141,33 @@ export function available(accounts: readonly Account[], currency: Currency): Mon
   return a ? fromWire(a.available) : money(0n, currency);
 }
 
+/** Shekels first: the club's home currency. */
+export const PURSES: readonly Currency[] = ['ILS', 'USD'];
+export interface PurseOption {
+  currency: Currency;
+  available: Money;
+}
+
+/** M14: the purses the member holds, each with what is available in it. */
+export function purseOptions(accounts: readonly Account[]): PurseOption[] {
+  return PURSES.filter((c) => accounts.some((a) => a.currency === c)).map((c) => ({ currency: c, available: available(accounts, c) }));
+}
+
+/**
+ * The purse M14 opens on: the chosen one when it covers `need`, else the first purse that does, else the
+ * chosen one (the balance line then says what is missing). `need` is at least one agora or cent.
+ */
+export function defaultPurse(accounts: readonly Account[], current: Currency, need = 1n): Currency {
+  const covers = (c: Currency) => available(accounts, c).minor >= (need > 0n ? need : 1n);
+  if (covers(current)) return current;
+  return purseOptions(accounts).find((o) => covers(o.currency))?.currency ?? current;
+}
+
+/** The recipient's side when it lands in another currency (a preview or a transfer); undefined when nothing converts. */
+export function convertedTo(x: { amount: MoneyWire; received?: MoneyWire | undefined } | undefined): MoneyWire | undefined {
+  return x?.received && x.received.currency !== x.amount.currency ? x.received : undefined;
+}
+
 /** Server refusals as copy with the server's numbers. */
 export function problemFor(e: unknown, locale: Locale): Problem | 'stepUp' {
   const err = e as { code?: string; status?: number; remaining?: string; currency?: string; limitedBy?: string; available?: string };
@@ -146,6 +179,7 @@ export function problemFor(e: unknown, locale: Locale): Problem | 'stepUp' {
   if (errorIs(e, { code: 'FORBIDDEN' })) return { key: 'pay.confirm.unverified' };
   if (errorIs(e, { code: 'VALIDATION_FAILED' })) return { key: 'pay.recipient.invalid' };
   if (errorIs(e, { code: 'IDEMPOTENCY_CONFLICT' }) || errorIs(e, { status: 409 })) return { key: 'pay.inbox.gone' };
+  if (errorIs(e, { code: 'PROVIDER_UNAVAILABLE' })) return { key: 'pay.error.ratesUnavailable' };
   if (errorIs(e, { code: 'FEATURE_OFF' }) || errorIs(e, { status: 503 })) return { key: 'common.error.unavailable' };
   return { key: 'common.error.generic' };
 }
@@ -171,6 +205,8 @@ export interface PayModel {
   /** M15: mints the confirm key once; a second call while the sheet is open keeps it. */
   openConfirm(): string;
   closeConfirm(): void;
+  /** M15: asks the server what the recipient receives; a conversion shows the amount and the rate. */
+  previewSend(): Promise<void>;
   send(): Promise<void>;
   cancelHold(): Promise<void>;
   /** M16. */
@@ -201,6 +237,7 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
     note: initial.note ?? '',
     busy: false,
     needsStepUp: false,
+    previewing: false,
     split: { totalText: '', participants: [] },
     qrAmountText: '',
   });
@@ -234,6 +271,8 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
     const s = store.get();
     return { to: s.recipient.trim(), amount: s.amountText, currency: s.currency, ...(s.note ? { note: s.note } : {}) };
   };
+  // An explicit currency (the URL, a scanned code, the member's tap) is kept; otherwise M14 picks a purse with money.
+  let pinned = initial.currency !== undefined;
   const refreshRequests = async () => {
     const { items } = await deps.pay.listRequests();
     store.patch({ requests: [...items] });
@@ -245,13 +284,17 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
       store.patch({ mode: 'loading', error: undefined });
       try {
         const [accounts, requests] = await Promise.all([deps.pay.listAccounts(), deps.pay.listRequests()]);
-        store.patch({ mode: 'ready', accounts: [...accounts.items], requests: [...requests.items] });
+        const s = store.get();
+        const typed = parseAmount(s.amountText, s.currency);
+        const currency = pinned ? s.currency : defaultPurse(accounts.items, s.currency, 'amount' in typed ? typed.amount.minor : 1n);
+        store.patch({ mode: 'ready', accounts: [...accounts.items], requests: [...requests.items], currency });
       } catch (e) {
         store.patch({ mode: 'error', error: problemFor(e, locale) === 'stepUp' ? { key: 'common.error.generic' } : (problemFor(e, locale) as Problem) });
       }
     },
     setCurrency(c) {
-      store.patch({ currency: c, error: undefined });
+      pinned = true;
+      store.patch({ currency: c, error: undefined, preview: undefined });
     },
     setRecipient(v) {
       store.patch({ recipient: v, error: undefined });
@@ -301,7 +344,21 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
       return key;
     },
     closeConfirm() {
-      store.patch({ confirmKey: undefined, needsStepUp: false, error: undefined });
+      store.patch({ confirmKey: undefined, needsStepUp: false, error: undefined, preview: undefined });
+    },
+    async previewSend() {
+      const s = store.get();
+      const parsed = parseAmount(s.amountText, s.currency);
+      if (!isMemberId(s.recipient.trim()) || 'problem' in parsed) return;
+      store.patch({ previewing: true });
+      try {
+        const preview = await deps.pay.preview({ toPartyId: s.recipient.trim(), amount: toWire(parsed.amount) });
+        store.patch({ previewing: false, preview });
+      } catch (e) {
+        // The send would meet the same refusal: say it now rather than after the passkey.
+        const p = problemFor(e, locale);
+        store.patch({ previewing: false, preview: undefined, ...(p === 'stepUp' ? {} : { error: p }) });
+      }
     },
     async send() {
       const s = store.get();
@@ -312,7 +369,9 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
       store.patch({ busy: true, error: undefined, notice: undefined });
       try {
         const t = await deps.pay.send({ toPartyId: s.recipient.trim(), amount: toWire(amount), ...(s.note ? { note: s.note } : {}) }, key);
-        store.patch({ busy: false, result: t, needsStepUp: false, confirmKey: undefined, ...(t.state === 'pending_hold' ? {} : { notice: { key: 'pay.confirm.sent' } }) });
+        const received = convertedTo(t);
+        const notice: Problem = received ? { key: 'pay.confirm.sentConverted', vars: { amount: formatMoney(t.amount, locale), received: formatMoney(received, locale) } } : { key: 'pay.confirm.sent' };
+        store.patch({ busy: false, result: t, needsStepUp: false, confirmKey: undefined, ...(t.state === 'pending_hold' ? {} : { notice }) });
         await this.load().catch(() => undefined);
       } catch (e) {
         fail(e);

@@ -1,12 +1,14 @@
 // Pay view model (T-0508): over-limit copy with the server's remaining amount, insufficient funds with
 // the available balance, step-up required keeping the same key, the idempotency key fixed per confirm
 // sheet, the hold banner with cancel, split maths, the request inbox's pay or decline, and camera or
-// contacts denied. Request notes are data: shown as written, never parsed.
+// contacts denied. Request notes are data: shown as written, never parsed. T-0516: the purses offered
+// with their balances and the default; the server's preview of a converted send; both amounts once sent;
+// rates unavailable reads as such.
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
-import type { Account, PaidPaymentRequest, PayApi, PaymentRequest, Split, Transfer } from '../../src/api.ts';
+import type { Account, MoneyWire, PaidPaymentRequest, PayApi, PaymentRequest, Split, Transfer, TransferPreview } from '../../src/api.ts';
 import { memoryRouter } from '../../src/navigation.ts';
-import { available, buildQr, createPayModel, inboxView, parseAmount, parseQr, partyIdOf, problemFor, splitPreview, type PayDeps } from './pay.model.ts';
+import { available, buildQr, convertedTo, createPayModel, defaultPurse, inboxView, parseAmount, parseQr, partyIdOf, problemFor, purseOptions, splitPreview, type PayDeps } from './pay.model.ts';
 
 const ME = '11111111-1111-7111-8111-111111111111';
 const BOB = '22222222-2222-7222-8222-222222222222';
@@ -14,8 +16,22 @@ const CAL = '33333333-3333-7333-8333-333333333333';
 const NOW = new Date('2026-11-10T09:00:00Z');
 const problem = (code: string, status: number, extra: Record<string, unknown> = {}) => Object.assign(new Error(code), { code, status, ...extra });
 const ils = (minor: string) => ({ minor, currency: 'ILS' as const });
+const usd = (minor: string) => ({ minor, currency: 'USD' as const });
+const purse = (currency: 'ILS' | 'USD', minor: string): Account => ({ id: `acc-${currency}`, currency, settled: { minor, currency }, holds: { minor: '0', currency }, available: { minor, currency } });
 
-function fakePay(opts: { available?: string; fail?: (input: { toPartyId: string; amount: { minor: string } }) => unknown; hold?: boolean; requests?: PaymentRequest[] } = {}) {
+function fakePay(
+  opts: {
+    available?: string;
+    accounts?: Account[];
+    fail?: (input: { toPartyId: string; amount: { minor: string } }) => unknown;
+    hold?: boolean;
+    requests?: PaymentRequest[];
+    /** What the recipient receives: the preview answers it, and a send carries it. */
+    received?: MoneyWire;
+    previewFails?: unknown;
+  } = {},
+) {
+  const previews: { toPartyId: string; amount: MoneyWire }[] = [];
   const sends: { key: string; toPartyId: string; amount: string; note?: string }[] = [];
   const cancels: string[] = [];
   const created: string[] = [];
@@ -25,14 +41,26 @@ function fakePay(opts: { available?: string; fail?: (input: { toPartyId: string;
   let fail = opts.fail;
   const api: PayApi = {
     async listAccounts() {
-      const items: Account[] = [{ id: 'acc-ils', currency: 'ILS', settled: ils(opts.available ?? '20000'), holds: ils('0'), available: ils(opts.available ?? '20000') }];
+      const items: Account[] = opts.accounts ?? [{ id: 'acc-ils', currency: 'ILS', settled: ils(opts.available ?? '20000'), holds: ils('0'), available: ils(opts.available ?? '20000') }];
       return { items };
+    },
+    async preview(input) {
+      previews.push(input);
+      if (opts.previewFails) throw opts.previewFails;
+      const p: TransferPreview = { amount: input.amount, received: opts.received ?? input.amount, ...(opts.received ? { rate: '3.700000', rateVersion: 1 } : {}) };
+      return p;
     },
     async send(input, key) {
       const e = fail?.(input);
       if (e) throw e;
       sends.push({ key, toPartyId: input.toPartyId, amount: input.amount.minor, ...(input.note ? { note: input.note } : {}) });
-      const t: Transfer = { id: `t-${sends.length}`, state: opts.hold ? 'pending_hold' : 'settled', amount: input.amount, ...(opts.hold ? { holdReleasesAt: new Date(NOW.getTime() + 2 * 3_600_000).toISOString() } : {}) };
+      const t: Transfer = {
+        id: `t-${sends.length}`,
+        state: opts.hold ? 'pending_hold' : 'settled',
+        amount: input.amount,
+        ...(opts.hold ? { holdReleasesAt: new Date(NOW.getTime() + 2 * 3_600_000).toISOString() } : {}),
+        ...(opts.received ? { received: opts.received, rateVersion: 1 } : {}),
+      };
       return t;
     },
     async cancelTransfer(id) {
@@ -72,7 +100,7 @@ function fakePay(opts: { available?: string; fail?: (input: { toPartyId: string;
       return r;
     },
   };
-  return { api, sends, cancels, created, paid, declined, requests, setFail: (f: typeof fail) => void (fail = f) };
+  return { api, sends, previews, cancels, created, paid, declined, requests, setFail: (f: typeof fail) => void (fail = f) };
 }
 
 function model(api: PayApi, over: Partial<PayDeps> = {}, initial: Parameters<typeof createPayModel>[1] = {}) {
@@ -122,6 +150,7 @@ describe('pure helpers', () => {
     expect(problemFor(problem('FORBIDDEN', 403), 'en')).toEqual({ key: 'pay.confirm.unverified' });
     expect(problemFor(problem('IDEMPOTENCY_CONFLICT', 409), 'en')).toEqual({ key: 'pay.inbox.gone' });
     expect(problemFor(problem('FEATURE_OFF', 404), 'en')).toEqual({ key: 'common.error.unavailable' });
+    expect(problemFor(problem('PROVIDER_UNAVAILABLE', 503), 'en')).toEqual({ key: 'pay.error.ratesUnavailable' });
     expect(problemFor(new Error('boom'), 'en')).toEqual({ key: 'common.error.generic' });
   });
 
@@ -207,6 +236,77 @@ describe('the send flow (M13 → M15)', () => {
     expect(m.store.get()).toMatchObject({ result: { state: 'cancelled' }, notice: { key: 'pay.hold.cancelled' } });
     await m.cancelHold(); // nothing to cancel any more
     expect(cancels).toEqual(['t-1']);
+  });
+});
+
+describe('currencies (T-0516, REQ-PAY-006)', () => {
+  it('M14 offers the purses the member holds with what is available in each, and opens on one with enough', async () => {
+    const both = [purse('ILS', '0'), purse('USD', '20000')];
+    expect(purseOptions(both)).toEqual([
+      { currency: 'ILS', available: money(0n, 'ILS') },
+      { currency: 'USD', available: money(20_000n, 'USD') },
+    ]);
+    expect(purseOptions([purse('USD', '100')]).map((p) => p.currency)).toEqual(['USD']);
+    expect(defaultPurse(both, 'ILS')).toBe('USD');
+    expect(defaultPurse([purse('ILS', '5000'), purse('USD', '20000')], 'ILS')).toBe('ILS');
+    expect(defaultPurse([purse('ILS', '5000'), purse('USD', '20000')], 'ILS', 6_000n)).toBe('USD');
+    expect(defaultPurse([purse('ILS', '0'), purse('USD', '0')], 'ILS')).toBe('ILS');
+
+    // The empty shekel purse is passed over; a typed ₪/$ 300 opens on the purse that covers it.
+    const { m } = model(fakePay({ accounts: both }).api);
+    await m.load();
+    expect(m.store.get().currency).toBe('USD');
+    const typed = model(fakePay({ accounts: [purse('ILS', '20000'), purse('USD', '50000')] }).api, {}, { amountText: '300' });
+    await typed.m.load();
+    expect(typed.m.store.get().currency).toBe('USD');
+    // A currency from the link or a code, or the member's tap, is kept.
+    const pinned = model(fakePay({ accounts: both }).api, {}, { currency: 'ILS' });
+    await pinned.m.load();
+    expect(pinned.m.store.get().currency).toBe('ILS');
+    m.setCurrency('ILS');
+    await m.load();
+    expect(m.store.get().currency).toBe('ILS');
+  });
+
+  it('M15 shows what the recipient receives and the rate from the server\'s preview; the sent sheet shows both amounts', async () => {
+    const { api, previews, sends } = fakePay({ accounts: [purse('USD', '20000')], received: ils('36722') });
+    const { m } = model(api, {}, { recipient: BOB, amountText: '100', currency: 'USD' });
+    await m.load();
+    m.openConfirm();
+    await m.previewSend();
+    expect(previews).toEqual([{ toPartyId: BOB, amount: usd('10000') }]);
+    expect(m.store.get()).toMatchObject({ previewing: false, preview: { amount: usd('10000'), received: ils('36722'), rate: '3.700000' } });
+    expect(convertedTo(m.store.get().preview)).toEqual(ils('36722'));
+    expect(sends).toEqual([]);
+
+    await m.send();
+    const s = m.store.get();
+    expect(convertedTo(s.result)).toEqual(ils('36722'));
+    expect(s.notice).toEqual({ key: 'pay.confirm.sentConverted', vars: { amount: '$100.00', received: '₪367.22' } });
+    m.closeConfirm();
+    expect(m.store.get().preview).toBeUndefined();
+  });
+
+  it('a same-currency preview converts nothing; a send keeps the plain notice', async () => {
+    const { m } = model(fakePay().api, {}, { recipient: BOB, amountText: '50' });
+    await m.load();
+    await m.previewSend();
+    expect(m.store.get().preview).toEqual({ amount: ils('5000'), received: ils('5000') });
+    expect(convertedTo(m.store.get().preview)).toBeUndefined();
+    await m.send();
+    expect(m.store.get().notice).toEqual({ key: 'pay.confirm.sent' });
+  });
+
+  it('rates unavailable reads as such, on the preview and on the send', async () => {
+    const down = problem('PROVIDER_UNAVAILABLE', 503);
+    const { api, setFail } = fakePay({ accounts: [purse('USD', '20000')], previewFails: down });
+    const { m } = model(api, {}, { recipient: BOB, amountText: '100', currency: 'USD' });
+    await m.load();
+    await m.previewSend();
+    expect(m.store.get()).toMatchObject({ previewing: false, preview: undefined, error: { key: 'pay.error.ratesUnavailable' } });
+    setFail(() => down);
+    await m.send();
+    expect(m.store.get()).toMatchObject({ busy: false, error: { key: 'pay.error.ratesUnavailable' } });
   });
 });
 
