@@ -996,6 +996,110 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/requests": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Payment requests the member owes or asked for, open first
+         * @description REQ-PAY-004. Request text in `note` is untrusted member text.
+         */
+        readonly get: operations["listPaymentRequests"];
+        readonly put?: never;
+        /**
+         * Ask another member for money; payable for 14 days
+         * @description REQ-PAY-004. Idempotent by key.
+         */
+        readonly post: operations["createPaymentRequest"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/requests/{id}/cancel": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Withdraw a request you made
+         * @description REQ-PAY-004. Idempotent.
+         */
+        readonly post: operations["cancelPaymentRequest"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/requests/{id}/decline": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Decline a request
+         * @description REQ-PAY-004. Idempotent.
+         */
+        readonly post: operations["declinePaymentRequest"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/requests/{id}/pay": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Pay a request; the send goes through the ordinary transfer rules
+         * @description REQ-PAY-004 with REQ-PAY-001..003. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Paying twice is one transfer.
+         */
+        readonly post: operations["payPaymentRequest"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/splits": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Split a bill; every other participant gets a request for their share
+         * @description REQ-PAY-004. Equal shares; the requester covers any rounding remainder. Idempotent by key.
+         */
+        readonly post: operations["createSplit"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/transfers": {
         readonly parameters: {
             readonly query?: never;
@@ -1578,6 +1682,9 @@ export interface components {
              */
             readonly purpose: "register" | "recovery";
         };
+        readonly PaidPaymentRequest: components["schemas"]["PaymentRequest"] & {
+            readonly transfer: components["schemas"]["Transfer"];
+        };
         readonly PasskeyAuthenticateRequest: {
             readonly deviceId?: string;
             /** @description The authenticator's assertion; omit to receive options */
@@ -1596,6 +1703,34 @@ export interface components {
             readonly credentialId?: string;
             readonly options?: Record<string, never>;
             readonly tokens?: components["schemas"]["TokenPair"];
+        };
+        readonly PaymentRequest: {
+            readonly amount: components["schemas"]["Money"];
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** Format: date-time */
+            readonly expiresAt: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** @description Untrusted member text */
+            readonly note?: string;
+            /** Format: uuid */
+            readonly payerPartyId: string;
+            /** Format: uuid */
+            readonly requesterPartyId: string;
+            /** Format: uuid */
+            readonly splitId?: string;
+            /** @enum {string} */
+            readonly status: "open" | "paid" | "declined" | "expired" | "cancelled";
+            /** Format: uuid */
+            readonly transferId?: string;
+        };
+        readonly PaymentRequestCreate: {
+            readonly amount: components["schemas"]["Money"];
+            /** @description Member text; rendered */
+            readonly note?: string;
+            /** Format: uuid */
+            readonly payerPartyId: string;
         };
         readonly Payout: {
             readonly amount: components["schemas"]["Money"];
@@ -1689,6 +1824,19 @@ export interface components {
             readonly postalCode: string;
             /** @description Required for US */
             readonly region?: string;
+        };
+        readonly Split: {
+            /** Format: uuid */
+            readonly id: string;
+            readonly requests: readonly components["schemas"]["PaymentRequest"][];
+            readonly share: components["schemas"]["Money"];
+            readonly total: components["schemas"]["Money"];
+        };
+        readonly SplitCreate: {
+            readonly note?: string;
+            /** @description The other members; the requester may be listed and is skipped */
+            readonly participants: readonly string[];
+            readonly total: components["schemas"]["Money"];
         };
         readonly StepUpResult: {
             /** Format: date-time */
@@ -3153,6 +3301,165 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Payout"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listPaymentRequests: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Requests */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["PaymentRequest"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createPaymentRequest: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["PaymentRequestCreate"];
+            };
+        };
+        readonly responses: {
+            /** @description Request created */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PaymentRequest"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly cancelPaymentRequest: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Request */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PaymentRequest"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly declinePaymentRequest: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Request */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PaymentRequest"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly payPaymentRequest: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The paid request and its transfer */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PaidPaymentRequest"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createSplit: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["SplitCreate"];
+            };
+        };
+        readonly responses: {
+            /** @description Split created */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Split"];
                 };
             };
             readonly default: components["responses"]["Problem"];
