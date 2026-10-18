@@ -20,18 +20,25 @@ vendor sandbox, and flip a flag. See `docs/constitution.md` and the live spec.
 | `packages/adapters` | Vendor adapters (Airalo, Stripe, Nium, card processor…) |
 | `contracts/openapi.yaml` | API source of truth |
 | `db/migrations` | Atlas migrations; `ledger/0001_init.sql` ready |
-| `specs/tasks` | 56 agent-executable task cards |
-| `docs/adr` | ADR-001…012 (012: core platform) |
+| `specs/tasks` | Agent-executable task cards, indexed in `specs/tasks/README.md` |
+| `docs/adr` | ADR-001…013 (006: processor and bank, 007: native ILS, 012: core platform, 013: admin through the API) |
+| `docs/runbooks` | RUN-01…08, the on-call rota and the alert index |
 | `config/flags.json` | The only flag registry |
 
 ## Status
-- The first 58 task cards in `specs/tasks` are implemented with their tests; `pnpm typecheck`,
-  `pnpm test`, `pnpm lint`, `pnpm trace` and `pnpm db:lint` are green at the root.
-- ADR-004 is decided (WorkOS for institution SSO and SCIM) and ADR-013 (the admin console talks to
-  the API). ADR-006's build decision: the money epics E04/E05 run against the simulators; their 25
-  cards (T-04xx, T-05xx, T-0606, T-0906–T-0909, T-1007) are the open work.
-- Deferred by ADR: NestJS binding (ADR-001), Temporal hosting (ADR-002), the processor adapter
-  for the money ports (ADR-006 vendor pick).
+- Every task card through T-1007 is implemented with its tests and merged: setup, auth, ledger,
+  billing, card, wallet, P2P, FX, payouts, institutions, marketplace, notifications, admin, agent and
+  monitoring. `pnpm typecheck`, `pnpm test`, `pnpm lint`, `pnpm trace` and `pnpm db:lint` are green at
+  the root; the desktop checker has applied every migration through ledger/0012 on Postgres 16.
+- Decided: ADR-004 (WorkOS for institution SSO and SCIM), ADR-007 (ILS is native: every load, send and
+  receipt names its currency; conversions at the club-published rate) and ADR-013 (the admin console
+  talks to the API). ADR-006's build decision: the money epics run against the simulators; the
+  processor adapter is one later card per port. ADR-001, 002, 003, 005, 008 and 010 carry draft
+  recommendations awaiting Zvi.
+- Next: the currency-choice and club-rate cards T-0512 to T-0518 (ADR-007), and the Sprint 9 cards
+  T-0013, T-0014 and T-0910 to T-0912 (Hebrew/RTL pass, pentest readiness, runbooks and status page,
+  the bank-review package). Switch-on starts with Airalo once a contract and sandbox keys exist
+  (Tab 1 of the live spec); every money flag waits on ADR-006.
 - Desktop-only steps go through `handoff/` (see `handoff/README.md`).
 
 ## Quick start

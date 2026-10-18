@@ -14,6 +14,8 @@
 | [T-0010](T-0010.md) | SETUP | Preview environments per PR | — | 1 |
 | [T-0011](T-0011.md) | SETUP | Atlas apply in dependency order with per-schema baseline | — | 2 |
 | [T-0012](T-0012.md) | SETUP | Migration safety lint without Atlas Pro (Squawk), and move the balance cache to ops.account_balance | — | 2 |
+| [T-0013](T-0013.md) | SETUP | Hebrew/RTL full pass and Dynamic Type 200% (CLUB-37) | — | 9 |
+| [T-0014](T-0014.md) | SETUP | Pentest readiness: ZAP baseline on the preview, evidence folders (CLUB-38) | — | 9 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
@@ -52,6 +54,12 @@
 | [T-0509](T-0509.md) | FX | Quotes with 30 s lock, plan markup on the journal, M11 | REQ-FX-001, REQ-FX-002 | 6 |
 | [T-0510](T-0510.md) | PO | Payouts: payee validation, cool-off, two-person approval, auto-reverse | REQ-PO-001, REQ-PO-002 | 8 |
 | [T-0511](T-0511.md) | WAL | Mobile screens M08–M10 | — | 5 |
+| [T-0512](T-0512.md) | FX | Club rate table, two-person manual rates, admin rate API | REQ-FX-003, REQ-ADM-003 | 9 |
+| [T-0513](T-0513.md) | FX | Quotes and conversions at the club rate; port refresh and staleness | REQ-FX-003, REQ-FX-004 | 9 |
+| [T-0514](T-0514.md) | PAY | Receiving currency preference | REQ-PAY-007 | 9 |
+| [T-0515](T-0515.md) | PAY | Cross-currency send at the club rate | REQ-PAY-006 | 9 |
+| [T-0516](T-0516.md) | PAY | Mobile purse choice, received-amount preview, receiving currency setting | REQ-PAY-006, REQ-PAY-007 | 9 |
+| [T-0517](T-0517.md) | WAL | Loads into the chosen purse; cross-currency loads at the club rate | REQ-WAL-006 | 9 |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
@@ -78,6 +86,9 @@
 | [T-0907](T-0907.md) | ADM | Admin API: customer search + Customer 360 | — | 5 |
 | [T-0908](T-0908.md) | ADM | Complaints table, admin complaint + alert endpoints | REQ-CMP-002 | 5 |
 | [T-0909](T-0909.md) | CMP | Monitoring rules v1: velocity, structuring, fan-in/out | REQ-CMP-001 | 6 |
+| [T-0910](T-0910.md) | ADM | Runbooks RUN-01 to RUN-08, alert index, on-call rota (CLUB-39) | — | 9 |
+| [T-0911](T-0911.md) | ADM | Status endpoint and incident banner wired to the kill switches (CLUB-39) | — | 9 |
+| [T-0912](T-0912.md) | CMP | Bank-review package (CLUB-40) | — | 9 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |
