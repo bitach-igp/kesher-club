@@ -53,6 +53,6 @@ adds what a session needs to work here without rediscovering it.
 - `exactOptionalPropertyTypes` is on: spread optional fields conditionally (`...(x ? { x } : {})`) and
   type possibly-missing values as `T | undefined` on the way in.
 - ESLint flags useless escapes, useless assignments and unused imports; a literal BOM or other
-  irregular whitespace goes in as an escape (`﻿`).
+  irregular whitespace goes in as an escape (`\uFEFF`).
 - Mobile copy lives in `apps/mobile/src/i18n.ts` with English and Hebrew mirrored; screens read a model
   over `createStore` / `useStore`, and optional component props use the conditional spread.
