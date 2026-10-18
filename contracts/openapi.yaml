@@ -1790,6 +1790,7 @@ components:
         amount: { $ref: "#/components/schemas/Money" }
         method: { type: string, enum: [card, apple_pay, google_pay, ach] }
         paymentMethodId: { type: string }
+        purseCurrency: { type: string, enum: [USD, ILS], description: The purse credited; the amount's currency when absent. A different currency converts at the club rate }
     Load:
       type: object
       required: [id, state, amount]
@@ -1799,6 +1800,8 @@ components:
         amount: { $ref: "#/components/schemas/Money" }
         holdUntil: { type: string, format: date }
         clientSecret: { type: string }
+        credited: { $ref: "#/components/schemas/Money", description: What the purse receives when the load converts into the other currency }
+        rateVersion: { type: integer, description: The club rate version the load converted at }
     TransferRequest:
       type: object
       required: [toPartyId, amount]

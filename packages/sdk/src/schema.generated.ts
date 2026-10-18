@@ -1841,10 +1841,14 @@ export interface components {
         readonly Load: {
             readonly amount: components["schemas"]["Money"];
             readonly clientSecret?: string;
+            /** @description What the purse receives when the load converts into the other currency */
+            readonly credited?: components["schemas"]["Money"];
             /** Format: date */
             readonly holdUntil?: string;
             /** Format: uuid */
             readonly id: string;
+            /** @description The club rate version the load converted at */
+            readonly rateVersion?: number;
             /** @enum {string} */
             readonly state: "created" | "requires_action" | "processing" | "on_hold" | "settled" | "failed";
         };
@@ -1855,6 +1859,11 @@ export interface components {
             /** @enum {string} */
             readonly method: "card" | "apple_pay" | "google_pay" | "ach";
             readonly paymentMethodId?: string;
+            /**
+             * @description The purse credited; the amount's currency when absent. A different currency converts at the club rate
+             * @enum {string}
+             */
+            readonly purseCurrency?: "USD" | "ILS";
         };
         readonly Membership: {
             /** Format: date-time */
