@@ -1,6 +1,7 @@
 # Preview environment per PR (T-0010, Tab 3 §9). On open/synchronize: build the api and worker
 # images, apply infra/preview with -var pr_number, post the URL on the PR, then run the
-# Schemathesis contract job against it. On close: destroy. Credentials come from GitHub OIDC
+# Schemathesis contract job against it, then the OWASP ZAP baseline scan (T-0014), which fails on any
+# High alert. On close: destroy. Credentials come from GitHub OIDC
 # through aws-actions/configure-aws-credentials; there are no static keys anywhere.
 name: preview
 on:
@@ -161,6 +162,36 @@ jobs:
         with:
           name: schemathesis-pr-${{ github.event.pull_request.number }}
           path: schemathesis.xml
+          if-no-files-found: ignore
+
+  zap:
+    name: ZAP baseline against the preview
+    # After the contract suite, so a broken API fails there first with a clearer message.
+    needs: [deploy, contract]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run the baseline scan
+        # -I: warnings do not fail the scan; the next step judges by risk instead. The target is the public
+        # status endpoint, which every build serves without a token. Reports land in the workspace.
+        run: |
+          docker run --rm -u root -v "$PWD:/zap/wrk:rw" ghcr.io/zaproxy/zaproxy:2.16.0 \
+            zap-baseline.py -t "${{ needs.deploy.outputs.url }}/v1/status" -m 2 -I -J zap.json -r zap.html
+      - name: Fail on any High alert
+        run: |
+          high=$(jq '[.site[]?.alerts[]? | select(.riskcode == "3")] | length' zap.json)
+          jq -r '.site[]?.alerts[]? | "\(.riskdesc)\t\(.alert)"' zap.json | sort | uniq
+          if [ "$high" -gt 0 ]; then
+            echo "::error::ZAP found $high High alert(s); see the zap report artifact" >&2
+            exit 1
+          fi
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-pr-${{ github.event.pull_request.number }}
+          path: |
+            zap.json
+            zap.html
           if-no-files-found: ignore
 
   destroy:
