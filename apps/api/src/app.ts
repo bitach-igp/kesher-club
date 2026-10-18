@@ -46,6 +46,8 @@ import { walletHandlers } from './wallet/handlers.ts';
 import { FUNDING_PROVIDER, LoadService } from './wallet/loads.ts';
 import { AddonOrderService } from './addons/orders.ts';
 import { CreditService } from './addons/credit.ts';
+import { CollectionsService, collectionsHandlers } from './institutions/collections.ts';
+import { exportHandler } from './institutions/export.ts';
 import { RosterService, importRosterHandler } from './institutions/roster.ts';
 import { ApprovalService } from './approvals/service.ts';
 import { AuditService } from './audit/service.ts';
@@ -135,16 +137,18 @@ function buildServices(o: AppOptions) {
   const requests = new PaymentRequestService(o.db, p2p, identity);
   const fx = new FxService({ port: o.registry.resolve<FxPort>('fx', o.market), ledger, accounts, transfers, memberships, plans, flags });
   // Payouts (REQ-PO-001/002): the rail's status webhooks land on /hooks/payout; settled and failed are applied once (SEQ-09).
+  const collections = new CollectionsService(o.db, ledger, accounts, flags);
   const payouts = new PayoutService({ db: o.db, port: o.registry.resolve<PayoutPort>('payout', o.market), ledger, accounts, transfers, approvals, identity, notify: notifyPort, flags, provider: o.registry.bindingFor('payout', o.market)?.provider ?? 'simulator' });
   webhooks.bind(PAYOUT_PROVIDER, { verifier: payouts.webhookVerifier(), process: (e) => payouts.applyWebhook(e, clock.now()).then(() => undefined) });
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections };
 }
 
 export function createApp(o: AppOptions): App {
   const s = buildServices(o);
+  const staffInstitution = async (partyId: string) => (await o.db.query<{ institution_id: string }>('select institution_id from org.staff where party_id = $1 and active', [partyId])).rows[0]?.institution_id;
   const handlers: HandlerTable = {
     ...authHandlers({ otp: s.otp, passkeys: s.passkeys, recovery: s.recovery, tokens: s.tokens, stepUp: s.stepUp }),
     getCapabilities: capabilitiesHandler({ flags: s.flags, memberships: s.memberships, entitlements: s.entitlements }),
@@ -173,7 +177,9 @@ export function createApp(o: AppOptions): App {
       const order = await s.orders.create({ idempotencyKey: requireIdempotencyKey(req), memberPartyId: p.partyId, membership, sku: b.sku, ...(b.quantity ? { quantity: b.quantity } : {}), ...(b.disclosuresAcknowledged !== undefined ? { disclosuresAcknowledged: b.disclosuresAcknowledged } : {}) }, req.now);
       return { status: 201, body: { id: order.id, sku: order.sku, state: order.state, price: toWire(order.price), creditApplied: toWire(order.credit), ...(order.fulfilment ? { fulfilment: order.fulfilment } : {}) } };
     }),
-    importRoster: importRosterHandler({ roster: s.roster, staffInstitution: async (partyId) => (await o.db.query<{ institution_id: string }>('select institution_id from org.staff where party_id = $1 and active', [partyId])).rows[0]?.institution_id }),
+    importRoster: importRosterHandler({ roster: s.roster, staffInstitution }),
+    ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
+    exportCollections: exportHandler(o.db, staffInstitution),
     approveIntent: route(async (req) => {
       const key = requireIdempotencyKey(req);
       const r = await s.intents.approve(req, req.params['id'] ?? '', key);

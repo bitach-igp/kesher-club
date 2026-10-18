@@ -182,6 +182,13 @@
     "turnOnTrigger": "Bank sign-off on agent intent flow"
   },
   {
+    "key": "monitoring.rules",
+    "defaultProd": false,
+    "owner": "Noah",
+    "gates": "Transaction monitoring rules v1: structuring, velocity, fan-in/out",
+    "turnOnTrigger": "Compliance signs off the thresholds; console queue staffed"
+  },
+  {
     "key": "notify.whatsapp",
     "defaultProd": false,
     "owner": "Kathleen",

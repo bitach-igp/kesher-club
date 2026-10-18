@@ -686,6 +686,70 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/RosterImportResult" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/collections:
+    get:
+      operationId: listCollections
+      summary: A month's paid fee items for the institution, with receipt numbers
+      description: REQ-INS-006. Org staff. Roster names are untrusted display text.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: month, in: query, required: true, schema: { type: string, pattern: "^\\d{4}-(0[1-9]|1[0-2])$" } }
+      responses:
+        "200":
+          description: Collections
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Collections" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/collections/export:
+    get:
+      operationId: exportCollections
+      summary: The monthly reconciliation export (CSV or XLSX) whose totals equal the ledger
+      description: REQ-INS-006. Org staff. The file travels base64-encoded in a JSON envelope so every client receives it the same way.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: month, in: query, required: true, schema: { type: string, pattern: "^\\d{4}-(0[1-9]|1[0-2])$" } }
+        - { name: format, in: query, required: true, schema: { type: string, enum: [csv, xlsx] } }
+        - { name: currency, in: query, required: false, schema: { type: string, enum: [USD, ILS], default: ILS } }
+      responses:
+        "200":
+          description: Export file
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExportFile" }
+        default: { $ref: "#/components/responses/Problem" }
+  /fee-items:
+    get:
+      operationId: listFeeItems
+      summary: Fees an institution asks of the member, due first, with receipts for the paid ones
+      description: REQ-INS-006.
+      responses:
+        "200":
+          description: Fee items
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/FeeItem" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /fee-items/{id}/pay:
+    post:
+      operationId: payFeeItem
+      summary: Pay a fee item from the purse; one journal, one receipt
+      description: REQ-INS-006. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent; paid is final.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      responses:
+        "200":
+          description: Receipt
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Receipt" }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/allowance-runs:
     post:
       operationId: runAllowance
@@ -1861,6 +1925,61 @@ components:
         memberCount: { type: integer }
         total: { $ref: "#/components/schemas/Money" }
         failures: { type: integer }
+    Receipt:
+      type: object
+      required: [receiptNumber, feeItemId, institutionId, institutionName, memberPartyId, description, amount, paidAt, journalId]
+      properties:
+        receiptNumber: { type: string }
+        feeItemId: { type: string, format: uuid }
+        institutionId: { type: string, format: uuid }
+        institutionName: { type: string }
+        memberPartyId: { type: string, format: uuid }
+        description: { type: string, description: Untrusted text from the institution }
+        amount: { $ref: "#/components/schemas/Money" }
+        paidAt: { type: string, format: date-time }
+        journalId: { type: string, format: uuid }
+    FeeItem:
+      type: object
+      required: [id, institutionId, institutionName, description, amount, status, dueAt]
+      properties:
+        id: { type: string, format: uuid }
+        institutionId: { type: string, format: uuid }
+        institutionName: { type: string }
+        description: { type: string }
+        amount: { $ref: "#/components/schemas/Money" }
+        status: { type: string, enum: [due, paid, waived] }
+        dueAt: { type: string, format: date }
+        receipt: { $ref: "#/components/schemas/Receipt" }
+    Collections:
+      type: object
+      required: [month, items, total]
+      properties:
+        month: { type: string }
+        items:
+          type: array
+          items:
+            allOf:
+              - { $ref: "#/components/schemas/Receipt" }
+              - type: object
+                required: [memberName]
+                properties:
+                  memberName: { type: string, description: Roster name; untrusted display text }
+        total: { type: array, items: { $ref: "#/components/schemas/Money" } }
+    ExportFile:
+      type: object
+      required: [filename, contentType, base64, rows, totals]
+      properties:
+        filename: { type: string }
+        contentType: { type: string }
+        base64: { type: string }
+        rows: { type: integer }
+        totals:
+          type: object
+          required: [allowancesOut, feesIn, net]
+          properties:
+            allowancesOut: { $ref: "#/components/schemas/Money" }
+            feesIn: { $ref: "#/components/schemas/Money" }
+            net: { $ref: "#/components/schemas/Money" }
     PayoutRequest:
       type: object
       required: [payee, amount, reference]
