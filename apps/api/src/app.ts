@@ -15,6 +15,7 @@ import { kycHandlers } from './kyc/handlers.ts';
 import { p2pHandlers } from './p2p/handlers.ts';
 import { P2pHoldService } from './p2p/holds.ts';
 import { P2pLimitService } from './p2p/limits.ts';
+import { PaymentRequestService } from './p2p/requests.ts';
 import { P2pSendService } from './p2p/send.ts';
 import { KycService } from './kyc/service.ts';
 import { CustomerReadModel } from './admin/customers.ts';
@@ -127,10 +128,11 @@ function buildServices(o: AppOptions) {
   const p2pLimits = new P2pLimitService(o.db, memberships, entitlements, plans);
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
   const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort });
+  const requests = new PaymentRequestService(o.db, p2p, identity);
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure, p2pLimits, p2p };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure, p2pLimits, p2p, requests };
 }
 
 export function createApp(o: AppOptions): App {
@@ -141,7 +143,7 @@ export function createApp(o: AppOptions): App {
     ...kycHandlers(s.kyc),
     ...cardHandlers(s.cards, s.jit, s.provisioning, s.stepUp, s.physical),
     ...walletHandlers(s.loads, s.stepUp, s.flags, s.autoReload, s.closure),
-    ...p2pHandlers(s.p2p, s.stepUp, s.flags),
+    ...p2pHandlers(s.p2p, s.stepUp, s.flags, s.requests),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
     createMembership: route(async (req) => {
       const p = requirePrincipal(req);

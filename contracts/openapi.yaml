@@ -322,6 +322,105 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Transfer" }
         default: { $ref: "#/components/responses/Problem" }
+  /requests:
+    get:
+      operationId: listPaymentRequests
+      summary: Payment requests the member owes or asked for, open first
+      description: REQ-PAY-004. Request text in `note` is untrusted member text.
+      responses:
+        "200":
+          description: Requests
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/PaymentRequest" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createPaymentRequest
+      summary: Ask another member for money; payable for 14 days
+      description: REQ-PAY-004. Idempotent by key.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PaymentRequestCreate" }
+      responses:
+        "201":
+          description: Request created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentRequest" }
+        default: { $ref: "#/components/responses/Problem" }
+  /splits:
+    post:
+      operationId: createSplit
+      summary: Split a bill; every other participant gets a request for their share
+      description: REQ-PAY-004. Equal shares; the requester covers any rounding remainder. Idempotent by key.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SplitCreate" }
+      responses:
+        "201":
+          description: Split created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Split" }
+        default: { $ref: "#/components/responses/Problem" }
+  /requests/{id}/pay:
+    post:
+      operationId: payPaymentRequest
+      summary: Pay a request; the send goes through the ordinary transfer rules
+      description: REQ-PAY-004 with REQ-PAY-001..003. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Paying twice is one transfer.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      responses:
+        "200":
+          description: The paid request and its transfer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaidPaymentRequest" }
+        default: { $ref: "#/components/responses/Problem" }
+  /requests/{id}/decline:
+    post:
+      operationId: declinePaymentRequest
+      summary: Decline a request
+      description: REQ-PAY-004. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "200":
+          description: Request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentRequest" }
+        default: { $ref: "#/components/responses/Problem" }
+  /requests/{id}/cancel:
+    post:
+      operationId: cancelPaymentRequest
+      summary: Withdraw a request you made
+      description: REQ-PAY-004. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "200":
+          description: Request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PaymentRequest" }
+        default: { $ref: "#/components/responses/Problem" }
   /fx/quotes:
     post:
       operationId: createFxQuote
@@ -1525,6 +1624,49 @@ components:
         state: { type: string, enum: [created, submitted, pending, pending_hold, settled, failed, reversed, cancelled] }
         amount: { $ref: "#/components/schemas/Money" }
         holdReleasesAt: { type: string, format: date-time }
+    PaymentRequestCreate:
+      type: object
+      required: [payerPartyId, amount]
+      properties:
+        payerPartyId: { type: string, format: uuid }
+        amount: { $ref: "#/components/schemas/Money" }
+        note: { type: string, maxLength: 140, description: Member text; rendered, never interpreted }
+    SplitCreate:
+      type: object
+      required: [total, participants]
+      properties:
+        total: { $ref: "#/components/schemas/Money" }
+        participants: { type: array, minItems: 1, maxItems: 20, items: { type: string, format: uuid }, description: The other members; the requester may be listed and is skipped }
+        note: { type: string, maxLength: 140 }
+    PaymentRequest:
+      type: object
+      required: [id, requesterPartyId, payerPartyId, amount, status, createdAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        requesterPartyId: { type: string, format: uuid }
+        payerPartyId: { type: string, format: uuid }
+        amount: { $ref: "#/components/schemas/Money" }
+        note: { type: string, description: Untrusted member text }
+        splitId: { type: string, format: uuid }
+        status: { type: string, enum: [open, paid, declined, expired, cancelled] }
+        transferId: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+    PaidPaymentRequest:
+      allOf:
+        - { $ref: "#/components/schemas/PaymentRequest" }
+        - type: object
+          required: [transfer]
+          properties:
+            transfer: { $ref: "#/components/schemas/Transfer" }
+    Split:
+      type: object
+      required: [id, total, share, requests]
+      properties:
+        id: { type: string, format: uuid }
+        total: { $ref: "#/components/schemas/Money" }
+        share: { $ref: "#/components/schemas/Money" }
+        requests: { type: array, items: { $ref: "#/components/schemas/PaymentRequest" } }
     FxQuoteRequest:
       type: object
       required: [from, to]
