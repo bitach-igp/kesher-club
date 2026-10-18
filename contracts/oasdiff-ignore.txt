@@ -8,3 +8,7 @@ GET /me/capabilities the `entitlements/additionalProperties/remaining` response'
 POST /transfers added the new required `header` request parameter `x-step-up`
 # T-0205: transfers can be cancelled by the sender before submission; the state machine grew the value.
 POST /transfers added the new `cancelled` enum value to the `state` response property for the response status `201`
+# T-0512 (REQ-ADM-003): approvals gained the kind fx_rate (club rate proposals). ApprovalRequest is read only by the admin console, which is ours (ADR-013) and ships with the API.
+POST /admin/flag-flips/{id}/approve added the new `fx_rate` enum value to the `kind` response property for the response status `200`
+GET /admin/flags added the new `fx_rate` enum value to the `items/items/pendingFlip/kind` response property for the response status `200`
+POST /admin/flags/{key}/flips added the new `fx_rate` enum value to the `kind` response property for the response status `201`
