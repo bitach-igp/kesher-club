@@ -1,18 +1,21 @@
-// FX (T-0509, REQ-FX-001/002): a USD/ILS quote locks for 30 seconds with the rate, the markup and the
-// total; converting at it moves the member's money between purses in one journal that carries the
-// markup in basis points, so the plan's pricing is auditable on the ledger. The markup comes from the
-// member's active plan (the default when they have none). Quotes are short-lived and process-local:
-// after a restart a quote is unknown and the screen asks for a fresh one, which is what it does on
-// expiry anyway. Every conversion is a transfer of kind 'fx' keyed by the Idempotency-Key, and the
-// vendor call carries the same key, so a retry never converts twice.
-import { add, DomainError, fromWire, toWire, type Currency, type Money } from '@kesher/domain';
-import { FxError, RATE_SCALE, type FxPort, type FxQuote } from '@kesher/ports';
+// FX (T-0509, REQ-FX-001/002; T-0513, REQ-FX-003/004): a USD/ILS quote locks for 30 seconds with the
+// rate, the markup and the total. The rate is the club's published one (ADR-007): the member leg is priced
+// from RateService, never from the vendor's live rate, and the quote and the journal carry the rate
+// version; without a valid rate the quote is refused with PROVIDER_UNAVAILABLE. The markup comes from the
+// member's active plan (the default when they have none) and rides the journal in basis points. The vendor
+// (FxPort) is the hedge: convert() executes the vendor leg with the same idempotency key and records the
+// vendor fill on the journal, so reconciliation can watch fx_position against it. Quotes are short-lived
+// and process-local: after a restart a quote is unknown and the screen asks for a fresh one, which is
+// what it does on expiry anyway. Every conversion is a transfer of kind 'fx' keyed by the Idempotency-Key.
+import { add, applyBps, DomainError, fromWire, money, sub, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
+import { applyRate, FxError, RATE_SCALE, type FxPort, type FxQuote } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import { DEFAULT_FX_MARKUP_BPS, type PlanService } from '../billing/plans.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferService } from '../transfers/service.ts';
+import type { RateService } from './rates.ts';
 
 export const FX_FLAG = 'fx.enabled';
 export const FX_JOURNAL_KIND = 'fx';
@@ -27,6 +30,8 @@ export interface FxQuoteView {
   markupBps: number;
   /** Decimal string for display only; money never flows through it. */
   rate: string;
+  /** The club rate version the quote was priced from (REQ-FX-003). */
+  rateVersion: number;
   expiresAt: string;
 }
 
@@ -42,10 +47,13 @@ export interface FxConversionView {
 interface HeldQuote {
   partyId: string;
   quote: FxQuote;
+  rateId: string;
+  rateVersion: number;
 }
 
 interface Deps {
   port: FxPort;
+  rates: RateService;
   ledger: PostgresLedger;
   accounts: AccountService;
   transfers: TransferService;
@@ -76,24 +84,22 @@ export class FxService {
     const prior = this.quotesByKey.get(`${partyId}:${key}`);
     if (prior) {
       const held = this.quotes.get(prior);
-      if (held) return view(held.quote);
+      if (held) return view(held);
     }
     const { from, to } = parse(body);
     const purse = (await this.d.accounts.purses(partyId)).find((p) => p.currency === from.currency)!;
     if (purse.available.minor < from.minor) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the purse to convert', { available: purse.available.minor.toString(), currency: from.currency });
     const markupBps = await this.markupFor(partyId);
-    let quote: FxQuote;
-    try {
-      quote = await this.d.port.quote({ from, to, markupBps });
-    } catch (e) {
-      throw mapFxError(e);
-    }
-    // The vendor's clock and ours may differ by a little; the lock is ours to enforce from now.
-    quote = { ...quote, expiresAt: new Date(Math.min(Date.parse(quote.expiresAt), now.getTime() + QUOTE_TTL_MS)).toISOString() };
-    this.quotes.set(quote.quoteId, { partyId, quote });
+    // The club rate, or PROVIDER_UNAVAILABLE when none is valid now (REQ-FX-004): nothing is guessed.
+    const rate = await this.d.rates.rateFor(from.currency, to, now);
+    const gross = money(applyRate(from.minor, rate.rateScaled), to);
+    const markup = applyBps(gross, markupBps);
+    const quote: FxQuote = { quoteId: `cq_${uuidv7(now)}`, from, to, rateScaled: rate.rateScaled, markupBps, total: sub(gross, markup), markup, expiresAt: new Date(now.getTime() + QUOTE_TTL_MS).toISOString() };
+    const held: HeldQuote = { partyId, quote, rateId: rate.rateId, rateVersion: rate.version };
+    this.quotes.set(quote.quoteId, held);
     this.quotesByKey.set(`${partyId}:${key}`, quote.quoteId);
     this.sweep(now);
-    return view(quote);
+    return view(held);
   }
 
   /** POST /fx/conversions: convert at a live quote, once per key; QUOTE_EXPIRED after 30 s. */
@@ -120,21 +126,18 @@ export class FxService {
 
     let t: Transfer = existing ?? (await this.d.transfers.create({ idempotencyKey: key, kind: 'fx', fromPartyId: partyId, toPartyId: partyId, amount: q.from }, now));
     if (t.state === 'created') t = await this.d.transfers.apply(t.id, 'submit', now);
+    // The vendor leg is the hedge: a fresh vendor quote at its own rate, converted under the same key.
     let conversion;
     try {
-      conversion = await this.d.port.convert(q.quoteId, key);
+      const vendorQuote = await this.d.port.quote({ from: q.from, to: q.total.currency, markupBps: 0n });
+      conversion = await this.d.port.convert(vendorQuote.quoteId, key);
     } catch (e) {
-      if (e instanceof FxError && e.code === 'QUOTE_EXPIRED') {
-        this.quotes.delete(q.quoteId);
-        await this.d.transfers.apply(t.id, 'fail', now, { failureCode: 'QUOTE_EXPIRED', reason: 'vendor' });
-        throw new DomainError('QUOTE_EXPIRED', 'This quote expired after 30 seconds; get a fresh one', { quoteId: q.quoteId });
-      }
       throw mapFxError(e); // an outage leaves the transfer submitted: the same key retries the vendor call
     }
-    const journal = await this.post(partyId, conversion.from, conversion.total, conversion.markup, conversion.markupBps, conversion.rateScaled, q.quoteId, conversion.conversionId, t.id, key, now);
+    const journal = await this.post(partyId, q, held, conversion.conversionId, conversion.rateScaled, conversion.total, t.id, key, now);
     t = await this.d.transfers.apply(t.id, 'settle', now, { journalId: journal.id });
     this.quotes.delete(q.quoteId);
-    const out: FxConversionView = { conversionId: conversion.conversionId, quoteId: q.quoteId, from: toWire(conversion.from), total: toWire(conversion.total), status: 'settled' };
+    const out: FxConversionView = { conversionId: conversion.conversionId, quoteId: q.quoteId, from: toWire(q.from), total: toWire(q.total), status: 'settled' };
     this.conversionsByTransfer.set(t.id, out);
     return out;
   }
@@ -149,9 +152,12 @@ export class FxService {
 
   /**
    * One journal, balanced per currency: the member's `from` purse pays into the FX position; the FX position
-   * pays out the gross in `to`, the member's `to` purse receives the total and fee income the markup.
+   * pays out the gross in `to` at the club rate, the member's `to` purse receives the total and fee income
+   * the markup. The vendor fill (its rate and amount) rides the metadata: the gap between it and the club
+   * gross is fx_position's gain or loss, which reconciliation watches against the vendor's statement.
    */
-  private async post(partyId: string, from: Money, total: Money, markup: Money, markupBps: bigint, rateScaled: bigint, quoteId: string, conversionId: string, transferId: string, key: string, now: Date) {
+  private async post(partyId: string, q: FxQuote, held: HeldQuote, conversionId: string, vendorRateScaled: bigint, vendorTotal: Money, transferId: string, key: string, now: Date) {
+    const { from, total, markup, markupBps, rateScaled, quoteId } = q;
     const walletFrom = await this.d.accounts.memberAccount(partyId, 'wallet', from.currency);
     const walletTo = await this.d.accounts.memberAccount(partyId, 'wallet', total.currency);
     const positionFrom = await this.d.accounts.systemAccount('fx_position', from.currency);
@@ -170,7 +176,19 @@ export class FxService {
         { accountId: walletTo, currency: total.currency, amountMinor: -total.minor },
         { accountId: feeIncome, currency: total.currency, amountMinor: -markup.minor },
       ],
-      metadata: { fx_markup_bps: Number(markupBps), rateScaled: rateScaled.toString(), rate: rateString(rateScaled), quoteId, conversionId, from: toWire(from), total: toWire(total), markup: toWire(markup) },
+      metadata: {
+        fx_markup_bps: Number(markupBps),
+        fx_rate_version: held.rateVersion,
+        fx_rate_id: held.rateId,
+        rateScaled: rateScaled.toString(),
+        rate: rateString(rateScaled),
+        quoteId,
+        conversionId,
+        from: toWire(from),
+        total: toWire(total),
+        markup: toWire(markup),
+        vendor: { rateScaled: vendorRateScaled.toString(), rate: rateString(vendorRateScaled), total: toWire(vendorTotal) },
+      },
     });
   }
 
@@ -198,8 +216,9 @@ function parse(body: unknown): { from: Money; to: Currency } {
   return { from, to: b.to };
 }
 
-function view(q: FxQuote): FxQuoteView {
-  return { quoteId: q.quoteId, from: toWire(q.from), total: toWire(q.total), markup: toWire(q.markup), markupBps: Number(q.markupBps), rate: rateString(q.rateScaled), expiresAt: q.expiresAt };
+function view(h: HeldQuote): FxQuoteView {
+  const q = h.quote;
+  return { quoteId: q.quoteId, from: toWire(q.from), total: toWire(q.total), markup: toWire(q.markup), markupBps: Number(q.markupBps), rate: rateString(q.rateScaled), rateVersion: h.rateVersion, expiresAt: q.expiresAt };
 }
 
 function mapFxError(e: unknown): Error {
