@@ -97,4 +97,5 @@
 | [T-1005](T-1005.md) | AGT | Pending-intent service + approval | REQ-AGT-006 | 10 |
 | [T-1006](T-1006.md) | AGT | Grants screen, revoke, rate limits | REQ-AGT-008, REQ-AGT-009 | 10 |
 | [T-1007](T-1007.md) | AGT | Provider calls never carry a user token | REQ-AGT-004 | 10 |
+| [T-1008](T-1008.md) | AGT | Approving a P2P intent runs the member's send | REQ-AGT-006 | 10 |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.

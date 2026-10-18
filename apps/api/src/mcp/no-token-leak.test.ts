@@ -15,6 +15,7 @@ import { OtpService } from '../auth/otp.ts';
 import { PasskeyService } from '../auth/passkeys.ts';
 import { StepUpService } from '../auth/step-up.ts';
 import { TokenService, generateSigningKey } from '../auth/tokens.ts';
+import { StaticFlags } from '../billing/capabilities.ts';
 import { IntentService } from '../intents/service.ts';
 import { AccountService } from '../ledger/accounts.ts';
 import { PostgresLedger } from '../ledger/post.ts';
@@ -153,7 +154,7 @@ beforeAll(async () => {
       email.send({ channel: 'email', to: 'noa@example.com', template: 'agent.intent', locale: 'he', data, category: 'security' }, `email:${intent.id}`),
     ]);
   };
-  const intents = new IntentService(db, new TransferService(db), stepUp, notifyAll);
+  const intents = new IntentService(db, new TransferService(db), stepUp, { send: () => Promise.reject(new Error('approval is not exercised here')) }, new StaticFlags(), notifyAll);
   const ctx = (at: Date): ToolContext => ({
     now: at,
     accounts: async (m) => (await accounts.purses(m)).map((p) => ({ id: p.id, currency: p.currency, settled: p.settled, holds: p.holds, available: p.available })),
