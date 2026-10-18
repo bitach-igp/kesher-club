@@ -26,6 +26,8 @@ export type PaymentRequest = Schemas['PaymentRequest'];
 export type PaidPaymentRequest = Schemas['PaidPaymentRequest'];
 export type Split = Schemas['Split'];
 export type MoneyWire = Schemas['Money'];
+export type Transaction = Schemas['Transaction'];
+export type TransactionPage = Schemas['TransactionPage'];
 export type FxQuote = Schemas['FxQuote'];
 export type FxConversion = Schemas['FxConversion'];
 export type OtpPurpose = 'register' | 'recovery';
@@ -84,6 +86,12 @@ export interface PayApi {
   declineRequest(id: string, idempotencyKey: string): Promise<PaymentRequest>;
 }
 
+/** M08–M10 home, balance and transaction detail (T-0511): purses, the transaction history per purse, identity and card status. */
+export interface WalletApi {
+  listAccounts(): Promise<{ items: readonly Account[] }>;
+  listTransactions(accountId: string, cursor?: string): Promise<TransactionPage>;
+}
+
 /** M11 convert (T-0509): a 30 s quote and the conversion at it. */
 export interface FxApi {
   quote(input: { from: MoneyWire; to: 'USD' | 'ILS' }, idempotencyKey: string): Promise<FxQuote>;
@@ -124,6 +132,7 @@ export interface Api {
   kyc: KycApi;
   cards: CardsApi;
   pay: PayApi;
+  wallet: WalletApi;
   fx: FxApi;
   esim: EsimUsageApi;
   grants: GrantsApi;
@@ -178,6 +187,10 @@ export function sdkApi(client: Client, _session: Session, extras: { esim: EsimUs
       createSplit: (input, idempotencyKey) => client.post('/splits', { body: input, idempotencyKey }),
       payRequest: (id, idempotencyKey) => client.post('/requests/{id}/pay', { path: { id }, idempotencyKey }),
       declineRequest: (id, idempotencyKey) => client.post('/requests/{id}/decline', { path: { id }, idempotencyKey }),
+    },
+    wallet: {
+      listAccounts: () => client.get('/accounts'),
+      listTransactions: (id, cursor) => client.get('/accounts/{id}/transactions', { path: { id }, ...(cursor ? { query: { cursor } } : {}) }),
     },
     fx: {
       quote: (input, idempotencyKey) => client.post('/fx/quotes', { body: input, idempotencyKey }),
