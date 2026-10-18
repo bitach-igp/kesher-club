@@ -1,5 +1,6 @@
 // OTP input: 6 boxes drawn over a single input so SMS autofill (oneTimeCode / sms-otp) and
-// paste-to-fill work. Boxes are 48 wide with a 56 minimum height.
+// paste-to-fill work. Boxes are at least 48 wide and 56 high, and grow with Dynamic Type. A code is
+// read left to right in every language, so the row of boxes never mirrors under RTL.
 import { StyleSheet, TextInput, View } from 'react-native';
 import { useTheme } from '../theme.ts';
 import { Txt } from './Txt.tsx';
@@ -28,7 +29,7 @@ export function OtpInput({ value, onChange, label, error, disabled = false, test
           <View
             key={i}
             style={{
-              width: 48,
+              minWidth: 48,
               minHeight: 56,
               borderRadius: th.radius.md,
               backgroundColor: th.color.bg.sunken,
@@ -68,7 +69,7 @@ export function OtpInput({ value, onChange, label, error, disabled = false, test
 }
 
 const styles = StyleSheet.create({
-  boxes: { flexDirection: 'row' },
+  boxes: { flexDirection: 'row', direction: 'ltr' },
   // Kept on-screen (not display:none) so autofill and the keyboard still target it.
   hiddenInput: { opacity: 0.01, minHeight: 1 },
 });
