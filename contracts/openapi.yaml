@@ -144,6 +144,40 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Capabilities" }
         default: { $ref: "#/components/responses/Problem" }
+  /me/preferences:
+    get:
+      operationId: getPreferences
+      summary: The member's receiving currency
+      description: REQ-PAY-007 (ADR-007). `as_sent`, the default, keeps the sender's currency; USD or ILS converts a send in the other currency at the club rate.
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Preferences
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Preferences" }
+        default: { $ref: "#/components/responses/Problem" }
+    patch:
+      operationId: updatePreferences
+      summary: Set the receiving currency
+      description: REQ-PAY-007. Bearer only; a preference moves no money by itself. Unknown values answer VALIDATION_FAILED.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [receiveCurrency]
+              properties:
+                receiveCurrency: { type: string, enum: [USD, ILS, as_sent] }
+      responses:
+        "200":
+          description: Preferences after the change
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Preferences" }
+        default: { $ref: "#/components/responses/Problem" }
   /households/{id}:
     get:
       operationId: getHousehold
@@ -1850,6 +1884,12 @@ components:
         from: { $ref: "#/components/schemas/Money" }
         total: { $ref: "#/components/schemas/Money" }
         status: { type: string, enum: [settled, failed] }
+    Preferences:
+      type: object
+      required: [receiveCurrency]
+      properties:
+        receiveCurrency: { type: string, enum: [USD, ILS, as_sent] }
+        updatedAt: { type: string, format: date-time }
     FxRate:
       type: object
       required: [id, pair, version, mid, source, status, proposedBy, createdAt]
