@@ -15,3 +15,16 @@ Steps (from repo root, PowerShell on Windows unless stated):
 12. docker rm -f kesher-pg
 Expected: step 4 prints `ok   ledger` (13 migrations) then identity, org, billing, legal, addons, notify, audit, agent. Step 5 reports no pending migrations for every schema. Step 6 lists ops.fx_rate with checks on pair, mid_scaled, source and status, the unique (pair, version), the partial unique index fx_rate_one_active_idx on (pair) WHERE status = 'active', the fx_rate_pair_created_idx index and the FK to ops.approval_request. Step 7 prints `INSERT 0 1`. Step 8 fails with a duplicate key violation on fx_rate_one_active_idx (one active rate per pair). Step 9 prints `INSERT 0 1`. Step 10 fails with a check constraint violation on approval_request_kind_check. Step 11 shows club_app with `arw` on ops.fx_rate.
 Report back: the console output of steps 4, 6, 7, 8, 9, 10 and 11.
+
+## Result
+Date: 2026-10-18 21:07 Asia/Jerusalem (desktop checker)
+Outcome: PASS, run at 0dbaaa2 (branch head, ledger 14 / identity 2 migrations) in postgres:16.
+- Step 4: ledger "Migrating to version 0014 (14 migrations in total)"; 0013 created ops.fx_rate, fx_rate_one_active_idx, fx_rate_pair_created_idx and re-added approval_request_kind_check with 'fx_rate' NOT VALID, "-- ok (87.8ms)". Then `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent.
+- Step 5 re-run: "No migration files to execute" x9, all ok.
+- Step 6: \d ops.fx_rate shows fx_rate_pkey, fx_rate_one_active_idx UNIQUE (pair) WHERE status = 'active', fx_rate_pair_created_idx (pair, created_at DESC), fx_rate_pair_version_key UNIQUE (pair, version); checks fx_rate_mid_scaled_check, fx_rate_pair_check, fx_rate_source_check, fx_rate_status_check; FK fx_rate_approval_id_fkey -> ops.approval_request(id). As expected.
+- Step 7: `INSERT 0 1`. As expected.
+- Step 8: `ERROR: duplicate key value violates unique constraint "fx_rate_one_active_idx"` (Key (pair)=(USD/ILS) already exists). As expected.
+- Step 9: `INSERT 0 1`. As expected.
+- Step 10: `ERROR: new row for relation "approval_request" violates check constraint "approval_request_kind_check"`. As expected.
+- Step 11: ops.fx_rate privileges `club_app=arw/postgres`. As expected.
+- Step 12: container removed. (Error texts for steps 8 and 10 captured on a second fresh container at the same commit; the first run showed no INSERT for both.)

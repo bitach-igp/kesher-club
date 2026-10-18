@@ -6,18 +6,29 @@
 // (REQ-PAY-003, T-0506) instead reserves the money and waits two hours in pending_hold, cancellable; the
 // worker resumes the same run when the time passes. Requests or splits (REQ-PAY-004) are a later card.
 //
+// Currency (T-0515, REQ-PAY-006, ADR-007): the amount's currency names the purse paid from; the recipient's
+// receiving currency (T-0514) names the purse credited. When the two differ the send is priced once, at
+// `begin`, from the club rate in force, with the recipient's plan markup on top (they chose to receive
+// converted, so their plan prices it), and the transfer carries the received leg and the rate version:
+// the post, the sweep and the hold's release move that amount and never re-price. No valid rate refuses
+// the send with PROVIDER_UNAVAILABLE before anything is created. Limits and the hold rule judge the sent
+// amount; the journal is one, balanced per currency, through `fx_position`.
+//
 // `runSend` is the deterministic body over `SendActivities`, so Temporal (ADR-002) can host it unchanged;
 // `P2pSendService` is both the activities and the HTTP-facing entry. The note is member text: stored,
 // rendered, never interpreted.
-import { DomainError, fromWire, toWire, type Money } from '@kesher/domain';
-import type { NotifyPort } from '@kesher/ports';
+import { applyBps, DomainError, fromWire, money, sub, toWire, type Money, type Posting } from '@kesher/domain';
+import { applyRate, type NotifyPort } from '@kesher/ports';
 import type { IdentityRepository } from '../auth/repository.ts';
 import type { Database } from '../db.ts';
+import type { RateService } from '../fx/rates.ts';
+import { rateString } from '../fx/service.ts';
 import type { KycService } from '../kyc/service.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
-import type { Transfer, TransferService } from '../transfers/service.ts';
-import type { P2pHoldService } from './holds.ts';
+import type { PreferenceService } from '../me/preferences.ts';
+import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
+import { RELEASE_JOURNAL_KIND, releaseKey, type P2pHoldService } from './holds.ts';
 import type { P2pLimitService } from './limits.ts';
 
 export const P2P_JOURNAL_KIND = 'p2p';
@@ -36,7 +47,7 @@ export interface SendInput {
 export interface SendActivities {
   begin(input: SendInput, workflowId: string, now: Date): Promise<Transfer>;
   submit(transfer: Transfer, now: Date): Promise<Transfer>;
-  /** The book transfer: one journal, wallet → wallet, keyed by the workflow id. */
+  /** The book transfer: one journal, wallet → wallet (through fx_position when converting), keyed by the workflow id. */
   post(transfer: Transfer, workflowId: string, now: Date): Promise<{ journalId: string }>;
   settle(transfer: Transfer, journalId: string, now: Date): Promise<Transfer>;
   /** The plan's P2P usage, idempotent by the workflow id. */
@@ -95,6 +106,10 @@ interface Deps {
   kyc: KycService;
   identity: IdentityRepository;
   notify: NotifyPort;
+  preferences: Pick<PreferenceService, 'receiveCurrencyOf'>;
+  rates: Pick<RateService, 'rateFor'>;
+  /** The recipient's plan markup in basis points (FxService.markupFor). */
+  markups: { markupFor(partyId: string): Promise<bigint> };
 }
 
 export class P2pSendService implements SendActivities {
@@ -134,9 +149,30 @@ export class P2pSendService implements SendActivities {
   // ---- activities ----
 
   async begin(input: SendInput, workflowId: string, now: Date): Promise<Transfer> {
-    const t = await this.d.transfers.create({ idempotencyKey: workflowId, kind: 'p2p', fromPartyId: input.fromPartyId, toPartyId: input.toPartyId, amount: input.amount, ...(input.note ? { note: input.note } : {}) }, now);
+    const existing = await this.d.transfers.byKey(workflowId);
+    if (existing) {
+      if (existing.kind !== 'p2p') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
+      return existing; // a replay keeps the price it was created at
+    }
+    const conversion = await this.price(input, now);
+    const t = await this.d.transfers.create({ idempotencyKey: workflowId, kind: 'p2p', fromPartyId: input.fromPartyId, toPartyId: input.toPartyId, amount: input.amount, ...(input.note ? { note: input.note } : {}), ...(conversion ? { conversion } : {}) }, now);
     if (t.kind !== 'p2p') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
     return t;
+  }
+
+  /**
+   * The received leg when the recipient's receiving currency differs from the sent one: the gross at the
+   * club rate, less the recipient's plan markup. PROVIDER_UNAVAILABLE when no valid rate stands (REQ-FX-004).
+   */
+  async price(input: SendInput, now: Date): Promise<TransferConversion | undefined> {
+    const to = await this.d.preferences.receiveCurrencyOf(input.toPartyId, input.amount.currency);
+    if (to === input.amount.currency) return undefined;
+    const rate = await this.d.rates.rateFor(input.amount.currency, to, now);
+    const markupBps = await this.d.markups.markupFor(input.toPartyId);
+    const gross = money(applyRate(input.amount.minor, rate.rateScaled), to);
+    const received = sub(gross, applyBps(gross, markupBps));
+    if (received.minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'The amount is too small to convert', { received: received.minor.toString(), currency: to });
+    return { received, rateId: rate.rateId, rateVersion: rate.version, rateScaled: rate.rateScaled, markupBps };
   }
 
   submit(transfer: Transfer, now: Date): Promise<Transfer> {
@@ -144,21 +180,47 @@ export class P2pSendService implements SendActivities {
   }
 
   async post(transfer: Transfer, workflowId: string, now: Date): Promise<{ journalId: string }> {
-    const { currency } = transfer.amount;
-    const from = await this.d.accounts.memberAccount(transfer.fromPartyId!, 'wallet', currency);
-    const to = await this.d.accounts.memberAccount(transfer.toPartyId!, 'wallet', currency);
+    const from = await this.d.accounts.memberAccount(transfer.fromPartyId!, 'wallet', transfer.amount.currency);
     const journal = await this.d.ledger.post({
       idempotencyKey: settleKey(workflowId),
       kind: P2P_JOURNAL_KIND,
       transferId: transfer.id,
       effectiveAt: now,
-      postings: [
-        { accountId: from, currency, amountMinor: transfer.amount.minor },
-        { accountId: to, currency, amountMinor: -transfer.amount.minor },
-      ],
-      metadata: { workflowId, fromPartyId: transfer.fromPartyId, toPartyId: transfer.toPartyId },
+      postings: await this.legs(transfer, from),
+      metadata: { workflowId, fromPartyId: transfer.fromPartyId, toPartyId: transfer.toPartyId, ...conversionMetadata(transfer) },
     });
     return { journalId: journal.id };
+  }
+
+  /**
+   * The postings from a source account in the sent currency to the recipient's wallet. Same currency: two
+   * legs. Converting: the source pays fx_position in the sent currency; fx_position pays out the gross in the
+   * received currency, the recipient's wallet takes the received amount and fee income the markup. Balanced
+   * per currency; the gap between the club rate and the vendor's lands on fx_position, which reconciliation
+   * watches (ADR-007).
+   */
+  private async legs(transfer: Transfer, source: string): Promise<Posting[]> {
+    const { currency } = transfer.amount;
+    const c = transfer.conversion;
+    if (!c) {
+      const to = await this.d.accounts.memberAccount(transfer.toPartyId!, 'wallet', currency);
+      return [
+        { accountId: source, currency, amountMinor: transfer.amount.minor },
+        { accountId: to, currency, amountMinor: -transfer.amount.minor },
+      ];
+    }
+    const to = await this.d.accounts.memberAccount(transfer.toPartyId!, 'wallet', c.received.currency);
+    const positionFrom = await this.d.accounts.systemAccount('fx_position', currency);
+    const positionTo = await this.d.accounts.systemAccount('fx_position', c.received.currency);
+    const feeIncome = await this.d.accounts.systemAccount('fee_income', c.received.currency);
+    const markup = markupOf(transfer, c);
+    return [
+      { accountId: source, currency, amountMinor: transfer.amount.minor },
+      { accountId: positionFrom, currency, amountMinor: -transfer.amount.minor },
+      { accountId: positionTo, currency: c.received.currency, amountMinor: c.received.minor + markup },
+      { accountId: to, currency: c.received.currency, amountMinor: -c.received.minor },
+      ...(markup > 0n ? [{ accountId: feeIncome, currency: c.received.currency, amountMinor: -markup }] : []),
+    ];
   }
 
   settle(transfer: Transfer, journalId: string, now: Date): Promise<Transfer> {
@@ -173,8 +235,22 @@ export class P2pSendService implements SendActivities {
     return this.d.holds.hold(transfer, workflowId, now);
   }
 
-  release(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer> {
-    return this.d.holds.release(transfer, workflowId, now);
+  /** A converted hold releases here, at the price fixed when it began; a same-currency one through the hold service. */
+  async release(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer> {
+    if (!transfer.conversion) return this.d.holds.release(transfer, workflowId, now);
+    if (transfer.state !== 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a transfer that is ${transfer.state}`);
+    if (!transfer.holdReleasesAt || Date.parse(transfer.holdReleasesAt) > now.getTime()) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold has not expired yet');
+    const pending = await this.d.accounts.memberAccount(transfer.fromPartyId!, 'pending', transfer.amount.currency);
+    const journal = await this.d.ledger.post({
+      idempotencyKey: releaseKey(workflowId),
+      kind: RELEASE_JOURNAL_KIND,
+      transferId: transfer.id,
+      effectiveAt: now,
+      postings: await this.legs(transfer, pending),
+      metadata: { workflowId, heldUntil: transfer.holdReleasesAt, ...conversionMetadata(transfer) },
+    });
+    const released = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold expired' });
+    return this.d.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
   }
 
   recordUsage(transfer: Transfer, workflowId: string, now: Date): Promise<void> {
@@ -195,9 +271,10 @@ export class P2pSendService implements SendActivities {
   async notify(transfer: Transfer, workflowId: string, _now: Date): Promise<void> {
     const recipient = await this.d.identity.findUser(transfer.toPartyId!);
     if (!recipient) return;
-    // The amount and the transfer id only: the sender's name and the note are not for an SMS.
+    // The amount received and the transfer id only: the sender's name and the note are not for an SMS.
+    const received = transfer.conversion?.received ?? transfer.amount;
     await this.d.notify.send(
-      { channel: 'sms', to: recipient.phone, template: RECEIVED_TEMPLATE, locale: 'en', data: { amount: transfer.amount.minor.toString(), currency: transfer.amount.currency, transferId: transfer.id }, category: 'money' },
+      { channel: 'sms', to: recipient.phone, template: RECEIVED_TEMPLATE, locale: 'en', data: { amount: received.minor.toString(), currency: received.currency, transferId: transfer.id }, category: 'money' },
       `${workflowId}:notify`,
     );
   }
@@ -217,14 +294,44 @@ function parse(fromPartyId: string, body: unknown): SendInput {
   return { fromPartyId, toPartyId: b.toPartyId, amount, ...(typeof b.note === 'string' && b.note ? { note: b.note } : {}) };
 }
 
+/** The markup kept by fee income: the gross at the rate applied, less what the recipient received. */
+function markupOf(t: Transfer, c: TransferConversion): bigint {
+  return applyRate(t.amount.minor, c.rateScaled) - c.received.minor;
+}
+
+function conversionMetadata(t: Transfer): Record<string, unknown> {
+  const c = t.conversion;
+  if (!c) return {};
+  const markup = markupOf(t, c);
+  return {
+    fx_rate_version: c.rateVersion,
+    fx_rate_id: c.rateId,
+    fx_markup_bps: Number(c.markupBps),
+    rateScaled: c.rateScaled.toString(),
+    rate: rateString(c.rateScaled),
+    sent: toWire(t.amount),
+    received: toWire(c.received),
+    markup: toWire(money(markup, c.received.currency)),
+  };
+}
+
 /** The OpenAPI `Transfer`. */
 export interface TransferView {
   id: string;
   state: Transfer['state'];
   amount: ReturnType<typeof toWire>;
   holdReleasesAt?: string;
+  /** The recipient's leg when the send converted (REQ-PAY-006). */
+  received?: ReturnType<typeof toWire>;
+  rateVersion?: number;
 }
 
 function view(t: Transfer): TransferView {
-  return { id: t.id, state: t.state, amount: toWire(t.amount), ...(t.state === 'pending_hold' && t.holdReleasesAt ? { holdReleasesAt: t.holdReleasesAt } : {}) };
+  return {
+    id: t.id,
+    state: t.state,
+    amount: toWire(t.amount),
+    ...(t.state === 'pending_hold' && t.holdReleasesAt ? { holdReleasesAt: t.holdReleasesAt } : {}),
+    ...(t.conversion ? { received: toWire(t.conversion.received), rateVersion: t.conversion.rateVersion } : {}),
+  };
 }

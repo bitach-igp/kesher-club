@@ -136,11 +136,12 @@ function buildServices(o: AppOptions) {
   const autoReload = new AutoReloadService(o.db, accounts, loads, flags);
   const p2pLimits = new P2pLimitService(o.db, memberships, entitlements, plans);
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
-  const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort });
-  const requests = new PaymentRequestService(o.db, p2p, identity);
   const rates = new RateService(o.db, approvals, audit);
   const preferences = new PreferenceService(o.db);
   const fx = new FxService({ port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
+  // A send to a member who receives in the other currency prices at the club rate with their plan's markup (REQ-PAY-006).
+  const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort, preferences, rates, markups: fx });
+  const requests = new PaymentRequestService(o.db, p2p, identity);
   // Payouts (REQ-PO-001/002): the rail's status webhooks land on /hooks/payout; settled and failed are applied once (SEQ-09).
   const collections = new CollectionsService(o.db, ledger, accounts, transfers, flags);
   const payouts = new PayoutService({ db: o.db, port: o.registry.resolve<PayoutPort>('payout', o.market), ledger, accounts, transfers, approvals, identity, notify: notifyPort, flags, provider: o.registry.bindingFor('payout', o.market)?.provider ?? 'simulator' });

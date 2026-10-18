@@ -8,6 +8,19 @@ import { next, TERMINAL_STATES, type TransferEvent, type TransferState } from '.
 
 export type TransferKind = 'p2p' | 'load' | 'payout' | 'fx' | 'allowance' | 'addon' | 'refund' | 'fee';
 
+/**
+ * The received leg of a cross-currency send (T-0515, REQ-PAY-006): priced once at create time from the
+ * club rate in force, so a replay or the hold's release never re-prices (ADR-007).
+ */
+export interface TransferConversion {
+  received: Money;
+  rateId: string;
+  rateVersion: number;
+  /** Received-currency units per one unit sent × 1e6, in the direction used. */
+  rateScaled: bigint;
+  markupBps: bigint;
+}
+
 export interface Transfer {
   id: string;
   idempotencyKey: string;
@@ -21,6 +34,7 @@ export interface Transfer {
   journalId?: string;
   reversalJournalId?: string;
   note?: string;
+  conversion?: TransferConversion;
   createdAt: string;
   updatedAt: string;
 }
@@ -32,6 +46,7 @@ export interface CreateTransferInput {
   toPartyId?: string;
   amount: Money;
   note?: string;
+  conversion?: TransferConversion;
 }
 
 interface Row {
@@ -48,6 +63,12 @@ interface Row {
   journal_id: string | null;
   reversal_journal_id: string | null;
   note: string | null;
+  received_minor: string | null;
+  received_currency: Currency | null;
+  fx_rate_id: string | null;
+  fx_rate_version: number | null;
+  fx_rate_scaled: string | null;
+  fx_markup_bps: number | null;
   created_at: string | Date;
   updated_at: string | Date;
 }
@@ -58,18 +79,20 @@ export class TransferService {
   /** Idempotent by key: a replayed create returns the existing transfer unchanged (REQ-PAY-005). */
   async create(input: CreateTransferInput, now: Date): Promise<Transfer> {
     if (input.amount.minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'Amount must be positive');
+    const c = input.conversion;
+    if (c && (c.received.minor <= 0n || c.received.currency === input.amount.currency || c.markupBps < 0n || c.rateScaled <= 0n)) throw new DomainError('VALIDATION_FAILED', 'A conversion receives a positive amount in the other currency');
     const existing = await this.byKey(input.idempotencyKey);
     if (existing) return existing;
     const id = uuidv7(now);
     try {
       await this.db.transaction(async (tx) => {
         await tx.query(
-          `insert into ops.transfer (id, idempotency_key, kind, from_party_id, to_party_id, amount_minor, currency, state, note, created_at, updated_at)
-           values ($1, $2, $3, $4, $5, $6, $7, 'created', $8, $9, $9)`,
-          [id, input.idempotencyKey, input.kind, input.fromPartyId ?? null, input.toPartyId ?? null, input.amount.minor.toString(), input.amount.currency, input.note ?? null, now],
+          `insert into ops.transfer (id, idempotency_key, kind, from_party_id, to_party_id, amount_minor, currency, state, note, received_minor, received_currency, fx_rate_id, fx_rate_version, fx_rate_scaled, fx_markup_bps, created_at, updated_at)
+           values ($1, $2, $3, $4, $5, $6, $7, 'created', $8, $9, $10, $11, $12, $13, $14, $15, $15)`,
+          [id, input.idempotencyKey, input.kind, input.fromPartyId ?? null, input.toPartyId ?? null, input.amount.minor.toString(), input.amount.currency, input.note ?? null, c?.received.minor.toString() ?? null, c?.received.currency ?? null, c?.rateId ?? null, c?.rateVersion ?? null, c?.rateScaled.toString() ?? null, c ? Number(c.markupBps) : null, now],
         );
         await tx.query('insert into ops.transfer_event (transfer_id, from_state, to_state, at) values ($1, null, $2, $3)', [id, 'created', now]);
-        await enqueue(tx, 'transfer', id, 'transfer.created', { kind: input.kind, amount: input.amount, fromPartyId: input.fromPartyId, toPartyId: input.toPartyId });
+        await enqueue(tx, 'transfer', id, 'transfer.created', { kind: input.kind, amount: input.amount, fromPartyId: input.fromPartyId, toPartyId: input.toPartyId, ...(c ? { received: c.received, rateVersion: c.rateVersion } : {}) });
       });
     } catch (e) {
       if (isPgError(e, PG.UNIQUE_VIOLATION)) return (await this.byKey(input.idempotencyKey))!;
@@ -140,6 +163,9 @@ function toTransfer(r: Row): Transfer {
     ...(r.journal_id ? { journalId: r.journal_id } : {}),
     ...(r.reversal_journal_id ? { reversalJournalId: r.reversal_journal_id } : {}),
     ...(r.note ? { note: r.note } : {}),
+    ...(r.received_minor && r.received_currency && r.fx_rate_id && r.fx_rate_version !== null && r.fx_rate_scaled && r.fx_markup_bps !== null
+      ? { conversion: { received: { minor: BigInt(r.received_minor), currency: r.received_currency }, rateId: r.fx_rate_id, rateVersion: r.fx_rate_version, rateScaled: BigInt(r.fx_rate_scaled), markupBps: BigInt(r.fx_markup_bps) } }
+      : {}),
     createdAt: new Date(r.created_at).toISOString(),
     updatedAt: new Date(r.updated_at).toISOString(),
   };
