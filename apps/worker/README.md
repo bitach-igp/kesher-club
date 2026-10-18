@@ -13,6 +13,7 @@ until then; every money movement's workflow ID is its idempotency key.
 | `allowance/` | T-0605 | Institution allowance runs with preview, two-person approval above the threshold, per-member failures |
 | `catalogue/sync` | T-0702 | Pulls vendor packages into the catalogue with the markup policy |
 | `esim/usage` | T-0710 | Usage polling and low-data / expiry notifications |
+| `fx/refresh-rates` | T-0513 | Every 5 minutes, publishes the FX port's mid as the club rate for 15 minutes unless a manual rate is active (ADR-007) |
 | `monitoring/` | T-0909 | Transaction monitoring rules v1 over the last day of `ops.transfer`; one `ops.case` per finding for the compliance console, behind `monitoring.rules` |
 
 ## Commands

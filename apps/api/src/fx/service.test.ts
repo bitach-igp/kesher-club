@@ -2,8 +2,11 @@
 // step-up. TST-FX-001: a quote shows rate, markup and total and expires at +30 s; converting an expired
 // quote answers QUOTE_EXPIRED and a fresh quote converts. TST-FX-002: a 0.75 % plan writes
 // fx_markup_bps=75 on the journal, and fx_position and fee_income post, balanced per currency.
+// TST-FX-003/004 (T-0513): quotes are priced from the club's published rate and carry its version, the
+// journal too; a port rate past its 15 minutes refuses the quote with PROVIDER_UNAVAILABLE until the
+// next one is published; a manual rate holds.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { money } from '@kesher/domain';
+import { money, uuidv7 } from '@kesher/domain';
 import { fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
@@ -51,6 +54,8 @@ beforeAll(async () => {
   const su = await s.stepUp.start(principal);
   stepUpToken = (await s.stepUp.complete(principal, await device.authenticate(su.options))).stepUpToken;
   await runLoad(s.loads, { payerPartyId: member, memberPartyId: member, method: 'card', amount: money(50_000n, 'USD'), paymentMethodId: 'pm_ok' }, 'fx-fund-usd', now);
+  // The worker's refresh job would do this: the club rate is the simulator's mid, published for 15 minutes.
+  await s.rates.publishFromPort('USD/ILS', 3_710_000n, now);
 }, 60_000);
 afterAll(async () => db.close());
 
@@ -60,7 +65,7 @@ describe('TST-FX-001: quotes lock for 30 s', () => {
     expect(r.status).toBe(201);
     const q = r.body as FxQuoteView;
     // $100 × 3.71 = ₪371.00 gross; 0.75 % = ₪2.78 markup (half-up); the member receives ₪368.22.
-    expect(q).toEqual({ quoteId: expect.any(String), from: { minor: '10000', currency: 'USD' }, total: { minor: '36822', currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' }, markupBps: Number(DEFAULT_FX_MARKUP_BPS), rate: '3.710000', expiresAt: new Date(NOW.getTime() + 30_000).toISOString() });
+    expect(q).toEqual({ quoteId: expect.any(String), from: { minor: '10000', currency: 'USD' }, total: { minor: '36822', currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' }, markupBps: Number(DEFAULT_FX_MARKUP_BPS), rate: '3.710000', rateVersion: 1, expiresAt: new Date(NOW.getTime() + 30_000).toISOString() });
     expect(rateString(269_542n)).toBe('0.269542');
     expect((await quote({ minor: '10000', currency: 'USD' }, 'ILS', 'fx-quote-1')).body).toEqual(q);
     // Validation and the balance.
@@ -102,7 +107,7 @@ describe('TST-FX-002: the markup on the journal', () => {
     expect(t).toMatchObject({ kind: 'fx', state: 'settled', fromPartyId: member, toPartyId: member, amount: money(10_000n, 'USD') });
     const j = (await db.query<{ kind: string; metadata: Record<string, unknown> }>(`select kind, metadata from ledger.journal where id = $1`, [t.journalId])).rows[0]!;
     expect(j.kind).toBe('fx');
-    expect(j.metadata).toMatchObject({ fx_markup_bps: 75, rate: '3.710000', rateScaled: '3710000', from: { minor: '10000', currency: 'USD' }, total: { minor: '36822', currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' } });
+    expect(j.metadata).toMatchObject({ fx_markup_bps: 75, fx_rate_version: 1, rate: '3.710000', rateScaled: '3710000', from: { minor: '10000', currency: 'USD' }, total: { minor: '36822', currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' }, vendor: { rate: '3.710000', total: { minor: '37100', currency: 'ILS' } } });
     const postings = (await db.query<{ type: string; currency: string; amount_minor: string }>(`select a.type::text, p.currency::text, p.amount_minor::text from ledger.posting p join ledger.account a on a.id = p.account_id where p.journal_id = $1 order by p.currency::text, a.type::text`, [t.journalId])).rows;
     expect(postings).toEqual([
       { type: 'fee_income', currency: 'ILS', amount_minor: '-278' },
@@ -152,5 +157,29 @@ describe('TST-FX-002: the markup on the journal', () => {
 
     const off = createApp({ db, registry: host.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => now, identity: app.services.identity, flags: new StaticFlags(undefined, { 'wallet.enabled': true }) });
     await expect(off.services.fx.quote(member, { from: { minor: '100', currency: 'USD' }, to: 'ILS' }, 'fx-off-1', now)).rejects.toMatchObject({ code: 'FEATURE_OFF' });
+  });
+});
+
+describe('TST-FX-003/004: the club rate behind every quote', () => {
+  it('a port rate past its 15 minutes refuses the quote with PROVIDER_UNAVAILABLE and creates nothing; the next published rate prices the next quote and reaches the journal', async () => {
+    const s = app.services;
+    const later = new Date(NOW.getTime() + 16 * 60_000);
+    await expect(s.fx.quote(member, { from: { minor: '10000', currency: 'USD' }, to: 'ILS' }, 'fx-stale-1', later)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    const v2 = (await s.rates.publishFromPort('USD/ILS', 3_800_000n, later))!;
+    const q = await s.fx.quote(member, { from: { minor: '10000', currency: 'USD' }, to: 'ILS' }, 'fx-stale-2', later);
+    // $100 × 3.80 = ₪380.00 gross; 0.75 % = ₪2.85; ₪377.15 received, from rate version 2.
+    expect(q).toMatchObject({ rate: '3.800000', rateVersion: v2.version, total: { minor: '37715', currency: 'ILS' }, markup: { minor: '285', currency: 'ILS' } });
+    const c = await s.fx.convert(member, { quoteId: q.quoteId }, 'fx-stale-2-convert', later);
+    expect(c.status).toBe('settled');
+    const t = (await s.transfers.byKey('fx-stale-2-convert'))!;
+    const meta = (await db.query<{ metadata: Record<string, unknown> }>(`select metadata from ledger.journal where id = $1`, [t.journalId])).rows[0]!.metadata;
+    // The member got the club rate; the vendor filled at its own 3.71, and the journal says both.
+    expect(meta).toMatchObject({ fx_rate_version: v2.version, fx_rate_id: v2.id, rate: '3.800000', vendor: { rate: '3.710000' } });
+    // A manual rate holds past any window: finance sets 3.70 and a quote a day later uses it.
+    const fin = { partyId: uuidv7(later), role: 'finance', subject: 'auth0|finance-a' };
+    const proposed = await s.rates.propose('USD/ILS', 3_700_000n, fin, 'Fixing', later);
+    await s.rates.approve(proposed.rate.id, { partyId: uuidv7(later), role: 'finance' }, later);
+    const dayLater = new Date(later.getTime() + 24 * 60 * 60_000);
+    expect(await s.fx.quote(member, { from: { minor: '10000', currency: 'USD' }, to: 'ILS' }, 'fx-manual-1', dayLater)).toMatchObject({ rate: '3.700000', rateVersion: proposed.rate.version, total: { minor: '36722', currency: 'ILS' } });
   });
 });

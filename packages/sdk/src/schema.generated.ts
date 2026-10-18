@@ -1741,6 +1741,8 @@ export interface components {
             readonly quoteId: string;
             /** @description Decimal string for display only */
             readonly rate: string;
+            /** @description The club rate version the quote was priced from (REQ-FX-003) */
+            readonly rateVersion?: number;
             readonly total: components["schemas"]["Money"];
         };
         readonly FxQuoteRequest: {

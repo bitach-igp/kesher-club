@@ -137,10 +137,10 @@ function buildServices(o: AppOptions) {
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
   const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort });
   const requests = new PaymentRequestService(o.db, p2p, identity);
-  const fx = new FxService({ port: o.registry.resolve<FxPort>('fx', o.market), ledger, accounts, transfers, memberships, plans, flags });
+  const rates = new RateService(o.db, approvals, audit);
+  const fx = new FxService({ port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
   // Payouts (REQ-PO-001/002): the rail's status webhooks land on /hooks/payout; settled and failed are applied once (SEQ-09).
   const collections = new CollectionsService(o.db, ledger, accounts, transfers, flags);
-  const rates = new RateService(o.db, approvals, audit);
   const payouts = new PayoutService({ db: o.db, port: o.registry.resolve<PayoutPort>('payout', o.market), ledger, accounts, transfers, approvals, identity, notify: notifyPort, flags, provider: o.registry.bindingFor('payout', o.market)?.provider ?? 'simulator' });
   webhooks.bind(PAYOUT_PROVIDER, { verifier: payouts.webhookVerifier(), process: (e) => payouts.applyWebhook(e, clock.now()).then(() => undefined) });
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });

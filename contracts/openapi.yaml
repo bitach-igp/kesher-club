@@ -1839,6 +1839,7 @@ components:
         markup: { $ref: "#/components/schemas/Money" }
         markupBps: { type: integer }
         rate: { type: string, description: Decimal string for display only }
+        rateVersion: { type: integer, minimum: 1, description: The club rate version the quote was priced from (REQ-FX-003) }
         expiresAt: { type: string, format: date-time }
     FxConversion:
       type: object
