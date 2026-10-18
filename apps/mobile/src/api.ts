@@ -20,6 +20,12 @@ export type ShipTo = Schemas['ShipTo'];
 export type ProvisioningPayload = Schemas['ProvisioningPayload'];
 export type KycStatus = Schemas['KycStatus'];
 export type KycSessionStarted = Schemas['KycSessionStarted'];
+export type Account = Schemas['Account'];
+export type Transfer = Schemas['Transfer'];
+export type PaymentRequest = Schemas['PaymentRequest'];
+export type PaidPaymentRequest = Schemas['PaidPaymentRequest'];
+export type Split = Schemas['Split'];
+export type MoneyWire = Schemas['Money'];
 export type OtpPurpose = 'register' | 'recovery';
 
 export interface AuthApi {
@@ -64,6 +70,18 @@ export interface CardsApi {
   startProvisioning(id: string, wallet: 'apple' | 'google', deviceId: string, clientData: Record<string, string>, idempotencyKey: string): Promise<ProvisioningPayload>;
 }
 
+/** M12–M19 pay screens (T-0508): purses, sends, requests and splits over the P2P contract (T-0505..T-0507). */
+export interface PayApi {
+  listAccounts(): Promise<{ items: readonly Account[] }>;
+  send(input: { toPartyId: string; amount: MoneyWire; note?: string }, idempotencyKey: string): Promise<Transfer>;
+  cancelTransfer(id: string, idempotencyKey: string): Promise<Transfer>;
+  listRequests(): Promise<{ items: readonly PaymentRequest[] }>;
+  createRequest(input: { payerPartyId: string; amount: MoneyWire; note?: string }, idempotencyKey: string): Promise<PaymentRequest>;
+  createSplit(input: { total: MoneyWire; participants: string[]; note?: string }, idempotencyKey: string): Promise<Split>;
+  payRequest(id: string, idempotencyKey: string): Promise<PaidPaymentRequest>;
+  declineRequest(id: string, idempotencyKey: string): Promise<PaymentRequest>;
+}
+
 export interface EmergencyCase {
   caseId: string;
   callbackSlaMinutes: number;
@@ -97,6 +115,7 @@ export interface Api {
   club: ClubApi;
   kyc: KycApi;
   cards: CardsApi;
+  pay: PayApi;
   esim: EsimUsageApi;
   grants: GrantsApi;
   concierge: ConciergeApi;
@@ -140,6 +159,16 @@ export function sdkApi(client: Client, _session: Session, extras: { esim: EsimUs
       activate: (id, last4, idempotencyKey) => client.post('/cards/{id}/activate', { path: { id }, body: { last4 }, idempotencyKey }),
       detailsToken: (id) => client.post('/cards/{id}/details-token', { path: { id } }),
       startProvisioning: (id, wallet, deviceId, clientData, idempotencyKey) => client.post('/cards/{id}/provisioning/{wallet}', { path: { id, wallet }, body: { deviceId, clientData }, idempotencyKey }),
+    },
+    pay: {
+      listAccounts: () => client.get('/accounts'),
+      send: (input, idempotencyKey) => client.post('/transfers', { body: input, idempotencyKey }),
+      cancelTransfer: (id, idempotencyKey) => client.post('/transfers/{id}/cancel', { path: { id }, idempotencyKey }),
+      listRequests: () => client.get('/requests'),
+      createRequest: (input, idempotencyKey) => client.post('/requests', { body: input, idempotencyKey }),
+      createSplit: (input, idempotencyKey) => client.post('/splits', { body: input, idempotencyKey }),
+      payRequest: (id, idempotencyKey) => client.post('/requests/{id}/pay', { path: { id }, idempotencyKey }),
+      declineRequest: (id, idempotencyKey) => client.post('/requests/{id}/decline', { path: { id }, idempotencyKey }),
     },
     esim: extras.esim,
     grants: {
