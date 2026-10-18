@@ -1,6 +1,7 @@
-// Collections (T-0606, TST-INS-006) end to end: a paid fee item produces a receipt number and one journal
-// (paid twice is the same receipt); the institution's month lists it with the roster name as data; the
-// export over HTTP carries the same totals; staff of another institution are refused.
+// Collections (T-0606, TST-INS-006) end to end: a paid fee item produces a receipt number, one journal and
+// one settled transfer of kind fee (paid twice is the same receipt); a journal left without its row by a
+// crash is caught up on the next read and the next pay; the institution's month lists it with the roster
+// name as data; the export over HTTP carries the same totals; staff of another institution are refused.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { SIM_OTP_CODE, SimPasskeyDevice } from '@kesher/ports';
@@ -26,6 +27,7 @@ const INST = uuidv7(NOW);
 const OTHER = uuidv7(NOW);
 let feeId = '';
 let bigFeeId = '';
+let crashFeeId = '';
 
 const call = (method: string, url: string, body?: unknown, h: Record<string, string> = {}) => dispatch(app, { method, url, headers: { authorization: `Bearer ${access}`, ...h }, rawBody: body === undefined ? '' : JSON.stringify(body), now: NOW });
 const pay = (id: string, key: string, h: Record<string, string> = {}) => call('POST', `/v1/fee-items/${id}/pay`, undefined, { 'idempotency-key': key, 'x-step-up': stepUpToken, ...h });
@@ -52,7 +54,8 @@ beforeAll(async () => {
   await db.query(`insert into org.member (id, institution_id, member_name, member_party_id, status) values ($1, $2, 'Noa Example', $3, 'active')`, [uuidv7(NOW), INST, member]);
   feeId = uuidv7(NOW);
   bigFeeId = uuidv7(NOW);
-  await db.query(`insert into org.fee_item (id, institution_id, member_party_id, description, amount_minor, currency, status, due_at) values ($1, $2, $3, 'Tuition, term 1 <b>', 12000, 'ILS', 'due', '2026-11-30'), ($4, $2, $3, 'Building fund', 500000, 'ILS', 'due', '2026-11-30')`, [feeId, INST, member, bigFeeId]);
+  crashFeeId = uuidv7(NOW);
+  await db.query(`insert into org.fee_item (id, institution_id, member_party_id, description, amount_minor, currency, status, due_at) values ($1, $2, $3, 'Tuition, term 1 <b>', 12000, 'ILS', 'due', '2026-11-30'), ($4, $2, $3, 'Building fund', 500000, 'ILS', 'due', '2026-11-30'), ($5, $2, $3, 'Trip', 3000, 'ILS', 'due', '2026-10-31')`, [feeId, INST, member, bigFeeId, crashFeeId]);
   const staffA = uuidv7(NOW);
   const staffB = uuidv7(NOW);
   await db.query(`insert into org.staff (party_id, institution_id, role) values ($1, $2, 'finance'), ($3, $4, 'finance')`, [staffA, INST, staffB, OTHER]);
@@ -66,6 +69,7 @@ describe('TST-INS-006', () => {
     const before = await available();
     const due = (await call('GET', '/v1/fee-items')).body as { items: FeeItemView[] };
     expect(due.items.map((f) => [f.status, f.description])).toEqual([
+      ['due', 'Trip'],
       ['due', 'Tuition, term 1 <b>'],
       ['due', 'Building fund'],
     ]);
@@ -75,8 +79,13 @@ describe('TST-INS-006', () => {
     const receipt = r.body as Receipt;
     const journal = (await db.query<{ id: string; kind: string; effective_at: string | Date; metadata: Record<string, unknown> }>(`select id, kind, effective_at, metadata from ledger.journal where idempotency_key = $1`, [feeKey(feeId)])).rows[0]!;
     expect(receipt).toEqual({ receiptNumber: receiptNumber(journal.id, NOW), feeItemId: feeId, institutionId: INST, institutionName: 'Yeshivat Example', memberPartyId: member, description: 'Tuition, term 1 <b>', amount: { minor: '12000', currency: 'ILS' }, paidAt: NOW.toISOString(), journalId: journal.id });
-    expect(receipt.receiptNumber).toMatch(/^KC-202611-[0-9A-F]{8}$/);
+    expect(receipt.receiptNumber).toMatch(/^KC-202611-[0-9A-F]{12}$/);
+    expect(receipt.receiptNumber.slice(-12)).toBe(journal.id.replaceAll('-', '').slice(-12).toUpperCase()); // the random tail, never the shared timestamp
     expect(journal.kind).toBe('fee');
+    // The payment is a transfer like any other movement: kind fee, settled, carrying the journal.
+    const transfer = await app.services.transfers.byKey(feeKey(feeId));
+    expect(transfer).toMatchObject({ kind: 'fee', state: 'settled', fromPartyId: member, journalId: journal.id, amount: money(12_000n, 'ILS') });
+    expect((await app.services.transfers.history(transfer!.id)).map((h) => h.to)).toEqual(['created', 'submitted', 'settled']);
     expect(journal.metadata).toMatchObject({ institutionId: INST, memberPartyId: member, feeItemId: feeId });
     expect(await available()).toBe(before - 12_000n);
     const sides = (await db.query<{ type: string; amount_minor: string }>(`select a.type::text, p.amount_minor::text from ledger.posting p join ledger.account a on a.id = p.account_id where p.journal_id = $1 order by a.type::text`, [journal.id])).rows;
@@ -97,11 +106,31 @@ describe('TST-INS-006', () => {
     expect((await pay(bigFeeId, 'pay-fee-waived')).body).toMatchObject({ status: 409, code: 'IDEMPOTENCY_CONFLICT' });
   });
 
+  it('a journal the ledger holds without its row (a crash after posting) reads as paid and is caught up by the next pay, with nothing moved twice', async () => {
+    // The crash: the fee journal posted (dated in October), then the process died before the row and the transfer were touched.
+    const s = app.services;
+    const wallet = await s.accounts.memberAccount(member, 'wallet', 'ILS');
+    const master = await s.accounts.systemAccount('institution_master', 'ILS');
+    const posted = await s.ledger.post({ idempotencyKey: feeKey(crashFeeId), kind: 'fee', effectiveAt: new Date('2026-10-20T10:00:00Z'), postings: [{ accountId: wallet, currency: 'ILS', amountMinor: 3_000n }, { accountId: master, currency: 'ILS', amountMinor: -3_000n }], metadata: { institutionId: INST, memberPartyId: member, feeItemId: crashFeeId, description: 'Trip' } });
+    const before = await available();
+    const list = (await call('GET', '/v1/fee-items')).body as { items: FeeItemView[] };
+    expect(list.items.find((f) => f.id === crashFeeId)).toMatchObject({ status: 'paid', receipt: { journalId: posted.id, receiptNumber: receiptNumber(posted.id, new Date('2026-10-20T10:00:00Z')) } });
+    expect((await db.query<{ status: string }>('select status from org.fee_item where id = $1', [crashFeeId])).rows[0]).toEqual({ status: 'due' });
+    const r = await pay(crashFeeId, 'pay-fee-crash');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ journalId: posted.id, description: 'Trip', amount: { minor: '3000', currency: 'ILS' } });
+    expect(await available()).toBe(before);
+    expect((await db.query<{ status: string }>('select status from org.fee_item where id = $1', [crashFeeId])).rows[0]).toEqual({ status: 'paid' });
+    expect((await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [feeKey(crashFeeId)])).rows[0]).toEqual({ n: 1 });
+  });
+
   it('the institution\'s staff list the month with roster names as data and export it; the totals equal the ledger; other staff are refused', async () => {
     const list = await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections?month=2026-11`, headers: { authorization: `Bearer ${staffToken}` }, rawBody: '', now: NOW });
     expect(list.status).toBe(200);
     expect(list.body).toMatchObject({ month: '2026-11', items: [{ feeItemId: feeId, memberName: 'Noa Example', amount: { minor: '12000', currency: 'ILS' } }], total: [{ minor: '12000', currency: 'ILS' }] });
-    expect((await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections?month=2026-10`, headers: { authorization: `Bearer ${staffToken}` }, rawBody: '', now: NOW })).body).toMatchObject({ items: [], total: [] });
+    // October holds the Trip the crash test left on the ledger; September nothing.
+    expect((await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections?month=2026-10`, headers: { authorization: `Bearer ${staffToken}` }, rawBody: '', now: NOW })).body).toMatchObject({ items: [{ feeItemId: crashFeeId, description: 'Trip', amount: { minor: '3000', currency: 'ILS' } }], total: [{ minor: '3000', currency: 'ILS' }] });
+    expect((await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections?month=2026-09`, headers: { authorization: `Bearer ${staffToken}` }, rawBody: '', now: NOW })).body).toMatchObject({ items: [], total: [] });
     expect((await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections?month=2026-1`, headers: { authorization: `Bearer ${staffToken}` }, rawBody: '', now: NOW })).body).toMatchObject({ code: 'VALIDATION_FAILED' });
     expect((await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections?month=2026-11`, headers: { authorization: `Bearer ${otherStaffToken}` }, rawBody: '', now: NOW })).body).toMatchObject({ status: 403, code: 'FORBIDDEN' });
     expect((await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections?month=2026-11`, headers: { authorization: `Bearer ${access}` }, rawBody: '', now: NOW })).body).toMatchObject({ code: 'FORBIDDEN' });

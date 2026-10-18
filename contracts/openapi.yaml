@@ -1590,10 +1590,14 @@ components:
         available: { $ref: "#/components/schemas/Money" }
     Transaction:
       type: object
-      required: [id, kind, amount, at, state]
+      required: [id, kind, direction, amount, at, state]
       properties:
         id: { type: string, format: uuid }
         kind: { type: string, enum: [load, p2p, card, fee, fx, payout, addon, allowance, reversal] }
+        direction:
+          type: string
+          enum: [in, out]
+          description: From this purse's point of view. `amount` is always positive; the app signs it from here, never from `kind` (a p2p is out for the sender and in for the recipient).
         amount: { $ref: "#/components/schemas/Money" }
         at: { type: string, format: date-time }
         state: { type: string, enum: [pending, settled, reversed] }

@@ -1,9 +1,12 @@
 // Transaction monitoring job (T-0909, REQ-CMP-001). Reads the last day of member movements from
 // ops.transfer, runs the v1 rules and opens one ops.case per finding for the compliance console
-// (/admin/alerts, T-0908). Dedupe is twofold: the finding's key (anchored on the pattern's first
-// transfer) stops a re-run from opening the same case twice, and an undecided case for the same
-// party and rule suppresses a new one until compliance records a disposition. The job never moves
-// money and never reads a note: a case payload is ids, counts, amounts and times.
+// (/admin/alerts, T-0908). Dedupe is threefold: the finding's key (anchored on the pattern's first
+// transfer) stops a re-run from opening the same case twice; a case for the same party and rule that
+// already covers any of the finding's transfers, decided or not, means the pattern has been seen (the
+// anchor shifts as the lookback window slides past the first transfer, the transfers do not); and an
+// undecided case for the same party and rule suppresses a new one until compliance records a
+// disposition. The job never moves money and never reads a note: a case payload is ids, counts,
+// amounts and times.
 import { money, uuidv7, type Currency } from '@kesher/domain';
 import type { FeatureFlags } from '@kesher/api/billing/capabilities';
 import type { Database } from '@kesher/api/db';
@@ -70,8 +73,11 @@ export class MonitoringJob {
   }
 
   private async open(f: Finding, now: Date): Promise<Outcome> {
-    const same = await this.db.query<{ id: string }>('select id from ops.case where dedupe_key = $1', [f.dedupeKey]);
-    if (same.rows[0]) return 'duplicate';
+    const covered = await this.db.query<{ id: string }>(
+      `select id from ops.case where kind = $1 and payload->>'rule' = $2 and payload->>'partyId' = $3 and payload->'transferIds' ?| $4::text[] limit 1`,
+      [f.caseKind, f.rule, f.partyId, f.transferIds],
+    );
+    if (covered.rows[0]) return 'duplicate';
     const undecided = await this.db.query<{ id: string }>(
       `select id from ops.case where kind = $1 and payload->>'rule' = $2 and payload->>'partyId' = $3
           and (disposition is null or disposition = 'in_review') and status in ('open', 'investigating') limit 1`,

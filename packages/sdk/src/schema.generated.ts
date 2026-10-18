@@ -1991,6 +1991,11 @@ export interface components {
             readonly at: string;
             /** @description Untrusted display text (merchant or member) */
             readonly counterparty?: string;
+            /**
+             * @description From this purse's point of view. `amount` is always positive; the app signs it from here, never from `kind` (a p2p is out for the sender and in for the recipient).
+             * @enum {string}
+             */
+            readonly direction: "in" | "out";
             /** Format: uuid */
             readonly id: string;
             /** @enum {string} */

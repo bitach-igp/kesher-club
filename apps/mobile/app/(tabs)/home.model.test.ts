@@ -9,7 +9,7 @@ import { createHomeModel, declinedCopy, filterTransactions, frozenCard, groupByD
 
 const NOW = new Date('2026-11-10T09:00:00Z');
 const acc = (id: string, currency: 'ILS' | 'USD', available: string, holds = '0'): Account => ({ id, currency, settled: { minor: (BigInt(available) + BigInt(holds)).toString(), currency }, holds: { minor: holds, currency }, available: { minor: available, currency } });
-const tx = (over: Partial<Transaction> & { id: string }): Transaction => ({ kind: 'card', amount: { minor: '1200', currency: 'ILS' }, at: '2026-11-10T08:00:00Z', state: 'settled', ...over });
+const tx = (over: Partial<Transaction> & { id: string }): Transaction => ({ kind: 'card', direction: 'out', amount: { minor: '1200', currency: 'ILS' }, at: '2026-11-10T08:00:00Z', state: 'settled', ...over });
 const problem = (code: string, status: number) => Object.assign(new Error(code), { code, status });
 
 const controls = (): Card['controls'] => ({ blockedMccs: [], atm: false, online: true, agentPurchases: { mode: 'off' } });
@@ -94,9 +94,13 @@ describe('pure views', () => {
     expect(declinedCopy(tx({ id: 'd3', state: 'reversed' }))).toBeUndefined();
     expect(declinedCopy(tx({ id: 'd4', state: 'settled', untrusted: { declineReason: 'CARD_FROZEN' } }))).toBeUndefined();
     expect(declinedCopy(tx({ id: 'd5', kind: 'p2p', state: 'reversed', untrusted: { declineReason: 'CARD_FROZEN' } }))).toBeUndefined();
+    // The sign comes from the server's direction, never from the kind: a p2p is out for the sender and in for the recipient.
     expect(signedAmount(tx({ id: 's1' }))).toEqual(money(-1_200n, 'ILS'));
-    expect(signedAmount(tx({ id: 's2', kind: 'load' }))).toEqual(money(1_200n, 'ILS'));
+    expect(signedAmount(tx({ id: 's2', kind: 'load', direction: 'in' }))).toEqual(money(1_200n, 'ILS'));
     expect(signedAmount(tx({ id: 's3', kind: 'payout', amount: { minor: '500', currency: 'ILS' } }))).toEqual(money(-500n, 'ILS'));
+    expect(signedAmount(tx({ id: 's4', kind: 'p2p', direction: 'out' }))).toEqual(money(-1_200n, 'ILS'));
+    expect(signedAmount(tx({ id: 's5', kind: 'p2p', direction: 'in' }))).toEqual(money(1_200n, 'ILS'));
+    expect(signedAmount(tx({ id: 's6', kind: 'fee', direction: 'out', amount: { minor: '-300', currency: 'ILS' } }))).toEqual(money(-300n, 'ILS'));
   });
 });
 
@@ -132,6 +136,21 @@ describe('the model', () => {
     expect(router.current()).toBe('/card');
     m.goWallet('a-ils');
     expect(router.current()).toBe('/wallet?account=a-ils');
+  });
+
+  it('locate finds a transaction on a later page by paging the purse, and gives up at the end without an error', async () => {
+    const f = fakes({ pages: { 'a-ils': [[tx({ id: 'p1' })], [tx({ id: 'p2', at: '2026-11-09T07:00:00Z' })], [tx({ id: 'p3', at: '2026-11-08T07:00:00Z' })]] } });
+    const m = createHomeModel({ ...f, router: memoryRouter(), now: () => NOW });
+    await m.load();
+    expect(m.transaction('p3')).toBeUndefined();
+    expect((await m.locate('p3', 'a-ils'))?.id).toBe('p3');
+    expect(f.calls.filter((c) => c.startsWith('tx:'))).toEqual(['tx:a-ils:', 'tx:a-ils:1', 'tx:a-ils:2']);
+    expect(m.transaction('p3')?.id).toBe('p3'); // the pages it fetched stay loaded for the screen
+    expect((await m.locate('p1', 'a-ils'))?.id).toBe('p1'); // already loaded: no call
+    expect(f.calls.filter((c) => c.startsWith('tx:'))).toHaveLength(3);
+    expect(await m.locate('nope', 'a-ils')).toBeUndefined();
+    expect(m.store.get()).toMatchObject({ busy: false, error: undefined });
+    expect(await m.locate('nope')).toBeUndefined(); // falls back to the selected purse
   });
 
   it('activity behind a flag or down leaves balances current and says so; an identity outage leaves the card out; an accounts outage is the error', async () => {
