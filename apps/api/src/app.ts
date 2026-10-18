@@ -131,12 +131,13 @@ function buildServices(o: AppOptions) {
   });
   // Loads (REQ-WAL-002): the vendor's payment events land on /hooks/funding; the port verifies and parses,
   // the service settles or fails the transfer once, whatever the webhook count (SEQ-02).
-  const loads = new LoadService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, memberships, flags, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
+  // Club rates (REQ-FX-003): a load into the other purse (REQ-WAL-006) and a converted send price at them.
+  const rates = new RateService(o.db, approvals, audit);
+  const loads = new LoadService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, memberships, flags, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', rates });
   webhooks.bind(FUNDING_PROVIDER, { verifier: loads.webhookVerifier(), process: (e) => loads.applyWebhook(e, clock.now()).then(() => undefined) });
   const autoReload = new AutoReloadService(o.db, accounts, loads, flags);
   const p2pLimits = new P2pLimitService(o.db, memberships, entitlements, plans);
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
-  const rates = new RateService(o.db, approvals, audit);
   const preferences = new PreferenceService(o.db);
   const fx = new FxService({ port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
   // A send to a member who receives in the other currency prices at the club rate with their plan's markup (REQ-PAY-006).

@@ -8,17 +8,25 @@
 // (the member sees it "on hold until" the release date) and the worker's release job moves it to the
 // wallet on that date under `{workflowId}:release`; an ACH return before then reverses the hold.
 //
+// A load credits the purse the member chooses (T-0517, REQ-WAL-006, ADR-007). When the instrument settles in
+// the other currency, the load is priced once when it begins, at the club rate (mid, no markup), and the
+// price rides on the transfer: settle, hold and release book partner_settlement in the instrument currency,
+// fx_position in both, and the purse in its own currency, so no replay or late webhook ever re-prices it.
+// With no valid club rate the load is refused before the vendor is asked for anything.
+//
 // `runLoad` is the deterministic workflow body, pure over `LoadActivities`, so Temporal (ADR-002) can
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
-import { DomainError, fromWire, toWire, type Money } from '@kesher/domain';
-import { FundingError, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
+import { DomainError, fromWire, money, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
+import { applyRate, FundingError, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import type { Database } from '../db.ts';
+import type { RateService } from '../fx/rates.ts';
+import { rateString } from '../fx/service.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
-import type { Transfer, TransferService } from '../transfers/service.ts';
+import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
 
@@ -27,6 +35,7 @@ export const WALLET_FLAG = 'wallet.enabled';
 export const FUNDING_PROVIDER = 'funding';
 export const ACH_FLAG = 'funding.ach';
 export const LOAD_METHODS: readonly FundingMethod[] = ['card', 'apple_pay', 'google_pay'];
+export const PURSE_CURRENCIES: readonly Currency[] = ['USD', 'ILS'];
 /** Journal kinds: the settlement (one per load, ever), the ACH hold into pending, and its release into the wallet. */
 export const LOAD_JOURNAL_KIND = 'load';
 export const HOLD_JOURNAL_KIND = 'load_hold';
@@ -42,6 +51,8 @@ export interface LoadInput {
   method: FundingMethod;
   amount: Money;
   paymentMethodId?: string;
+  /** The purse credited; the amount's currency when absent. */
+  purse?: Currency;
 }
 
 /** The OpenAPI `Load`. */
@@ -51,6 +62,10 @@ export interface LoadView {
   amount: ReturnType<typeof toWire>;
   holdUntil?: string;
   clientSecret?: string;
+  /** What the purse is credited, when the load converts. */
+  credited?: ReturnType<typeof toWire>;
+  /** The club rate version the load converted at. */
+  rateVersion?: number;
 }
 
 export interface LoadActivities {
@@ -133,6 +148,8 @@ interface Deps {
   flags: FeatureFlags;
   /** Registry provider name, the key space of ops.external_ref. */
   provider: string;
+  /** The club rates a cross-currency load converts at; without them only same-currency loads go. */
+  rates?: Pick<RateService, 'rateFor'>;
 }
 
 export class LoadService implements LoadActivities {
@@ -148,8 +165,11 @@ export class LoadService implements LoadActivities {
 
   // ---- activities ----
 
+  /** A replay finds its transfer and keeps its price; a first run prices the conversion before anything exists. */
   async begin(input: LoadInput, workflowId: string, now: Date): Promise<Transfer> {
-    const t = await this.d.transfers.create({ idempotencyKey: workflowId, kind: 'load', fromPartyId: input.payerPartyId, toPartyId: input.memberPartyId, amount: input.amount }, now);
+    const found = await this.d.transfers.byKey(workflowId);
+    const conversion = found ? undefined : await this.price(input, now);
+    const t = found ?? (await this.d.transfers.create({ idempotencyKey: workflowId, kind: 'load', fromPartyId: input.payerPartyId, toPartyId: input.memberPartyId, amount: input.amount, ...(conversion ? { conversion } : {}) }, now));
     if (t.kind !== 'load') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
     return t;
   }
@@ -173,38 +193,26 @@ export class LoadService implements LoadActivities {
 
   async settle(transfer: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Transfer> {
     if (transfer.state === 'pending_hold') return this.release(transfer, now);
-    const { currency } = transfer.amount;
-    const wallet = await this.d.accounts.memberAccount(transfer.toPartyId!, 'wallet', currency);
-    const partner = await this.d.accounts.systemAccount('partner_settlement', currency);
     const journal = await this.d.ledger.post({
       idempotencyKey: settleKey(workflowId),
       kind: LOAD_JOURNAL_KIND,
       transferId: transfer.id,
       effectiveAt: now,
-      postings: [
-        { accountId: partner, currency, amountMinor: transfer.amount.minor },
-        { accountId: wallet, currency, amountMinor: -transfer.amount.minor },
-      ],
-      metadata: { workflowId, method: load.method, provider: this.d.provider, loadId: load.loadId },
+      postings: await this.legs(transfer, 'wallet'),
+      metadata: { workflowId, method: load.method, provider: this.d.provider, loadId: load.loadId, ...conversionMetadata(transfer) },
     });
     return this.d.transfers.apply(transfer.id, 'settle', now, { journalId: journal.id });
   }
 
   async hold(transfer: Transfer, holdUntil: string, now: Date): Promise<Transfer> {
     const workflowId = transfer.idempotencyKey;
-    const { currency } = transfer.amount;
-    const pending = await this.d.accounts.memberAccount(transfer.toPartyId!, 'pending', currency);
-    const partner = await this.d.accounts.systemAccount('partner_settlement', currency);
     const journal = await this.d.ledger.post({
       idempotencyKey: holdKey(workflowId),
       kind: HOLD_JOURNAL_KIND,
       transferId: transfer.id,
       effectiveAt: now,
-      postings: [
-        { accountId: partner, currency, amountMinor: transfer.amount.minor },
-        { accountId: pending, currency, amountMinor: -transfer.amount.minor },
-      ],
-      metadata: { workflowId, provider: this.d.provider, holdUntil },
+      postings: await this.legs(transfer, 'pending'),
+      metadata: { workflowId, provider: this.d.provider, holdUntil, ...conversionMetadata(transfer) },
     });
     return this.d.transfers.apply(transfer.id, 'hold', now, { journalId: journal.id, holdReleasesAt: new Date(holdUntil), reason: 'bank hold' });
   }
@@ -212,7 +220,8 @@ export class LoadService implements LoadActivities {
   async release(transfer: Transfer, now: Date): Promise<Transfer> {
     if (transfer.state !== 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a load that is ${transfer.state}`);
     const workflowId = transfer.idempotencyKey;
-    const { currency } = transfer.amount;
+    // The hold already converted: the release moves the credited amount within the purse currency.
+    const { minor, currency } = credited(transfer);
     const pending = await this.d.accounts.memberAccount(transfer.toPartyId!, 'pending', currency);
     const wallet = await this.d.accounts.memberAccount(transfer.toPartyId!, 'wallet', currency);
     const journal = await this.d.ledger.post({
@@ -221,8 +230,8 @@ export class LoadService implements LoadActivities {
       transferId: transfer.id,
       effectiveAt: now,
       postings: [
-        { accountId: pending, currency, amountMinor: transfer.amount.minor },
-        { accountId: wallet, currency, amountMinor: -transfer.amount.minor },
+        { accountId: pending, currency, amountMinor: minor },
+        { accountId: wallet, currency, amountMinor: -minor },
       ],
       metadata: { workflowId, provider: this.d.provider, heldUntil: transfer.holdReleasesAt },
     });
@@ -300,11 +309,49 @@ export class LoadService implements LoadActivities {
       amount: toWire(t.amount),
       ...(t.state === 'pending_hold' && t.holdReleasesAt ? { holdUntil: t.holdReleasesAt.slice(0, 10) } : {}),
       ...(run.clientSecret ? { clientSecret: run.clientSecret } : {}),
+      ...(t.conversion ? { credited: toWire(t.conversion.received), rateVersion: t.conversion.rateVersion } : {}),
     };
   }
 
+  /** The conversion a load into another purse settles at: the club rate, no markup (ADR-007). */
+  private async price(input: LoadInput, now: Date): Promise<TransferConversion | undefined> {
+    const purse = input.purse ?? input.amount.currency;
+    if (purse === input.amount.currency) return undefined;
+    if (!this.d.rates) throw new DomainError('PROVIDER_UNAVAILABLE', 'Loads into another currency are not available right now');
+    const rate = await this.d.rates.rateFor(input.amount.currency, purse, now);
+    const minor = applyRate(input.amount.minor, rate.rateScaled);
+    if (minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'The amount is too small to convert');
+    return { received: money(minor, purse), rateId: rate.rateId, rateVersion: rate.version, rateScaled: rate.rateScaled, markupBps: 0n };
+  }
+
+  /**
+   * partner_settlement in the instrument currency to the member's wallet or pending purse. Same currency:
+   * two legs. Converting: fx_position takes the instrument amount and pays out the credited amount in the
+   * purse currency, balanced per currency; the gap to the vendor's real rate is fx_position's to carry.
+   */
+  private async legs(transfer: Transfer, into: 'wallet' | 'pending'): Promise<Posting[]> {
+    const { minor, currency } = transfer.amount;
+    const partner = await this.d.accounts.systemAccount('partner_settlement', currency);
+    const c = transfer.conversion;
+    if (!c) {
+      const dest = await this.d.accounts.memberAccount(transfer.toPartyId!, into, currency);
+      return [
+        { accountId: partner, currency, amountMinor: minor },
+        { accountId: dest, currency, amountMinor: -minor },
+      ];
+    }
+    const to = c.received.currency;
+    const dest = await this.d.accounts.memberAccount(transfer.toPartyId!, into, to);
+    return [
+      { accountId: partner, currency, amountMinor: minor },
+      { accountId: await this.d.accounts.systemAccount('fx_position', currency), currency, amountMinor: -minor },
+      { accountId: await this.d.accounts.systemAccount('fx_position', to), currency: to, amountMinor: c.received.minor },
+      { accountId: dest, currency: to, amountMinor: -c.received.minor },
+    ];
+  }
+
   private async parse(payerPartyId: string, body: unknown): Promise<LoadInput> {
-    const b = (body ?? {}) as { memberPartyId?: unknown; amount?: unknown; method?: unknown; paymentMethodId?: unknown };
+    const b = (body ?? {}) as { memberPartyId?: unknown; amount?: unknown; method?: unknown; paymentMethodId?: unknown; purseCurrency?: unknown };
     if (typeof b.memberPartyId !== 'string' || !b.memberPartyId) throw new DomainError('VALIDATION_FAILED', 'memberPartyId is required');
     if (b.method === 'ach' && !(await this.d.flags.isOn(ACH_FLAG))) throw new DomainError('FEATURE_OFF', 'Bank loads are not enabled yet');
     if (b.method === 'rtp') throw new DomainError('FEATURE_OFF', 'Instant bank loads are not enabled yet');
@@ -317,11 +364,19 @@ export class LoadService implements LoadActivities {
     }
     if (amount.minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'Amount must be positive');
     if (b.paymentMethodId !== undefined && typeof b.paymentMethodId !== 'string') throw new DomainError('VALIDATION_FAILED', 'paymentMethodId must be a string');
+    if (b.purseCurrency !== undefined && !PURSE_CURRENCIES.includes(b.purseCurrency as Currency)) throw new DomainError('VALIDATION_FAILED', `purseCurrency must be one of ${PURSE_CURRENCIES.join(', ')}`);
     if (b.memberPartyId !== payerPartyId) {
       const m = await this.d.memberships.forMember(b.memberPartyId);
       if (!m || m.funderPartyId !== payerPartyId || m.status !== 'active') throw new DomainError('FORBIDDEN', 'You can load your own purse or one you fund');
     }
-    return { payerPartyId, memberPartyId: b.memberPartyId, method: b.method as FundingMethod, amount, ...(typeof b.paymentMethodId === 'string' ? { paymentMethodId: b.paymentMethodId } : {}) };
+    return {
+      payerPartyId,
+      memberPartyId: b.memberPartyId,
+      method: b.method as FundingMethod,
+      amount,
+      ...(typeof b.paymentMethodId === 'string' ? { paymentMethodId: b.paymentMethodId } : {}),
+      ...(b.purseCurrency !== undefined ? { purse: b.purseCurrency as Currency } : {}),
+    };
   }
 }
 
@@ -341,6 +396,17 @@ export function loadState(t: Transfer, awaiting?: 'action' | 'vendor'): LoadStat
     case 'cancelled':
       return 'failed';
   }
+}
+
+/** What the member's purse receives: the conversion's amount, or the load itself. */
+function credited(t: Transfer): Money {
+  return t.conversion?.received ?? t.amount;
+}
+
+function conversionMetadata(t: Transfer): Record<string, unknown> {
+  const c = t.conversion;
+  if (!c) return {};
+  return { fx_rate_version: c.rateVersion, fx_rate_id: c.rateId, rateScaled: c.rateScaled.toString(), rate: rateString(c.rateScaled), loaded: toWire(t.amount), credited: toWire(c.received) };
 }
 
 function mapFundingError(e: unknown): Error {
