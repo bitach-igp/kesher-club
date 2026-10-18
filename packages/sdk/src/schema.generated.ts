@@ -1308,6 +1308,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/transfers/preview": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Preview what a send lands as in the recipient's purse
+         * @description REQ-PAY-006 (T-0518). Priced exactly as the send prices it, at the current club rate and the recipient's receiving currency; nothing is created or reserved. The same eligibility as a send; limits and the balance are judged by the send. A missing or stale rate answers PROVIDER_UNAVAILABLE.
+         */
+        readonly post: operations["previewTransfer"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -2153,6 +2173,16 @@ export interface components {
             readonly received?: components["schemas"]["Money"];
             /** @enum {string} */
             readonly state: "created" | "submitted" | "pending" | "pending_hold" | "settled" | "failed" | "reversed" | "cancelled";
+        };
+        readonly TransferPreview: {
+            /** @description What leaves the sender's purse */
+            readonly amount: components["schemas"]["Money"];
+            /** @description The club rate the send converts at */
+            readonly rate?: string;
+            /** @description The club rate version it was priced from */
+            readonly rateVersion?: number;
+            /** @description What lands in the recipient's purse */
+            readonly received: components["schemas"]["Money"];
         };
         readonly TransferRequest: {
             /** @description The amount and the purse it is paid from; the recipient's receiving currency (/me/preferences) names the purse it lands in */
@@ -4052,6 +4082,31 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Transfer"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly previewTransfer: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["TransferRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description The preview */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["TransferPreview"];
                 };
             };
             readonly default: components["responses"]["Problem"];

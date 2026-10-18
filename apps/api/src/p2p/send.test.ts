@@ -265,6 +265,31 @@ describe('TST-PAY-006: the receiving currency', () => {
     expect(await metadataOf(settleKey('xccy-same-ccy'))).not.toHaveProperty('fx_rate_version');
   });
 
+  it('T-0518: the preview prices exactly as the send does, under the bearer alone, and creates nothing', async () => {
+    const a = await register('+972501000030');
+    const b = await register('+972501000031');
+    const c = await register('+972501000032');
+    await app.services.preferences.set(b.partyId, 'ILS', NOW);
+    const preview = (from: Member, body: unknown, token = from.access) => dispatch(app, { method: 'POST', url: '/v1/transfers/preview', headers: { authorization: `Bearer ${token}` }, rawBody: JSON.stringify(body), now: NOW });
+
+    const usdToIls = await preview(a, { toPartyId: b.partyId, amount: usd('10000') });
+    expect(usdToIls.status).toBe(200);
+    expect(usdToIls.body).toEqual({ amount: usd('10000'), received: ils('36722'), rate: '3.700000', rateVersion: 1 });
+    expect((await preview(a, { toPartyId: c.partyId, amount: ils('5000') })).body).toEqual({ amount: ils('5000'), received: ils('5000') });
+    expect((await db.query<{ n: number }>(`select count(*)::int as n from ops.transfer where from_party_id = $1`, [a.partyId])).rows[0]).toEqual({ n: 0 });
+
+    // The send lands what the preview said.
+    await fund(a, 20_000n, 'USD');
+    expect((await send(a, { toPartyId: b.partyId, amount: usd('10000') }, 'xccy-preview-send')).body).toMatchObject({ received: ils('36722'), rateVersion: 1 });
+
+    expect((await preview(a, { toPartyId: a.partyId, amount: usd('100') })).body).toMatchObject({ status: 422, code: 'VALIDATION_FAILED' });
+    expect((await preview(a, { toPartyId: uuidv7(NOW), amount: usd('100') })).body).toMatchObject({ status: 404, code: 'NOT_FOUND' });
+    expect((await preview(a, { toPartyId: b.partyId, amount: usd('-1') })).body).toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect((await dispatch(app, { method: 'POST', url: '/v1/transfers/preview', headers: {}, rawBody: '{}', now: NOW })).status).toBe(401);
+    // Twenty minutes on, the port rate has run out: the preview refuses as the send would.
+    await expect(app.services.p2p.preview(a.partyId, { toPartyId: b.partyId, amount: usd('10000') }, new Date(NOW.getTime() + 20 * MIN))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+  });
+
   it('a converted hold is priced when it begins and releases at that price; no valid rate refuses before anything is created', async () => {
     const a = await register('+972501000023');
     const c = await register('+972501000024');
