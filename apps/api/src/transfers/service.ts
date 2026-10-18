@@ -6,7 +6,7 @@ import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
 import { enqueue } from './outbox.ts';
 import { next, TERMINAL_STATES, type TransferEvent, type TransferState } from './state-machine.ts';
 
-export type TransferKind = 'p2p' | 'load' | 'payout' | 'fx' | 'allowance' | 'addon' | 'refund';
+export type TransferKind = 'p2p' | 'load' | 'payout' | 'fx' | 'allowance' | 'addon' | 'refund' | 'fee';
 
 export interface Transfer {
   id: string;

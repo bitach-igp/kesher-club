@@ -5,13 +5,15 @@
 // anchored on the first transfer of the pattern, so the same data always yields the same key and a
 // re-run opens nothing twice. Member notes never reach a rule: a movement is ids, kind, amount, time.
 import { format, money, type Currency, type Money } from '@kesher/domain';
+import { DAY, HOUR } from '@kesher/ports';
+import type { Severity } from '@kesher/api/admin/alerts';
 import { HOLD_THRESHOLD_MINOR } from '@kesher/api/p2p/holds';
 
 export type RuleKind = 'structuring' | 'velocity' | 'fan_in' | 'fan_out';
 /** The ops.case kind the console lists a finding under (ALERT_KINDS): fan-in and fan-out are velocity cases with the rule in the payload. */
 export type CaseKind = 'structuring' | 'velocity';
-export type Severity = 'low' | 'medium' | 'high' | 'critical';
-export type MovementKind = 'p2p' | 'load' | 'payout' | 'fx' | 'allowance' | 'addon' | 'refund';
+export type { Severity };
+export type MovementKind = 'p2p' | 'load' | 'payout' | 'fx' | 'allowance' | 'addon' | 'refund' | 'fee';
 
 export interface Movement {
   id: string;
@@ -52,9 +54,6 @@ export interface Thresholds {
   fanIn: { windowMs: number; minSenders: number };
   fanOut: { windowMs: number; minRecipients: number };
 }
-
-const HOUR = 60 * 60_000;
-const DAY = 24 * HOUR;
 
 /** v1 thresholds (apps/worker/README.md); compliance tunes them here, not in the job. */
 export const THRESHOLDS: Thresholds = {

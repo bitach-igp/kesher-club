@@ -12,6 +12,8 @@ import type { Router } from '../../src/navigation.ts';
 export type HomeMode = 'loading' | 'ready' | 'error';
 export type TxFilter = 'all' | 'load' | 'p2p' | 'card' | 'fx' | 'payout' | 'other';
 export const FILTERS: readonly TxFilter[] = ['all', 'load', 'p2p', 'card', 'fx', 'payout', 'other'];
+/** How far the detail screen pages into a purse's activity looking for one transaction before giving up. */
+export const LOCATE_PAGES = 25;
 
 export interface PurseRow {
   accountId: string;
@@ -103,21 +105,26 @@ export function matchesQuery(tx: Transaction, query: string): boolean {
 
 export const filterTransactions = (items: readonly Transaction[], filter: TxFilter, query: string): Transaction[] => items.filter((t) => matchesFilter(t, filter) && matchesQuery(t, query));
 
-/** Newest day first; today and yesterday get words, the rest a date. */
+/** The device's calendar day of an instant, YYYY-MM-DD: a purchase at 23:30 in Tel Aviv is today's, not tomorrow's. */
+export function localDay(at: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+}
+
+/** Newest day first, by the device's calendar; today and yesterday get words, the rest a date. */
 export function groupByDay(items: readonly Transaction[], now: Date, locale: Locale): DayGroup[] {
-  const dayOf = (iso: string) => iso.slice(0, 10);
-  const today = dayOf(now.toISOString());
-  const yesterday = dayOf(new Date(now.getTime() - 86_400_000).toISOString());
+  const today = localDay(now);
+  const yesterday = localDay(new Date(now.getTime() - 86_400_000));
   const groups = new Map<string, Transaction[]>();
   for (const t of [...items].sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0))) {
-    const d = dayOf(t.at);
+    const d = localDay(new Date(t.at));
     const g = groups.get(d);
     if (g) g.push(t);
     else groups.set(d, [t]);
   }
   return [...groups.entries()].map(([day, list]) => ({
     day,
-    label: day === today ? { key: 'wallet.day.today' as CopyKey } : day === yesterday ? { key: 'wallet.day.yesterday' as CopyKey } : { date: new Date(`${day}T00:00:00Z`).toLocaleDateString(intlLocale(locale), { timeZone: 'UTC', day: 'numeric', month: 'long' }) },
+    label: day === today ? { key: 'wallet.day.today' as CopyKey } : day === yesterday ? { key: 'wallet.day.yesterday' as CopyKey } : { date: new Date(`${day}T00:00:00`).toLocaleDateString(intlLocale(locale), { day: 'numeric', month: 'long' }) },
     items: list,
   }));
 }
@@ -132,11 +139,11 @@ export function declinedCopy(tx: Transaction): { key: CopyKey; vars: Record<stri
   return KNOWN_DECLINES.has(code) ? { key: `tx.declined.${code}` as CopyKey, vars: {} } : { key: 'tx.declined.other', vars: { code } };
 }
 
-/** Signed for display: money in is positive, money out negative, from the purse's point of view. */
+/** Signed for display from the server's `direction`: out is negative, in positive. The kind says nothing about the sign (a p2p is out for one purse and in for another). */
 export function signedAmount(tx: Transaction): Money {
   const m = fromWire(tx.amount);
-  const out = tx.kind === 'card' || tx.kind === 'payout' || tx.kind === 'fee' || tx.kind === 'addon';
-  return out && m.minor > 0n ? money(-m.minor, m.currency) : m;
+  const abs = m.minor < 0n ? -m.minor : m.minor;
+  return money(tx.direction === 'out' ? -abs : abs, m.currency);
 }
 
 export const fmt = (m: Money, locale: Locale): string => format(m, intlLocale(locale));
@@ -152,7 +159,10 @@ export interface HomeModel {
   loadMore(): Promise<void>;
   /** The account's transactions after the filter and search, grouped by day. */
   groups(accountId?: string): DayGroup[];
+  /** A transaction already loaded, from any purse. */
   transaction(id: string): Transaction | undefined;
+  /** Finds a transaction, paging further into the purse's activity (up to LOCATE_PAGES pages) when it is not loaded yet. */
+  locate(id: string, accountId?: string): Promise<Transaction | undefined>;
   goVerify(): void;
   goCard(): void;
   goWallet(accountId: string): void;
@@ -222,6 +232,29 @@ export function createHomeModel(deps: HomeDeps): HomeModel {
         if (t) return t;
       }
       return undefined;
+    },
+    async locate(id, accountId) {
+      const found = this.transaction(id);
+      if (found) return found;
+      const account = accountId ?? store.get().selectedAccountId;
+      if (!account) return undefined;
+      store.patch({ busy: true });
+      try {
+        if (!store.get().transactions[account]) await page(account);
+        for (let n = 0; n < LOCATE_PAGES; n += 1) {
+          const hit = store.get().transactions[account]?.find((x) => x.id === id);
+          if (hit) return hit;
+          const cursor = store.get().cursors[account];
+          if (!cursor) return undefined;
+          await page(account, cursor);
+        }
+        return store.get().transactions[account]?.find((x) => x.id === id);
+      } catch {
+        store.patch({ error: 'common.error.generic' });
+        return undefined;
+      } finally {
+        store.patch({ busy: false });
+      }
     },
     goVerify() {
       deps.router.push(deps.kycHref ?? '/kyc');

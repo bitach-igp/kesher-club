@@ -2,7 +2,8 @@
 // hour open one structuring case the compliance console lists; a re-run opens no duplicate; a second
 // burst is suppressed while the first is undecided and opens once compliance has cleared it; the
 // disposition is recorded on the case; velocity, fan-out and fan-in cases open with the rule in the
-// payload; the flag off reads nothing.
+// payload; a cleared case keeps covering its transfers after the lookback slides past the first one; the
+// flag off reads nothing.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { AlertService } from '@kesher/api/admin/alerts';
@@ -97,6 +98,13 @@ describe('TST-CMP-001: the monitoring job', () => {
       'received 10 sends from 10 different members, ₪200.00 in all, within 24 hours',
       'sent 25 times to 25 different members, ₪250.00 in all, within 24 hours',
     ].sort());
+    // An hour on, the lookback has slid past Lior's first send: the fan-out pattern re-anchors on the
+    // second one, but the cleared case already covers those transfers, so nothing reopens.
+    const fanOut = (await cases('velocity')).find((c) => c.payload['rule'] === 'fan_out')!;
+    await alerts.decide(fanOut.id, 'cleared', 'Youth group reimbursements, confirmed with the institution', staff, now);
+    now = at(300 + 24 * 60 + 60);
+    expect(await job.run()).toMatchObject({ findings: 1, opened: 0, duplicate: 1, suppressed: 0 });
+    expect((await cases('velocity')).filter((c) => c.payload['rule'] === 'fan_out')).toHaveLength(1);
     // Movements older than the lookback are not read: a day later the same purse is quiet.
     now = at(300 + 50 * 60);
     expect(await job.run()).toMatchObject({ movements: 0, findings: 0, opened: 0 });

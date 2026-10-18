@@ -1,8 +1,8 @@
 // M10 transaction detail: kind, state, amount, when, the counterparty, a declined purchase's reason
 // in plain words, and whatever the merchant sent, shown as the text it is.
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Badge, Banner, Button, Card, Screen, Skeleton, Txt } from '../../src/components/index.ts';
-import { t, useLocale } from '../../src/i18n.ts';
+import { intlLocale, t, useLocale } from '../../src/i18n.ts';
 import { useStore } from '../../src/model.ts';
 import { useParams, useRouter } from '../../src/navigation.ts';
 import { useHomeModel } from '../(tabs)/home.tsx';
@@ -17,11 +17,19 @@ export function TransactionView({ model, id, accountId }: { model: HomeModel; id
   const s = useStore(model.store);
   const locale = useLocale();
   const router = useRouter();
+  const [searched, setSearched] = useState(false);
   useEffect(() => {
-    void model.load().then(() => (accountId ? model.selectAccount(accountId) : undefined));
-  }, [model, accountId]);
+    setSearched(false);
+    void (async () => {
+      await model.load();
+      if (accountId) await model.selectAccount(accountId);
+      // The row may sit on a page the list screen fetched and this screen has not: page until it turns up.
+      await model.locate(id, accountId);
+      setSearched(true);
+    })();
+  }, [model, accountId, id]);
   const tx = model.transaction(id);
-  if (s.mode === 'loading' || (!tx && s.busy)) {
+  if (s.mode === 'loading' || (!tx && (s.busy || !searched))) {
     return (
       <Screen title={t('tx.title', locale)} testID="screen-tx">
         <Skeleton />
@@ -36,7 +44,7 @@ export function TransactionView({ model, id, accountId }: { model: HomeModel; id
     );
   }
   const declined = declinedCopy(tx);
-  const when = new Date(tx.at).toLocaleString(locale === 'he' ? 'he-IL' : 'en-US');
+  const when = new Date(tx.at).toLocaleString(intlLocale(locale));
   return (
     <Screen title={t(`tx.kind.${tx.kind}`, locale)} subtitle={fmt(signedAmount(tx), locale)} testID="screen-tx" footer={<Button label={t('tx.help', locale)} variant="tertiary" onPress={() => router.push('/help')} testID="tx-help" />}>
       <Badge label={t(`tx.state.${tx.state}`, locale)} />
