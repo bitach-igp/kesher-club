@@ -2,8 +2,9 @@
 // book transfer. The transfer's key is the member's Idempotency-Key and the SendWorkflow's id, so two
 // POSTs with one key are one transfer (REQ-PAY-005). The workflow posts one balanced journal, the
 // sender's wallet to the recipient's wallet, keyed `{key}:settle`, settles the transfer, records the
-// plan's usage, and tells the recipient within seconds. Holds for a new counterparty (REQ-PAY-003) and
-// requests or splits (REQ-PAY-004) are later cards; every send here settles at once.
+// plan's usage, and tells the recipient within seconds. A first send over ₪500 to a new counterparty
+// (REQ-PAY-003, T-0506) instead reserves the money and waits two hours in pending_hold, cancellable; the
+// worker resumes the same run when the time passes. Requests or splits (REQ-PAY-004) are a later card.
 //
 // `runSend` is the deterministic body over `SendActivities`, so Temporal (ADR-002) can host it unchanged;
 // `P2pSendService` is both the activities and the HTTP-facing entry. The note is member text: stored,
@@ -16,6 +17,7 @@ import type { KycService } from '../kyc/service.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferService } from '../transfers/service.ts';
+import type { P2pHoldService } from './holds.ts';
 import type { P2pLimitService } from './limits.ts';
 
 export const P2P_JOURNAL_KIND = 'p2p';
@@ -41,6 +43,12 @@ export interface SendActivities {
   recordUsage(transfer: Transfer, workflowId: string, now: Date): Promise<void>;
   /** The recipient's notification, idempotent by the workflow id. */
   notify(transfer: Transfer, workflowId: string, now: Date): Promise<void>;
+  /** REQ-PAY-003: a first send over the threshold to a new counterparty waits. */
+  shouldHold(transfer: Transfer): Promise<boolean>;
+  /** Reserves the money (wallet → pending) and parks the transfer for two hours. */
+  hold(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer>;
+  /** The hold's time passed: pending → the recipient's wallet, and the transfer settles. */
+  release(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer>;
 }
 
 export interface SendRun {
@@ -49,19 +57,30 @@ export interface SendRun {
   replayed: boolean;
   /** True when this run told the recipient (a replay does not). */
   notified: boolean;
+  /** True when this run parked the send in a new-pair hold. */
+  held: boolean;
 }
 
-/** The workflow body: created → submitted → settled, each step safe to repeat. */
+/**
+ * The workflow body: created → submitted → settled, or → pending_hold and, once the time passes, →
+ * settled by way of the release; each step safe to repeat. A run on a hold that has not expired returns it.
+ */
 export async function runSend(a: SendActivities, input: SendInput, workflowId: string, now: Date): Promise<SendRun> {
   let t = await a.begin(input, workflowId, now);
-  if (t.state === 'settled' || t.state === 'failed' || t.state === 'cancelled' || t.state === 'reversed') return { workflowId, transfer: t, replayed: true, notified: false };
+  if (t.state === 'settled' || t.state === 'failed' || t.state === 'cancelled' || t.state === 'reversed') return { workflowId, transfer: t, replayed: true, notified: false, held: false };
   const replayed = t.state !== 'created';
-  if (t.state === 'created') t = await a.submit(t, now);
-  const { journalId } = await a.post(t, workflowId, now);
-  t = await a.settle(t, journalId, now);
+  if (t.state === 'pending_hold') {
+    if (!t.holdReleasesAt || Date.parse(t.holdReleasesAt) > now.getTime()) return { workflowId, transfer: t, replayed, notified: false, held: false };
+    t = await a.release(t, workflowId, now);
+  } else {
+    if (t.state === 'created') t = await a.submit(t, now);
+    if (t.state === 'submitted' && (await a.shouldHold(t))) return { workflowId, transfer: await a.hold(t, workflowId, now), replayed, notified: false, held: true };
+    const { journalId } = await a.post(t, workflowId, now);
+    t = await a.settle(t, journalId, now);
+  }
   await a.recordUsage(t, workflowId, now);
   await a.notify(t, workflowId, now);
-  return { workflowId, transfer: t, replayed, notified: true };
+  return { workflowId, transfer: t, replayed, notified: true, held: false };
 }
 
 export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
@@ -72,6 +91,7 @@ interface Deps {
   accounts: AccountService;
   transfers: TransferService;
   limits: P2pLimitService;
+  holds: P2pHoldService;
   kyc: KycService;
   identity: IdentityRepository;
   notify: NotifyPort;
@@ -81,7 +101,7 @@ export class P2pSendService implements SendActivities {
   constructor(private readonly d: Deps) {}
 
   /** POST /transfers: eligibility, limits and balance, then the workflow. */
-  async send(fromPartyId: string, body: unknown, key: string, now: Date): Promise<{ id: string; state: Transfer['state']; amount: ReturnType<typeof toWire> }> {
+  async send(fromPartyId: string, body: unknown, key: string, now: Date): Promise<TransferView> {
     const input = parse(fromPartyId, body);
     const existing = await this.d.transfers.byKey(key);
     if (existing) {
@@ -104,6 +124,11 @@ export class P2pSendService implements SendActivities {
     const recipient = await this.d.identity.findUser(input.toPartyId);
     if (!recipient || recipient.status === 'closed' || recipient.status === 'pending') throw new DomainError('NOT_FOUND', 'Recipient is not a member');
     if (!(await this.d.kyc.isApproved(input.toPartyId, 'T1'))) throw new DomainError('FORBIDDEN', 'Recipient has not completed identity verification');
+  }
+
+  /** POST /transfers/{id}/cancel: only a held send, only by its sender (REQ-PAY-003). */
+  async cancel(partyId: string, transferId: string, now: Date): Promise<TransferView> {
+    return view(await this.d.holds.cancel(transferId, partyId, now));
   }
 
   // ---- activities ----
@@ -138,6 +163,18 @@ export class P2pSendService implements SendActivities {
 
   settle(transfer: Transfer, journalId: string, now: Date): Promise<Transfer> {
     return this.d.transfers.apply(transfer.id, 'settle', now, { journalId });
+  }
+
+  shouldHold(transfer: Transfer): Promise<boolean> {
+    return this.d.holds.shouldHold(transfer.fromPartyId!, transfer.toPartyId!, transfer.amount);
+  }
+
+  hold(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer> {
+    return this.d.holds.hold(transfer, workflowId, now);
+  }
+
+  release(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer> {
+    return this.d.holds.release(transfer, workflowId, now);
   }
 
   recordUsage(transfer: Transfer, workflowId: string, now: Date): Promise<void> {
@@ -180,6 +217,14 @@ function parse(fromPartyId: string, body: unknown): SendInput {
   return { fromPartyId, toPartyId: b.toPartyId, amount, ...(typeof b.note === 'string' && b.note ? { note: b.note } : {}) };
 }
 
-function view(t: Transfer): { id: string; state: Transfer['state']; amount: ReturnType<typeof toWire> } {
-  return { id: t.id, state: t.state, amount: toWire(t.amount) };
+/** The OpenAPI `Transfer`. */
+export interface TransferView {
+  id: string;
+  state: Transfer['state'];
+  amount: ReturnType<typeof toWire>;
+  holdReleasesAt?: string;
+}
+
+function view(t: Transfer): TransferView {
+  return { id: t.id, state: t.state, amount: toWire(t.amount), ...(t.state === 'pending_hold' && t.holdReleasesAt ? { holdReleasesAt: t.holdReleasesAt } : {}) };
 }

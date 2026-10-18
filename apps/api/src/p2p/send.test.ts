@@ -1,7 +1,8 @@
 // P2P send (T-0505) end to end over PGlite and the simulators with real passkeys and step-up.
 // TST-PAY-001: A sends ₪50 to verified B, both wallet postings land in one journal and B's notification
 // is queued within 5 s. TST-PAY-002: ₪1,200 against ₪1,000 remaining → LIMIT_EXCEEDED with the remaining
-// amount. TST-PAY-005: two POSTs with one key → one transfer, one journal, one notification.
+// amount. TST-PAY-005: two POSTs with one key → one transfer, one journal, one notification. TST-PAY-003: a
+// first ₪600 to a new counterparty holds two hours with cancel (T-0506).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { SIM_OTP_CODE, SimPasskeyDevice, type NotifySimulator } from '@kesher/ports';
@@ -128,6 +129,40 @@ describe('POST /transfers', () => {
     expect((await send(a, { toPartyId: b.partyId, amount: ils('120000') }, 'send-over-3')).body).toMatchObject({ code: 'LIMIT_EXCEEDED', remaining: '100000', limitedBy: 'entitlement' });
     expect((await send(a, { toPartyId: b.partyId, amount: ils('30000') }, 'send-plan-1')).status).toBe(201);
     expect((await send(a, { toPartyId: b.partyId, amount: ils('70001') }, 'send-over-4')).body).toMatchObject({ code: 'LIMIT_EXCEEDED', remaining: '70000', limitedBy: 'entitlement' });
+  });
+
+  it('TST-PAY-003: a first ₪600 to a new counterparty waits two hours with cancel; the next send to that pair does not', async () => {
+    const a = await register('+972501000010');
+    const b = await register('+972501000011');
+    await fund(a, 100_000n);
+    const before = notifySim().sent.length;
+    const r = await send(a, { toPartyId: b.partyId, amount: ils('60000') }, 'hold-http-1');
+    expect(r.status).toBe(201);
+    expect(r.body).toEqual({ id: expect.any(String), state: 'pending_hold', amount: ils('60000'), holdReleasesAt: new Date(NOW.getTime() + 2 * 60 * 60_000).toISOString() });
+    const id = (r.body as { id: string }).id;
+    const purse = (await app.services.accounts.purses(a.partyId)).find((p) => p.currency === 'ILS')!;
+    expect(purse.available.minor).toBe(40_000n);
+    expect(purse.holds.minor).toBe(60_000n);
+    expect(await available(b.partyId)).toBe(0n);
+    expect(notifySim().sent.length).toBe(before);
+    // Replay: the same held transfer.
+    expect((await send(a, { toPartyId: b.partyId, amount: ils('60000') }, 'hold-http-1')).body).toEqual(r.body);
+
+    // B cannot cancel A's send; A can, once, and the money is back.
+    const cancel = (m: Member, key: string) => dispatch(app, { method: 'POST', url: `/v1/transfers/${id}/cancel`, headers: { authorization: `Bearer ${m.access}`, 'idempotency-key': key }, rawBody: '', now: NOW });
+    expect((await cancel(b, 'cancel-b-1')).status).toBe(404);
+    expect((await cancel(a, 'cancel-a-1')).body).toEqual({ id, state: 'cancelled', amount: ils('60000') });
+    expect((await cancel(a, 'cancel-a-1')).body).toMatchObject({ state: 'cancelled' });
+    expect(await available(a.partyId)).toBe(100_000n);
+    expect((await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = 'hold-http-1:hold:reversal'`)).rows[0]).toEqual({ n: 1 });
+
+    // Under the threshold: straight through, and the pair is known from then on.
+    expect((await send(a, { toPartyId: b.partyId, amount: ils('50000') }, 'hold-http-2')).body).toMatchObject({ state: 'settled' });
+    expect((await send(a, { toPartyId: b.partyId, amount: ils('45000') }, 'hold-http-3')).body).toMatchObject({ state: 'settled' });
+    expect(await available(b.partyId)).toBe(95_000n);
+    // A settled send cannot be cancelled.
+    const settledId = ((await send(a, { toPartyId: b.partyId, amount: ils('1000') }, 'hold-http-4')).body as { id: string }).id;
+    expect((await dispatch(app, { method: 'POST', url: `/v1/transfers/${settledId}/cancel`, headers: { authorization: `Bearer ${a.access}`, 'idempotency-key': 'cancel-settled' }, rawBody: '', now: NOW })).body).toMatchObject({ status: 409, code: 'IDEMPOTENCY_CONFLICT' });
   });
 
   it('the gate and the eligibility: step-up, flag, key, verified members on both sides, the balance, the body', async () => {
