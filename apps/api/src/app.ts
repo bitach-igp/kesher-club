@@ -6,6 +6,8 @@ import type { AuthPort, BillingPort, CardIssuingPort, EventsPort, FundingPort, F
 import { ok, requireIdempotencyKey, requirePrincipal, route, type Handler, type HttpRequest } from './http.ts';
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
+import { fxAdminHandlers } from './fx/admin.ts';
+import { RateService } from './fx/rates.ts';
 import { cardHandlers } from './cards/handlers.ts';
 import { CardService } from './cards/service.ts';
 import { JitService } from './cards/jit.ts';
@@ -138,12 +140,13 @@ function buildServices(o: AppOptions) {
   const fx = new FxService({ port: o.registry.resolve<FxPort>('fx', o.market), ledger, accounts, transfers, memberships, plans, flags });
   // Payouts (REQ-PO-001/002): the rail's status webhooks land on /hooks/payout; settled and failed are applied once (SEQ-09).
   const collections = new CollectionsService(o.db, ledger, accounts, transfers, flags);
+  const rates = new RateService(o.db, approvals, audit);
   const payouts = new PayoutService({ db: o.db, port: o.registry.resolve<PayoutPort>('payout', o.market), ledger, accounts, transfers, approvals, identity, notify: notifyPort, flags, provider: o.registry.bindingFor('payout', o.market)?.provider ?? 'simulator' });
   webhooks.bind(PAYOUT_PROVIDER, { verifier: payouts.webhookVerifier(), process: (e) => payouts.applyWebhook(e, clock.now()).then(() => undefined) });
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates };
 }
 
 export function createApp(o: AppOptions): App {
@@ -179,6 +182,7 @@ export function createApp(o: AppOptions): App {
     }),
     importRoster: importRosterHandler({ roster: s.roster, staffInstitution }),
     ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
+    ...fxAdminHandlers(s.rates),
     exportCollections: exportHandler(o.db, staffInstitution),
     approveIntent: route(async (req) => {
       const key = requireIdempotencyKey(req);
