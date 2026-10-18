@@ -6,6 +6,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { BillingSimulator, KycSimulator, NotifySimulator, fixedClock } from '@kesher/ports';
 import { InMemoryIdentityRepository } from '../auth/repository.ts';
+import { ApprovalService } from '../approvals/service.ts';
+import { AuditService } from '../audit/service.ts';
+import { DEFAULT_FX_MARKUP_BPS } from '../billing/plans.ts';
+import { RateService } from '../fx/rates.ts';
+import { PreferenceService } from '../me/preferences.ts';
 import { EntitlementService } from '../billing/entitlements.ts';
 import { MembershipService } from '../billing/memberships.ts';
 import { PlanService } from '../billing/plans.ts';
@@ -53,7 +58,7 @@ beforeAll(async () => {
   holds = new P2pHoldService(db, ledger, accounts, transfers);
   const plans = new PlanService(db);
   notify = new NotifySimulator();
-  send = new P2pSendService({ db, ledger, accounts, transfers, limits: new P2pLimitService(db, new MembershipService(db, plans, new BillingSimulator()), new EntitlementService(db, plans), plans), holds, kyc: new KycService(db, new KycSimulator(fixedClock(NOW.toISOString())), 'IL'), identity, notify });
+  send = new P2pSendService({ db, ledger, accounts, transfers, limits: new P2pLimitService(db, new MembershipService(db, plans, new BillingSimulator()), new EntitlementService(db, plans), plans), holds, kyc: new KycService(db, new KycSimulator(fixedClock(NOW.toISOString())), 'IL'), identity, notify, preferences: new PreferenceService(db), rates: new RateService(db, new ApprovalService(db), new AuditService(db)), markups: { markupFor: async () => DEFAULT_FX_MARKUP_BPS } });
   // Trusted tier so the ₪1,000 monthly cap does not get in the way of the hold cases.
 }, 60_000);
 afterAll(async () => db.close());

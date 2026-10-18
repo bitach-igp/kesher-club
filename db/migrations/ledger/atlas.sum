@@ -1,4 +1,4 @@
-h1:+yeV+nLh7hZHy0hzViGfYD5AL6a+wo0zhQ8oVkUkHik=
+h1:6c0CBV/Qd+n7cIWSplkFn7/yn+gmMYTUYCjphDcBjwM=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
@@ -12,3 +12,4 @@ h1:+yeV+nLh7hZHy0hzViGfYD5AL6a+wo0zhQ8oVkUkHik=
 0011_payees.sql h1:16VkspbRF5HfyAwfJny/n+uqkAwk4q3XKxb9AMVBcJQ=
 0012_fee_transfers.sql h1:oHgENBbM5zMPKrpoMXsLWMAKNfn/iXwBdllZ4GEzh5U=
 0013_fx_rates.sql h1:cpHLHP1B3QRqeS4Kam9LoGcbvEdNBbHS+n8JBq/ps08=
+0014_transfer_fx.sql h1:9EaZNqso5WjLNNLJJ2DNJGB9PbNz/IziDwhrL3+47i0=

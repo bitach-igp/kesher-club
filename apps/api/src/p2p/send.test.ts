@@ -2,7 +2,8 @@
 // TST-PAY-001: A sends ₪50 to verified B, both wallet postings land in one journal and B's notification
 // is queued within 5 s. TST-PAY-002: ₪1,200 against ₪1,000 remaining → LIMIT_EXCEEDED with the remaining
 // amount. TST-PAY-005: two POSTs with one key → one transfer, one journal, one notification. TST-PAY-003: a
-// first ₪600 to a new counterparty holds two hours with cancel (T-0506).
+// first ₪600 to a new counterparty holds two hours with cancel (T-0506). TST-PAY-006: a send to a member who
+// receives in the other currency converts at the club rate with their plan markup, once, at the start (T-0515).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { SIM_OTP_CODE, SimPasskeyDevice, type NotifySimulator } from '@kesher/ports';
@@ -13,6 +14,7 @@ import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { runLoad } from '../wallet/loads.ts';
+import { HOLD_MS, releaseKey } from './holds.ts';
 import { RECEIVED_TEMPLATE, settleKey } from './send.ts';
 
 let db: TestDatabase;
@@ -47,8 +49,18 @@ async function register(phone: string, kyc = true): Promise<Member> {
 
 const send = (from: Member, body: Record<string, unknown>, key: string, h: Record<string, string> = {}) => dispatch(app, { method: 'POST', url: '/v1/transfers', headers: { authorization: `Bearer ${from.access}`, 'idempotency-key': key, 'x-step-up': from.stepUp, ...h }, rawBody: JSON.stringify(body), now: NOW });
 const ils = (minor: string) => ({ minor, currency: 'ILS' });
-const fund = (m: Member, minor: bigint) => runLoad(app.services.loads, { payerPartyId: m.partyId, memberPartyId: m.partyId, method: 'card', amount: money(minor, 'ILS'), paymentMethodId: 'pm_ok' }, `fund-${m.partyId}-${minor}`, NOW);
-const available = async (partyId: string) => (await app.services.accounts.purses(partyId)).find((p) => p.currency === 'ILS')!.available.minor;
+const usd = (minor: string) => ({ minor, currency: 'USD' });
+const fund = (m: Member, minor: bigint, currency: 'ILS' | 'USD' = 'ILS') => runLoad(app.services.loads, { payerPartyId: m.partyId, memberPartyId: m.partyId, method: 'card', amount: money(minor, currency), paymentMethodId: 'pm_ok' }, `fund-${m.partyId}-${currency}-${minor}`, NOW);
+const available = async (partyId: string, currency: 'ILS' | 'USD' = 'ILS') => (await app.services.accounts.purses(partyId)).find((p) => p.currency === currency)!.available.minor;
+/** Every posting of the journal under the key: who (a member, or the system account's type), the currency, the amount. */
+const postingsOf = async (key: string) =>
+  (
+    await db.query<{ owner: string; currency: string; amount_minor: string }>(
+      `select case when a.type in ('wallet', 'pending') then a.owner_party_id::text else a.type::text end as owner, p.currency::text, p.amount_minor::text from ledger.posting p join ledger.account a on a.id = p.account_id join ledger.journal j on j.id = p.journal_id where j.idempotency_key = $1 order by p.amount_minor desc`,
+      [key],
+    )
+  ).rows;
+const metadataOf = async (key: string) => (await db.query<{ metadata: Record<string, unknown> }>(`select metadata from ledger.journal where idempotency_key = $1`, [key])).rows[0]!.metadata;
 const notifySim = () => host.simulators.notify as NotifySimulator;
 
 beforeAll(async () => {
@@ -108,7 +120,7 @@ describe('POST /transfers', () => {
 
     // Another member replaying A's key, or A reusing a load's key, is a conflict, not a second transfer.
     expect((await send(b, { toPartyId: a.partyId, amount: ils('1000') }, 'send-twice-1')).body).toMatchObject({ status: 409, code: 'IDEMPOTENCY_CONFLICT' });
-    expect((await send(a, { toPartyId: b.partyId, amount: ils('100') }, `fund-${a.partyId}-10000`)).body).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect((await send(a, { toPartyId: b.partyId, amount: ils('100') }, `fund-${a.partyId}-ILS-10000`)).body).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
   });
 
   it('TST-PAY-002: ₪1,200 against ₪1,000 remaining is refused with the remaining amount; the lower cap binds', async () => {
@@ -188,5 +200,114 @@ describe('POST /transfers', () => {
     expect((await send(stranger, { toPartyId: b.partyId, amount: ils('100') }, 'gate-sender-unverified')).body).toMatchObject({ status: 403, code: 'FORBIDDEN' });
     expect((await send(a, { toPartyId: b.partyId, amount: ils('5000') }, 'gate-funds')).body).toMatchObject({ status: 422, code: 'INSUFFICIENT_FUNDS', available: '900' });
     expect((await db.query<{ n: number }>(`select count(*)::int as n from ops.transfer where idempotency_key like 'gate-%' and kind = 'p2p'`)).rows[0]).toEqual({ n: 1 });
+  });
+});
+
+describe('TST-PAY-006: the receiving currency', () => {
+  const MIN = 60_000;
+
+  it('converts at the club rate with the recipient\'s plan markup, in one journal through fx_position; limits judge the sent amount; the SMS names the received amount', async () => {
+    await app.services.rates.publishFromPort('USD/ILS', 3_700_000n, NOW);
+    const a = await register('+972501000020');
+    const b = await register('+972501000021');
+    const d = await register('+972501000022');
+    await fund(a, 50_000n, 'USD');
+    await fund(a, 100_000n);
+    await app.services.preferences.set(b.partyId, 'ILS', NOW);
+    await app.services.preferences.set(d.partyId, 'USD', NOW);
+    const before = notifySim().sent.length;
+
+    // $100 → ₪370.00 gross at 3.70, less the default 75 bps (₪2.78) → ₪367.22 in B's ILS purse.
+    const r = await send(a, { toPartyId: b.partyId, amount: usd('10000') }, 'xccy-send-1');
+    expect(r.status).toBe(201);
+    expect(r.body).toEqual({ id: expect.any(String), state: 'settled', amount: usd('10000'), received: ils('36722'), rateVersion: 1 });
+    expect(await available(a.partyId, 'USD')).toBe(40_000n);
+    expect(await available(b.partyId, 'ILS')).toBe(36_722n);
+    expect(await available(b.partyId, 'USD')).toBe(0n);
+    expect(await postingsOf(settleKey('xccy-send-1'))).toEqual([
+      { owner: 'fx_position', currency: 'ILS', amount_minor: '37000' },
+      { owner: a.partyId, currency: 'USD', amount_minor: '10000' },
+      { owner: 'fee_income', currency: 'ILS', amount_minor: '-278' },
+      { owner: 'fx_position', currency: 'USD', amount_minor: '-10000' },
+      { owner: b.partyId, currency: 'ILS', amount_minor: '-36722' },
+    ]);
+    expect(await metadataOf(settleKey('xccy-send-1'))).toMatchObject({ fx_rate_version: 1, fx_markup_bps: 75, rate: '3.700000', sent: usd('10000'), received: ils('36722'), markup: ils('278'), fromPartyId: a.partyId, toPartyId: b.partyId });
+    const t = (await app.services.transfers.byKey('xccy-send-1'))!;
+    expect(t.conversion).toMatchObject({ received: money(36_722n, 'ILS'), rateVersion: 1, rateScaled: 3_700_000n, markupBps: 75n });
+    const sent = notifySim().sent.slice(before);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ to: b.phone, template: RECEIVED_TEMPLATE, data: { amount: '36722', currency: 'ILS', transferId: t.id } });
+    // A replay answers the same priced transfer and moves nothing more.
+    expect((await send(a, { toPartyId: b.partyId, amount: usd('10000') }, 'xccy-send-1')).body).toEqual(r.body);
+    expect(await available(b.partyId, 'ILS')).toBe(36_722n);
+
+    // The limit is judged and consumed in the sent currency: $300 a month for a new member, $100 of it used.
+    expect((await send(a, { toPartyId: b.partyId, amount: usd('25000') }, 'xccy-limit-1')).body).toMatchObject({ status: 422, code: 'LIMIT_EXCEEDED', remaining: '20000', currency: 'USD' });
+
+    // The other direction uses the same rate row inverted: ₪370 → $100.00 gross (0.270270), less $0.75 → $99.25 in D's USD purse.
+    const r2 = await send(a, { toPartyId: d.partyId, amount: ils('37000') }, 'xccy-send-2');
+    expect(r2.body).toMatchObject({ state: 'settled', amount: ils('37000'), received: usd('9925'), rateVersion: 1 });
+    expect(await available(d.partyId, 'USD')).toBe(9_925n);
+    expect(await available(d.partyId, 'ILS')).toBe(0n);
+    expect(await postingsOf(settleKey('xccy-send-2'))).toEqual([
+      { owner: a.partyId, currency: 'ILS', amount_minor: '37000' },
+      { owner: 'fx_position', currency: 'USD', amount_minor: '10000' },
+      { owner: 'fee_income', currency: 'USD', amount_minor: '-75' },
+      { owner: d.partyId, currency: 'USD', amount_minor: '-9925' },
+      { owner: 'fx_position', currency: 'ILS', amount_minor: '-37000' },
+    ]);
+    expect(await metadataOf(settleKey('xccy-send-2'))).toMatchObject({ fx_rate_version: 1, rate: '0.270270' });
+
+    // Same currency as the preference: a plain two-posting send, nothing converted, nothing extra on the body.
+    const r3 = await send(a, { toPartyId: b.partyId, amount: ils('1000') }, 'xccy-same-ccy');
+    expect(r3.body).toEqual({ id: expect.any(String), state: 'settled', amount: ils('1000') });
+    expect(await postingsOf(settleKey('xccy-same-ccy'))).toHaveLength(2);
+    expect(await metadataOf(settleKey('xccy-same-ccy'))).not.toHaveProperty('fx_rate_version');
+  });
+
+  it('a converted hold is priced when it begins and releases at that price; no valid rate refuses before anything is created', async () => {
+    const a = await register('+972501000023');
+    const c = await register('+972501000024');
+    await fund(a, 50_000n, 'USD');
+    await fund(a, 10_000n);
+    await app.services.preferences.set(c.partyId, 'ILS', NOW);
+    const before = notifySim().sent.length;
+
+    // $200 to a new counterparty is over the $150 threshold: held, already priced at version 1 ($200 → ₪740.00 − ₪5.55).
+    const r = await send(a, { toPartyId: c.partyId, amount: usd('20000') }, 'xccy-hold-1');
+    expect(r.body).toEqual({ id: expect.any(String), state: 'pending_hold', amount: usd('20000'), holdReleasesAt: new Date(NOW.getTime() + HOLD_MS).toISOString(), received: ils('73445'), rateVersion: 1 });
+    const purse = (await app.services.accounts.purses(a.partyId)).find((p) => p.currency === 'USD')!;
+    expect(purse.available.minor).toBe(30_000n);
+    expect(purse.holds.minor).toBe(20_000n);
+    expect(await available(c.partyId, 'ILS')).toBe(0n);
+
+    // A new rate (version 2) is published a minute later; the hold keeps its price.
+    await app.services.rates.publishFromPort('USD/ILS', 3_800_000n, new Date(NOW.getTime() + MIN));
+
+    // Twenty minutes on, version 2 has run out: a fresh converted send is refused and creates nothing; a same-currency send still goes.
+    const stale = new Date(NOW.getTime() + 20 * MIN);
+    await expect(app.services.p2p.send(a.partyId, { toPartyId: c.partyId, amount: usd('1000') }, 'xccy-stale', stale)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(await app.services.transfers.byKey('xccy-stale')).toBeUndefined();
+    await expect(app.services.p2p.send(a.partyId, { toPartyId: c.partyId, amount: ils('1000') }, 'xccy-stale-ils', stale)).resolves.toMatchObject({ state: 'settled', amount: ils('1000') });
+
+    // Two hours on, the release moves the held dollars through fx_position at version 1, not version 2 and not nothing.
+    const later = new Date(NOW.getTime() + HOLD_MS);
+    const released = await app.services.p2p.send(a.partyId, { toPartyId: c.partyId, amount: usd('20000') }, 'xccy-hold-1', later);
+    expect(released).toEqual({ id: (r.body as { id: string }).id, state: 'settled', amount: usd('20000'), received: ils('73445'), rateVersion: 1 });
+    expect(await available(a.partyId, 'USD')).toBe(30_000n);
+    expect((await app.services.accounts.purses(a.partyId)).find((p) => p.currency === 'USD')!.holds.minor).toBe(0n);
+    expect(await available(c.partyId, 'ILS')).toBe(73_445n + 1_000n);
+    expect(await postingsOf(releaseKey('xccy-hold-1'))).toEqual([
+      { owner: 'fx_position', currency: 'ILS', amount_minor: '74000' },
+      { owner: a.partyId, currency: 'USD', amount_minor: '20000' },
+      { owner: 'fee_income', currency: 'ILS', amount_minor: '-555' },
+      { owner: 'fx_position', currency: 'USD', amount_minor: '-20000' },
+      { owner: c.partyId, currency: 'ILS', amount_minor: '-73445' },
+    ]);
+    expect(await metadataOf(releaseKey('xccy-hold-1'))).toMatchObject({ fx_rate_version: 1, fx_markup_bps: 75, rate: '3.700000', received: ils('73445') });
+    const sent = notifySim().sent.slice(before).filter((n) => n.data['transferId'] === released.id);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ to: c.phone, data: { amount: '73445', currency: 'ILS' } });
+    expect((await app.services.transfers.history(released.id)).map((e) => e.to)).toEqual(['created', 'submitted', 'pending_hold', 'pending', 'settled']);
   });
 });

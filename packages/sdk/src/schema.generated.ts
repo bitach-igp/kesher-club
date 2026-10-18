@@ -2138,10 +2138,15 @@ export interface components {
             readonly holdReleasesAt?: string;
             /** Format: uuid */
             readonly id: string;
+            /** @description The club rate version the send was priced from; present with `received` */
+            readonly rateVersion?: number;
+            /** @description The recipient's leg when their receiving currency differs from the sent one: converted at the club rate at send time, less their plan markup (REQ-PAY-006). Absent for a same-currency send. */
+            readonly received?: components["schemas"]["Money"];
             /** @enum {string} */
             readonly state: "created" | "submitted" | "pending" | "pending_hold" | "settled" | "failed" | "reversed" | "cancelled";
         };
         readonly TransferRequest: {
+            /** @description The amount and the purse it is paid from; the recipient's receiving currency (/me/preferences) names the purse it lands in */
             readonly amount: components["schemas"]["Money"];
             readonly note?: string;
             /** Format: uuid */

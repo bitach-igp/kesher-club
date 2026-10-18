@@ -1804,7 +1804,7 @@ components:
       required: [toPartyId, amount]
       properties:
         toPartyId: { type: string, format: uuid }
-        amount: { $ref: "#/components/schemas/Money" }
+        amount: { $ref: "#/components/schemas/Money", description: The amount and the purse it is paid from; the recipient's receiving currency (/me/preferences) names the purse it lands in }
         note: { type: string, maxLength: 140 }
     Transfer:
       type: object
@@ -1814,6 +1814,8 @@ components:
         state: { type: string, enum: [created, submitted, pending, pending_hold, settled, failed, reversed, cancelled] }
         amount: { $ref: "#/components/schemas/Money" }
         holdReleasesAt: { type: string, format: date-time }
+        received: { $ref: "#/components/schemas/Money", description: "The recipient's leg when their receiving currency differs from the sent one: converted at the club rate at send time, less their plan markup (REQ-PAY-006). Absent for a same-currency send." }
+        rateVersion: { type: integer, description: The club rate version the send was priced from; present with `received` }
     PaymentRequestCreate:
       type: object
       required: [payerPartyId, amount]
