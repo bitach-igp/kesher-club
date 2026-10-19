@@ -42,7 +42,7 @@ export function createPiiCipher(keys: { dataKey: Secret; indexKey: Secret }): Pi
   return {
     seal(value, context) {
       const iv = randomBytes(IV_BYTES);
-      const cipher = createCipheriv('aes-256-gcm', dataKey, iv);
+      const cipher = createCipheriv('aes-256-gcm', dataKey, iv, { authTagLength: TAG_BYTES });
       cipher.setAAD(Buffer.from(context, 'utf8'));
       const body = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
       return Buffer.concat([Buffer.of(VERSION), iv, body, cipher.getAuthTag()]);
@@ -53,7 +53,8 @@ export function createPiiCipher(keys: { dataKey: Secret; indexKey: Secret }): Pi
       if (buf[0] !== VERSION) throw new PiiSealError('unknown version');
       const iv = buf.subarray(1, 1 + IV_BYTES);
       const tag = buf.subarray(buf.length - TAG_BYTES);
-      const decipher = createDecipheriv('aes-256-gcm', dataKey, iv);
+      // The tag length is pinned, so Node itself refuses a shorter tag (a truncated GCM tag weakens the check).
+      const decipher = createDecipheriv('aes-256-gcm', dataKey, iv, { authTagLength: TAG_BYTES });
       decipher.setAAD(Buffer.from(context, 'utf8'));
       decipher.setAuthTag(tag);
       try {
