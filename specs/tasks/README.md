@@ -17,6 +17,11 @@
 | [T-0013](T-0013.md) | SETUP | Hebrew/RTL full pass and Dynamic Type 200% (CLUB-37) | — | 9 |
 | [T-0014](T-0014.md) | SETUP | Pentest readiness: ZAP baseline on the preview, evidence folders (CLUB-38) | — | 9 |
 | [T-0015](T-0015.md) | SETUP | File paths from import.meta.url work on Windows | — | 9 |
+| [T-0016](T-0016.md) | SETUP | Simulators boot under Node strip-only type stripping (no parameter properties in runtime packages) | — | 9 |
+| [T-0020](T-0020.md) | SETUP | Postgres driver binding and the process config | — | 9 |
+| [T-0021](T-0021.md) | SETUP | The API runs as a process | — | 9 |
+| [T-0022](T-0022.md) | SETUP | The worker runs every sweep on its cycle | — | 9 |
+| [T-0023](T-0023.md) | SETUP | The worker runs the nightly jobs at their Israel times | — | 9 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
@@ -26,6 +31,7 @@
 | [T-0116](T-0116.md) | AUTH | Admin SSO + VPN-only middleware | REQ-AUTH-009 | 2 |
 | [T-0117](T-0117.md) | AUTH | FederatedIdPPort simulator + Apple/Google adapters | REQ-AUTH-004, REQ-AUTH-005 | 2 |
 | [T-0118](T-0118.md) | AUTH | OrgIdPPort simulator + vendor adapter per ADR-004 | REQ-AUTH-008 | 2 |
+| [T-0119](T-0119.md) | AUTH | Identity is stored in Postgres | REQ-AUTH-001 | 9 |
 | [T-0201](T-0201.md) | LED | Ledger core post() + invariant trigger (port the reference Ledger to Postgres) | REQ-LED-001, REQ-LED-002 | 4 |
 | [T-0202](T-0202.md) | LED | Account provisioning per party and currency | REQ-WAL-001 | 4 |
 | [T-0203](T-0203.md) | LED | Balance materialisation + nightly proof | — | 4 |

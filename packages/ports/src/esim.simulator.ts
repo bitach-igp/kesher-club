@@ -17,7 +17,10 @@ export class EsimSimulator implements EsimPort {
   private readonly usage = new Map<string, EsimUsage>();
   private seq = 0;
 
-  constructor(private readonly now: () => Date = () => new Date('2026-11-01T00:00:00Z')) {}
+  private readonly now: () => Date;
+  constructor(now: () => Date = () => new Date('2026-11-01T00:00:00Z')) {
+    this.now = now;
+  }
 
   async listPackages(country: string): Promise<EsimPackage[]> {
     return CATALOGUE.filter((p) => p.country === country);

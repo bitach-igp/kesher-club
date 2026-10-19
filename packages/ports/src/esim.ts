@@ -36,8 +36,10 @@ export interface EsimPort {
 }
 
 export class EsimError extends Error {
-  constructor(readonly code: 'UNKNOWN_SKU' | 'UNKNOWN_ICCID' | 'PROVIDER_UNAVAILABLE', msg: string) {
+  readonly code: 'UNKNOWN_SKU' | 'UNKNOWN_ICCID' | 'PROVIDER_UNAVAILABLE';
+  constructor(code: 'UNKNOWN_SKU' | 'UNKNOWN_ICCID' | 'PROVIDER_UNAVAILABLE', msg: string) {
     super(msg);
+    this.code = code;
     this.name = 'EsimError';
   }
 }

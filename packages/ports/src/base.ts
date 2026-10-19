@@ -4,13 +4,19 @@
 export type PortErrorCode<C extends string> = C | 'PROVIDER_UNAVAILABLE' | 'VALIDATION_FAILED';
 
 export class PortError<C extends string = never> extends Error {
+  readonly port: string;
+  readonly code: PortErrorCode<C>;
+  readonly retryable: boolean;
   constructor(
-    readonly port: string,
-    readonly code: PortErrorCode<C>,
+    port: string,
+    code: PortErrorCode<C>,
     message: string,
-    readonly retryable = code === 'PROVIDER_UNAVAILABLE',
+    retryable = code === 'PROVIDER_UNAVAILABLE',
   ) {
     super(message);
+    this.port = port;
+    this.code = code;
+    this.retryable = retryable;
     this.name = `${port}Error`;
   }
 }
@@ -48,7 +54,10 @@ export class IdempotencyStore<T> {
 /** Deterministic ids for simulators: `${prefix}_000001`. Adapters use vendor ids. */
 export class Sequence {
   private n = 0;
-  constructor(private readonly prefix: string) {}
+  private readonly prefix: string;
+  constructor(prefix: string) {
+    this.prefix = prefix;
+  }
   next(): string {
     return `${this.prefix}_${String(++this.n).padStart(6, '0')}`;
   }

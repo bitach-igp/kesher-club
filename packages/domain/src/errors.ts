@@ -22,12 +22,16 @@ export const ERROR_CODES = {
 export type ErrorCode = keyof typeof ERROR_CODES;
 
 export class DomainError extends Error {
+  readonly code: ErrorCode;
+  readonly extra: Record<string, unknown>;
   constructor(
-    readonly code: ErrorCode,
+    code: ErrorCode,
     detail: string,
-    readonly extra: Record<string, unknown> = {},
+    extra: Record<string, unknown> = {},
   ) {
     super(detail);
+    this.code = code;
+    this.extra = extra;
     this.name = 'DomainError';
   }
 

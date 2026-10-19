@@ -36,11 +36,13 @@ export interface PayoutPort {
 export type PayoutErrorCode = 'INVALID_PAYEE' | 'UNKNOWN_PAYOUT' | 'BAD_SIGNATURE' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class PayoutError extends Error {
+  readonly code: PayoutErrorCode;
   constructor(
-    readonly code: PayoutErrorCode,
+    code: PayoutErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'PayoutError';
   }
 }
