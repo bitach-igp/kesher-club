@@ -507,7 +507,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Sign in with a passkey (two-step; omit `response` to get options)
-         * @description REQ-AUTH-002. Public. Recovery (OTP) is a separate path and applies a 24 h hold (REQ-AUTH-003).
+         * @description REQ-AUTH-002. Public. Both steps send the same `deviceId`, which keys the challenge and the device's session family. Recovery (OTP) is a separate path and applies a 24 h hold (REQ-AUTH-003).
          */
         readonly post: operations["authenticatePasskey"];
         readonly delete?: never;
@@ -527,7 +527,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Enrol a passkey (two-step; omit `response` to get options)
-         * @description REQ-AUTH-001. Authenticated by the otp-session token from verifyOtp, or an access token when adding a device.
+         * @description REQ-AUTH-001. Authenticated by the otp-session token from verifyOtp, or an access token when adding a device. Both steps send the same `deviceId`; the ceremony, the stored passkey and the device row are keyed by it, and refresh later names it.
          */
         readonly post: operations["registerPasskey"];
         readonly delete?: never;
@@ -1769,6 +1769,8 @@ export interface components {
             readonly month: string;
             readonly total: readonly components["schemas"]["Money"][];
         };
+        /** @description The app's install id, generated once and kept in the secure store. Not a hardware identifier. */
+        readonly DeviceId: string;
         readonly ExportFile: {
             readonly base64: string;
             readonly contentType: string;
@@ -1980,7 +1982,7 @@ export interface components {
             readonly transfer: components["schemas"]["Transfer"];
         };
         readonly PasskeyAuthenticateRequest: {
-            readonly deviceId?: string;
+            readonly deviceId: components["schemas"]["DeviceId"];
             /** @description The authenticator's assertion; omit to receive options */
             readonly response?: Record<string, never>;
         };
@@ -1989,7 +1991,14 @@ export interface components {
             readonly tokens?: components["schemas"]["TokenPair"];
         };
         readonly PasskeyRegisterRequest: {
+            readonly deviceId: components["schemas"]["DeviceId"];
             readonly deviceName?: string;
+            /**
+             * @description recovery enrols a passkey on the otp-session of a recovery verification and applies the 24 h hold (REQ-AUTH-003)
+             * @default register
+             * @enum {string}
+             */
+            readonly purpose: "register" | "recovery";
             /** @description The authenticator's registration response; omit to receive options */
             readonly response?: Record<string, never>;
         };
@@ -2170,6 +2179,10 @@ export interface components {
             /** @description The other members; the requester may be listed and is skipped */
             readonly participants: readonly string[];
             readonly total: components["schemas"]["Money"];
+        };
+        readonly StepUpRequest: {
+            /** @description The authenticator's assertion; omit to receive options */
+            readonly response?: Record<string, never>;
         };
         readonly StepUpResult: {
             /** Format: date-time */
@@ -3029,7 +3042,7 @@ export interface operations {
         };
         readonly requestBody: {
             readonly content: {
-                readonly "application/json": components["schemas"]["PasskeyAuthenticateRequest"];
+                readonly "application/json": components["schemas"]["StepUpRequest"];
             };
         };
         readonly responses: {
@@ -3055,7 +3068,7 @@ export interface operations {
         readonly requestBody: {
             readonly content: {
                 readonly "application/json": {
-                    readonly deviceId: string;
+                    readonly deviceId: components["schemas"]["DeviceId"];
                 };
             };
         };

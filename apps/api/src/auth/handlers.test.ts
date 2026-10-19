@@ -2,7 +2,7 @@
 // refresh, TST-AUTH-006 step-up, TST-AUTH-003 recovery, all through the operationId handlers.
 import { describe, expect, it } from 'vitest';
 import { AuthSimulator, NotifySimulator, SIM_OTP_CODE, SimPasskeyDevice, fixedClock, type AdvanceableClock, type PasskeyRegistrationOptions, type PasskeyAuthenticationOptions } from '@kesher/ports';
-import { makeRequest, type HttpRequest } from '../http.ts';
+import { makeRequest, type HttpRequest, type HttpResponse } from '../http.ts';
 import { authHandlers, bearerMiddleware } from './handlers.ts';
 import { InMemoryIdentityRepository } from './repository.ts';
 import { OtpService } from './otp.ts';
@@ -85,5 +85,37 @@ describe('auth handlers', () => {
     expect(res.headers?.['content-type']).toBe('application/problem+json');
     await expect(call('stepUp', {}, { authorization: 'Bearer eyJ.not.ajwt' })).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
     expect((await call('stepUp', {}, { authorization: 'Bearer otps_opaque' })).status).toBe(401);
+  });
+
+  it('T-0120: register, sign-in and refresh refuse a missing or empty deviceId instead of keying on undefined', async () => {
+    const { call } = await app();
+    const { otpId } = (await call('startOtp', { phone: '+972501234567' })).body as { otpId: string };
+    const { otpSessionToken } = (await call('verifyOtp', { otpId, code: SIM_OTP_CODE })).body as { otpSessionToken: string };
+    const bearer = { authorization: `Bearer ${otpSessionToken}` };
+    const refused = async (res: Promise<HttpResponse>) => expect(await res).toMatchObject({ status: 422, body: { code: 'VALIDATION_FAILED' } });
+    for (const body of [{}, { deviceId: '' }, { deviceId: 'x'.repeat(129) }, { deviceId: 7 }]) {
+      await refused(call('registerPasskey', body, bearer));
+      await refused(call('authenticatePasskey', body));
+    }
+    await refused(call('refreshToken', {}, { authorization: 'Bearer rt_whatever' }));
+  });
+
+  it('T-0120: two devices signing in at once each keep their own challenge', async () => {
+    const { call } = await app();
+    const enrol = async (phone: string, deviceId: string) => {
+      const { otpId } = (await call('startOtp', { phone })).body as { otpId: string };
+      const { otpSessionToken } = (await call('verifyOtp', { otpId, code: SIM_OTP_CODE })).body as { otpSessionToken: string };
+      const device = new SimPasskeyDevice();
+      const o = (await call('registerPasskey', { deviceId }, { authorization: `Bearer ${otpSessionToken}` })).body as { options: PasskeyRegistrationOptions };
+      await call('registerPasskey', { deviceId, response: await device.register(o.options) }, { authorization: `Bearer ${otpSessionToken}` });
+      return device;
+    };
+    const noa = await enrol('+972501234567', 'noa-phone');
+    const dana = await enrol('+15555550101', 'dana-phone');
+    const noaStart = (await call('authenticatePasskey', { deviceId: 'noa-phone' })).body as { options: PasskeyAuthenticationOptions };
+    const danaStart = (await call('authenticatePasskey', { deviceId: 'dana-phone' })).body as { options: PasskeyAuthenticationOptions };
+    const noaDone = await call('authenticatePasskey', { deviceId: 'noa-phone', response: await noa.authenticate(noaStart.options) });
+    const danaDone = await call('authenticatePasskey', { deviceId: 'dana-phone', response: await dana.authenticate(danaStart.options) });
+    expect([noaDone.status, danaDone.status]).toEqual([200, 200]);
   });
 });

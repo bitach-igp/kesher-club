@@ -44,6 +44,7 @@
 | [T-0117](T-0117.md) | AUTH | FederatedIdPPort simulator + Apple/Google adapters | REQ-AUTH-004, REQ-AUTH-005 | 2 |
 | [T-0118](T-0118.md) | AUTH | OrgIdPPort simulator + vendor adapter per ADR-004 | REQ-AUTH-008 | 2 |
 | [T-0119](T-0119.md) | AUTH | Identity is stored in Postgres | REQ-AUTH-001 | 9 |
+| [T-0120](T-0120.md) | AUTH | Passkey ceremonies declare the install's deviceId; the app sends it | REQ-AUTH-001 | 10 |
 | [T-0201](T-0201.md) | LED | Ledger core post() + invariant trigger (port the reference Ledger to Postgres) | REQ-LED-001, REQ-LED-002 | 4 |
 | [T-0202](T-0202.md) | LED | Account provisioning per party and currency | REQ-WAL-001 | 4 |
 | [T-0203](T-0203.md) | LED | Balance materialisation + nightly proof | — | 4 |

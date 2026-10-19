@@ -40,9 +40,9 @@ export type OtpPurpose = 'register' | 'recovery';
 export interface AuthApi {
   startOtp(input: { phone: string; locale: Locale }): Promise<OtpStart>;
   verifyOtp(input: { otpId: string; code: string; purpose: OtpPurpose }): Promise<OtpVerify>;
-  /** Two-step: no `response` returns options; with it, the credential and tokens. */
-  registerPasskey(input: { deviceName?: string; response?: unknown }): Promise<PasskeyRegisterResult>;
-  authenticatePasskey(input: { deviceId?: string; response?: unknown }): Promise<PasskeyAuthenticateResult>;
+  /** Two-step: no `response` returns options; with it, the credential and tokens. The binding adds this install's device id. */
+  registerPasskey(input: { deviceName?: string; purpose: OtpPurpose; response?: unknown }): Promise<PasskeyRegisterResult>;
+  authenticatePasskey(input: { response?: unknown }): Promise<PasskeyAuthenticateResult>;
 }
 
 export interface ClubApi {
@@ -169,15 +169,15 @@ export function useApi(): Api {
 }
 
 /** Binds the generated SDK client. `extras` cover operations the contract does not expose yet. */
-export function sdkApi(client: Client, _session: Session, extras: { esim: EsimUsageApi; concierge: ConciergeApi; invites: InvitesApi }): Api {
+export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsageApi; concierge: ConciergeApi; invites: InvitesApi }): Api {
   return {
     auth: {
       startOtp: ({ phone, locale }) => client.post('/auth/otp', { body: { phone, locale } }),
       verifyOtp: ({ otpId, code, purpose }) => client.post('/auth/otp/verify', { body: { otpId, code, purpose } }),
-      registerPasskey: ({ deviceName, response }) =>
-        client.post('/auth/passkeys/register', { body: { ...(deviceName !== undefined ? { deviceName } : {}), ...(response !== undefined ? { response: response as Record<string, never> } : {}) } }),
-      authenticatePasskey: ({ deviceId, response }) =>
-        client.post('/auth/passkeys/authenticate', { body: { ...(deviceId !== undefined ? { deviceId } : {}), ...(response !== undefined ? { response: response as Record<string, never> } : {}) } }),
+      registerPasskey: ({ deviceName, purpose, response }) =>
+        client.post('/auth/passkeys/register', { body: { deviceId: session.deviceId(), purpose, ...(deviceName !== undefined ? { deviceName } : {}), ...(response !== undefined ? { response: response as Record<string, never> } : {}) } }),
+      authenticatePasskey: ({ response }) =>
+        client.post('/auth/passkeys/authenticate', { body: { deviceId: session.deviceId(), ...(response !== undefined ? { response: response as Record<string, never> } : {}) } }),
     },
     club: {
       listCatalogue: () => client.get('/catalogue'),

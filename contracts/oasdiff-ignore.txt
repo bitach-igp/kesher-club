@@ -12,3 +12,8 @@ POST /transfers added the new `cancelled` enum value to the `state` response pro
 POST /admin/flag-flips/{id}/approve added the new `fx_rate` enum value to the `kind` response property for the response status `200`
 GET /admin/flags added the new `fx_rate` enum value to the `items/items/pendingFlip/kind` response property for the response status `200`
 POST /admin/flags/{key}/flips added the new `fx_rate` enum value to the `kind` response property for the response status `201`
+# T-0120 (REQ-AUTH-001, REQ-AUTH-002, REQ-AUTH-007): the server always keyed the passkey ceremonies, the stored passkey and the device row by deviceId, and refresh already required it; the contract now says so. The mobile app, the only client, sends its install id in the same change. An empty id was never a usable device.
+POST /auth/passkeys/authenticate the request property 'deviceId' became required
+POST /auth/passkeys/authenticate the 'deviceId' request property's minLength was increased from '0' to '1'
+POST /auth/passkeys/register added the new required request property 'deviceId'
+POST /auth/token/refresh the 'deviceId' request property's minLength was increased from '0' to '1'

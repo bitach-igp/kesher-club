@@ -95,8 +95,7 @@ async function signUp(target: SeedTarget, p: Persona): Promise<Schemas['TokenPai
   const started = await anon.post('/auth/otp', { body: { phone: p.phone, locale: 'en' } });
   const verified = await anon.post('/auth/otp/verify', { body: { otpId: started.otpId, code: SIM_OTP_CODE, purpose: 'register' } });
   const otpSession = createClient({ baseUrl: apiBase(target), getAccessToken: () => verified.otpSessionToken });
-  // The server keys the ceremony by deviceId, which the contract's PasskeyRegisterRequest does not declare yet.
-  const begin = { deviceId: deviceIdOf(p), deviceName: 'Demo seed' };
+  const begin = { deviceId: deviceIdOf(p), deviceName: 'Demo seed', purpose: 'register' as const };
   try {
     const { options } = await otpSession.post('/auth/passkeys/register', { body: begin });
     const finish = { ...begin, response: wire(passkeyOf(p).register(options as unknown as PasskeyRegistrationOptions)) };
