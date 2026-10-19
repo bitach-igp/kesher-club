@@ -61,6 +61,14 @@ describe('API and worker config (T-0020)', () => {
     expect(String(c.TOKEN_SIGNING_JWK)).toBe('[redacted]');
   });
 
+  it('refuses a signing key that is not a private ES256 JWK, without quoting it', () => {
+    for (const TOKEN_SIGNING_JWK of ['{"kty":"EC","crv":"P-256","x":"x","y":"y","d":"super-secret-d" oops', '{"kty":"EC","crv":"P-256","x":"x","y":"y"}', '{"kty":"RSA","n":"n","e":"e","d":"super-secret-d"}']) {
+      const e = thrown(() => loadApiConfig({ ...env, TOKEN_SIGNING_JWK }));
+      expect(e.invalid.join()).toMatch(/TOKEN_SIGNING_JWK/);
+      expect(e.message).not.toContain('super-secret-d');
+    }
+  });
+
   it('takes two distinct 32-byte PII keys and never prints them (T-0024)', () => {
     expect(loadApiConfig(env).PII_DATA_KEY.reveal()).toBe(DATA_KEY);
     const bad = [
