@@ -102,13 +102,13 @@ function buildServices(o: AppOptions) {
   const plans = new PlanService(o.db);
   const entitlements = new EntitlementService(o.db, plans);
   const memberships = new MembershipService(o.db, plans, billingPort);
-  const transfers = new TransferService(o.db);
+  const transfers = new TransferService(o.db, o.market);
   const approvals = new ApprovalService(o.db);
   const audit = new AuditService(o.db);
   const flags: FeatureFlags = o.flags ?? new FlagService(o.db, approvals, audit);
-  const orders = new AddonOrderService(o.db, ledger, accounts, new CreditService(entitlements));
+  const orders = new AddonOrderService(o.db, ledger, accounts, new CreditService(entitlements), o.market);
   const roster = new RosterService(o.db);
-  const inbound = new InboundEventStore(o.db);
+  const inbound = new InboundEventStore(o.db, o.market);
   const webhooks = new WebhookRouter(inbound);
   const kyc = new KycService(o.db, o.registry.resolve<KycPort>('kyc', o.market), o.market, o.registry.bindingFor('kyc', o.market)?.provider ?? 'issuer-kyc');
   const cardIssuing = o.registry.resolve<CardIssuingPort>('card-issuing', o.market);
@@ -136,7 +136,7 @@ function buildServices(o: AppOptions) {
   // the service settles or fails the transfer once, whatever the webhook count (SEQ-02).
   const loads = new LoadService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, memberships, flags, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', rates, markups: fx });
   webhooks.bind(FUNDING_PROVIDER, { verifier: loads.webhookVerifier(), process: (e) => loads.applyWebhook(e, clock.now()).then(() => undefined) });
-  const autoReload = new AutoReloadService(o.db, accounts, loads, flags);
+  const autoReload = new AutoReloadService(o.db, accounts, loads, flags, o.market);
   const p2pLimits = new P2pLimitService(o.db, memberships, entitlements, plans);
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
   const preferences = new PreferenceService(o.db);

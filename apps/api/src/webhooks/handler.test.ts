@@ -4,6 +4,7 @@
 import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
+import { isPgError } from '../db.ts';
 import { makeRequest } from '../http.ts';
 import { AccountService } from '../ledger/accounts.ts';
 import { PostgresLedger } from '../ledger/post.ts';
@@ -116,5 +117,17 @@ describe('providerWebhook', () => {
     expect((await store.get('simulator', 'evt-retry'))?.processedAt).toBeTruthy();
     expect((await db.query('select 1 from ledger.journal where idempotency_key = $1', ['simulator:evt-retry'])).rowCount).toBe(1);
     expect(await store.lagMs(now)).toBe(0);
+  });
+
+  it('stores each webhook with the market of the API that received it; none is stored without one (T-0027)', async () => {
+    await new InboundEventStore(db, 'US').record({ provider: 'simulator', eventId: 'evt-us-market', signatureOk: true, payload: {}, receivedAt: now });
+    await store.record({ provider: 'simulator', eventId: 'evt-il-market', signatureOk: true, payload: {}, receivedAt: now });
+    const r = await db.query<{ event_id: string; market: string }>(`select event_id, market from ops.inbound_event where event_id in ('evt-us-market', 'evt-il-market') order by event_id`);
+    expect(r.rows).toEqual([
+      { event_id: 'evt-il-market', market: 'IL' },
+      { event_id: 'evt-us-market', market: 'US' },
+    ]);
+    const err = await db.query(`insert into ops.inbound_event (provider, event_id, signature_ok, payload) values ('simulator', 'evt-no-market', true, '{}')`).catch((e: unknown) => e);
+    expect(isPgError(err, '23514')).toBe(true);
   });
 });

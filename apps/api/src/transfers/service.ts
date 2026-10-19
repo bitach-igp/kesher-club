@@ -2,6 +2,7 @@
 // transaction that updates the row, appends a transfer_event, and enqueues an outbox message.
 // Money moves only through the ledger (journal ids are recorded here, never amounts recomputed).
 import { DomainError, uuidv7, type Currency, type Money } from '@kesher/domain';
+import type { Market } from '@kesher/ports';
 import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
 import { enqueue } from './outbox.ts';
 import { next, TERMINAL_STATES, type TransferEvent, type TransferState } from './state-machine.ts';
@@ -75,8 +76,11 @@ interface Row {
 
 export class TransferService {
   private readonly db: Database;
-  constructor(db: Database) {
+  /** The market whose API this is: every row written carries it (T-0027). createApp always passes it. */
+  private readonly market: Market;
+  constructor(db: Database, market: Market = 'IL') {
     this.db = db;
+    this.market = market;
   }
 
   /** Idempotent by key: a replayed create returns the existing transfer unchanged (REQ-PAY-005). */
@@ -90,9 +94,9 @@ export class TransferService {
     try {
       await this.db.transaction(async (tx) => {
         await tx.query(
-          `insert into ops.transfer (id, idempotency_key, kind, from_party_id, to_party_id, amount_minor, currency, state, note, received_minor, received_currency, fx_rate_id, fx_rate_version, fx_rate_scaled, fx_markup_bps, created_at, updated_at)
-           values ($1, $2, $3, $4, $5, $6, $7, 'created', $8, $9, $10, $11, $12, $13, $14, $15, $15)`,
-          [id, input.idempotencyKey, input.kind, input.fromPartyId ?? null, input.toPartyId ?? null, input.amount.minor.toString(), input.amount.currency, input.note ?? null, c?.received.minor.toString() ?? null, c?.received.currency ?? null, c?.rateId ?? null, c?.rateVersion ?? null, c?.rateScaled.toString() ?? null, c ? Number(c.markupBps) : null, now],
+          `insert into ops.transfer (id, idempotency_key, kind, from_party_id, to_party_id, amount_minor, currency, state, note, received_minor, received_currency, fx_rate_id, fx_rate_version, fx_rate_scaled, fx_markup_bps, created_at, updated_at, market)
+           values ($1, $2, $3, $4, $5, $6, $7, 'created', $8, $9, $10, $11, $12, $13, $14, $15, $15, $16)`,
+          [id, input.idempotencyKey, input.kind, input.fromPartyId ?? null, input.toPartyId ?? null, input.amount.minor.toString(), input.amount.currency, input.note ?? null, c?.received.minor.toString() ?? null, c?.received.currency ?? null, c?.rateId ?? null, c?.rateVersion ?? null, c?.rateScaled.toString() ?? null, c ? Number(c.markupBps) : null, now, this.market],
         );
         await tx.query('insert into ops.transfer_event (transfer_id, from_state, to_state, at) values ($1, null, $2, $3)', [id, 'created', now]);
         await enqueue(tx, 'transfer', id, 'transfer.created', { kind: input.kind, amount: input.amount, fromPartyId: input.fromPartyId, toPartyId: input.toPartyId, ...(c ? { received: c.received, rateVersion: c.rateVersion } : {}) });

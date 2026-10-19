@@ -5,7 +5,7 @@
 // pull, and the load's key derives from that stamp, so a rerun inside the window neither loads twice
 // nor retries a failure. Setting the rule needs a fresh step-up: it authorises money to move later.
 import { DomainError, fromWire, money, toWire, type Currency, type Money } from '@kesher/domain';
-import type { FundingMethod } from '@kesher/ports';
+import type { FundingMethod, Market } from '@kesher/ports';
 import { uuidv7 } from '@kesher/domain';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
@@ -73,16 +73,20 @@ export class AutoReloadService {
   private readonly accounts: AccountService;
   private readonly loads: LoadService;
   private readonly flags: FeatureFlags;
+  /** The market whose API this is: every row written carries it (T-0027). createApp always passes it. */
+  private readonly market: Market;
   constructor(
     db: Database,
     accounts: AccountService,
     loads: LoadService,
     flags: FeatureFlags,
+    market: Market = 'IL',
   ) {
     this.db = db;
     this.accounts = accounts;
     this.loads = loads;
     this.flags = flags;
+    this.market = market;
   }
 
   /** GET /accounts/{id}/auto-reload: the member's rule for one of their purses. */
@@ -101,11 +105,11 @@ export class AutoReloadService {
     const existing = await this.byAccount(accountId);
     const id = existing?.id ?? uuidv7(now);
     await this.db.query(
-      `insert into ops.auto_reload (id, party_id, account_id, currency, enabled, threshold_minor, target_minor, method, payment_method_id, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10)
+      `insert into ops.auto_reload (id, party_id, account_id, currency, enabled, threshold_minor, target_minor, method, payment_method_id, created_at, updated_at, market)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, $11)
        on conflict (account_id) do update set enabled = excluded.enabled, threshold_minor = excluded.threshold_minor, target_minor = excluded.target_minor,
          method = excluded.method, payment_method_id = excluded.payment_method_id, updated_at = excluded.updated_at`,
-      [id, partyId, accountId, currency, b.enabled, b.threshold.minor.toString(), b.target.minor.toString(), b.method, b.paymentMethodId, now],
+      [id, partyId, accountId, currency, b.enabled, b.threshold.minor.toString(), b.target.minor.toString(), b.method, b.paymentMethodId, now, this.market],
     );
     return view((await this.byAccount(accountId))!, now);
   }

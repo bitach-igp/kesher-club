@@ -2,6 +2,7 @@
 // never creates two transfers) at the service layer; the HTTP layer is TST-PAY-005.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
+import { isPgError } from '../db.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { OutboxPublisher, type OutboxMessage } from './outbox.ts';
 import { TransferService } from './service.ts';
@@ -35,6 +36,17 @@ describe('state machine', () => {
 });
 
 describe('TransferService', () => {
+  it('stamps the market of the API that created it; the database refuses a transfer without one (T-0027)', async () => {
+    const us = await new TransferService(db, 'US').create({ idempotencyKey: `us-${uuidv7()}`, kind: 'load', toPartyId: uuidv7(), amount: money(100n, 'USD') }, now);
+    const il = await transfers.create({ idempotencyKey: `il-${uuidv7()}`, kind: 'load', toPartyId: uuidv7(), amount: money(100n, 'ILS') }, now);
+    const r = await db.query<{ id: string; market: string }>('select id, market from ops.transfer where id = any($1)', [[us.id, il.id]]);
+    expect(Object.fromEntries(r.rows.map((x) => [x.id, x.market]))).toEqual({ [us.id]: 'US', [il.id]: 'IL' });
+    const err = await db
+      .query(`insert into ops.transfer (id, idempotency_key, kind, to_party_id, amount_minor, currency, state) values ($1, $2, 'load', $3, 1, 'USD', 'created')`, [uuidv7(), `no-market-${uuidv7()}`, uuidv7()])
+      .catch((e: unknown) => e);
+    expect(isPgError(err, '23514')).toBe(true);
+  });
+
   it('create is idempotent by key and a replay with a different amount returns the original (THR-04)', async () => {
     const key = `k-${uuidv7()}`;
     const a = await transfers.create({ idempotencyKey: key, kind: 'p2p', fromPartyId: uuidv7(), toPartyId: uuidv7(), amount: money(5_000n, 'ILS') }, now);
