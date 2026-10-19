@@ -84,7 +84,10 @@ export class FxService {
   private readonly quotesByKey = new Map<string, string>();
   private readonly conversionsByTransfer = new Map<string, FxConversionView>();
 
-  constructor(private readonly d: Deps) {}
+  private readonly d: Deps;
+  constructor(d: Deps) {
+    this.d = d;
+  }
 
   /** POST /fx/quotes: the member's plan sets the markup; the purse must cover the amount now. Idempotent by key. */
   async quote(partyId: string, body: unknown, key: string, now: Date): Promise<FxQuoteView> {

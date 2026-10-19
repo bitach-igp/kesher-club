@@ -17,12 +17,16 @@ export interface XCoverClientOptions {
 }
 
 export class XCoverApiError extends Error {
+  readonly status: number;
+  readonly body: Record<string, unknown>;
   constructor(
-    readonly status: number,
-    readonly body: Record<string, unknown>,
+    status: number,
+    body: Record<string, unknown>,
     message: string,
   ) {
     super(message);
+    this.status = status;
+    this.body = body;
     this.name = 'XCoverApiError';
   }
   get isOutage(): boolean {

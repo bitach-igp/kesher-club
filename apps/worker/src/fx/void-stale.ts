@@ -12,10 +12,15 @@ export interface VoidStaleReport {
 }
 
 export class VoidStaleConversionsJob {
+  private readonly fx: Pick<FxService, 'voidStale'>;
+  private readonly clock: () => Date;
   constructor(
-    private readonly fx: Pick<FxService, 'voidStale'>,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    fx: Pick<FxService, 'voidStale'>,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.fx = fx;
+    this.clock = clock;
+  }
 
   async run(): Promise<VoidStaleReport> {
     const now = this.clock();

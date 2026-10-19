@@ -82,10 +82,15 @@ const toAlert = (r: Row): Alert => {
 const COLUMNS = 'id, kind, severity, status, payload, opened_at, disposition, decided_by, decided_at, decision_note';
 
 export class AlertService {
+  private readonly db: Database;
+  private readonly audit: AuditService;
   constructor(
-    private readonly db: Database,
-    private readonly audit: AuditService,
-  ) {}
+    db: Database,
+    audit: AuditService,
+  ) {
+    this.db = db;
+    this.audit = audit;
+  }
 
   /** Every monitoring case, undecided first (worst severity, then oldest), then decided ones newest first. */
   async list(): Promise<Alert[]> {

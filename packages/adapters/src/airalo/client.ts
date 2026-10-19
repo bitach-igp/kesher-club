@@ -13,12 +13,16 @@ export interface AiraloClientOptions {
 
 /** A non-2xx reply from Airalo: status, `meta.message` and the per-field `data` errors. */
 export class AiraloApiError extends Error {
+  readonly status: number;
+  readonly fieldErrors: Record<string, string[]>;
   constructor(
-    readonly status: number,
-    readonly fieldErrors: Record<string, string[]>,
+    status: number,
+    fieldErrors: Record<string, string[]>,
     message: string,
   ) {
     super(message);
+    this.status = status;
+    this.fieldErrors = fieldErrors;
     this.name = 'AiraloApiError';
   }
   get isOutage(): boolean {

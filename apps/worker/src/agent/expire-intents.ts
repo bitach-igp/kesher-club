@@ -15,11 +15,18 @@ export interface ExpireIntentsReport {
 }
 
 export class ExpireIntentsJob {
+  private readonly intents: Pick<IntentService, 'expire'>;
+  private readonly clock: () => Date;
+  private readonly batch: number;
   constructor(
-    private readonly intents: Pick<IntentService, 'expire'>,
-    private readonly clock: () => Date = () => new Date(),
-    private readonly batch = 500,
-  ) {}
+    intents: Pick<IntentService, 'expire'>,
+    clock: () => Date = () => new Date(),
+    batch = 500,
+  ) {
+    this.intents = intents;
+    this.clock = clock;
+    this.batch = batch;
+  }
 
   async run(): Promise<ExpireIntentsReport> {
     const now = this.clock();

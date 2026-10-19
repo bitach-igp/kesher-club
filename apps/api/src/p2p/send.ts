@@ -113,7 +113,10 @@ interface Deps {
 }
 
 export class P2pSendService implements SendActivities {
-  constructor(private readonly d: Deps) {}
+  private readonly d: Deps;
+  constructor(d: Deps) {
+    this.d = d;
+  }
 
   /** POST /transfers: eligibility, limits and balance, then the workflow. */
   async send(fromPartyId: string, body: unknown, key: string, now: Date): Promise<TransferView> {

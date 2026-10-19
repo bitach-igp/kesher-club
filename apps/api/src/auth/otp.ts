@@ -14,11 +14,18 @@ const START_WINDOW_MS = 10 * 60_000;
 export type OtpPurpose = 'register' | 'recovery';
 
 export class OtpService {
+  private readonly port: AuthPort;
+  private readonly repo: IdentityRepository;
+  private readonly clock: Clock;
   constructor(
-    private readonly port: AuthPort,
-    private readonly repo: IdentityRepository,
-    private readonly clock: Clock,
-  ) {}
+    port: AuthPort,
+    repo: IdentityRepository,
+    clock: Clock,
+  ) {
+    this.port = port;
+    this.repo = repo;
+    this.clock = clock;
+  }
 
   async start(input: { phone: string; locale: 'en' | 'he' }): Promise<{ otpId: string; expiresAt: string; attemptsAllowed: number }> {
     if (!E164.test(input.phone)) throw new DomainError('VALIDATION_FAILED', 'Phone must be E.164');

@@ -23,11 +23,18 @@ export interface SweepReport {
 }
 
 export class LoadWorkflow {
+  private readonly loads: LoadService;
+  private readonly port: FundingPort;
+  private readonly clock: () => Date;
   constructor(
-    private readonly loads: LoadService,
-    private readonly port: FundingPort,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    loads: LoadService,
+    port: FundingPort,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.loads = loads;
+    this.port = port;
+    this.clock = clock;
+  }
 
   /** Starts, or resumes, the run whose id is `workflowId`. */
   run(input: LoadInput, workflowId: string): Promise<LoadRun> {

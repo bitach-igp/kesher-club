@@ -44,12 +44,21 @@ export function isPublicAddress(ip: string): boolean {
 }
 
 export class CimdRegistry {
+  private readonly db: Database;
+  private readonly resolve: Resolver;
+  private readonly fetchImpl: Fetcher;
+  private readonly clock: () => Date;
   constructor(
-    private readonly db: Database,
-    private readonly resolve: Resolver,
-    private readonly fetchImpl: Fetcher,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    db: Database,
+    resolve: Resolver,
+    fetchImpl: Fetcher,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.db = db;
+    this.resolve = resolve;
+    this.fetchImpl = fetchImpl;
+    this.clock = clock;
+  }
 
   /** Registers (or refreshes) a client from its metadata URL. Refuses anything the guard does not like. */
   async register(clientId: string): Promise<ClientMetadata> {

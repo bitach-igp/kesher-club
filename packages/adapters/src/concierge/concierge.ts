@@ -16,7 +16,9 @@ export class PartnerConciergeAdapter implements ConciergePort {
   private readonly fetchImpl: typeof fetch;
   private readonly idem = new IdempotencyStore<unknown>();
 
-  constructor(private readonly opts: PartnerConciergeOptions) {
+  private readonly opts: PartnerConciergeOptions;
+  constructor(opts: PartnerConciergeOptions) {
+    this.opts = opts;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
   }
 
@@ -80,11 +82,18 @@ export class EmailBridgeConciergeAdapter implements ConciergePort {
   private readonly cases = new Map<string, ConciergeCase & { messages: CaseMessage[] }>();
   private readonly idem = new IdempotencyStore<unknown>();
 
+  private readonly notify: NotifyPort;
+  private readonly helpDeskEmail: string;
+  private readonly clock: () => Date;
   constructor(
-    private readonly notify: NotifyPort,
-    private readonly helpDeskEmail: string,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    notify: NotifyPort,
+    helpDeskEmail: string,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.notify = notify;
+    this.helpDeskEmail = helpDeskEmail;
+    this.clock = clock;
+  }
 
   async openCase(input: { kind: CaseKind; memberId: string; summary: string; locale: 'en' | 'he'; phone?: string }, key: string): Promise<ConciergeCase> {
     if (!input.summary.trim()) throw new ConciergeError('VALIDATION_FAILED', 'Summary required');

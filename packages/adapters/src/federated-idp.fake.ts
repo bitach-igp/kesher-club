@@ -26,7 +26,9 @@ export class FakeIdP {
   readonly revokeRequests: Record<string, string>[] = [];
   private keys!: { kid: string; privateKey: CryptoKey; jwk: JWK };
 
-  private constructor(private readonly opts: FakeIdPOptions) {
+  private readonly opts: FakeIdPOptions;
+  private constructor(opts: FakeIdPOptions) {
+    this.opts = opts;
     this.fetch = (input, init) => this.handle(String(input), init);
   }
 

@@ -52,12 +52,21 @@ const iso = (v: string | Date): string => new Date(v).toISOString();
 const view = (r: Row): KycSessionView => ({ sessionId: r.session_id, tier: r.tier, status: r.status, reasons: r.reasons, startedAt: iso(r.started_at), expiresAt: iso(r.expires_at), ...(r.decided_at ? { decidedAt: iso(r.decided_at) } : {}) });
 
 export class KycService {
+  private readonly db: Database;
+  private readonly port: KycPort;
+  private readonly market: 'US' | 'IL';
+  private readonly provider: string;
   constructor(
-    private readonly db: Database,
-    private readonly port: KycPort,
-    private readonly market: 'US' | 'IL',
-    private readonly provider = 'issuer-kyc',
-  ) {}
+    db: Database,
+    port: KycPort,
+    market: 'US' | 'IL',
+    provider = 'issuer-kyc',
+  ) {
+    this.db = db;
+    this.port = port;
+    this.market = market;
+    this.provider = provider;
+  }
 
   /**
    * Starts a session, or by idempotency key re-reads the one already started. A tier already approved

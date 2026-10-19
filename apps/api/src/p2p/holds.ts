@@ -18,12 +18,21 @@ export const holdKey = (workflowId: string): string => `${workflowId}:hold`;
 export const releaseKey = (workflowId: string): string => `${workflowId}:release`;
 
 export class P2pHoldService {
+  private readonly db: Database;
+  private readonly ledger: PostgresLedger;
+  private readonly accounts: AccountService;
+  private readonly transfers: TransferService;
   constructor(
-    private readonly db: Database,
-    private readonly ledger: PostgresLedger,
-    private readonly accounts: AccountService,
-    private readonly transfers: TransferService,
-  ) {}
+    db: Database,
+    ledger: PostgresLedger,
+    accounts: AccountService,
+    transfers: TransferService,
+  ) {
+    this.db = db;
+    this.ledger = ledger;
+    this.accounts = accounts;
+    this.transfers = transfers;
+  }
 
   /** A new pair is one with no settled send from this member to that one, in any currency. */
   async isNewPair(fromPartyId: string, toPartyId: string): Promise<boolean> {

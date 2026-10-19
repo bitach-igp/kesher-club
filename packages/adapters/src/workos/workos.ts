@@ -74,7 +74,9 @@ export class WorkOsOrgIdPAdapter implements OrgIdPPort {
   private readonly deactivated = new Set<string>();
   private readonly seenEvents = new Map<string, ScimEvent>();
 
-  constructor(private readonly opts: WorkOsOptions) {
+  private readonly opts: WorkOsOptions;
+  constructor(opts: WorkOsOptions) {
+    this.opts = opts;
     if (!opts.clientId || !opts.apiKey) throw new Error('WorkOS adapter needs clientId and apiKey');
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.base = (opts.baseUrl ?? 'https://api.workos.com').replace(/\/$/, '');

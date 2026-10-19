@@ -53,11 +53,18 @@ export function deadlineFor(runDate: string): Date {
 }
 
 export class ReconJob {
+  private readonly db: Database;
+  private readonly source: StatementSource;
+  private readonly clock: () => Date;
   constructor(
-    private readonly db: Database,
-    private readonly source: StatementSource,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    db: Database,
+    source: StatementSource,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.db = db;
+    this.source = source;
+    this.clock = clock;
+  }
 
   async run(provider: string, runDate: string): Promise<ReconReport> {
     const startedAt = this.clock();

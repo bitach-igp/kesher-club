@@ -100,14 +100,27 @@ export interface AgentPurchase {
 }
 
 export class IntentService {
+  private readonly db: Database;
+  private readonly transfers: TransferService;
+  private readonly stepUp: StepUpService;
+  private readonly money: IntentMoney;
+  private readonly flags: Pick<FeatureFlags, 'isOn'>;
+  private readonly notify: (partyId: string, intent: PendingIntent) => Promise<void>;
   constructor(
-    private readonly db: Database,
-    private readonly transfers: TransferService,
-    private readonly stepUp: StepUpService,
-    private readonly money: IntentMoney,
-    private readonly flags: Pick<FeatureFlags, 'isOn'>,
-    private readonly notify: (partyId: string, intent: PendingIntent) => Promise<void> = async () => undefined,
-  ) {}
+    db: Database,
+    transfers: TransferService,
+    stepUp: StepUpService,
+    money: IntentMoney,
+    flags: Pick<FeatureFlags, 'isOn'>,
+    notify: (partyId: string, intent: PendingIntent) => Promise<void> = async () => undefined,
+  ) {
+    this.db = db;
+    this.transfers = transfers;
+    this.stepUp = stepUp;
+    this.money = money;
+    this.flags = flags;
+    this.notify = notify;
+  }
 
   async propose(input: { grantId: string; partyId: string; kind: IntentKind; payload: Record<string, unknown> }, now: Date): Promise<PendingIntent> {
     if (input.kind === 'p2p' || input.kind === 'load') {

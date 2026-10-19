@@ -69,12 +69,21 @@ interface Row {
 }
 
 export class AutoReloadService {
+  private readonly db: Database;
+  private readonly accounts: AccountService;
+  private readonly loads: LoadService;
+  private readonly flags: FeatureFlags;
   constructor(
-    private readonly db: Database,
-    private readonly accounts: AccountService,
-    private readonly loads: LoadService,
-    private readonly flags: FeatureFlags,
-  ) {}
+    db: Database,
+    accounts: AccountService,
+    loads: LoadService,
+    flags: FeatureFlags,
+  ) {
+    this.db = db;
+    this.accounts = accounts;
+    this.loads = loads;
+    this.flags = flags;
+  }
 
   /** GET /accounts/{id}/auto-reload: the member's rule for one of their purses. */
   async get(partyId: string, accountId: string, now: Date): Promise<AutoReloadView> {

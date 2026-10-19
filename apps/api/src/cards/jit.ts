@@ -74,7 +74,9 @@ const decline = (reason: Extract<JitDecision, { approve: false }>['reason']): Ji
 
 export class JitService {
   private readonly budgetMs: number;
-  constructor(private readonly d: JitDeps) {
+  private readonly d: JitDeps;
+  constructor(d: JitDeps) {
+    this.d = d;
     this.budgetMs = d.budgetMs ?? DECISION_BUDGET_MS;
   }
 

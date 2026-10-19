@@ -10,12 +10,21 @@ import { listTools, toolByName, type ToolContext } from './tools/registry.ts';
 export const RATE_LIMIT_PER_MINUTE = 60;
 
 export class McpGateway implements AgentGateway {
+  private readonly cfg: McpConfig;
+  private readonly db: Database;
+  private readonly validator: McpTokenValidator;
+  private readonly ctx: (now: Date) => ToolContext;
   constructor(
-    private readonly cfg: McpConfig,
-    private readonly db: Database,
-    private readonly validator: McpTokenValidator,
-    private readonly ctx: (now: Date) => ToolContext,
-  ) {}
+    cfg: McpConfig,
+    db: Database,
+    validator: McpTokenValidator,
+    ctx: (now: Date) => ToolContext,
+  ) {
+    this.cfg = cfg;
+    this.db = db;
+    this.validator = validator;
+    this.ctx = ctx;
+  }
 
   metadata(): ProtectedResourceMetadata {
     return protectedResourceMetadata(this.cfg);

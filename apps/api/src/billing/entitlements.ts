@@ -40,10 +40,15 @@ export function periodEnd(period: EntitlementTemplate['period'], at: Date, membe
 }
 
 export class EntitlementService {
+  private readonly db: Database;
+  private readonly plans: PlanService;
   constructor(
-    private readonly db: Database,
-    private readonly plans: PlanService,
-  ) {}
+    db: Database,
+    plans: PlanService,
+  ) {
+    this.db = db;
+    this.plans = plans;
+  }
 
   async can(m: MembershipRef, key: string, amount: bigint, at: Date, db: SqlClient = this.db): Promise<Decision> {
     const plan = await this.plans.get(m.planCode, m.planVersion, db);

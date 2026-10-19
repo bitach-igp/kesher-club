@@ -25,12 +25,21 @@ export function termEnd(createdAt: string, termMonths: number): string {
 }
 
 export class DunningService {
+  private readonly db: Database;
+  private readonly memberships: MembershipService;
+  private readonly billing: BillingPort;
+  private readonly notify: NotifyPort;
   constructor(
-    private readonly db: Database,
-    private readonly memberships: MembershipService,
-    private readonly billing: BillingPort,
-    private readonly notify: NotifyPort,
-  ) {}
+    db: Database,
+    memberships: MembershipService,
+    billing: BillingPort,
+    notify: NotifyPort,
+  ) {
+    this.db = db;
+    this.memberships = memberships;
+    this.billing = billing;
+    this.notify = notify;
+  }
 
   async onBillingEvent(event: BillingEvent, now: Date): Promise<DunningResult> {
     const subscriptionId = event.type === 'subscription.updated' ? event.subscription.subscriptionId : event.subscriptionId;

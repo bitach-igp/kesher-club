@@ -79,13 +79,24 @@ export function receiptNumber(journalId: string, effectiveAt: Date): string {
 }
 
 export class CollectionsService {
+  private readonly db: Database;
+  private readonly ledger: PostgresLedger;
+  private readonly accounts: AccountService;
+  private readonly transfers: TransferService;
+  private readonly flags: FeatureFlags;
   constructor(
-    private readonly db: Database,
-    private readonly ledger: PostgresLedger,
-    private readonly accounts: AccountService,
-    private readonly transfers: TransferService,
-    private readonly flags: FeatureFlags,
-  ) {}
+    db: Database,
+    ledger: PostgresLedger,
+    accounts: AccountService,
+    transfers: TransferService,
+    flags: FeatureFlags,
+  ) {
+    this.db = db;
+    this.ledger = ledger;
+    this.accounts = accounts;
+    this.transfers = transfers;
+    this.flags = flags;
+  }
 
   /** GET /fee-items: what the member owes and has paid; due first, soonest and smallest first. One query. */
   async listForMember(memberPartyId: string): Promise<{ items: FeeItemView[] }> {

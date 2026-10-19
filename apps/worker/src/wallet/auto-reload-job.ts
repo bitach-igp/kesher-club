@@ -17,11 +17,18 @@ export interface AutoReloadReport {
 }
 
 export class AutoReloadJob {
+  private readonly rules: AutoReloadService;
+  private readonly clock: () => Date;
+  private readonly batch: number;
   constructor(
-    private readonly rules: AutoReloadService,
-    private readonly clock: () => Date = () => new Date(),
-    private readonly batch = 500,
-  ) {}
+    rules: AutoReloadService,
+    clock: () => Date = () => new Date(),
+    batch = 500,
+  ) {
+    this.rules = rules;
+    this.clock = clock;
+    this.batch = batch;
+  }
 
   async run(): Promise<AutoReloadReport> {
     const now = this.clock();

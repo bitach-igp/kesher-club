@@ -18,10 +18,15 @@ export interface Funnel {
 }
 
 export class InviteService {
+  private readonly db: Database;
+  private readonly notify: NotifyPort;
   constructor(
-    private readonly db: Database,
-    private readonly notify: NotifyPort,
-  ) {}
+    db: Database,
+    notify: NotifyPort,
+  ) {
+    this.db = db;
+    this.notify = notify;
+  }
 
   /** Sends an invite for every member of the import that has none yet. */
   async fanOut(importId: string, now: Date): Promise<{ sent: number; skipped: number }> {

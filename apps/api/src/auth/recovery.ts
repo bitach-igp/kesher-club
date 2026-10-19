@@ -34,14 +34,27 @@ export interface RecoverInput {
 export class RecoveryService {
   private readonly pending = new Map<string, { partyId: string; phone: string }>();
 
+  private readonly repo: IdentityRepository;
+  private readonly otp: OtpService;
+  private readonly passkeys: PasskeyService;
+  private readonly tokens: TokenService;
+  private readonly notify: NotifyPort;
+  private readonly clock: Clock;
   constructor(
-    private readonly repo: IdentityRepository,
-    private readonly otp: OtpService,
-    private readonly passkeys: PasskeyService,
-    private readonly tokens: TokenService,
-    private readonly notify: NotifyPort,
-    private readonly clock: Clock,
-  ) {}
+    repo: IdentityRepository,
+    otp: OtpService,
+    passkeys: PasskeyService,
+    tokens: TokenService,
+    notify: NotifyPort,
+    clock: Clock,
+  ) {
+    this.repo = repo;
+    this.otp = otp;
+    this.passkeys = passkeys;
+    this.tokens = tokens;
+    this.notify = notify;
+    this.clock = clock;
+  }
 
   /** Two-step like registration; the otp-session is consumed on the first step and remembered for the second. */
   async recover(input: RecoverInput): Promise<{ options?: PasskeyRegistrationOptions; tokens?: TokenPair }> {

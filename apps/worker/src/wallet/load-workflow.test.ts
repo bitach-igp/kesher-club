@@ -27,7 +27,10 @@ const keysSeen: string[] = [];
 class ScriptedVendor implements FundingPort {
   readonly byKey = new Map<string, Load>();
   readonly script = new Map<string, Load['status'][]>();
-  constructor(private readonly first: Load['status'] = 'processing') {}
+  private readonly first: Load['status'];
+  constructor(first: Load['status'] = 'processing') {
+    this.first = first;
+  }
   async createLoad(input: Parameters<FundingPort['createLoad']>[0], key: string): Promise<Load> {
     keysSeen.push(key);
     if (input.paymentMethodId === 'pm_outage') throw new FundingError('PROVIDER_UNAVAILABLE', 'down');

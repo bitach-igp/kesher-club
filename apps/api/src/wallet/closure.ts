@@ -48,7 +48,10 @@ const loadOfRefund = (key: string): string => key.slice(key.lastIndexOf(':') + 1
 export const refundSettleKey = (key: string): string => `${key}:settle`;
 
 export class ClosureService {
-  constructor(private readonly d: Deps) {}
+  private readonly d: Deps;
+  constructor(d: Deps) {
+    this.d = d;
+  }
 
   /** POST /me/closure: start, or continue, closing the member's account. Idempotent: every call reports the current state. */
   async close(partyId: string, now: Date): Promise<ClosureView> {

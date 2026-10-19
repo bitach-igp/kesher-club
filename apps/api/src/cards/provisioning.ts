@@ -71,12 +71,21 @@ export function parseTokenEvent(payload: unknown): TokenEvent {
 }
 
 export class ProvisioningService {
+  private readonly db: Database;
+  private readonly cards: CardService;
+  private readonly source: WalletProvisioningSource;
+  private readonly flags: FeatureFlags;
   constructor(
-    private readonly db: Database,
-    private readonly cards: CardService,
-    private readonly source: WalletProvisioningSource,
-    private readonly flags: FeatureFlags,
-  ) {}
+    db: Database,
+    cards: CardService,
+    source: WalletProvisioningSource,
+    flags: FeatureFlags,
+  ) {
+    this.db = db;
+    this.cards = cards;
+    this.source = source;
+    this.flags = flags;
+  }
 
   /**
    * The payload for the OS sheet. Owner only, flag on, card active, and not for a device that already

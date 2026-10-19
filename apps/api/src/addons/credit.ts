@@ -19,7 +19,10 @@ export const ENTITLEMENT_BY_KIND: Readonly<Record<string, { key: string; attribu
 };
 
 export class CreditService {
-  constructor(private readonly entitlements: EntitlementService) {}
+  private readonly entitlements: EntitlementService;
+  constructor(entitlements: EntitlementService) {
+    this.entitlements = entitlements;
+  }
 
   /** What the member would pay now, without consuming anything. */
   async quote(m: MembershipRef | undefined, item: { kind: string; attributes: Record<string, unknown>; price: Money }, quantity: number, at: Date): Promise<CreditQuote> {

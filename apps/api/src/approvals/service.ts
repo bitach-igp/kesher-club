@@ -56,7 +56,10 @@ export function approversRequired(kind: ApprovalKind, amount?: Money): number {
 }
 
 export class ApprovalService {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   /** Creates (or returns) the request for (kind, subject). The requester's own approval counts only for single-approver actions. */
   async request(input: { kind: ApprovalKind; subject: string; scope: string; requestedBy: Approver; amount?: Money; payload?: Record<string, unknown>; ttlMs?: number }, now: Date): Promise<ApprovalRequest> {

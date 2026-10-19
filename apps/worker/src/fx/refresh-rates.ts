@@ -25,11 +25,18 @@ const base = (pair: RatePair): { from: Currency; to: Currency } => {
 };
 
 export class RefreshRatesJob {
+  private readonly port: FxPort;
+  private readonly rates: RateService;
+  private readonly clock: () => Date;
   constructor(
-    private readonly port: FxPort,
-    private readonly rates: RateService,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    port: FxPort,
+    rates: RateService,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.port = port;
+    this.rates = rates;
+    this.clock = clock;
+  }
 
   async run(): Promise<RefreshReport> {
     const now = this.clock();

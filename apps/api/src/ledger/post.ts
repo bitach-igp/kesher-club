@@ -38,7 +38,10 @@ interface PostingRow {
 }
 
 export class PostgresLedger {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   async post(input: JournalInput): Promise<PostedJournal> {
     validate(input);

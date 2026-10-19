@@ -14,15 +14,25 @@ export interface StripeClientOptions {
 
 /** A non-2xx reply from Stripe, with the fields of its `error` object (never the request). */
 export class StripeApiError extends Error {
+  readonly status: number;
+  readonly type: string;
+  readonly code: string | undefined;
+  readonly declineCode: string | undefined;
+  readonly param: string | undefined;
   constructor(
-    readonly status: number,
-    readonly type: string,
-    readonly code: string | undefined,
-    readonly declineCode: string | undefined,
-    readonly param: string | undefined,
+    status: number,
+    type: string,
+    code: string | undefined,
+    declineCode: string | undefined,
+    param: string | undefined,
     message: string,
   ) {
     super(message);
+    this.status = status;
+    this.type = type;
+    this.code = code;
+    this.declineCode = declineCode;
+    this.param = param;
     this.name = 'StripeApiError';
   }
   get isOutage(): boolean {

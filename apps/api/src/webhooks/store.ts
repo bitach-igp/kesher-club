@@ -24,7 +24,10 @@ interface Row {
 }
 
 export class InboundEventStore {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   /** Returns `duplicate: true` when the (provider, eventId) pair was already stored; the stored row wins. */
   async record(e: { provider: string; eventId: string; signatureOk: boolean; payload: unknown; receivedAt: Date }): Promise<{ duplicate: boolean; event: InboundEvent }> {

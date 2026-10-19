@@ -91,13 +91,24 @@ interface Row {
 const iso = (v: string | Date): string => new Date(v).toISOString();
 
 export class CardService {
+  private readonly db: Database;
+  private readonly port: CardIssuingPort;
+  private readonly kyc: KycService;
+  private readonly flags: FeatureFlags;
+  private readonly processor: string;
   constructor(
-    private readonly db: Database,
-    private readonly port: CardIssuingPort,
-    private readonly kyc: KycService,
-    private readonly flags: FeatureFlags,
-    private readonly processor = 'simulator',
-  ) {}
+    db: Database,
+    port: CardIssuingPort,
+    kyc: KycService,
+    flags: FeatureFlags,
+    processor = 'simulator',
+  ) {
+    this.db = db;
+    this.port = port;
+    this.kyc = kyc;
+    this.flags = flags;
+    this.processor = processor;
+  }
 
   // ---- activities (each idempotent by its key) ---------------------------------------------------
 

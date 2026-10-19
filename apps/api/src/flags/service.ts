@@ -50,11 +50,18 @@ export interface FlagView {
 export class FlagService implements FeatureFlags {
   private readonly registry = new Map(loadRegistry().map((r) => [r.key, r]));
 
+  private readonly db: Database;
+  private readonly approvals: ApprovalService;
+  private readonly audit: AuditService;
   constructor(
-    private readonly db: Database,
-    private readonly approvals: ApprovalService,
-    private readonly audit: AuditService,
-  ) {}
+    db: Database,
+    approvals: ApprovalService,
+    audit: AuditService,
+  ) {
+    this.db = db;
+    this.approvals = approvals;
+    this.audit = audit;
+  }
 
   keys(): readonly string[] {
     return [...this.registry.keys()];

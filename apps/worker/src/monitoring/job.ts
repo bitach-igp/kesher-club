@@ -41,12 +41,21 @@ interface Row {
 }
 
 export class MonitoringJob {
+  private readonly db: Database;
+  private readonly flags: FeatureFlags;
+  private readonly clock: () => Date;
+  private readonly thresholds: Thresholds;
   constructor(
-    private readonly db: Database,
-    private readonly flags: FeatureFlags,
-    private readonly clock: () => Date,
-    private readonly thresholds: Thresholds = THRESHOLDS,
-  ) {}
+    db: Database,
+    flags: FeatureFlags,
+    clock: () => Date,
+    thresholds: Thresholds = THRESHOLDS,
+  ) {
+    this.db = db;
+    this.flags = flags;
+    this.clock = clock;
+    this.thresholds = thresholds;
+  }
 
   async run(): Promise<MonitoringReport> {
     const now = this.clock();

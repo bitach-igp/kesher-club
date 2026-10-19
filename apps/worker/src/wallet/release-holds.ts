@@ -19,11 +19,18 @@ export interface ReleaseReport {
 }
 
 export class ReleaseHoldsJob {
+  private readonly transfers: TransferService;
+  private readonly loads: LoadService;
+  private readonly clock: () => Date;
   constructor(
-    private readonly transfers: TransferService,
-    private readonly loads: LoadService,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    transfers: TransferService,
+    loads: LoadService,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.transfers = transfers;
+    this.loads = loads;
+    this.clock = clock;
+  }
 
   async run(): Promise<ReleaseReport> {
     const now = this.clock();

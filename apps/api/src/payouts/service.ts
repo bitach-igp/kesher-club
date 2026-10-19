@@ -121,7 +121,10 @@ interface PayeeRow {
 }
 
 export class PayoutService implements PayoutActivities {
-  constructor(private readonly d: Deps) {}
+  private readonly d: Deps;
+  constructor(d: Deps) {
+    this.d = d;
+  }
 
   /** POST /payouts: the flag, the payee (ours and the vendor's), the purse, then the workflow. */
   async request(partyId: string, body: unknown, key: string, now: Date): Promise<PayoutView & { newPayee: boolean }> {

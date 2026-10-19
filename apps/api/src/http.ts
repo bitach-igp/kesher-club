@@ -69,14 +69,22 @@ export function toProblem(err: unknown, traceId: string): HttpResponse<ProblemBo
 
 /** For transport-level failures that are not domain errors (401 challenges, 403 scope, 429). */
 export class HttpError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly headers: Record<string, string>;
+  readonly extra: Record<string, unknown>;
   constructor(
-    readonly status: number,
-    readonly code: string,
+    status: number,
+    code: string,
     message: string,
-    readonly headers: Record<string, string> = {},
-    readonly extra: Record<string, unknown> = {},
+    headers: Record<string, string> = {},
+    extra: Record<string, unknown> = {},
   ) {
     super(message);
+    this.status = status;
+    this.code = code;
+    this.headers = headers;
+    this.extra = extra;
     this.name = 'HttpError';
   }
 }

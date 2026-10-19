@@ -38,7 +38,10 @@ export function entryHash(e: Omit<AuditEntry, 'hash' | 'seq'>): string {
 }
 
 export class AuditService {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   /** Appends one entry. Serialised through a row lock on the last entry so the chain never forks. */
   async record(input: AuditInput, now: Date, db: Database = this.db): Promise<AuditEntry> {
