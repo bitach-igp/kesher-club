@@ -14,7 +14,9 @@ export class OrgIdPSimulator implements OrgIdPPort {
   private readonly directory = new Map<string, Map<string, DirectoryEntry>>();
   private readonly seenEvents = new Map<string, ScimEvent>();
 
-  constructor(readonly clock: Clock = fixedClock(), orgs: readonly string[] = ['org_yeshiva_a', 'org_sem_b']) {
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock(), orgs: readonly string[] = ['org_yeshiva_a', 'org_sem_b']) {
+    this.clock = clock;
     for (const o of orgs) this.directory.set(o, new Map());
   }
 

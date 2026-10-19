@@ -12,7 +12,10 @@ export class PayoutSimulator implements PayoutPort {
   private readonly ids = new Sequence('po');
   private readonly evIds = new Sequence('evt');
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async validatePayee(payee: Payee): Promise<PayeeValidation> {
     const reasons: PayeeValidation['reasons'][number][] = [];

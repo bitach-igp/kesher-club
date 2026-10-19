@@ -15,7 +15,10 @@ export class BillingSimulator implements BillingPort {
   private readonly subIds = new Sequence('sub');
   private readonly evIds = new Sequence('evt');
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async createCustomer(input: { partyId: string; email: string }, idempotencyKey: string): Promise<BillingCustomer> {
     if (input.email.endsWith('@outage.example')) throw new BillingError('PROVIDER_UNAVAILABLE', 'Simulated billing outage');

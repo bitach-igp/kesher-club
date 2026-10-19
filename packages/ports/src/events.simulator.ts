@@ -28,7 +28,10 @@ export class EventsSimulator implements EventsPort {
   /** Test hook: every signed request the simulator "sent". */
   readonly delivered: SignedRequest[] = [];
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async createEndpoint(input: { institutionId: string; url: string; eventTypes: readonly OutboundEventType[] }, key: string): Promise<Endpoint> {
     if (!/^https:\/\//.test(input.url)) throw new EventsError('VALIDATION_FAILED', 'Endpoints must be https');

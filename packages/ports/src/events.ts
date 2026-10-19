@@ -55,11 +55,13 @@ export interface EventsPort {
 export type EventsErrorCode = 'UNKNOWN_ENDPOINT' | 'UNKNOWN_MESSAGE' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class EventsError extends Error {
+  readonly code: EventsErrorCode;
   constructor(
-    readonly code: EventsErrorCode,
+    code: EventsErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'EventsError';
   }
 }

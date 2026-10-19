@@ -57,11 +57,18 @@ export function quietWindow(at: Date, prefs: Preferences): { quiet: boolean; rel
 export class NotifyService {
   private readonly deferred: Deferred[] = [];
 
+  private readonly port: NotifyPort;
+  private readonly prefs: PreferenceStore;
+  private readonly clock: () => Date;
   constructor(
-    private readonly port: NotifyPort,
-    private readonly prefs: PreferenceStore,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    port: NotifyPort,
+    prefs: PreferenceStore,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.port = port;
+    this.prefs = prefs;
+    this.clock = clock;
+  }
 
   async send(partyId: string, n: Notification, idempotencyKey: string): Promise<Outcome> {
     const prefs = (await this.prefs.get(partyId)) ?? DEFAULT_PREFERENCES;
