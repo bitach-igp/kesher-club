@@ -27,6 +27,9 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      # The console must build, not only typecheck: Next checks the proxy's static config at build, and the
+      # build needs no settings, so one image serves every environment (T-0915).
+      - run: pnpm --filter @kesher/admin build
       - run: pnpm trace
       - run: pnpm db:lint
 

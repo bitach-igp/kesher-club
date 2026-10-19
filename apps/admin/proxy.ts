@@ -4,7 +4,7 @@
 import { createRemoteJWKSet } from 'jose';
 import { NextResponse, type NextRequest } from 'next/server';
 import { getConfig } from './src/config.ts';
-import { ADMIN_ROLES_HEADER, ADMIN_SUBJECT_HEADER, adminProxy, PROXY_MATCHER } from './src/auth/proxy.ts';
+import { ADMIN_ROLES_HEADER, ADMIN_SUBJECT_HEADER, adminProxy } from './src/auth/proxy.ts';
 import { SESSION_COOKIE } from './src/auth/session.ts';
 
 const cfg = getConfig();
@@ -36,4 +36,6 @@ export default async function proxy(request: NextRequest): Promise<NextResponse>
   }
 }
 
-export const config = { matcher: PROXY_MATCHER };
+// Next reads the matcher at build time and only from a literal; src/auth/proxy.test.ts keeps it equal to
+// PROXY_MATCHER (T-0915).
+export const config = { matcher: ['/((?!_next/static|_next/image|favicon.ico|healthz).*)'] };
