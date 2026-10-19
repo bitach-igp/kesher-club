@@ -4,7 +4,7 @@
 // refuses simulators in production. Only `sim` is accepted for now: no vendor adapter is wired into the
 // registry until ADR-006 names a processor, so `sandbox` and `live` would boot on nothing.
 // `loadConfig` throws ConfigError naming every missing or invalid key; secrets never print.
-import { defineConfig, loadConfig, secret, type Config } from '@kesher/domain';
+import { defineConfig, loadConfig, secret, type Config, type Secret } from '@kesher/domain';
 import type { JWK } from 'jose';
 import { z } from 'zod';
 
@@ -19,6 +19,14 @@ const jwksJson = z.string().transform((raw, ctx): JWK[] => {
   return z.NEVER;
 });
 
+/** A 32-byte key, standard base64. Decoding is strict: Node's base64 decoder skips junk, so re-encode and compare. */
+const key32 = () =>
+  secret().refine((k) => {
+    const raw = k.reveal();
+    const bytes = Buffer.from(raw, 'base64');
+    return bytes.length === 32 && bytes.toString('base64') === raw;
+  }, 'must be 32 bytes, standard base64');
+
 const shared = {
   /** The member token key: a private ES256 JWK as JSON, from Secrets Manager. */
   TOKEN_SIGNING_JWK: secret(),
@@ -28,16 +36,23 @@ const shared = {
   /** Public JWKS of the admin console's staff-token key (ADR-013). Public, so not a secret. */
   STAFF_JWKS: jwksJson,
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  /** Field-level PII keys (T-0024): one seals, the other blind-indexes. Never the same key. */
+  PII_DATA_KEY: key32(),
+  PII_INDEX_KEY: key32(),
 };
 
-const simulatorsOnly = (cfg: unknown, ctx: z.RefinementCtx) => {
-  if ((cfg as { PROVIDER_MODE_DEFAULT: string }).PROVIDER_MODE_DEFAULT !== 'sim') {
+const processRules = (cfg: unknown, ctx: z.RefinementCtx) => {
+  const c = cfg as { PROVIDER_MODE_DEFAULT: string; PII_DATA_KEY: Secret; PII_INDEX_KEY: Secret };
+  if (c.PROVIDER_MODE_DEFAULT !== 'sim') {
     ctx.addIssue({ code: 'custom', path: ['PROVIDER_MODE_DEFAULT'], message: 'only sim until ADR-006 wires a vendor adapter' });
+  }
+  if (c.PII_DATA_KEY.reveal() === c.PII_INDEX_KEY.reveal()) {
+    ctx.addIssue({ code: 'custom', path: ['PII_INDEX_KEY'], message: 'must differ from PII_DATA_KEY' });
   }
 };
 
-export const apiConfigSchema = defineConfig({ ...shared, PORT: z.coerce.number().int().min(1).max(65535) }).superRefine(simulatorsOnly);
-export const workerConfigSchema = defineConfig(shared).superRefine(simulatorsOnly);
+export const apiConfigSchema = defineConfig({ ...shared, PORT: z.coerce.number().int().min(1).max(65535) }).superRefine(processRules);
+export const workerConfigSchema = defineConfig(shared).superRefine(processRules);
 
 export type ApiConfig = Config<typeof apiConfigSchema>;
 export type WorkerConfig = Config<typeof workerConfigSchema>;
