@@ -1,0 +1,20 @@
+{
+  "name": "@kesher/demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "dev": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/dev.ts"
+  },
+  "dependencies": {
+    "@kesher/api": "workspace:*",
+    "@kesher/domain": "workspace:*",
+    "@kesher/ports": "workspace:*",
+    "@kesher/simulators": "workspace:*",
+    "@kesher/worker": "workspace:*",
+    "jose": "6.2.12",
+    "zod": "^4.6.7"
+  }
+}
