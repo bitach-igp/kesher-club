@@ -64,11 +64,14 @@ server (`apps/api/src/index.ts:1-2`). The request says, step by step, which flow
 
 ## Open items
 
-Each document ends its sections with its `Open:` lines. Counts at the commit above:
+Each document ends its sections with its `Open:` lines. ADR-014 (2026-10-19) decided the thirteen
+money-flow items that were conflicts between the spec and the code or waited on engineering; those now
+read `Gap found:` followed by `Decided (ADR-014, decision N)` and the card that carries the work. What is
+still open:
 
 | Document | Open items |
 |---|---|
-| money-flows.md | 19 |
+| money-flows.md | 6 |
 | monitoring-rules.md | 6 |
 | complaint-process.md | 7 |
 | disclosures.md | 9 |
