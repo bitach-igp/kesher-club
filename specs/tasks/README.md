@@ -58,6 +58,7 @@
 | [T-0408](T-0408.md) | CRD | Mobile screens M06, M20–M24 | — | 6 |
 | [T-0409](T-0409.md) | CRD | A shekel card payment draws on the shekel purse at the club rate | REQ-CRD-003 | 9 |
 | [T-0410](T-0410.md) | CRD | Card settlement: clearing moves the hold, unclaimed holds release after 7 days | REQ-CRD-003 | 9 |
+| [T-0411](T-0411.md) | CRD | A card hold refunds the markup on what was not spent | REQ-CRD-003 | 9 |
 | [T-0501](T-0501.md) | WAL | Loads by card, Apple Pay, Google Pay + load workflow | REQ-WAL-002 | 5 |
 | [T-0502](T-0502.md) | WAL | ACH holds and release | REQ-WAL-003 | 5 |
 | [T-0503](T-0503.md) | WAL | Auto-reload, once per 24 h | REQ-WAL-004 | 6 |
@@ -115,6 +116,7 @@
 | [T-0914](T-0914.md) | ADM | The console gets its config; only VPN traffic passes its IP gate | REQ-AUTH-009 | 9 |
 | [T-0915](T-0915.md) | ADM | The console builds, with no settings, into one image for every environment | REQ-AUTH-009 | 9 |
 | [T-0916](T-0916.md) | ADM | A market's provider row is live only where a vendor is bound | — | 9 |
+| [T-0917](T-0917.md) | ADM | The console ships as an image that turns healthy only when configured | REQ-AUTH-009 | 9 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |

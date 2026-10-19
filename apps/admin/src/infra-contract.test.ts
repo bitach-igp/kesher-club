@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { PROXY_MATCHER } from './auth/proxy.ts';
 import { adminConfigSchema, API_MODE_KEYS } from './config.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -55,6 +56,15 @@ describe('the console config and Terraform agree (T-0914)', () => {
         expect(env.get('ADMIN_API_URL_IL')).toMatch(/il\.api\}\/v1"$/);
         expect(env.get('ADMIN_API_URL_US')).toMatch(/us\.api\}\/v1"$/);
         expect(env.get('ADMIN_VPN_CIDRS')).toBe('join(",", module.network.client_vpn_source_cidrs)');
+      });
+
+      it('health-checks a path the console serves and the proxy leaves to the load balancer (T-0917)', () => {
+        const healthPath = /^\s*health_check_path\s*=\s*"([^"]+)"/m.exec(bodyAfter(admin, /^\s*ingress\s*=\s*\{/m))?.[1];
+        expect(healthPath).toBe('/healthz');
+        expect(fs.existsSync(path.join(ROOT, 'apps/admin/app/healthz/route.ts'))).toBe(true);
+        // Next anchors each matcher to the whole path; a matched path goes through the VPN and SSO gate.
+        expect(PROXY_MATCHER.some((m) => new RegExp(`^${m}$`).test(healthPath!))).toBe(false);
+        expect(PROXY_MATCHER.some((m) => new RegExp(`^${m}$`).test('/api/healthz'))).toBe(true);
       });
     });
   }

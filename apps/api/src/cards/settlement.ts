@@ -10,8 +10,9 @@
 // release (late presentment) draws the whole amount from the purse that paid, under `jit:{authId}:late`.
 //
 // A converted hold (T-0409) clears in the authorisation's currency; the difference moves through
-// fx_position at the hold's own club rate. Money drawn converts with the hold's markup, as the hold did;
-// money given back returns at the club rate and the club keeps the markup on what it converted (ADR-015).
+// fx_position at the hold's own club rate. Money drawn converts with the hold's markup, as the hold did.
+// Money given back takes its markup with it (ADR-016, T-0411): the member ends up paying exactly what the
+// cleared amount costs at the hold's rate and markup, so a hold released unspent costs nothing.
 import { applyBps, DomainError, fromWire, money, type Currency, type Money, type Posting } from '@kesher/domain';
 import { applyRate } from '@kesher/ports';
 import type { Database } from '../db.ts';
@@ -55,7 +56,8 @@ interface Hold {
   held: Money;
   pending: string;
   paidFrom: { account: string; currency: Currency };
-  conversion?: { rateScaled: bigint; markupBps: bigint };
+  /** What the hold converted: its rate and markup, and what the paying purse gave (gross + markup). */
+  conversion?: { rateScaled: bigint; markupBps: bigint; paid: bigint; markup: bigint };
 }
 
 export class CardSettlementService {
@@ -144,14 +146,18 @@ export class CardSettlementService {
         ...(markup > 0n ? [{ accountId: await this.accounts.systemAccount('fee_income', pay), currency: pay, amountMinor: -markup }] : []),
       ];
     }
-    // Less was claimed, or nothing: what is left goes back at the hold's club rate; the club keeps the markup.
-    const back = -draw;
-    const gross = applyRate(back, h.conversion.rateScaled);
+    // Less was claimed, or nothing (ADR-016): the purse that paid ends up charged what the cleared amount
+    // costs at the hold's rate and markup, so the rest of the gross and of the markup go back to it.
+    const costGross = applyRate(cleared, h.conversion.rateScaled);
+    const costMarkup = applyBps(money(costGross, pay), h.conversion.markupBps).minor;
+    const markupBack = h.conversion.markup - costMarkup;
+    const grossBack = h.conversion.paid - h.conversion.markup - costGross;
     return [
       ...legs,
-      { accountId: fxAuth, currency: ccy, amountMinor: -back },
-      { accountId: fxPay, currency: pay, amountMinor: gross },
-      { accountId: h.paidFrom.account, currency: pay, amountMinor: -gross },
+      { accountId: fxAuth, currency: ccy, amountMinor: draw },
+      { accountId: fxPay, currency: pay, amountMinor: grossBack },
+      ...(markupBack > 0n ? [{ accountId: await this.accounts.systemAccount('fee_income', pay), currency: pay, amountMinor: markupBack }] : []),
+      { accountId: h.paidFrom.account, currency: pay, amountMinor: -(grossBack + markupBack) },
     ];
   }
 
@@ -164,6 +170,7 @@ export class CardSettlementService {
     );
     const pending = r.rows.find((x) => x.type === 'pending');
     const wallet = r.rows.find((x) => x.type === 'wallet');
+    const fee = r.rows.find((x) => x.type === 'fee_income');
     if (!pending || !wallet) return undefined;
     const m = r.rows[0]!.metadata;
     const rate = typeof m['rate'] === 'string' ? m['rate'] : undefined;
@@ -172,7 +179,7 @@ export class CardSettlementService {
       held: money(-BigInt(pending.amount_minor), pending.currency),
       pending: pending.account_id,
       paidFrom: { account: wallet.account_id, currency: wallet.currency },
-      ...(rate && wallet.currency !== pending.currency ? { conversion: { rateScaled: scaled(rate), markupBps: BigInt(Number(m['fx_markup_bps'] ?? 0)) } } : {}),
+      ...(rate && wallet.currency !== pending.currency ? { conversion: { rateScaled: scaled(rate), markupBps: BigInt(Number(m['fx_markup_bps'] ?? 0)), paid: BigInt(wallet.amount_minor), markup: fee ? -BigInt(fee.amount_minor) : 0n } } : {}),
     };
   }
 }
