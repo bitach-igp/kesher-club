@@ -107,11 +107,13 @@ export interface AdminData {
 }
 
 export class AdminDataError extends Error {
+  readonly code: 'NOT_FOUND' | 'CONFLICT' | 'FORBIDDEN' | 'GATES_INCOMPLETE' | 'SAME_APPROVER' | 'UNAVAILABLE';
   constructor(
-    readonly code: 'NOT_FOUND' | 'CONFLICT' | 'FORBIDDEN' | 'GATES_INCOMPLETE' | 'SAME_APPROVER' | 'UNAVAILABLE',
+    code: 'NOT_FOUND' | 'CONFLICT' | 'FORBIDDEN' | 'GATES_INCOMPLETE' | 'SAME_APPROVER' | 'UNAVAILABLE',
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'AdminDataError';
   }
 }
