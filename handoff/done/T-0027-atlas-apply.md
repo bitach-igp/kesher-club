@@ -13,3 +13,50 @@ Steps (from repo root, PowerShell on Windows unless stated):
 10. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with ledger at 16 migrations and addons at 2. Step 5 reports no pending migrations. Step 6 lists the four constraints, each with `convalidated` = `f` (added NOT VALID, as intended). Step 7 prints `INSERT 0 1`. Step 8 fails with a check constraint violation on `transfer_market`. Step 9 fails with a check constraint violation on `inbound_event_market`.
 Report back: the console output of steps 4, 5, 6, 8 and 9.
+
+## Result
+PASS, 2026-10-19 14:11 (Asia/Jerusalem), desktop checker on Zvi's PC (Docker 29.8.2, postgres:16), runner worktree at a8036f7
+(claude/practical-babbage-80xevv: 1fcc65c T-0027 plus the T-0022/T-0023 handoff results).
+
+Step 4 (exit 0): ledger "Migrating to version 0016 (16 migrations in total)", addons "Migrating to version 0002
+(2 migrations in total)", every version `-- ok`, then:
+```
+ok   ledger
+ok   identity
+ok   org
+ok   billing
+ok   legal
+ok   addons
+ok   notify
+ok   audit
+ok   agent
+```
+
+Step 5 (exit 0): `No migration files to execute` for each of the 9 schemas, then the same nine `ok` lines.
+
+Step 6:
+```
+       conname        | convalidated
+----------------------+--------------
+ addon_order_market   | f
+ auto_reload_market   | f
+ inbound_event_market | f
+ transfer_market      | f
+(4 rows)
+```
+
+Step 7: `INSERT 0 1`
+
+Step 8 (exit 1):
+```
+ERROR:  new row for relation "transfer" violates check constraint "transfer_market"
+```
+
+Step 9 (exit 1):
+```
+ERROR:  new row for relation "inbound_event" violates check constraint "inbound_event_market"
+```
+
+Step 10: container `kesher-pg` removed.
+
+All expectations met.
