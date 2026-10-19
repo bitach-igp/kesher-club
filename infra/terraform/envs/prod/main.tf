@@ -224,6 +224,8 @@ module "secrets" {
     "pii-data-key",
     "pii-index-key",
     "staff-jwks",
+    "admin-api-signing-key",
+    "admin-oidc-client-secret",
   ]
 }
 
@@ -388,20 +390,41 @@ module "worker" {
 }
 
 module "admin" {
-  source          = "../../modules/ecs-service"
-  name            = "${local.name}-admin"
-  cluster_arn     = aws_ecs_cluster.this.arn
-  cluster_name    = aws_ecs_cluster.this.name
-  vpc_id          = module.network.vpc_id
-  subnet_ids      = module.network.private_subnet_ids
-  image           = "${var.ecr_registry}/kesher/admin:${var.image_tag}"
-  cpu             = 512
-  memory          = 1024
-  desired_count   = 1
-  min_capacity    = 1
-  max_capacity    = 2
-  environment     = { NODE_ENV = "production", APP_ENV = local.env, API_BASE_URL = "https://${local.market_hosts.il.api}" }
-  log_kms_key_arn = module.kms_logs.key_arn
+  source        = "../../modules/ecs-service"
+  name          = "${local.name}-admin"
+  cluster_arn   = aws_ecs_cluster.this.arn
+  cluster_name  = aws_ecs_cluster.this.name
+  vpc_id        = module.network.vpc_id
+  subnet_ids    = module.network.private_subnet_ids
+  image         = "${var.ecr_registry}/kesher/admin:${var.image_tag}"
+  cpu           = 512
+  memory        = 1024
+  desired_count = 1
+  min_capacity  = 1
+  max_capacity  = 2
+  # Everything the console reads in `api` mode (T-0914; apps/admin/src/config.ts): club-wide data from the
+  # IL API, bindings from both (T-0913); its IP gate passes only the Client VPN's own subnets.
+  environment = {
+    NODE_ENV              = "production"
+    APP_ENV               = local.env
+    ADMIN_ENVIRONMENT     = "production"
+    ADMIN_BASE_URL        = "https://${local.hosts.admin}"
+    ADMIN_VPN_CIDRS       = join(",", module.network.client_vpn_source_cidrs)
+    ADMIN_OIDC_ISSUER     = var.admin_oidc_issuer
+    ADMIN_OIDC_AUDIENCE   = var.admin_oidc_client_id
+    ADMIN_OIDC_CLIENT_ID  = var.admin_oidc_client_id
+    ADMIN_OIDC_JWKS_URL   = var.admin_oidc_jwks_url
+    ADMIN_DATA            = "api"
+    ADMIN_API_URL_IL      = "https://${local.market_hosts.il.api}/v1"
+    ADMIN_API_URL_US      = "https://${local.market_hosts.us.api}/v1"
+    ADMIN_API_SIGNING_KID = "kesher-${local.env}-admin-1"
+  }
+  secrets = {
+    ADMIN_API_SIGNING_KEY    = module.secrets.arns["admin-api-signing-key"]
+    ADMIN_OIDC_CLIENT_SECRET = module.secrets.arns["admin-oidc-client-secret"]
+  }
+  secret_kms_key_arns = [module.kms_secrets.key_arn]
+  log_kms_key_arn     = module.kms_logs.key_arn
   ingress = {
     listener_arn          = module.admin_alb.https_listener_arn
     alb_security_group_id = module.admin_alb.security_group_id

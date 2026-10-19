@@ -89,6 +89,9 @@ variables {
   temporal_address        = "temporal.kesher.internal:7233"
   temporal_namespace      = "kesher"
   webhook_provider_cidrs  = ["198.51.100.0/24"]
+  admin_oidc_issuer       = "https://identitycenter.example/oidc"
+  admin_oidc_client_id    = "kesher-admin"
+  admin_oidc_jwks_url     = "https://identitycenter.example/oidc/keys"
 }
 
 run "staging_certificate" {

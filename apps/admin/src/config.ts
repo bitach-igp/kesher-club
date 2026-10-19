@@ -18,6 +18,9 @@ const cidrList = z
     return out;
   });
 
+/** Keys optional in the schema but required when ADMIN_DATA=api; Terraform's contract test reads this list (T-0914). */
+export const API_MODE_KEYS = ['ADMIN_API_URL_IL', 'ADMIN_API_URL_US', 'ADMIN_API_SIGNING_KEY', 'ADMIN_API_SIGNING_KID'] as const;
+
 export const adminConfigSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'preview', 'staging', 'production']),
   /** Drives the environment banner in the shell (staging vs prod). */
@@ -54,7 +57,7 @@ export const adminConfigSchema = z.object({
   ADMIN_API_SIGNING_KID: z.string().min(1).optional(),
 }).superRefine((c, ctx) => {
   if (c.ADMIN_DATA === 'memory' && c.ADMIN_ENVIRONMENT !== 'local' && c.ADMIN_ENVIRONMENT !== 'preview') ctx.addIssue({ code: 'custom', path: ['ADMIN_DATA'], message: 'memory data is allowed in local and preview only' });
-  if (c.ADMIN_DATA === 'api') for (const k of ['ADMIN_API_URL_IL', 'ADMIN_API_URL_US', 'ADMIN_API_SIGNING_KEY', 'ADMIN_API_SIGNING_KID'] as const) if (c[k] === undefined) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required when ADMIN_DATA=api` });
+  if (c.ADMIN_DATA === 'api') for (const k of API_MODE_KEYS) if (c[k] === undefined) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required when ADMIN_DATA=api` });
 });
 
 type ParsedAdminConfig = z.infer<typeof adminConfigSchema>;

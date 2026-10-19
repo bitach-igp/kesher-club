@@ -91,3 +91,19 @@ variable "deletion_protection" {
   type        = bool
   default     = true
 }
+
+# The admin console's Identity Center OIDC application (T-0914). The ID token's audience is the client id.
+variable "admin_oidc_issuer" {
+  description = "Issuer URL of the Identity Center OIDC application the admin console signs in with."
+  type        = string
+}
+
+variable "admin_oidc_client_id" {
+  description = "Client id of that application; also the audience of the ID tokens the console verifies."
+  type        = string
+}
+
+variable "admin_oidc_jwks_url" {
+  description = "JWKS URL the console verifies ID tokens against."
+  type        = string
+}
