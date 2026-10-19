@@ -5,7 +5,7 @@ simulator from `@kesher/ports`, one shared advanceable clock, bound in a `Provid
 US and IL in `sim` mode.
 
 ```
-SIMULATOR_PORT=4010 NODE_ENV=development DATABASE_URL=postgres://x TEMPORAL_ADDRESS=localhost:7233 PROVIDER_MODE_DEFAULT=sim \
+SIMULATOR_PORT=4010 APP_ENV=development DATABASE_URL=postgres://x TEMPORAL_ADDRESS=localhost:7233 PROVIDER_MODE_DEFAULT=sim \
   pnpm --filter @kesher/simulators start
 ```
 
@@ -18,5 +18,5 @@ SIMULATOR_PORT=4010 NODE_ENV=development DATABASE_URL=postgres://x TEMPORAL_ADDR
 | `POST /clock/advance` | `{ "ms": 60000 }` moves every simulator's clock |
 | `GET /health` | Clock and start time |
 
-Hook results are bigint-safe JSON (Money minor units as strings). The host refuses to boot when
-`NODE_ENV` is staging or production.
+Hook results are bigint-safe JSON (Money minor units as strings). The host boots only when
+`APP_ENV` is development, test or preview (T-0025); `NODE_ENV` is Node's own flag and plays no part.

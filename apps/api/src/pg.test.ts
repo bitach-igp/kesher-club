@@ -10,6 +10,8 @@ import { isPgError, PG } from './db.ts';
 import { createPgDatabase, type PgDatabase } from './pg.ts';
 import { createMigratedPGlite } from './test-db.ts';
 
+/** Migrating a fresh PGlite takes seconds, and well over vitest's 10 s hook default when every package tests at once. */
+const MIGRATED_PGLITE_MS = 60_000;
 let lite: PGlite;
 let server: PGLiteSocketServer;
 let db: PgDatabase;
@@ -19,7 +21,7 @@ beforeAll(async () => {
   server = new PGLiteSocketServer({ db: lite, host: '127.0.0.1', port: 0 });
   await server.start();
   db = createPgDatabase(`postgres://postgres@${server.getServerConn()}/postgres?sslmode=disable`, { max: 1 });
-});
+}, MIGRATED_PGLITE_MS);
 
 afterAll(async () => {
   await db.close();

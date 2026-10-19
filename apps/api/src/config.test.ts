@@ -8,12 +8,12 @@ import { loadApiConfig, loadWorkerConfig } from './config.ts';
 const SIGNING_JWK = '{"kty":"EC","crv":"P-256","x":"x","y":"y","d":"super-secret-d"}';
 const DATA_KEY = randomBytes(32).toString('base64');
 const env = {
-  NODE_ENV: 'preview',
+  APP_ENV: 'preview',
   DATABASE_URL: 'postgres://club_app@db.internal:5432/club',
   TEMPORAL_ADDRESS: 'temporal.internal:7233',
   PROVIDER_MODE_DEFAULT: 'sim',
-  TOKEN_SIGNING_JWK: SIGNING_JWK,
-  TOKEN_SIGNING_KID: 'k-2026-10',
+  JWT_SIGNING_KEY: SIGNING_JWK,
+  JWT_SIGNING_KID: 'k-2026-10',
   TOKEN_ISSUER: 'https://api.preview.kesher.club',
   MARKET: 'IL',
   STAFF_JWKS: '{"keys":[{"kty":"EC","crv":"P-256","x":"x","y":"y","kid":"staff-1"}]}',
@@ -36,8 +36,8 @@ describe('API and worker config (T-0020)', () => {
   it('loads a complete environment with the defaults filled in', () => {
     const c = loadApiConfig(env);
     expect(c).toMatchObject({ PORT: 8080, MARKET: 'IL', DATABASE_POOL_MAX: 10, PROVIDER_MODE_DEFAULT: 'sim' });
-    expect(c.TOKEN_SIGNING_JWK).toBeInstanceOf(Secret);
-    expect(c.TOKEN_SIGNING_JWK.reveal()).toBe(SIGNING_JWK);
+    expect(c.JWT_SIGNING_KEY).toBeInstanceOf(Secret);
+    expect(c.JWT_SIGNING_KEY.reveal()).toBe(SIGNING_JWK);
     expect(c.STAFF_JWKS).toEqual([{ kty: 'EC', crv: 'P-256', x: 'x', y: 'y', kid: 'staff-1' }]);
   });
 
@@ -48,8 +48,8 @@ describe('API and worker config (T-0020)', () => {
   });
 
   it('names every missing value at once, and an empty string counts as missing', () => {
-    const e = thrown(() => loadApiConfig({ ...env, DATABASE_URL: undefined, TOKEN_SIGNING_JWK: '', STAFF_JWKS: undefined }));
-    expect([...e.missing].sort()).toEqual(['DATABASE_URL', 'STAFF_JWKS', 'TOKEN_SIGNING_JWK']);
+    const e = thrown(() => loadApiConfig({ ...env, DATABASE_URL: undefined, JWT_SIGNING_KEY: '', STAFF_JWKS: undefined }));
+    expect([...e.missing].sort()).toEqual(['DATABASE_URL', 'JWT_SIGNING_KEY', 'STAFF_JWKS']);
   });
 
   it('never prints the signing key: not in the error, not in the loaded config', () => {
@@ -58,13 +58,13 @@ describe('API and worker config (T-0020)', () => {
     expect(e.message).not.toContain('super-secret-d');
     const c = loadApiConfig(env);
     expect(JSON.stringify(c)).not.toContain('super-secret-d');
-    expect(String(c.TOKEN_SIGNING_JWK)).toBe('[redacted]');
+    expect(String(c.JWT_SIGNING_KEY)).toBe('[redacted]');
   });
 
   it('refuses a signing key that is not a private ES256 JWK, without quoting it', () => {
-    for (const TOKEN_SIGNING_JWK of ['{"kty":"EC","crv":"P-256","x":"x","y":"y","d":"super-secret-d" oops', '{"kty":"EC","crv":"P-256","x":"x","y":"y"}', '{"kty":"RSA","n":"n","e":"e","d":"super-secret-d"}']) {
-      const e = thrown(() => loadApiConfig({ ...env, TOKEN_SIGNING_JWK }));
-      expect(e.invalid.join()).toMatch(/TOKEN_SIGNING_JWK/);
+    for (const JWT_SIGNING_KEY of ['{"kty":"EC","crv":"P-256","x":"x","y":"y","d":"super-secret-d" oops', '{"kty":"EC","crv":"P-256","x":"x","y":"y"}', '{"kty":"RSA","n":"n","e":"e","d":"super-secret-d"}']) {
+      const e = thrown(() => loadApiConfig({ ...env, JWT_SIGNING_KEY }));
+      expect(e.invalid.join()).toMatch(/JWT_SIGNING_KEY/);
       expect(e.message).not.toContain('super-secret-d');
     }
   });
@@ -92,6 +92,6 @@ describe('API and worker config (T-0020)', () => {
 
   it('runs on simulators only until ADR-006 wires a vendor, and never on simulators in production', () => {
     expect(thrown(() => loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: only sim/);
-    expect(thrown(() => loadApiConfig({ ...env, NODE_ENV: 'production' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: simulators are not allowed in production/);
+    expect(thrown(() => loadApiConfig({ ...env, APP_ENV: 'prod' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: simulators are not allowed in production/);
   });
 });

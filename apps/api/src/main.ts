@@ -34,7 +34,7 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
   const db = createPgDatabase(config.DATABASE_URL, { max: config.DATABASE_POOL_MAX });
   try {
     const pii = createPiiCipher({ dataKey: config.PII_DATA_KEY, indexKey: config.PII_INDEX_KEY });
-    const signingKey = await importSigningKey(JSON.parse(config.TOKEN_SIGNING_JWK.reveal()) as JWK, config.TOKEN_SIGNING_KID);
+    const signingKey = await importSigningKey(JSON.parse(config.JWT_SIGNING_KEY.reveal()) as JWK, config.JWT_SIGNING_KID);
     const { registry } = createRegistry(config.PROVIDER_MODE_DEFAULT);
     const app = createApp({
       db,

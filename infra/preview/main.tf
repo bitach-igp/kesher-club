@@ -22,7 +22,7 @@ locals {
 
   # The password is not part of the URL: node-postgres (and libpq) read PGPASSWORD, which the
   # ECS secrets integration injects straight from Secrets Manager.
-  database_url = "postgres://club_app@${local.cfg.rds_address}:${local.cfg.rds_port}/${local.db_name}?sslmode=require"
+  database_url = "postgres://club_app@${local.cfg.rds_address}:${local.cfg.rds_port}/${local.db_name}?sslmode=verify-full&sslrootcert=/app/db/certs/rds-global-bundle.pem"
 
   common_env = {
     NODE_ENV                   = "production"
@@ -36,11 +36,18 @@ locals {
     TEMPORAL_NAMESPACE         = local.cfg.temporal_namespace
     TEMPORAL_TASK_QUEUE_PREFIX = "preview-${var.pr_number}"
     AWS_REGION                 = var.region
+    TOKEN_ISSUER               = local.url
+    JWT_SIGNING_KID            = "kesher-staging-1" # previews share staging's signing key
+    MARKET                     = "IL"
+    PORT                       = "3000"
   }
 
   common_secrets = {
     PGPASSWORD           = local.cfg.db_app_password_secret_arn
     JWT_SIGNING_KEY      = local.cfg.jwt_signing_key_secret_arn
+    PII_DATA_KEY         = local.cfg.pii_data_key_secret_arn
+    PII_INDEX_KEY        = local.cfg.pii_index_key_secret_arn
+    STAFF_JWKS           = local.cfg.staff_jwks_secret_arn
     TEMPORAL_CLIENT_CERT = local.cfg.temporal_cert_secret_arn
     TEMPORAL_CLIENT_KEY  = local.cfg.temporal_key_secret_arn
   }
@@ -72,6 +79,7 @@ data "aws_ssm_parameter" "staging" {
     "rds_security_group_id", "rds_address", "rds_port",
     "log_kms_key_arn", "secrets_kms_key_arn",
     "db_app_password_secret_arn", "jwt_signing_key_secret_arn", "temporal_cert_secret_arn", "temporal_key_secret_arn",
+    "pii_data_key_secret_arn", "pii_index_key_secret_arn", "staff_jwks_secret_arn",
     "temporal_address", "temporal_namespace",
     "db_tool_task_definition", "db_tool_security_group_id",
     "ecr_registry", "hosted_zone_id", "domain",
@@ -153,6 +161,7 @@ module "api" {
     alb_security_group_id = local.cfg.alb_security_group_id
     host_headers          = [local.hostname]
     priority              = 1000 + var.pr_number
+    health_check_path     = "/v1/status"
   }
 
   depends_on = [null_resource.database]

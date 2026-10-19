@@ -13,8 +13,8 @@ export { createServer, handle } from './server.ts';
 const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   const config = loadConfig(defineConfig({ SIMULATOR_PORT: z.coerce.number().int().min(1).max(65535) }), process.env);
-  if (!['development', 'test', 'preview'].includes(config.NODE_ENV)) {
-    throw new Error(`Simulators do not run in ${config.NODE_ENV} (constitution art. 6)`);
+  if (!['development', 'test', 'preview'].includes(config.APP_ENV)) {
+    throw new Error(`Simulators do not run in ${config.APP_ENV} (constitution art. 6)`);
   }
   const host = new SimulatorHost();
   createServer(host).listen(config.SIMULATOR_PORT, () => console.log(`simulators: control panel on http://localhost:${config.SIMULATOR_PORT}/`));

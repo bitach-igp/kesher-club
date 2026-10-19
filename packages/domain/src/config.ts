@@ -55,16 +55,22 @@ export function secret() {
   return schema;
 }
 
+/**
+ * The environment a process runs in. It is APP_ENV, as Terraform passes it (T-0025); NODE_ENV stays
+ * Node's own flag (`production` in every container) and means nothing to this config.
+ */
+export const APP_ENVS = ['development', 'test', 'preview', 'staging', 'prod'] as const;
+
 export const baseConfigShape = {
-  NODE_ENV: z.enum(['development', 'test', 'preview', 'staging', 'production']),
+  APP_ENV: z.enum(APP_ENVS),
   DATABASE_URL: z.string().url(),
   TEMPORAL_ADDRESS: z.string().regex(/^[^\s:]+:\d+$/, 'host:port'),
   PROVIDER_MODE_DEFAULT: z.enum(['sim', 'sandbox', 'live']),
 } as const;
 
 const failSecure = (cfg: unknown, ctx: z.RefinementCtx) => {
-  const c = cfg as { NODE_ENV: string; PROVIDER_MODE_DEFAULT: string };
-  if (c.NODE_ENV === 'production' && c.PROVIDER_MODE_DEFAULT === 'sim') {
+  const c = cfg as { APP_ENV: string; PROVIDER_MODE_DEFAULT: string };
+  if (c.APP_ENV === 'prod' && c.PROVIDER_MODE_DEFAULT === 'sim') {
     ctx.addIssue({ code: 'custom', path: ['PROVIDER_MODE_DEFAULT'], message: 'simulators are not allowed in production' });
   }
 };

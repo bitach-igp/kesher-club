@@ -139,6 +139,9 @@ locals {
     secrets_kms_key_arn        = module.kms_secrets.key_arn
     db_app_password_secret_arn = module.secrets.arns["db-app-password"]
     jwt_signing_key_secret_arn = module.secrets.arns["jwt-signing-key"]
+    pii_data_key_secret_arn    = module.secrets.arns["pii-data-key"]
+    pii_index_key_secret_arn   = module.secrets.arns["pii-index-key"]
+    staff_jwks_secret_arn      = module.secrets.arns["staff-jwks"]
     temporal_cert_secret_arn   = module.secrets.arns["temporal-client-cert"]
     temporal_key_secret_arn    = module.secrets.arns["temporal-client-key"]
     temporal_address           = var.temporal_address
