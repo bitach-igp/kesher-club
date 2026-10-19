@@ -7,8 +7,8 @@ import { generateSigningKey } from '@kesher/api/auth/tokens';
 import { createRegistry } from '@kesher/api/registry';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { buildJobs, JOB_EXCLUSIONS } from './jobs.ts';
-import type { Job } from './scheduler.ts';
+import { buildJobs, CATALOGUE_CONFIG, catalogueConfigSchema, JOB_EXCLUSIONS, loadCatalogueConfig, NIGHTLY, pgRunLog } from './jobs.ts';
+import { DAILY_TICK_MS, type Job } from './scheduler.ts';
 
 const SRC = new URL('./', import.meta.url);
 const read = (rel: string): string => readFileSync(new URL(rel, SRC), 'utf8');
@@ -50,12 +50,13 @@ describe('buildJobs (T-0022)', () => {
   const NOW = new Date('2026-10-19T09:00:00Z');
   let db: TestDatabase;
   let jobs: Job[];
+  const results = new Map<string, unknown>();
 
   beforeAll(async () => {
     db = await createTestDatabase();
     const { registry } = createRegistry('sim');
     const app = createApp({ db, registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW });
-    jobs = buildJobs({ app, db, registry, market: 'IL', clock: () => NOW });
+    jobs = buildJobs({ app, db, registry, market: 'IL', clock: () => NOW, runs: pgRunLog(db), catalogue: loadCatalogueConfig() });
   }, 60_000);
   afterAll(async () => db.close());
 
@@ -75,12 +76,47 @@ describe('buildJobs (T-0022)', () => {
       'agent-expire-intents': 900,
       monitoring: 3600,
       'esim-usage': 3600,
+      ...Object.fromEntries(Object.keys(NIGHTLY).map((n) => [n, DAILY_TICK_MS / 1000])),
     });
+    // The nightly jobs tick every minute and run once a day at their Israel time.
+    expect(NIGHTLY).toEqual({ 'balance-proof': '02:30', 'catalogue-sync': '03:00' });
   });
 
   it('runs one cycle of every job against a fresh schema without an error', async () => {
     const failed: string[] = [];
-    for (const j of jobs) await j.run().catch((e: unknown) => failed.push(`${j.name}: ${e instanceof Error ? e.message : String(e)}`));
+    for (const j of jobs) {
+      await j
+        .run()
+        .then((v) => results.set(j.name, v))
+        .catch((e: unknown) => failed.push(`${j.name}: ${e instanceof Error ? e.message : String(e)}`));
+    }
     expect(failed).toEqual([]);
+  });
+
+  it('records each nightly run in ops.job_run for its Israel day, so a second tick that day does nothing', async () => {
+    const r = await db.query<{ job: string; run_date: string }>(`select job, to_char(run_date, 'YYYY-MM-DD') as run_date from ops.job_run order by job`);
+    expect(r.rows).toEqual([
+      { job: 'balance-proof', run_date: '2026-10-19' },
+      { job: 'catalogue-sync', run_date: '2026-10-19' },
+    ]);
+    const proof = jobs.find((j) => j.name === 'balance-proof')!;
+    expect(typeof (await proof.run())).toBe('symbol'); // IDLE: already ran today
+    expect((await db.query(`select 1 from ops.case where kind = 'balance_break'`)).rowCount).toBe(0);
+  });
+
+  it('asks the market\'s vendors for what config/catalogue.json lists', () => {
+    // A fresh schema has no price rules, so the sync sees every package and prices none (REQ-MKT-002).
+    expect(results.get('catalogue-sync')).toMatchObject({
+      esim: { provider: 'simulator', kind: 'esim', seen: 4, priced: 0 },
+      insurance: { provider: 'simulator', kind: 'insurance', seen: 2, priced: 0 },
+    });
+  });
+
+  it('refuses a catalogue config that is missing, malformed or carries unknown keys', () => {
+    expect(() => loadCatalogueConfig(new URL('./no-such.json', CATALOGUE_CONFIG))).toThrow(/ENOENT/);
+    const good = loadCatalogueConfig();
+    expect(catalogueConfigSchema.safeParse({ ...good, extra: 1 }).success).toBe(false);
+    expect(catalogueConfigSchema.safeParse({ ...good, esim: { countries: ['israel'] } }).success).toBe(false);
+    expect(catalogueConfigSchema.safeParse({ ...good, insurance: { products: [] } }).success).toBe(false);
   });
 });

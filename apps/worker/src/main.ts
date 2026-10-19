@@ -10,7 +10,7 @@ import { loadWorkerConfig } from '@kesher/api/config';
 import { createPiiCipher } from '@kesher/api/crypto/pii';
 import { createPgDatabase } from '@kesher/api/pg';
 import { createRegistry } from '@kesher/api/registry';
-import { buildJobs as defaultJobs, type JobDeps } from './jobs.ts';
+import { buildJobs as defaultJobs, type JobDeps, loadCatalogueConfig, pgRunLog } from './jobs.ts';
 import { advisoryLock } from './lock.ts';
 import { type Job, type Log, Scheduler } from './scheduler.ts';
 
@@ -29,6 +29,8 @@ export interface WorkerOptions {
   drainMs?: number;
   /** The job table; tests swap it to reach the drain deadline. */
   buildJobs?: (deps: JobDeps) => Job[];
+  /** The jobs' clock; tests fix it so a nightly job's slot does not depend on when they run. */
+  clock?: () => Date;
 }
 
 export const log: Log = (event, fields) => {
@@ -39,6 +41,7 @@ export async function main(env: Record<string, string | undefined>, opts: Worker
   const emit = opts.log ?? log;
   const drainMs = opts.drainMs ?? DRAIN_MS;
   const config = loadWorkerConfig(env); // throws ConfigError, naming every problem, before anything opens
+  const catalogue = loadCatalogueConfig(); // config/catalogue.json: missing or malformed throws here too
   const db = createPgDatabase(config.DATABASE_URL, { max: config.DATABASE_POOL_MAX });
   // The locks' own session: one connection, never reaped while idle (lock.ts).
   const locks = createPgDatabase(config.DATABASE_URL, { max: 1, idleTimeoutMs: 0 });
@@ -48,9 +51,9 @@ export async function main(env: Record<string, string | undefined>, opts: Worker
     // createApp wires the token service too; the worker never mints a token, but builds the same graph.
     const signingKey = await importSigningKey(JSON.parse(config.JWT_SIGNING_KEY.reveal()) as Parameters<typeof importSigningKey>[0], config.JWT_SIGNING_KID);
     const { registry } = createRegistry(config.PROVIDER_MODE_DEFAULT);
-    const clock = () => new Date();
+    const clock = opts.clock ?? (() => new Date());
     const app = createApp({ db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), clock });
-    const jobs = (opts.buildJobs ?? defaultJobs)({ app, db, registry, market: config.MARKET, clock });
+    const jobs = (opts.buildJobs ?? defaultJobs)({ app, db, registry, market: config.MARKET, clock, runs: pgRunLog(db), catalogue });
     const scheduler = new Scheduler(jobs, advisoryLock(locks, config.MARKET), emit);
     scheduler.start();
     emit('started', { market: config.MARKET, providers: config.PROVIDER_MODE_DEFAULT, jobs: jobs.length });

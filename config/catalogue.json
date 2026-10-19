@@ -1,0 +1,11 @@
+{
+  "esim": {
+    "countries": ["IL"]
+  },
+  "insurance": {
+    "products": [
+      { "vendorSku": "gadget", "title": "Gadget cover", "days": 30 },
+      { "vendorSku": "travel-il", "title": "Travel cover in Israel", "days": 30 }
+    ]
+  }
+}

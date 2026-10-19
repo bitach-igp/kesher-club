@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { type Job, type JobLock, noLock, Scheduler } from './scheduler.ts';
+import { daily, type DailyJob, israelClock, type Job, type JobLock, noLock, type RunLog, Scheduler } from './scheduler.ts';
 
 type Line = { event: string; fields: Record<string, string | number | boolean> };
 
@@ -169,5 +169,99 @@ describe('Scheduler', () => {
     expect(() => new Scheduler([a, countingJob('a', 2_000)], noLock, recorder().log)).toThrow(/Two jobs are named a/);
     expect(() => new Scheduler([countingJob('z', 0)], noLock, recorder().log)).toThrow(/positive cycle/);
     expect(() => new Scheduler([countingJob('n', Number.NaN)], noLock, recorder().log)).toThrow(/positive cycle/);
+  });
+});
+
+/** ops.job_run in memory: one row per job and Israel day. */
+function memoryRuns(): RunLog & { rows: Map<string, { started: string; finished: string }> } {
+  const rows = new Map<string, { started: string; finished: string }>();
+  return {
+    rows,
+    ranOn: async (job, day) => rows.has(`${job}@${day}`),
+    record: async (job, day, startedAt, finishedAt) => void rows.set(`${job}@${day}`, { started: startedAt.toISOString(), finished: finishedAt.toISOString() }),
+  };
+}
+
+const nightly = (at: string, body: (now: Date) => Promise<unknown> = async () => 'ok'): DailyJob & { runs: string[] } => {
+  const runs: string[] = [];
+  return {
+    name: 'balance-proof',
+    at,
+    runs,
+    run: async (now) => {
+      runs.push(now.toISOString());
+      return body(now);
+    },
+  };
+};
+
+describe('daily jobs at Israel wall-clock times (T-0023)', () => {
+  afterEach(() => vi.useRealTimers());
+  const now = () => new Date();
+
+  async function runFor(startIso: string, hours: number, job: DailyJob, runs: RunLog, log = recorder().log): Promise<void> {
+    vi.useFakeTimers({ now: new Date(startIso) });
+    const s = new Scheduler([daily(job, runs, now)], noLock, log);
+    s.start();
+    await vi.advanceTimersByTimeAsync(hours * 3_600_000);
+    await s.stop();
+  }
+
+  it('runs once per Israel day at its time, and records the day it belongs to', async () => {
+    const job = nightly('02:30');
+    const runs = memoryRuns();
+    await runFor('2026-10-19T21:30:00Z', 72, job, runs); // 00:30 on 20 Oct in Israel (UTC+3)
+    expect(job.runs).toEqual(['2026-10-19T23:30:00.000Z', '2026-10-20T23:30:00.000Z', '2026-10-21T23:30:00.000Z']);
+    expect([...runs.rows.keys()]).toEqual(['balance-proof@2026-10-20', 'balance-proof@2026-10-21', 'balance-proof@2026-10-22']);
+  });
+
+  it('runs once on the night the clocks go back, though 01:00 to 02:00 happens twice', async () => {
+    const job = nightly('01:30');
+    await runFor('2026-10-24T21:30:00Z', 12, job, memoryRuns()); // 00:30 on 25 Oct 2026, the night 02:00 IDT becomes 01:00 IST
+    expect(job.runs).toEqual(['2026-10-24T22:30:00.000Z']);
+  });
+
+  it('runs at the first tick after the clocks jump forward past its time', async () => {
+    const job = nightly('02:30');
+    await runFor('2027-03-25T22:30:00Z', 8, job, memoryRuns()); // 00:30 on 26 Mar 2027, the night 02:00 IST becomes 03:00 IDT: 02:30 never happens
+    expect(job.runs).toEqual(['2027-03-26T00:00:00.000Z']);
+    expect(israelClock(new Date('2027-03-26T00:00:00Z'))).toEqual({ day: '2027-03-26', time: '03:00' });
+  });
+
+  it('runs once when the worker boots after its time with no run recorded today, and not again after a restart', async () => {
+    const runs = memoryRuns();
+    const first = nightly('02:30');
+    await runFor('2026-10-19T09:00:00Z', 1, first, runs); // noon in Israel
+    expect(first.runs).toEqual(['2026-10-19T09:00:00.000Z']);
+
+    const restarted = nightly('02:30');
+    await runFor('2026-10-19T10:00:00Z', 6, restarted, runs);
+    expect(restarted.runs).toEqual([]);
+  });
+
+  it('a failed run records nothing, is logged, and runs again at the next tick', async () => {
+    let calls = 0;
+    const job = nightly('02:30', async () => {
+      calls += 1;
+      if (calls === 1) throw Object.assign(new Error('statement timeout'), { code: '57014' });
+      return 'ok';
+    });
+    const runs = memoryRuns();
+    const { log, lines } = recorder();
+    await runFor('2026-10-19T23:29:00Z', 2, job, runs, log);
+    expect(job.runs).toEqual(['2026-10-19T23:30:00.000Z', '2026-10-19T23:31:00.000Z']);
+    expect(lines.map((l) => l.event)).toEqual(['job_failed', 'job_ran']);
+    expect(lines[0]!.fields).toMatchObject({ job: 'balance-proof', error: 'Error', code: '57014' });
+    expect([...runs.rows.keys()]).toEqual(['balance-proof@2026-10-20']);
+  });
+
+  it('logs nothing for the ticks before its time or after its run', async () => {
+    const { log, lines } = recorder();
+    await runFor('2026-10-19T09:00:00Z', 3, nightly('23:59'), memoryRuns(), log);
+    expect(lines).toEqual([]);
+  });
+
+  it('refuses a time that is not HH:MM', () => {
+    for (const at of ['2:30', '24:00', '02:60', '0230']) expect(() => daily(nightly(at), memoryRuns(), now)).toThrow(/HH:MM/);
   });
 });
