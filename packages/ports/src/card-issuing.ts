@@ -43,6 +43,17 @@ export interface JitAuthorizationRequest {
   receivedAt: string;
 }
 
+/**
+ * The processor's settlement of an approved authorisation (SEQ-01, T-0410): the amount the merchant finally
+ * claimed, in the authorisation's currency. Arrives on the processor's webhook beside the token events.
+ */
+export interface CardClearingEvent {
+  eventId: string;
+  type: 'authorization.cleared';
+  authId: string;
+  amount: Money;
+}
+
 export type JitDecision = { approve: true; holdAmount: Money } | { approve: false; reason: 'CARD_FROZEN' | 'INSUFFICIENT_FUNDS' | 'LIMIT_EXCEEDED' | 'MCC_BLOCKED' | 'COUNTRY_BLOCKED' | 'CHANNEL_BLOCKED' | 'AGENT_NOT_ALLOWED' | 'TIMEOUT' | 'UNKNOWN_CARD' };
 
 export interface CardIssuingPort {

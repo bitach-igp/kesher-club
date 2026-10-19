@@ -61,7 +61,7 @@ describe('main (T-0022)', () => {
     const worker = await main(env, { log: (event, fields) => lines.push({ event, fields }), clock: () => new Date('2026-10-19T09:00:00Z') });
     const ran = () => new Set(lines.filter((l) => l.event === 'job_ran').map((l) => l.fields['job']));
     try {
-      expect(worker.jobs).toHaveLength(16);
+      expect(worker.jobs).toHaveLength(17);
       await until(() => ran().size === worker.jobs.length || lines.some((l) => l.event === 'job_failed'), 30_000, () => JSON.stringify(lines));
       expect(lines.filter((l) => l.event === 'job_failed' || l.event === 'job_skipped')).toEqual([]);
       expect([...ran()].sort()).toEqual([...worker.jobs].sort());

@@ -47,6 +47,7 @@ their own flag checks.
 | `auto-reload` | `wallet/auto-reload-job` | 15 min |
 | `agent-expire-intents` | `agent/expire-intents` | 15 min |
 | `monitoring` | `monitoring/job` | 1 h |
+| `card-release-holds` | `cards/release-holds` | 1 h |
 | `esim-usage` | `esim/usage` | 1 h |
 
 Nightly jobs (T-0023) run once per Israel calendar day at their wall-clock time. Each ticks every minute;

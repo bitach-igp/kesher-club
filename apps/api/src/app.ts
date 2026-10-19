@@ -14,6 +14,7 @@ import { CardService } from './cards/service.ts';
 import { JitService } from './cards/jit.ts';
 import { PhysicalCardService } from './cards/physical.ts';
 import { detailsTokenProvisioning, ProvisioningService, TOKEN_EVENT_PROVIDER } from './cards/provisioning.ts';
+import { CardSettlementService, cardIssuingProcessor } from './cards/settlement.ts';
 import { fxHandlers } from './fx/handlers.ts';
 import { FxService } from './fx/service.ts';
 import { kycHandlers } from './kyc/handlers.ts';
@@ -121,9 +122,12 @@ function buildServices(o: AppOptions) {
   const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
   const provisioning = new ProvisioningService(o.db, cards, detailsTokenProvisioning(cardIssuing), flags);
   const physical = new PhysicalCardService(o.db, cardIssuing, kyc, cards, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
-  // The processor's token lifecycle events land on /hooks/card-issuing and are applied at receipt; the
-  // worker's token-events job sweeps anything left pending within its cycle (REQ-CRD-007).
-  webhooks.bind(TOKEN_EVENT_PROVIDER, { verifier: ProvisioningService.verifier(o.registry.bindingFor('card-issuing', o.market)?.mode), process: (e) => provisioning.applyTokenEvent(e, clock.now()).then(() => undefined) });
+  // The processor's token lifecycle events and clearings land on /hooks/card-issuing and are applied at
+  // receipt; the worker's token-events job sweeps anything left pending within its cycle (REQ-CRD-007).
+  // A clearing settles its authorisation's hold (T-0410).
+  const settlement = new CardSettlementService(o.db, ledger, accounts);
+  const cardEvents = cardIssuingProcessor({ provisioning, settlement });
+  webhooks.bind(TOKEN_EVENT_PROVIDER, { verifier: ProvisioningService.verifier(o.registry.bindingFor('card-issuing', o.market)?.mode), process: (e) => cardEvents(e, clock.now()).then(() => undefined) });
   // The KYC provider's decisions arrive on /hooks/kyc; the port verifies and parses, the service applies,
   // and a T2 approval issues the virtual card while card.virtual is on (REQ-CRD-001). A processor failure
   // leaves the event unprocessed so replay retries it; both steps are idempotent.
@@ -155,7 +159,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences };
 }
 
 export function createApp(o: AppOptions): App {

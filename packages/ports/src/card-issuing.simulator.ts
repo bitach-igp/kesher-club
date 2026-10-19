@@ -104,6 +104,11 @@ export class CardIssuingSimulator implements CardIssuingPort {
     return { headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify(req) };
   }
 
+  /** Control-panel hook (T-0410): the processor clears authorisation `authId` for `amount`, as a signed webhook body. */
+  clear(authId: string, amount: { minor: bigint; currency: 'USD' | 'ILS' }, eventId = `clr_${authId}`): { headers: Record<string, string>; rawBody: string } {
+    return { headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId, type: 'authorization.cleared', authId, amount: toWire(amount) }) };
+  }
+
   private must(id: string): Card {
     const c = this.cards.get(id);
     if (!c) throw new CardIssuingError('UNKNOWN_CARD', id);

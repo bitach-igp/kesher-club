@@ -7,10 +7,12 @@
 // names every job-like module that is not here and why; jobs.test.ts fails on one that is in neither.
 import fs from 'node:fs';
 import type { App } from '@kesher/api/app';
+import { cardIssuingProcessor } from '@kesher/api/cards/settlement';
 import type { Database } from '@kesher/api/db';
 import type { EsimPort, FundingPort, FxPort, InsurancePort, Market, NotifyPort, ProviderRegistry } from '@kesher/ports';
 import { z } from 'zod';
 import { EXPIRE_INTENTS_CYCLE_MS, ExpireIntentsJob } from './agent/expire-intents.ts';
+import { CardHoldReleaseJob, CYCLE_MS as CARD_HOLD_RELEASE_CYCLE_MS } from './cards/release-holds.ts';
 import { CYCLE_MS as TOKEN_EVENTS_CYCLE_MS, TokenEventsJob } from './cards/token-events.ts';
 import { CatalogueSync } from './catalogue/sync.ts';
 import { EsimUsagePoller } from './esim/usage.ts';
@@ -76,7 +78,8 @@ export interface JobDeps {
 
 export function buildJobs({ app, db, registry, market, clock, runs, catalogue }: JobDeps): Job[] {
   const s = app.services;
-  const tokenEvents = new TokenEventsJob(s.inbound, (e, now) => s.provisioning.applyTokenEvent(e, now), clock);
+  const tokenEvents = new TokenEventsJob(s.inbound, cardIssuingProcessor({ provisioning: s.provisioning, settlement: s.settlement }), clock);
+  const cardHolds = new CardHoldReleaseJob(s.settlement, clock);
   const loads = new LoadWorkflow(s.loads, registry.resolve<FundingPort>('funding', market), clock);
   const sends = new SendWorkflow(s.p2p, clock);
   const payouts = new PayoutWorkflow(s.payouts, clock);
@@ -116,6 +119,7 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue }:
     { name: 'auto-reload', scope: 'market', everyMs: AUTO_RELOAD_CYCLE_MS, run: () => autoReload.run() },
     { name: 'agent-expire-intents', scope: 'club', everyMs: EXPIRE_INTENTS_CYCLE_MS, run: () => intents.run() },
     { name: 'monitoring', scope: 'club', everyMs: MONITORING_CYCLE_MS, run: () => monitoring.run() },
+    { name: 'card-release-holds', scope: 'club', everyMs: CARD_HOLD_RELEASE_CYCLE_MS, run: () => cardHolds.run() },
     { name: 'esim-usage', scope: 'market', everyMs: ESIM_USAGE_CYCLE_MS, run: () => esim.poll(clock()) },
     daily({ name: 'balance-proof', scope: 'club', at: NIGHTLY['balance-proof'], run: (now) => proof.run(now) }, runs, clock),
     daily(
