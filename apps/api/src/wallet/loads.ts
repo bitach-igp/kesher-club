@@ -298,7 +298,8 @@ export class LoadService implements LoadActivities {
 
   /** Loads the vendor has not finished: submitted longer than `olderThanMs` ago. The worker asks the vendor about them. */
   async stale(now: Date, olderThanMs: number, limit = 100): Promise<Transfer[]> {
-    const r = await this.d.db.query<{ id: string }>(`select id from ops.transfer where kind = 'load' and state = 'submitted' and updated_at <= $1 order by updated_at limit $2`, [new Date(now.getTime() - olderThanMs), limit]);
+    // This market's loads only: another market's worker asks its own provider about its own (T-0028).
+    const r = await this.d.db.query<{ id: string }>(`select id from ops.transfer where kind = 'load' and state = 'submitted' and updated_at <= $1 and market = $3 order by updated_at limit $2`, [new Date(now.getTime() - olderThanMs), limit, this.d.transfers.market]);
     const out: Transfer[] = [];
     for (const row of r.rows) {
       const t = await this.d.transfers.get(row.id);

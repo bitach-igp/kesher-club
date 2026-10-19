@@ -13,10 +13,10 @@ let poller: EsimUsagePoller;
 let clock: AdvanceableClock;
 const member = uuidv7();
 
-async function fulfilledOrder(): Promise<{ orderId: string; iccid: string }> {
+async function fulfilledOrder(market: 'IL' | 'US' = 'IL'): Promise<{ orderId: string; iccid: string }> {
   const o = await esim.order('IL-5GB-30D', `o-${uuidv7()}`);
   const orderId = uuidv7();
-  await db.query(`insert into addons.addon_order (id, idempotency_key, member_party_id, sku, kind, provider, state, cost_minor, price_minor, list_price_minor, currency, fulfilment, market) values ($1, $2, $3, 'esim:simulator:IL-5GB-30D', 'esim', 'simulator', 'fulfilled', 950, 1199, 1199, 'USD', $4, 'IL')`, [orderId, `k-${orderId}`, member, JSON.stringify({ iccid: o.iccid, installUrl: o.installUrl })]);
+  await db.query(`insert into addons.addon_order (id, idempotency_key, member_party_id, sku, kind, provider, state, cost_minor, price_minor, list_price_minor, currency, fulfilment, market) values ($1, $2, $3, 'esim:simulator:IL-5GB-30D', 'esim', 'simulator', 'fulfilled', 950, 1199, 1199, 'USD', $4, $5)`, [orderId, `k-${orderId}`, member, JSON.stringify({ iccid: o.iccid, installUrl: o.installUrl }), market]);
   return { orderId, iccid: o.iccid };
 }
 
@@ -25,7 +25,7 @@ beforeAll(async () => {
   clock = fixedClock('2026-11-01T09:00:00Z') as AdvanceableClock;
   esim = new EsimSimulator(() => clock.now());
   notify = new NotifySimulator();
-  poller = new EsimUsagePoller(db, () => esim, notify, async (p) => (p === member ? 'ExponentPushToken[member]' : undefined));
+  poller = new EsimUsagePoller(db, () => esim, notify, async (p) => (p === member ? 'ExponentPushToken[member]' : undefined), 'IL');
   await db.query(`insert into addons.catalogue_item (sku, kind, provider, vendor_sku, title, cost_minor, price_minor, currency, synced_at) values ('esim:simulator:IL-5GB-30D', 'esim', 'simulator', 'IL-5GB-30D', 'IL 5 GB', 950, 1199, 'USD', now())`);
 }, 60_000);
 afterAll(async () => db.close());
@@ -67,10 +67,22 @@ describe('eSIM usage polling (REQ-ESIM-003)', () => {
   });
 
   it('a provider error is counted and never notifies the member', async () => {
-    const broken = new EsimUsagePoller(db, () => ({ ...esim, getUsage: async () => { throw new Error('vendor 503'); } }) as unknown as EsimSimulator, notify, async () => 'ExponentPushToken[member]');
+    const broken = new EsimUsagePoller(db, () => ({ ...esim, getUsage: async () => { throw new Error('vendor 503'); } }) as unknown as EsimSimulator, notify, async () => 'ExponentPushToken[member]', 'IL');
     const before = notify.sent.length;
     const r = await broken.poll(new Date('2026-11-01T09:00:00Z'));
     expect(r.errors).toBeGreaterThan(0);
     expect(notify.sent.length).toBe(before);
+  });
+
+  it('each market polls only its own orders, through its own provider (T-0028)', async () => {
+    const at = new Date('2026-11-01T09:00:00Z');
+    const ilBefore = (await poller.poll(at)).polled;
+    await fulfilledOrder('US');
+    expect((await poller.poll(at)).polled).toBe(ilBefore);
+    const asked: string[] = [];
+    const usEsim = { getUsage: async (iccid: string) => (asked.push(iccid), esim.getUsage(iccid)) } as unknown as EsimSimulator;
+    const us = await new EsimUsagePoller(db, () => usEsim, notify, async () => undefined, 'US').poll(at);
+    expect(us.polled).toBe(1);
+    expect(asked).toHaveLength(1);
   });
 });

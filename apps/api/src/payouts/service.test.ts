@@ -4,7 +4,7 @@
 // awaiting_second_approval; a settled webhook settles once; a failed webhook reverses the journal once
 // and queues a push to the payer.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { money } from '@kesher/domain';
+import { money, uuidv7 } from '@kesher/domain';
 import { fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type NotifySimulator, type PayoutSimulator } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
@@ -14,6 +14,12 @@ import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { runLoad } from '../wallet/loads.ts';
 import { COOL_OFF_MS, runPayout, settleKey, type PayoutView } from './service.ts';
+
+const seedTransfer = (db: { query: (t: string, p?: readonly unknown[]) => Promise<unknown> }, f: { id: string; kind: string; state: string; market: string; at: Date }) =>
+  db.query(
+    `insert into ops.transfer (id, idempotency_key, kind, to_party_id, amount_minor, currency, state, hold_releases_at, market, created_at, updated_at) values ($1, $2, $3, $4, 100, 'USD', $5, $6, $7, $6, $6)`,
+    [f.id, `seed-${f.id}`, f.kind, f.id, f.state, f.at, f.market],
+  );
 
 let db: TestDatabase;
 let app: App;
@@ -183,4 +189,15 @@ describe('TST-PO-002: cooling off, approval, settlement and reversal', () => {
     const off = createApp({ db, registry: host.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => now, identity: app.services.identity, flags: new StaticFlags(undefined, { 'wallet.enabled': true }) });
     await expect(off.services.payouts.request(member, {}, 'po-off-1', now)).rejects.toMatchObject({ code: 'FEATURE_OFF' });
   });
+
+  it('the payout sweep resumes only this market\'s payouts, on this market\'s rail (T-0028)', async () => {
+    const past = new Date(now.getTime() - 60_000);
+    const [il, us] = [uuidv7(), uuidv7()];
+    await seedTransfer(db, { id: il, kind: 'payout', state: 'pending_hold', market: 'IL', at: past });
+    await seedTransfer(db, { id: us, kind: 'payout', state: 'pending_hold', market: 'US', at: past });
+    const resumable = (await app.services.payouts.resumable(now, 1000)).map((t) => t.id);
+    expect(resumable).toContain(il);
+    expect(resumable).not.toContain(us);
+  });
+
 });

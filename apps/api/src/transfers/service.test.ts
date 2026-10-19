@@ -8,6 +8,12 @@ import { OutboxPublisher, type OutboxMessage } from './outbox.ts';
 import { TransferService } from './service.ts';
 import { canTransition, next, TERMINAL_STATES, type TransferEvent, type TransferState } from './state-machine.ts';
 
+const seedTransfer = (db: { query: (t: string, p?: readonly unknown[]) => Promise<unknown> }, f: { id: string; kind: string; state: string; market: string; at: Date }) =>
+  db.query(
+    `insert into ops.transfer (id, idempotency_key, kind, to_party_id, amount_minor, currency, state, hold_releases_at, market, created_at, updated_at) values ($1, $2, $3, $4, 100, 'USD', $5, $6, $7, $6, $6)`,
+    [f.id, `seed-${f.id}`, f.kind, f.id, f.state, f.at, f.market],
+  );
+
 let db: TestDatabase;
 let transfers: TransferService;
 const now = new Date('2026-11-01T10:00:00Z');
@@ -119,4 +125,17 @@ describe('TransferService', () => {
       expect((await svc.apply(t.id, 'submit', now)).state).toBe('submitted');
     });
   });
+
+  it('expired holds are this market\'s only: each market\'s worker releases its own (T-0028)', async () => {
+    const past = new Date(now.getTime() - 60_000);
+    const [il, us] = [uuidv7(), uuidv7()];
+    await seedTransfer(db, { id: il, kind: 'p2p', state: 'pending_hold', market: 'IL', at: past });
+    await seedTransfer(db, { id: us, kind: 'p2p', state: 'pending_hold', market: 'US', at: past });
+    const ilHolds = (await transfers.expiredHolds(now)).map((t) => t.id);
+    const usHolds = (await new TransferService(db, 'US').expiredHolds(now)).map((t) => t.id);
+    expect(ilHolds).toContain(il);
+    expect(ilHolds).not.toContain(us);
+    expect(usHolds).toEqual([us]);
+  });
+
 });

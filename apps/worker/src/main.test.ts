@@ -77,7 +77,7 @@ describe('main (T-0022)', () => {
     const worker = await main(env, {
       log: (event, fields) => lines.push({ event, fields }),
       drainMs: 200,
-      buildJobs: () => [{ name: 'stuck', everyMs: 60_000, run: () => new Promise(() => undefined) }],
+      buildJobs: () => [{ name: 'stuck', scope: 'market', everyMs: 60_000, run: () => new Promise(() => undefined) }],
     });
     await new Promise((r) => setTimeout(r, 50));
     const started = Date.now();

@@ -82,6 +82,13 @@ describe('buildJobs (T-0022)', () => {
     expect(NIGHTLY).toEqual({ 'balance-proof': '02:30', 'catalogue-sync': '03:00' });
   });
 
+  it('gives every job a scope: market jobs sweep their own market\'s rows, club jobs run one at a time in the club (T-0028)', () => {
+    const byScope = (scope: string) => jobs.filter((j) => j.scope === scope).map((j) => j.name).sort();
+    expect(byScope('market')).toEqual(['ach-release-holds', 'auto-reload', 'card-token-events', 'catalogue-sync', 'esim-usage', 'load-sweep', 'p2p-release-holds', 'payout-sweep', 'webhook-replay']);
+    expect(byScope('club')).toEqual(['agent-expire-intents', 'balance-proof', 'fx-refresh-rates', 'fx-void-stale', 'monitoring', 'p2p-expire-requests', 'send-sweep']);
+    expect(jobs.every((j) => j.scope === 'market' || j.scope === 'club')).toBe(true);
+  });
+
   it('runs one cycle of every job against a fresh schema without an error', async () => {
     const failed: string[] = [];
     for (const j of jobs) {
@@ -95,9 +102,10 @@ describe('buildJobs (T-0022)', () => {
 
   it('records each nightly run in ops.job_run for its Israel day, so a second tick that day does nothing', async () => {
     const r = await db.query<{ job: string; run_date: string }>(`select job, to_char(run_date, 'YYYY-MM-DD') as run_date from ops.job_run order by job`);
+    // The balance proof is the club's; the catalogue sync is this market's, so its run is keyed by market.
     expect(r.rows).toEqual([
+      { job: 'IL:catalogue-sync', run_date: '2026-10-19' },
       { job: 'balance-proof', run_date: '2026-10-19' },
-      { job: 'catalogue-sync', run_date: '2026-10-19' },
     ]);
     const proof = jobs.find((j) => j.name === 'balance-proof')!;
     expect(typeof (await proof.run())).toBe('symbol'); // IDLE: already ran today

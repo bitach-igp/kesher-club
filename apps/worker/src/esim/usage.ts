@@ -2,7 +2,7 @@
 // trigger one notification each per eSIM, through the NotifyPort with the member's push token.
 // Given usage 81%, one push. Polling is per fulfilled order; each threshold fires once.
 import { uuidv7 } from '@kesher/domain';
-import type { EsimPort, NotifyPort } from '@kesher/ports';
+import type { EsimPort, Market, NotifyPort } from '@kesher/ports';
 import type { Database } from '@kesher/api/db';
 
 export const LOW_DATA_THRESHOLD_PCT = 20;
@@ -24,22 +24,26 @@ export class EsimUsagePoller {
   private readonly esim: (provider: string) => EsimPort;
   private readonly notify: NotifyPort;
   private readonly pushToken: PushTokenLookup;
+  /** Only this market's orders: another market's worker asks its own provider about its own (T-0028). */
+  private readonly market: Market;
   constructor(
     db: Database,
     esim: (provider: string) => EsimPort,
     notify: NotifyPort,
     pushToken: PushTokenLookup,
+    market: Market,
   ) {
     this.db = db;
     this.esim = esim;
     this.notify = notify;
     this.pushToken = pushToken;
+    this.market = market;
   }
 
   async poll(now: Date): Promise<UsagePollReport> {
     const orders = await this.db.query<{ id: string; member_party_id: string; provider: string; fulfilment: { iccid: string; expiresAt?: string } }>(
-      `select id, member_party_id, provider, fulfilment from addons.addon_order where kind = 'esim' and state = 'fulfilled' and fulfilment ? 'iccid' and (fulfilment->>'expiresAt' is null or (fulfilment->>'expiresAt')::timestamptz > $1)`,
-      [new Date(now.getTime() - 86_400_000)],
+      `select id, member_party_id, provider, fulfilment from addons.addon_order where kind = 'esim' and state = 'fulfilled' and fulfilment ? 'iccid' and (fulfilment->>'expiresAt' is null or (fulfilment->>'expiresAt')::timestamptz > $1) and market = $2`,
+      [new Date(now.getTime() - 86_400_000), this.market],
     );
     const report: UsagePollReport = { polled: 0, lowData: 0, expiring: 0, errors: 0 };
     for (const o of orders.rows) {

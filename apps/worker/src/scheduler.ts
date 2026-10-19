@@ -7,17 +7,26 @@
 // runs finish and schedules nothing more. The job bodies are the same ones Temporal will host. Nightly
 // jobs ride the same loop through `daily()` below.
 
+/**
+ * Who may run a job at once (T-0028). A `market` job sweeps rows that carry its worker's market and
+ * calls that market's providers, so each market's worker runs its own, side by side. A `club` job's
+ * work is not split by market (the club rate, monitoring, the balance proof, tables with no market),
+ * so one lock spans the club and two workers never run it at the same time.
+ */
+export type JobScope = 'market' | 'club';
+
 export interface Job {
   /** Stable name: the lock key and the log label. */
   name: string;
+  scope: JobScope;
   /** Time from the end of one run to the start of the next. */
   everyMs: number;
   run(): Promise<unknown>;
 }
 
 export interface JobLock {
-  /** Runs `fn` while holding the lock named `name`; resolves `{ ran: false }` without running it when another holder has it. */
-  withLock<T>(name: string, fn: () => Promise<T>): Promise<{ ran: true; value: T } | { ran: false }>;
+  /** Runs `fn` while holding the job's lock; resolves `{ ran: false }` without running it when another holder has it. */
+  withLock<T>(job: Pick<Job, 'name' | 'scope'>, fn: () => Promise<T>): Promise<{ ran: true; value: T } | { ran: false }>;
 }
 
 export type Log = (event: string, fields: Record<string, string | number | boolean>) => void;
@@ -77,7 +86,7 @@ export class Scheduler {
   private async runOnce(job: Job): Promise<void> {
     const started = Date.now();
     try {
-      const outcome = await this.lock.withLock(job.name, () => job.run());
+      const outcome = await this.lock.withLock(job, () => job.run());
       // A daily job's tick before its time, or after today's run, is not news.
       if (!(outcome.ran && outcome.value === IDLE)) this.log(outcome.ran ? 'job_ran' : 'job_skipped', { job: job.name, ms: Date.now() - started });
     } catch (e) {
@@ -107,6 +116,7 @@ export interface RunLog {
 
 export interface DailyJob {
   name: string;
+  scope: JobScope;
   /** Israel wall-clock time, `HH:MM`. */
   at: string;
   run(now: Date): Promise<unknown>;
@@ -124,6 +134,7 @@ export function daily(job: DailyJob, runs: RunLog, clock: () => Date): Job {
   if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(job.at)) throw new Error(`Job ${job.name} needs an HH:MM time, not ${job.at}`);
   return {
     name: job.name,
+    scope: job.scope,
     everyMs: DAILY_TICK_MS,
     run: async () => {
       const started = clock();
@@ -137,4 +148,4 @@ export function daily(job: DailyJob, runs: RunLog, clock: () => Date): Job {
 }
 
 /** A lock that always grants: for a single worker and for tests. */
-export const noLock: JobLock = { withLock: async (_name, fn) => ({ ran: true, value: await fn() }) };
+export const noLock: JobLock = { withLock: async (_job, fn) => ({ ran: true, value: await fn() }) };
