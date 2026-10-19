@@ -134,8 +134,10 @@
 | [T-0917](T-0917.md) | ADM | The console ships as an image that turns healthy only when configured | REQ-AUTH-009 | 9 |
 | [T-0918](T-0918.md) | ADM | A misconfigured console stops at boot and says why | REQ-AUTH-009 | 9 |
 | [T-0919](T-0919.md) | ADM | Staff sign in to a local console through a simulator identity provider | REQ-AUTH-009 | 10 |
-| [T-0920](T-0920.md) | CMP | Recorded walkthroughs of REC-01 to REC-09 on the running product | — | 10 |
-| [T-0921](T-0921.md) | CMP | Recorded walkthroughs of REC-10 to REC-18; the package points at them | — | 10 |
+| [T-0920](T-0920.md) | CMP | Recorded walkthroughs of REC-01 to REC-05, and the recording harness | — | 10 |
+| [T-0921](T-0921.md) | CMP | Recorded walkthroughs of REC-06 to REC-09 | — | 10 |
+| [T-0922](T-0922.md) | CMP | Recorded walkthroughs of REC-10 to REC-14 | — | 10 |
+| [T-0923](T-0923.md) | CMP | Recorded walkthroughs of REC-15 to REC-18; the package links all eighteen | — | 10 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |
