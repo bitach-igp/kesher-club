@@ -885,17 +885,26 @@ paths:
     post:
       operationId: approveIntent
       summary: Approve an agent's pending intent with a passkey step-up
-      description: REQ-AGT-006. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent.
+      description: >-
+        REQ-AGT-006. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent: the money
+        runs under the key `intent:{id}`, the same path as POST /transfers or POST /loads, so a refusal leaves
+        the intent pending and a second approval replays the first. A load intent names no funding method,
+        so its approval carries one (T-1009); a second approval reuses the first approval's choice.
       parameters:
         - { $ref: "#/components/parameters/Id" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
         - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IntentApprovalRequest" }
       responses:
         "200":
-          description: Intent
+          description: Intent, with the load it started when it is a load intent
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/PendingIntent" }
+              schema: { $ref: "#/components/schemas/ApprovedIntent" }
         default: { $ref: "#/components/responses/Problem" }
   /hooks/{provider}:
     post:
@@ -2233,6 +2242,19 @@ components:
         scopes: { type: array, items: { type: string } }
         createdAt: { type: string, format: date-time }
         lastUsedAt: { type: string, format: date-time }
+    IntentApprovalRequest:
+      type: object
+      description: How an approved load intent is paid; required for load intents, ignored for the others.
+      properties:
+        method: { type: string, enum: [card, apple_pay, google_pay, ach] }
+        paymentMethodId: { type: string, maxLength: 128 }
+        purseCurrency: { type: string, enum: [USD, ILS], description: The purse credited; the amount's currency when absent. A different currency converts at the club rate }
+    ApprovedIntent:
+      allOf:
+        - { $ref: "#/components/schemas/PendingIntent" }
+        - type: object
+          properties:
+            load: { $ref: "#/components/schemas/Load", description: The load the approval started; load intents only }
     PendingIntent:
       type: object
       required: [id, kind, status, expiresAt]
