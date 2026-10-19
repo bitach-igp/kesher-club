@@ -448,38 +448,47 @@ approval reserves the money.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-01 | REQ-CRD-003, REQ-CRD-004, REQ-CRD-005, REQ-CRD-008 | cards are issued only while `card.virtual` is on (`apps/api/src/cards/service.ts:14`); agent purchases also need `card.agentic` (`apps/api/src/cards/jit.ts:24`) | REC-12 card authorisation |
+| SEQ-01 | REQ-CRD-003, REQ-CRD-004, REQ-CRD-005, REQ-CRD-008 | cards are issued only while `card.virtual` is on (`apps/api/src/cards/service.ts:14`); agent purchases also need `card.agentic` (`apps/api/src/cards/jit.ts:31`) | REC-12 card authorisation |
 
-- The processor's request is signature-checked by the card port (`apps/api/src/cards/jit.ts:66-76`).
+- The processor's request is signature-checked by the card port (`apps/api/src/cards/jit.ts:82-92`).
 - Checks, cheapest refusal first: card and token status, controls (channel, merchant category,
   country, agent mode), daily and monthly limits, purse balance, velocity, plan card cap
-  (`apps/api/src/cards/jit.ts:113-177`).
-- Velocity: the 11th approval on one card within a minute is declined (`apps/api/src/cards/jit.ts:22`, `:164-168`).
-- Fail closed: any error, or no answer within 250 ms, is a decline (`apps/api/src/cards/jit.ts:26`, `:78-92`).
-- A repeat of the same authorisation id answers the same and holds nothing more (`apps/api/src/cards/jit.ts:113`).
+  (`apps/api/src/cards/jit.ts:132-194`).
+- Velocity: the 11th approval on one card within a minute is declined (`apps/api/src/cards/jit.ts:29`, `:181-185`).
+- Fail closed: any error, or no answer within 250 ms, is a decline (`apps/api/src/cards/jit.ts:33`, `:94-108`).
+- A repeat of the same authorisation id answers the same and holds nothing more (`apps/api/src/cards/jit.ts:132`).
+- Which purse pays (ADR-007, ADR-014 decision 10): the shekel purse first for a merchant in Israel, the
+  authorisation's own currency elsewhere, then the other purse. One purse pays the whole amount. A purse in
+  the other currency pays the amount at the club rate plus the member's plan markup; without a valid club
+  rate that purse is skipped (`apps/api/src/cards/jit.ts:226-260`).
 
 | Journal kind | Key | Dr | Cr | Currency |
 |---|---|---|---|---|
 | `auth_hold` | `jit:{authorisation id}` | member `wallet` | member `pending` | the authorisation currency |
+| `auth_hold`, converted | `jit:{authorisation id}` | member `wallet` (paying purse), gross plus markup | `fx_position` gross, `fee_income` markup | the paying purse's currency |
+| | | `fx_position` | member `pending` | the authorisation currency |
 
-Source: `apps/api/src/cards/jit.ts:27`, `:179-188`.
+A converted hold records `fx_rate_id`, `fx_rate_version`, `fx_markup_bps`, the rate, `paidFrom` and
+`markup` in its metadata.
+
+Source: `apps/api/src/cards/jit.ts:34`, `:196-220`, `:262-283`.
 
 Tests: TST-CRD-003 (`apps/api/src/cards/jit.test.ts:56-175`; `apps/api/src/cards/jit.bench.test.ts`),
-TST-CRD-004 (`apps/api/src/cards/jit.test.ts:182-191`), TST-CRD-008 (`apps/api/src/cards/jit.test.ts:202-257`).
+TST-CRD-004 (`apps/api/src/cards/jit.test.ts:182-191`), TST-CRD-008 (`apps/api/src/cards/jit.test.ts:202-257`). Purse
+choice: `apps/api/src/cards/jit.test.ts:289-366`.
 
 Gap found: settlement is not in the code. SEQ-01 ends with "transaction.cleared, settle hold, journal". No
 code handles the processor's clearing, moves the hold out of `pending`, or releases a hold that never
-clears (no `auth_hold` consumer besides `apps/api/src/cards/jit.ts:165`, `:198`). This waits on the
+clears (no `auth_hold` consumer besides `apps/api/src/cards/jit.ts:198`, `:289`). This waits on the
 processor choice (ADR-006); the engineering lead writes the card.
 
 Decided (ADR-014, decision 9): built against the simulator before `card.virtual` turns on, with a 7-day release for holds that never clear. Card T-0410.
 
 Gap found: SEQ-01 and ADR-007 say an ILS card authorisation draws on the ILS purse, converted at the club
-rate if needed (`docs/adr/ADR-007.md:35-38`). The code holds only in the purse of the authorisation's
-own currency, with no conversion (`apps/api/src/cards/jit.ts:144-161`). The founder decides with the
-processor.
+rate if needed (`docs/adr/ADR-007.md:35-38`). The code held only in the purse of the authorisation's
+own currency, with no conversion. The founder decides with the processor.
 
-Decided (ADR-014, decision 10): the shekel purse pays first for a merchant in Israel; a short purse is covered by the other, converted at the club rate with the plan markup. Card T-0409.
+Decided (ADR-014, decision 10): the shekel purse pays first for a merchant in Israel; a short purse is covered by the other, converted at the club rate with the plan markup. Built in T-0409 (`apps/api/src/cards/jit.ts:226-260`).
 
 ## 13. Payout to an Israeli bank account
 
@@ -545,7 +554,7 @@ Tests: TST-INS-003 (`apps/worker/src/allowance/workflow.test.ts:51`, `:59`, `:85
 (`apps/worker/src/allowance/workflow.test.ts:73`; `apps/api/src/approvals/service.test.ts:35`, `:47`).
 
 Gap found: the endpoint `POST /institutions/{id}/allowance-runs` has no handler and answers FEATURE_OFF
-(`apps/api/src/routes.ts:61`; `apps/api/src/app.ts:213`, `:225-227`). The run exists only as the worker
+(`apps/api/src/routes.ts:61`; `apps/api/src/app.ts:214`, `:225-227`). The run exists only as the worker
 body, and the worker has no running entry yet (`apps/worker/src/index.ts:1-2`). The engineering lead
 schedules the card.
 
@@ -602,7 +611,7 @@ A member buys an add-on from the club catalogue with their purse.
 | SEQ-10 | REQ-MKT-001, REQ-ESIM-002, REQ-INSR-001 | none in the order path (see Open) | REC-16 add-on purchase |
 
 - The order is keyed by the member's Idempotency-Key (`apps/api/src/addons/orders.ts:93-114`;
-  `apps/api/src/app.ts:182-188`).
+  `apps/api/src/app.ts:183-189`).
 - Insurance is refused unless the member acknowledged the disclosures (`apps/api/src/addons/orders.ts:98`).
 - A fulfilment failure after the charge reverses the charge and restores any data credit
   (`apps/api/src/addons/orders.ts:156-164`).
@@ -619,7 +628,7 @@ posts `addon_payable` $20.00 (2,000 cents) and `fee_income` $5.00 (500 cents)
 Tests: TST-MKT-001 (`apps/api/src/addons/orders.test.ts:75`), TST-ESIM-002 (`apps/api/src/addons/orders.test.ts:89`),
 the SEQ-10 compensation (`apps/api/src/addons/orders.test.ts:108`), REQ-INSR-001 (`apps/api/src/addons/orders.test.ts:125`).
 
-Open: the order endpoint checks no flag (`apps/api/src/app.ts:182-188`), although `esim.airalo` and
+Open: the order endpoint checks no flag (`apps/api/src/app.ts:183-189`), although `esim.airalo` and
 `insurance.coverGenius` exist and are off (`config/flags.json:45`, `:59`). Orders also create no
 `ops.transfer` row (`apps/api/src/addons/orders.ts:106`), so the monitoring job does not see them. The
 engineering lead decides both.

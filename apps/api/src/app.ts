@@ -114,7 +114,11 @@ function buildServices(o: AppOptions) {
   const kyc = new KycService(o.db, o.registry.resolve<KycPort>('kyc', o.market), o.market, o.registry.bindingFor('kyc', o.market)?.provider ?? 'issuer-kyc');
   const cardIssuing = o.registry.resolve<CardIssuingPort>('card-issuing', o.market);
   const cards = new CardService(o.db, cardIssuing, kyc, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
-  const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans, flags, intents });
+  // Club rates (REQ-FX-003) price every conversion: a card purchase the other purse pays (T-0409), a load into
+  // the other purse (REQ-WAL-006), a converted send (REQ-PAY-006) and the convert screen.
+  const rates = new RateService(o.db, approvals, audit);
+  const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
+  const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans, flags, intents, fx: { rates, markups: fx } });
   const provisioning = new ProvisioningService(o.db, cards, detailsTokenProvisioning(cardIssuing), flags);
   const physical = new PhysicalCardService(o.db, cardIssuing, kyc, cards, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
   // The processor's token lifecycle events land on /hooks/card-issuing and are applied at receipt; the
@@ -132,9 +136,6 @@ function buildServices(o: AppOptions) {
   });
   // Loads (REQ-WAL-002): the vendor's payment events land on /hooks/funding; the port verifies and parses,
   // the service settles or fails the transfer once, whatever the webhook count (SEQ-02).
-  // Club rates (REQ-FX-003): a load into the other purse (REQ-WAL-006) and a converted send price at them.
-  const rates = new RateService(o.db, approvals, audit);
-  const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
   const loads = new LoadService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, memberships, flags, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', rates, markups: fx });
   webhooks.bind(FUNDING_PROVIDER, { verifier: loads.webhookVerifier(), process: (e) => loads.applyWebhook(e, clock.now()).then(() => undefined) });
   const autoReload = new AutoReloadService(o.db, accounts, loads, flags);
