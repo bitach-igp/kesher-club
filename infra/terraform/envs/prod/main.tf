@@ -21,7 +21,7 @@ locals {
     vpn      = "vpn.${var.domain}"
   }
 
-  database_url = "postgres://club_app@${module.rds.address}:${module.rds.port}/${module.rds.database_name}?sslmode=require"
+  database_url = "postgres://club_app@${module.rds.address}:${module.rds.port}/${module.rds.database_name}?sslmode=verify-full&sslrootcert=/app/db/certs/rds-global-bundle.pem"
 
   common_env = {
     NODE_ENV              = "production"
@@ -31,6 +31,9 @@ locals {
     TEMPORAL_ADDRESS      = var.temporal_address
     TEMPORAL_NAMESPACE    = var.temporal_namespace
     AWS_REGION            = var.region
+    TOKEN_ISSUER          = "https://${local.hosts.api}"
+    JWT_SIGNING_KID       = "kesher-${local.env}-1"
+    PORT                  = "3000"
   }
 
   common_secrets = {
@@ -38,6 +41,9 @@ locals {
     TEMPORAL_CLIENT_CERT = module.secrets.arns["temporal-client-cert"]
     TEMPORAL_CLIENT_KEY  = module.secrets.arns["temporal-client-key"]
     JWT_SIGNING_KEY      = module.secrets.arns["jwt-signing-key"]
+    PII_DATA_KEY         = module.secrets.arns["pii-data-key"]
+    PII_INDEX_KEY        = module.secrets.arns["pii-index-key"]
+    STAFF_JWKS           = module.secrets.arns["staff-jwks"]
   }
 }
 
@@ -201,6 +207,9 @@ module "secrets" {
     "stripe-api-key",
     "stripe-webhook-secret",
     "provider-webhook-secrets",
+    "pii-data-key",
+    "pii-index-key",
+    "staff-jwks",
   ]
 }
 
@@ -285,6 +294,7 @@ module "api" {
     alb_security_group_id = module.alb.security_group_id
     host_headers          = [local.hosts.api]
     priority              = 10
+    health_check_path     = "/v1/status"
   }
 }
 

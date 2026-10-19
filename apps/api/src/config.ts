@@ -1,7 +1,8 @@
 // Process configuration for the API and the worker (T-0020, constitution art. 6). Both build their
 // services through createApp, so they share one shape; the API adds its port. The base shape from
-// @kesher/domain brings NODE_ENV, DATABASE_URL, TEMPORAL_ADDRESS and PROVIDER_MODE_DEFAULT, and already
-// refuses simulators in production. Only `sim` is accepted for now: no vendor adapter is wired into the
+// @kesher/domain brings APP_ENV, DATABASE_URL, TEMPORAL_ADDRESS and PROVIDER_MODE_DEFAULT, and already
+// refuses simulators in prod. Key names are the ones Terraform passes (T-0025); the database password
+// may arrive separately as PGPASSWORD, which node-postgres reads when DATABASE_URL carries none. Only `sim` is accepted for now: no vendor adapter is wired into the
 // registry until ADR-006 names a processor, so `sandbox` and `live` would boot on nothing.
 // `loadConfig` throws ConfigError naming every missing or invalid key; secrets never print.
 import { defineConfig, loadConfig, secret, type Config, type Secret } from '@kesher/domain';
@@ -30,7 +31,7 @@ const key32 = () =>
 const shared = {
   /** The member token key: a private ES256 JWK as JSON, from Secrets Manager. Checked here, because a
    *  JSON.parse error quotes its input and would carry the key into a boot log. */
-  TOKEN_SIGNING_JWK: secret().refine((k) => {
+  JWT_SIGNING_KEY: secret().refine((k) => {
     try {
       const jwk = JSON.parse(k.reveal()) as Record<string, unknown>;
       return jwk['kty'] === 'EC' && jwk['crv'] === 'P-256' && ['x', 'y', 'd'].every((f) => typeof jwk[f] === 'string');
@@ -38,7 +39,7 @@ const shared = {
       return false;
     }
   }, 'must be a private ES256 JWK (kty EC, crv P-256, with x, y and d)'),
-  TOKEN_SIGNING_KID: z.string().min(1),
+  JWT_SIGNING_KID: z.string().min(1),
   TOKEN_ISSUER: z.string().url(),
   MARKET: z.enum(['US', 'IL']),
   /** Public JWKS of the admin console's staff-token key (ADR-013). Public, so not a secret. */

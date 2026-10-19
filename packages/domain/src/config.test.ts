@@ -5,7 +5,7 @@ import { ConfigError, baseConfigSchema, defineConfig, loadConfig, secret } from 
 import { z } from 'zod';
 
 const valid = {
-  NODE_ENV: 'development',
+  APP_ENV: 'development',
   DATABASE_URL: 'postgres://club_app:pw@localhost:5432/club',
   TEMPORAL_ADDRESS: 'localhost:7233',
   PROVIDER_MODE_DEFAULT: 'sim',
@@ -14,14 +14,14 @@ const valid = {
 describe('config loader', () => {
   it('loads a valid environment', () => {
     const cfg = loadConfig(baseConfigSchema, valid);
-    expect(cfg.NODE_ENV).toBe('development');
+    expect(cfg.APP_ENV).toBe('development');
     expect(cfg.PROVIDER_MODE_DEFAULT).toBe('sim');
   });
 
   it('crashes on boot listing every missing variable, not just the first', () => {
-    expect(() => loadConfig(baseConfigSchema, { NODE_ENV: 'development' })).toThrow(ConfigError);
+    expect(() => loadConfig(baseConfigSchema, { APP_ENV: 'development' })).toThrow(ConfigError);
     try {
-      loadConfig(baseConfigSchema, { NODE_ENV: 'development' });
+      loadConfig(baseConfigSchema, { APP_ENV: 'development' });
     } catch (e) {
       const err = e as ConfigError;
       expect(err.missing).toEqual(['DATABASE_URL', 'TEMPORAL_ADDRESS', 'PROVIDER_MODE_DEFAULT']);
@@ -34,9 +34,16 @@ describe('config loader', () => {
     expect(() => loadConfig(baseConfigSchema, { ...valid, DATABASE_URL: '' })).toThrow(/DATABASE_URL/);
   });
 
-  it('refuses simulator mode in production (fail secure)', () => {
-    expect(() => loadConfig(baseConfigSchema, { ...valid, NODE_ENV: 'production' })).toThrow(/PROVIDER_MODE_DEFAULT/);
-    expect(loadConfig(baseConfigSchema, { ...valid, NODE_ENV: 'production', PROVIDER_MODE_DEFAULT: 'live' }).PROVIDER_MODE_DEFAULT).toBe('live');
+  it('refuses simulator mode in prod (fail secure)', () => {
+    expect(() => loadConfig(baseConfigSchema, { ...valid, APP_ENV: 'prod' })).toThrow(/PROVIDER_MODE_DEFAULT/);
+    expect(loadConfig(baseConfigSchema, { ...valid, APP_ENV: 'prod', PROVIDER_MODE_DEFAULT: 'live' }).PROVIDER_MODE_DEFAULT).toBe('live');
+  });
+
+  it('names the environment in APP_ENV, as Terraform passes it, and ignores NODE_ENV (T-0025)', () => {
+    // Every container runs with NODE_ENV=production; that must not make a preview count as prod.
+    expect(loadConfig(baseConfigSchema, { ...valid, APP_ENV: 'preview', NODE_ENV: 'production' }).APP_ENV).toBe('preview');
+    expect(() => loadConfig(baseConfigSchema, { ...valid, APP_ENV: 'production' })).toThrow(/APP_ENV/);
+    expect(() => loadConfig(baseConfigSchema, { DATABASE_URL: valid.DATABASE_URL, TEMPORAL_ADDRESS: valid.TEMPORAL_ADDRESS, PROVIDER_MODE_DEFAULT: 'sim', NODE_ENV: 'development' })).toThrow(/APP_ENV/);
   });
 
   it('secrets have no default and are redacted when the config is printed or serialised', () => {
