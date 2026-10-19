@@ -6,6 +6,7 @@ import path from 'node:path';
 import { ok, requirePrincipal, route, type Handler } from '../http.ts';
 import type { EntitlementService } from './entitlements.ts';
 import type { MembershipService } from './memberships.ts';
+import { fileURLToPath } from 'node:url';
 
 export interface FeatureFlags {
   isOn(key: string, context?: { partyId?: string }): boolean | Promise<boolean>;
@@ -34,7 +35,7 @@ export class StaticFlags implements FeatureFlags {
   }
 }
 
-export function loadRegistry(file = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../../../config/flags.json')): FlagRow[] {
+export function loadRegistry(file = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../config/flags.json')): FlagRow[] {
   return JSON.parse(fs.readFileSync(file, 'utf8')) as FlagRow[];
 }
 

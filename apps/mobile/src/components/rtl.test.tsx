@@ -12,8 +12,9 @@ import { ListRow } from './ListRow.tsx';
 import { OtpInput } from './OtpInput.tsx';
 import { TextField } from './TextField.tsx';
 import { MAX_FONT_SCALE, scaledLineHeight, Txt } from './Txt.tsx';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name)) : e.name.endsWith('.tsx') && !e.name.includes('.test.') ? [path.join(dir, e.name)] : []));
 const SOURCES = [...walk(path.join(ROOT, 'src/components')), ...walk(path.join(ROOT, 'app'))].map((file) => ({ file: path.relative(ROOT, file), text: fs.readFileSync(file, 'utf8') }));
 

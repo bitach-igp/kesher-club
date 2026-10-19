@@ -2,8 +2,9 @@
 // The REQ catalogue is the union of REQ ids in specs/requirements.md.
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const reqFile = path.join(root, 'specs/requirements.md');
 const known = new Set((fs.readFileSync(reqFile, 'utf8').match(/REQ-[A-Z]+-\d{3}/g) ?? []));
 

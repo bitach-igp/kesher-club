@@ -5,11 +5,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { lintDirectory, lintFile, R4_WAIVERS, rules, SQUAWK, squawkArgs, waiverKey } from './lint.mjs';
+import { fileURLToPath } from 'node:url';
 
 const ok = '-- T-0201 ledger core (REQ-LED-001, REQ-LED-002)\ncreate table ledger.x (id uuid primary key, at timestamptz not null, amount_minor bigint not null);\ngrant select, insert on all tables in schema ledger to club_app;\n';
 
 test('the committed ledger migration passes every rule', () => {
-  assert.deepEqual(lintDirectory(new URL('./migrations/ledger', import.meta.url).pathname), []);
+  assert.deepEqual(lintDirectory(fileURLToPath(new URL('./migrations/ledger', import.meta.url))), []);
 });
 
 test('R1 requires a task + REQ header', () => {
@@ -88,7 +89,7 @@ test('Squawk is pinned and every exclusion carries a reason', () => {
     assert.ok(reason.length > 20, `reason for ${rule}`);
   }
   for (const [p, reason] of SQUAWK.excludedPaths) {
-    assert.ok(fs.existsSync(path.join(path.dirname(new URL(import.meta.url).pathname), '..', p)), `${p} exists`);
+    assert.ok(fs.existsSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', p)), `${p} exists`);
     assert.ok(reason.length > 20, `reason for ${p}`);
   }
   const args = squawkArgs();
