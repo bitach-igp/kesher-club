@@ -24,14 +24,14 @@ const held = async (name: string, scope = 'IL'): Promise<number> =>
 describe('advisoryLock (T-0022)', () => {
   it('holds the lock for the length of the run and gives it back after', async () => {
     const lock = advisoryLock(db, 'IL');
-    const during = await lock.withLock('load-sweep', async () => [await held('load-sweep'), await held('load-sweep', 'US')]);
+    const during = await lock.withLock({ name: 'load-sweep', scope: 'market' }, async () => [await held('load-sweep'), await held('load-sweep', 'US')]);
     expect(during).toEqual({ ran: true, value: [1, 0] });
     expect(await held('load-sweep')).toBe(0);
   });
 
   it('gives the lock back when the run throws, and passes the error on', async () => {
     const lock = advisoryLock(db, 'IL');
-    await expect(lock.withLock('send-sweep', () => Promise.reject(new RangeError('boom')))).rejects.toThrow(RangeError);
+    await expect(lock.withLock({ name: 'send-sweep', scope: 'market' }, () => Promise.reject(new RangeError('boom')))).rejects.toThrow(RangeError);
     expect(await held('send-sweep')).toBe(0);
   });
 
@@ -44,7 +44,7 @@ describe('advisoryLock (T-0022)', () => {
       },
     };
     let called = false;
-    const out = await advisoryLock(taken, 'IL').withLock('payout-sweep', async () => (called = true));
+    const out = await advisoryLock(taken, 'IL').withLock({ name: 'payout-sweep', scope: 'market' }, async () => (called = true));
     expect(out).toEqual({ ran: false });
     expect(called).toBe(false);
     expect(sql).toEqual(['select pg_try_advisory_lock($1::bigint) as locked']);
@@ -59,7 +59,7 @@ describe('advisoryLock (T-0022)', () => {
         return { rows: [{ locked: true }] as R[], rowCount: 1 };
       },
     };
-    expect(await advisoryLock(dropping, 'IL').withLock('fx-void-stale', async () => 42)).toEqual({ ran: true, value: 42 });
+    expect(await advisoryLock(dropping, 'IL').withLock({ name: 'fx-void-stale', scope: 'market' }, async () => 42)).toEqual({ ran: true, value: 42 });
   });
 
   it('keys each job and each market apart, stably, in signed 64-bit range: the IL sweep never blocks the US one', () => {
@@ -69,5 +69,25 @@ describe('advisoryLock (T-0022)', () => {
     for (const n of ['a', 'load-sweep', 'esim-usage']) {
       expect(lockKey('US', n) >= -(2n ** 63n) && lockKey('US', n) < 2n ** 63n).toBe(true);
     }
+  });
+
+  it('a club job takes one lock across the club; a market job one per market (T-0028)', async () => {
+    const keys: string[] = [];
+    const recording: SqlClient = {
+      query: async <R>(text: string, params?: readonly unknown[]) => {
+        if (text.includes('pg_try_advisory_lock')) keys.push(String(params![0]));
+        return { rows: [{ locked: true }] as R[], rowCount: 1 };
+      },
+    };
+    for (const market of ['IL', 'US']) {
+      const lock = advisoryLock(recording, market);
+      await lock.withLock({ name: 'monitoring', scope: 'club' }, async () => undefined);
+      await lock.withLock({ name: 'load-sweep', scope: 'market' }, async () => undefined);
+    }
+    const [ilClub, ilMarket, usClub, usMarket] = keys;
+    expect(ilClub).toBe(usClub);
+    expect(ilClub).toBe(lockKey('club', 'monitoring').toString());
+    expect(ilMarket).not.toBe(usMarket);
+    expect(new Set(keys).size).toBe(3);
   });
 });

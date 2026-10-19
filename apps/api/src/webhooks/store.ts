@@ -26,7 +26,7 @@ interface Row {
 
 export class InboundEventStore {
   private readonly db: Database;
-  /** The market whose API this is: every row written carries it (T-0027). createApp always passes it. */
+  /** The market whose API this is: every row written carries it (T-0027), and the sweeps read only its rows (T-0028). */
   private readonly market: Market;
   constructor(db: Database, market: Market = 'IL') {
     this.db = db;
@@ -56,15 +56,15 @@ export class InboundEventStore {
   /** Verified events never processed or processed with an error, oldest first (the replay tool and the backlog alarm read this). */
   async pending(limit = 100, provider?: string): Promise<InboundEvent[]> {
     const r = await this.db.query<Row>(
-      `select * from ops.inbound_event where signature_ok and processed_at is null and ($1::text is null or provider = $1) order by received_at limit $2`,
-      [provider ?? null, limit],
+      `select * from ops.inbound_event where signature_ok and processed_at is null and ($1::text is null or provider = $1) and market = $3 order by received_at limit $2`,
+      [provider ?? null, limit, this.market],
     );
     return r.rows.map(toEvent);
   }
 
   /** Age of the oldest unprocessed verified event in ms (RUN-05 webhook backlog alert: over 5 minutes pages). */
   async lagMs(now: Date): Promise<number> {
-    const r = await this.db.query<{ oldest: string | Date | null }>('select min(received_at) as oldest from ops.inbound_event where signature_ok and processed_at is null');
+    const r = await this.db.query<{ oldest: string | Date | null }>('select min(received_at) as oldest from ops.inbound_event where signature_ok and processed_at is null and market = $1', [this.market]);
     const oldest = r.rows[0]?.oldest;
     return oldest ? now.getTime() - new Date(oldest).getTime() : 0;
   }

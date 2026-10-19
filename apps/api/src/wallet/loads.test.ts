@@ -16,6 +16,12 @@ import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { holdKey, loadState, LoadService, releaseKey, settleKey, type LoadView } from './loads.ts';
 
+const seedTransfer = (db: { query: (t: string, p?: readonly unknown[]) => Promise<unknown> }, f: { id: string; kind: string; state: string; market: string; at: Date }) =>
+  db.query(
+    `insert into ops.transfer (id, idempotency_key, kind, to_party_id, amount_minor, currency, state, hold_releases_at, market, created_at, updated_at) values ($1, $2, $3, $4, 100, 'USD', $5, $6, $7, $6, $6)`,
+    [f.id, `seed-${f.id}`, f.kind, f.id, f.state, f.at, f.market],
+  );
+
 let db: TestDatabase;
 let app: App;
 let host: SimulatorHost;
@@ -424,4 +430,15 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     expect(await purse('ILS', party)).toEqual({ available: 20_000n, holds: 0n });
     expect(await purse('USD', party)).toEqual({ available: 0n, holds: 0n });
   });
+
+  it('the stale-load sweep sees only this market\'s loads, so it asks only this market\'s provider (T-0028)', async () => {
+    const old = new Date(NOW.getTime() - 3_600_000);
+    const [us, il] = [uuidv7(), uuidv7()];
+    await seedTransfer(db, { id: us, kind: 'load', state: 'submitted', market: 'US', at: old });
+    await seedTransfer(db, { id: il, kind: 'load', state: 'submitted', market: 'IL', at: old });
+    const stale = (await app.services.loads.stale(NOW, 60_000, 1000)).map((t) => t.id);
+    expect(stale).toContain(us);
+    expect(stale).not.toContain(il);
+  });
+
 });

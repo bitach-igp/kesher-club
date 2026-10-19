@@ -339,8 +339,8 @@ export class PayoutService implements PayoutActivities {
       `select t.id from ops.transfer t where t.kind = 'payout' and (
           (t.state = 'pending_hold' and t.hold_releases_at <= $1)
           or (t.state in ('created', 'pending') and t.journal_id is null and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and a.status = 'approved'))
-       ) order by t.created_at limit $2`,
-      [now, limit],
+       ) and t.market = $3 order by t.created_at limit $2`,
+      [now, limit, this.d.transfers.market],
     );
     const out: Transfer[] = [];
     for (const row of r.rows) {

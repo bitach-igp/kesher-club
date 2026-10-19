@@ -13,6 +13,7 @@ function countingJob(name: string, everyMs: number, takesMs = 0): Job & { runs: 
   const runs: number[] = [];
   return {
     name,
+    scope: 'market',
     everyMs,
     runs,
     run: async () => {
@@ -50,6 +51,7 @@ describe('Scheduler', () => {
     const starts: number[] = [];
     const long: Job = {
       name: 'long',
+      scope: 'market',
       everyMs: 10_000,
       run: async () => {
         starts.push(Date.now());
@@ -83,6 +85,7 @@ describe('Scheduler', () => {
     let calls = 0;
     const flaky: Job = {
       name: 'flaky',
+      scope: 'market',
       everyMs: 30_000,
       run: async () => {
         calls += 1;
@@ -106,7 +109,7 @@ describe('Scheduler', () => {
   });
 
   it('logs a thrown non-Error by its type, without its value', async () => {
-    const odd: Job = { name: 'odd', everyMs: 1_000, run: () => Promise.reject('sk_live_abc') };
+    const odd: Job = { name: 'odd', scope: 'market', everyMs: 1_000, run: () => Promise.reject('sk_live_abc') };
     const { log, lines } = recorder();
     const s = new Scheduler([odd], noLock, log);
     s.start();
@@ -118,7 +121,7 @@ describe('Scheduler', () => {
   it('skips, and does not queue, a run whose lock another task holds', async () => {
     const held = new Set(['busy']);
     const lock: JobLock = {
-      withLock: async (name, fn) => (held.has(name) ? { ran: false } : { ran: true, value: await fn() }),
+      withLock: async (job, fn) => (held.has(job.name) ? { ran: false } : { ran: true, value: await fn() }),
     };
     const busy = countingJob('busy', 10_000);
     const { log, lines } = recorder();
@@ -186,6 +189,7 @@ const nightly = (at: string, body: (now: Date) => Promise<unknown> = async () =>
   const runs: string[] = [];
   return {
     name: 'balance-proof',
+    scope: 'club',
     at,
     runs,
     run: async (now) => {

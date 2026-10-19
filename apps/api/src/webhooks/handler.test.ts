@@ -130,4 +130,14 @@ describe('providerWebhook', () => {
     const err = await db.query(`insert into ops.inbound_event (provider, event_id, signature_ok, payload) values ('simulator', 'evt-no-market', true, '{}')`).catch((e: unknown) => e);
     expect(isPgError(err, '23514')).toBe(true);
   });
+
+  it('pending events and the backlog are this market\'s only: each market\'s worker replays its own (T-0028)', async () => {
+    const us = new InboundEventStore(db, 'US');
+    await us.record({ provider: 'simulator', eventId: 'evt-us-backlog', signatureOk: true, payload: {}, receivedAt: new Date(now.getTime() - 120_000) });
+    expect((await store.pending(1000)).map((e) => e.eventId)).not.toContain('evt-us-backlog');
+    expect((await us.pending(1000)).map((e) => e.eventId)).toEqual(expect.arrayContaining(['evt-us-backlog', 'evt-us-market']));
+    expect(await us.lagMs(now)).toBe(120_000);
+    expect(await store.lagMs(now)).toBe(0);
+  });
+
 });

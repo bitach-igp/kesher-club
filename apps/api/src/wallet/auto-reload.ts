@@ -73,7 +73,7 @@ export class AutoReloadService {
   private readonly accounts: AccountService;
   private readonly loads: LoadService;
   private readonly flags: FeatureFlags;
-  /** The market whose API this is: every row written carries it (T-0027). createApp always passes it. */
+  /** The market whose API this is: every row written carries it (T-0027), and the sweeps read only its rows (T-0028). */
   private readonly market: Market;
   constructor(
     db: Database,
@@ -117,8 +117,8 @@ export class AutoReloadService {
   /** Enabled rules whose window has passed, oldest attempt first. The worker evaluates each. */
   async due(now: Date, limit = 500): Promise<AutoReloadRule[]> {
     const r = await this.db.query<Row>(
-      `select * from ops.auto_reload where enabled and (last_attempt_at is null or last_attempt_at <= $1) order by last_attempt_at nulls first, id limit $2`,
-      [new Date(now.getTime() - WINDOW_MS), limit],
+      `select * from ops.auto_reload where enabled and (last_attempt_at is null or last_attempt_at <= $1) and market = $3 order by last_attempt_at nulls first, id limit $2`,
+      [new Date(now.getTime() - WINDOW_MS), limit, this.market],
     );
     return r.rows.map(toRule);
   }

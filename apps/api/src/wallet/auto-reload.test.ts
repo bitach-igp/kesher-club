@@ -147,4 +147,16 @@ describe('/accounts/{id}/auto-reload', () => {
     const err = await db.query(`insert into ops.auto_reload (id, party_id, account_id, currency, enabled, threshold_minor, target_minor, method, payment_method_id, created_at, updated_at) values ($1, $2, $3, 'USD', true, 1, 2, 'card', 'pm', now(), now())`, [uuidv7(), member, uuidv7()]).catch((e: unknown) => e);
     expect(isPgError(err, '23514')).toBe(true);
   });
+
+  it('the auto-reload job sees only this market\'s rules (T-0028)', async () => {
+    const [ilAccount, ilRule] = [uuidv7(), uuidv7()];
+    await db.query(`insert into ledger.account (id, type, currency, normal_side) values ($1, 'fee_income', 'ILS', 'C')`, [ilAccount]);
+    await db.query(`insert into ops.auto_reload (id, party_id, account_id, currency, enabled, threshold_minor, target_minor, method, payment_method_id, created_at, updated_at, market) values ($1, $2, $3, 'ILS', true, 1, 2, 'card', 'pm', now(), now(), 'IL')`, [ilRule, uuidv7(), ilAccount]);
+    const due = await app.services.autoReload.due(new Date(now.getTime() + 30 * 86_400_000));
+    expect(due.length).toBeGreaterThan(0);
+    expect(due.map((r) => r.id)).not.toContain(ilRule);
+    const all = await db.query<{ id: string }>('select id from ops.auto_reload where enabled');
+    expect(all.rows.map((r) => r.id)).toContain(ilRule);
+  });
+
 });

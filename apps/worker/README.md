@@ -24,8 +24,12 @@ until then; every money movement's workflow ID is its idempotency key.
 then once per cycle timed from the end of the last run, so a job never overlaps itself. A failed run
 logs one line (job, error class and code; never a message or a payload) and runs again next cycle.
 
-One runner per job per market across tasks: a run holds a Postgres advisory lock on its market and
-job name (`src/lock.ts`), on a one-connection pool of its own, and a task that finds the lock held skips that run.
+Every job has a scope (T-0028). A `market` job (load, payout and hold sweeps, auto-reload, token
+events, webhook replay, eSIM usage, catalogue sync) reads only rows that carry its worker's market and
+calls that market's providers; each market's worker runs its own. A `club` job (club rate, monitoring,
+balance proof, payment request and intent expiry, P2P send completion, stale conversions) is not split
+by market, so one lock spans the club. A run holds a Postgres advisory lock on `market:job` or
+`club:job` (`src/lock.ts`), on a one-connection pool of its own, and a task that finds the lock held skips that run.
 SIGTERM schedules nothing more and lets running jobs finish (up to 20 s; ECS kills at 30 s). Jobs keep
 their own flag checks.
 
@@ -55,7 +59,7 @@ the clocks jump past the slot, the first tick after the jump runs it. Idle ticks
 | Job | Module | Israel time |
 | --- | --- | --- |
 | `balance-proof` | `ledger/balance-proof` | 02:30 |
-| `catalogue-sync` | `catalogue/sync`, asking for what `config/catalogue.json` lists | 03:00 |
+| `catalogue-sync` | `catalogue/sync`, asking each market's vendors for what `config/catalogue.json` lists; recorded per market | 03:00 |
 
 Reconciliation joins at 04:00 Israel time with the processor adapter, which brings its statement
 source, ahead of REQ-LED-004's 06:00 deadline.

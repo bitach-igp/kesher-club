@@ -1,5 +1,8 @@
-// The worker's job table (T-0022, T-0023): every periodic and nightly job, its cycle or Israel time, and
-// the services it runs on. The cycles
+// The worker's job table (T-0022, T-0023, T-0028): every periodic and nightly job, its scope, its cycle or
+// Israel time, and the services it runs on. A job that calls a market's providers about rows carrying
+// that market is `market`: each market's worker sweeps its own rows, and together they cover every row.
+// A job whose work is not split by market (the club rate, monitoring, the balance proof, and tables with
+// no market: payment requests, agent intents, plus ledger-only sweeps) is `club`. The cycles
 // are each module's own constant, so a job's SLA and its schedule cannot drift apart. `JOB_EXCLUSIONS`
 // names every job-like module that is not here and why; jobs.test.ts fails on one that is in neither.
 import fs from 'node:fs';
@@ -89,37 +92,43 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue }:
   const esim = new EsimUsagePoller(db, () => registry.resolve<EsimPort>('esim', market), registry.resolve<NotifyPort>('notify', market), async (partyId) => {
     const devices = await s.identity.listDevices(partyId);
     return devices.filter((d) => d.pushToken).sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt))[0]?.pushToken;
-  });
+  }, market);
   const proof = new BalanceProof(db);
   const sync = new CatalogueSync(db, clock);
   const providerOf = (capability: string): string => registry.bindingFor(capability, market)?.provider ?? 'simulator';
+  // A market job's nightly run is recorded per market, so the US sync is not skipped because IL ran.
+  const marketRuns: RunLog = {
+    ranOn: (job, day) => runs.ranOn(`${market}:${job}`, day),
+    record: (job, day, startedAt, finishedAt) => runs.record(`${market}:${job}`, day, startedAt, finishedAt),
+  };
 
   return [
-    { name: 'card-token-events', everyMs: TOKEN_EVENTS_CYCLE_MS, run: () => tokenEvents.run() },
-    { name: 'load-sweep', everyMs: LOAD_SWEEP_CYCLE_MS, run: () => loads.sweep() },
-    { name: 'send-sweep', everyMs: SEND_SWEEP_CYCLE_MS, run: () => sends.sweep() },
-    { name: 'payout-sweep', everyMs: PAYOUT_SWEEP_CYCLE_MS, run: () => payouts.sweep() },
-    { name: 'p2p-release-holds', everyMs: P2P_RELEASE_CYCLE_MS, run: () => p2pHolds.run() },
-    { name: 'fx-void-stale', everyMs: VOID_STALE_CYCLE_MS, run: () => voidStale.run() },
-    { name: 'webhook-replay', everyMs: WEBHOOK_REPLAY_CYCLE_MS, run: () => s.webhooks.replay({ now: clock() }) },
-    { name: 'fx-refresh-rates', everyMs: REFRESH_CYCLE_MS, run: () => rates.run() },
-    { name: 'ach-release-holds', everyMs: ACH_RELEASE_CYCLE_MS, run: () => achHolds.run() },
-    { name: 'p2p-expire-requests', everyMs: EXPIRE_CYCLE_MS, run: () => requests.run() },
-    { name: 'auto-reload', everyMs: AUTO_RELOAD_CYCLE_MS, run: () => autoReload.run() },
-    { name: 'agent-expire-intents', everyMs: EXPIRE_INTENTS_CYCLE_MS, run: () => intents.run() },
-    { name: 'monitoring', everyMs: MONITORING_CYCLE_MS, run: () => monitoring.run() },
-    { name: 'esim-usage', everyMs: ESIM_USAGE_CYCLE_MS, run: () => esim.poll(clock()) },
-    daily({ name: 'balance-proof', at: NIGHTLY['balance-proof'], run: (now) => proof.run(now) }, runs, clock),
+    { name: 'card-token-events', scope: 'market', everyMs: TOKEN_EVENTS_CYCLE_MS, run: () => tokenEvents.run() },
+    { name: 'load-sweep', scope: 'market', everyMs: LOAD_SWEEP_CYCLE_MS, run: () => loads.sweep() },
+    { name: 'send-sweep', scope: 'club', everyMs: SEND_SWEEP_CYCLE_MS, run: () => sends.sweep() },
+    { name: 'payout-sweep', scope: 'market', everyMs: PAYOUT_SWEEP_CYCLE_MS, run: () => payouts.sweep() },
+    { name: 'p2p-release-holds', scope: 'market', everyMs: P2P_RELEASE_CYCLE_MS, run: () => p2pHolds.run() },
+    { name: 'fx-void-stale', scope: 'club', everyMs: VOID_STALE_CYCLE_MS, run: () => voidStale.run() },
+    { name: 'webhook-replay', scope: 'market', everyMs: WEBHOOK_REPLAY_CYCLE_MS, run: () => s.webhooks.replay({ now: clock() }) },
+    { name: 'fx-refresh-rates', scope: 'club', everyMs: REFRESH_CYCLE_MS, run: () => rates.run() },
+    { name: 'ach-release-holds', scope: 'market', everyMs: ACH_RELEASE_CYCLE_MS, run: () => achHolds.run() },
+    { name: 'p2p-expire-requests', scope: 'club', everyMs: EXPIRE_CYCLE_MS, run: () => requests.run() },
+    { name: 'auto-reload', scope: 'market', everyMs: AUTO_RELOAD_CYCLE_MS, run: () => autoReload.run() },
+    { name: 'agent-expire-intents', scope: 'club', everyMs: EXPIRE_INTENTS_CYCLE_MS, run: () => intents.run() },
+    { name: 'monitoring', scope: 'club', everyMs: MONITORING_CYCLE_MS, run: () => monitoring.run() },
+    { name: 'esim-usage', scope: 'market', everyMs: ESIM_USAGE_CYCLE_MS, run: () => esim.poll(clock()) },
+    daily({ name: 'balance-proof', scope: 'club', at: NIGHTLY['balance-proof'], run: (now) => proof.run(now) }, runs, clock),
     daily(
       {
         name: 'catalogue-sync',
+        scope: 'market',
         at: NIGHTLY['catalogue-sync'],
         run: async () => ({
           esim: await sync.syncEsim(providerOf('esim'), registry.resolve<EsimPort>('esim', market), catalogue.esim.countries),
           insurance: await sync.syncInsurance(providerOf('insurance'), registry.resolve<InsurancePort>('insurance', market), catalogue.insurance.products),
         }),
       },
-      runs,
+      marketRuns,
       clock,
     ),
   ];

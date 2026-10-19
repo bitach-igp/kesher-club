@@ -76,8 +76,9 @@ interface Row {
 
 export class TransferService {
   private readonly db: Database;
-  /** The market whose API this is: every row written carries it (T-0027). createApp always passes it. */
-  private readonly market: Market;
+  /** The market whose API this is: every row written carries it (T-0027), and the worker's sweeps read
+   *  only its rows (T-0028). createApp always passes it. */
+  readonly market: Market;
   constructor(db: Database, market: Market = 'IL') {
     this.db = db;
     this.market = market;
@@ -142,7 +143,7 @@ export class TransferService {
 
   /** Holds whose 2 h window passed (REQ-PAY-003); the workflow releases them. */
   async expiredHolds(now: Date): Promise<Transfer[]> {
-    const r = await this.db.query<Row>(`select * from ops.transfer where state = 'pending_hold' and hold_releases_at <= $1 order by hold_releases_at`, [now]);
+    const r = await this.db.query<Row>(`select * from ops.transfer where state = 'pending_hold' and hold_releases_at <= $1 and market = $2 order by hold_releases_at`, [now, this.market]);
     return r.rows.map(toTransfer);
   }
 
