@@ -134,7 +134,7 @@ function buildServices(o: AppOptions) {
   // the service settles or fails the transfer once, whatever the webhook count (SEQ-02).
   // Club rates (REQ-FX-003): a load into the other purse (REQ-WAL-006) and a converted send price at them.
   const rates = new RateService(o.db, approvals, audit);
-  const fx = new FxService({ port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
+  const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
   const loads = new LoadService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, memberships, flags, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', rates, markups: fx });
   webhooks.bind(FUNDING_PROVIDER, { verifier: loads.webhookVerifier(), process: (e) => loads.applyWebhook(e, clock.now()).then(() => undefined) });
   const autoReload = new AutoReloadService(o.db, accounts, loads, flags);

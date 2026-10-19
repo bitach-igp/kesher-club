@@ -80,7 +80,7 @@ These controls hold for every journal below.
 Gap found: Tab 3 §7 names workflow keys with a prefix (`load:{key}` in SEQ-02, `transfer:{key}` in SEQ-06,
 `fx:{quoteId}` in SEQ-08, `payout:{key}` in SEQ-09). The code uses the member's Idempotency-Key as
 it arrives (`apps/api/src/wallet/loads.ts:165`, `apps/api/src/p2p/send.ts:130`,
-`apps/api/src/fx/service.ts:127`, `apps/api/src/payouts/service.ts:151`). The engineering lead decides
+`apps/api/src/fx/service.ts:141`, `apps/api/src/payouts/service.ts:151`). The engineering lead decides
 whether the spec or the code changes.
 
 Decided (ADR-014, decision 3): the workflow id is the Idempotency-Key as received; the spec follows the code.
@@ -308,7 +308,7 @@ rate, and the recipient's plan markup is taken from the received amount.
   (`apps/api/src/p2p/send.ts:185-186`; TST-PAY-007, `apps/api/src/me/preferences.test.ts:27`).
 - Price, fixed once when the send begins: gross at the club rate, less the recipient's plan markup
   (`apps/api/src/p2p/send.ts:184-193`). The markup is the plan's, or 75 basis points (0.75%) without
-  an active plan (`apps/api/src/fx/service.ts:146-151`; `apps/api/src/billing/plans.ts:9`).
+  an active plan (`apps/api/src/fx/service.ts:185-190`; `apps/api/src/billing/plans.ts:9`).
 - With no valid club rate the send is refused with PROVIDER_UNAVAILABLE before anything is created
   (`apps/api/src/p2p/send.ts:13-14`, `:187`). Limits and the hold rule judge the sent amount
   (`apps/api/src/p2p/send.ts:14-15`).
@@ -381,23 +381,27 @@ A member converts between their own USD and ILS purses at a quote that holds for
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-08 | REQ-FX-001, REQ-FX-002, REQ-FX-003, REQ-FX-004 | `fx.enabled` (`apps/api/src/fx/service.ts:83`, `:107`) | REC-10 FX conversion |
+| SEQ-08 | REQ-FX-001, REQ-FX-002, REQ-FX-003, REQ-FX-004 | `fx.enabled` (`apps/api/src/fx/service.ts:91`, `:107`) | REC-10 FX conversion |
 
 - Quote: the club rate gives the gross; the plan markup (75 basis points by default) is taken from it;
-  total = gross − markup; it expires after 30 seconds (`apps/api/src/fx/service.ts:22`, `:92-97`).
-  The purse must cover the amount (`apps/api/src/fx/service.ts:90-91`).
+  total = gross − markup; it expires after 30 seconds (`apps/api/src/fx/service.ts:27`, `:92-97`).
+  The purse must cover the amount (`apps/api/src/fx/service.ts:98-99`).
 - Convert: an expired or unknown quote answers QUOTE_EXPIRED and moves nothing
-  (`apps/api/src/fx/service.ts:117-122`). The provider is asked for its own fill under the same key, as
-  the club's hedge (`apps/api/src/fx/service.ts:129-133`). An outage leaves the transfer submitted for a
-  retry with the same key (`apps/api/src/fx/service.ts:134-136`).
+  (`apps/api/src/fx/service.ts:126-131`). The provider is asked for its own fill under the same key, as
+  the club's hedge (`apps/api/src/fx/service.ts:143-147`). A vendor reject fails the conversion and voids
+  the quote with no journal; an outage leaves it submitted for a retry with the same key while the quote
+  lives, and a retry after the quote is gone fails it (`apps/api/src/fx/service.ts:148-156`, `:126-136`). The
+  worker's sweep fails any conversion still submitted once its quote cannot be alive
+  (`apps/api/src/fx/service.ts:164-182`; `apps/worker/src/fx/void-stale.ts:15-26`). Tests: T-0520 in
+  `apps/api/src/fx/service.test.ts:187-260` and `apps/worker/src/fx/void-stale.test.ts`.
 - The journal metadata carries the markup in basis points, the club rate version and the provider's
-  fill (`apps/api/src/fx/service.ts:179-191`).
+  fill (`apps/api/src/fx/service.ts:218-230`).
 
 | Journal kind | Key | Postings |
 |---|---|---|
 | `fx` | `{key}:settle` | Dr member `wallet` (from); Cr `fx_position` (from); Dr `fx_position` (to, gross); Cr member `wallet` (to, total); Cr `fee_income` (to, markup) |
 
-Source: `apps/api/src/fx/service.ts:159-193`. Example from the test: $100.00 at a club rate of 3.71 is
+Source: `apps/api/src/fx/service.ts:198-232`. Example from the test: $100.00 at a club rate of 3.71 is
 ₪371.00 gross (37,100 agorot); the 0.75% markup is ₪2.78 (278); the member receives ₪368.22 (36,822)
 (`apps/api/src/fx/service.test.ts:105-121`).
 
@@ -410,13 +414,11 @@ when more than one API instance runs.
 
 Decided (ADR-014, decision 8): acceptable while one API instance runs; quotes move to a table before a second. Card T-0522.
 
-Gap found: SEQ-08's compensation is "provider reject, quote void, no journal". In the code a provider error
-leaves the transfer `submitted` (`apps/api/src/fx/service.ts:134-136`, `:224-230`), and no worker sweep
-finishes or fails submitted FX transfers (the only FX worker job publishes rates,
-`apps/worker/src/fx/refresh-rates.ts:1-5`). The
-engineering lead decides how such a transfer is closed.
+Gap found: SEQ-08's compensation is "provider reject, quote void, no journal". Before T-0520 a provider
+error left the transfer `submitted`, and no worker sweep finished or failed submitted FX transfers.
 
-Decided (ADR-014, decision 7): a vendor reject fails the transfer and voids the quote; a stale submitted conversion is failed by a sweep. Card T-0520.
+Decided (ADR-014, decision 7): a vendor reject fails the transfer and voids the quote; a stale submitted
+conversion is failed by a sweep. Built in T-0520 (see the Convert line above).
 
 ## 11. Club rates: published rate and two-person manual rate
 
