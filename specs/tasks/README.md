@@ -16,6 +16,7 @@
 | [T-0012](T-0012.md) | SETUP | Migration safety lint without Atlas Pro (Squawk), and move the balance cache to ops.account_balance | — | 2 |
 | [T-0013](T-0013.md) | SETUP | Hebrew/RTL full pass and Dynamic Type 200% (CLUB-37) | — | 9 |
 | [T-0014](T-0014.md) | SETUP | Pentest readiness: ZAP baseline on the preview, evidence folders (CLUB-38) | — | 9 |
+| [T-0015](T-0015.md) | SETUP | File paths from import.meta.url work on Windows | — | 9 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
@@ -43,6 +44,8 @@
 | [T-0406](T-0406.md) | CRD | Agent purchases: off / with approval / under amount | REQ-CRD-008 | 6 |
 | [T-0407](T-0407.md) | CRD | Physical cards: order, tracking, activation, PIN | REQ-CRD-009 | 6 |
 | [T-0408](T-0408.md) | CRD | Mobile screens M06, M20–M24 | — | 6 |
+| [T-0409](T-0409.md) | CRD | A shekel card payment draws on the shekel purse at the club rate | REQ-CRD-003 | 9 |
+| [T-0410](T-0410.md) | CRD | Card settlement: clearing moves the hold, unclaimed holds release after 7 days | REQ-CRD-003 | 9 |
 | [T-0501](T-0501.md) | WAL | Loads by card, Apple Pay, Google Pay + load workflow | REQ-WAL-002 | 5 |
 | [T-0502](T-0502.md) | WAL | ACH holds and release | REQ-WAL-003 | 5 |
 | [T-0503](T-0503.md) | WAL | Auto-reload, once per 24 h | REQ-WAL-004 | 6 |
@@ -61,12 +64,17 @@
 | [T-0516](T-0516.md) | PAY | Mobile purse choice, received-amount preview, receiving currency setting | REQ-PAY-006, REQ-PAY-007 | 9 |
 | [T-0517](T-0517.md) | WAL | Loads into the chosen purse; cross-currency loads at the club rate | REQ-WAL-006 | 9 |
 | [T-0518](T-0518.md) | PAY | Send preview: what a send lands as, priced as the send prices it | REQ-PAY-006 | 9 |
+| [T-0519](T-0519.md) | WAL | A load into the other purse carries the plan markup | REQ-WAL-006 | 9 |
+| [T-0520](T-0520.md) | FX | A failed vendor leg closes the conversion | REQ-FX-001 | 9 |
+| [T-0521](T-0521.md) | WAL | Closure refunds a converted load pro rata at the load's rate | REQ-WAL-005 | 9 |
+| [T-0522](T-0522.md) | FX | Durable FX quotes before a second API instance | REQ-FX-001 | scale-out |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
 | [T-0604](T-0604.md) | INS | Allowance schedules + dry run + workflow | REQ-INS-003 | 8 |
 | [T-0605](T-0605.md) | INS | Two-person approval service | REQ-INS-004, REQ-ADM-002 | 8 |
 | [T-0606](T-0606.md) | INS | Collections receipts + monthly reconciliation export | REQ-INS-006 | 8 |
+| [T-0607](T-0607.md) | INS | Allowance runs: endpoint, a transfer per payment, the money flag | REQ-INS-003 | 9 |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
@@ -97,7 +105,7 @@
 | [T-1005](T-1005.md) | AGT | Pending-intent service + approval | REQ-AGT-006 | 10 |
 | [T-1006](T-1006.md) | AGT | Grants screen, revoke, rate limits | REQ-AGT-008, REQ-AGT-009 | 10 |
 | [T-1007](T-1007.md) | AGT | Provider calls never carry a user token | REQ-AGT-004 | 10 |
-| [T-1008](T-1008.md) | AGT | Approving a P2P intent runs the member's send | REQ-AGT-006 | 10 |
+| [T-1008](T-1008.md) | AGT | An approved agent send runs the member's own send path | REQ-AGT-006 | 10 |
 | [T-1009](T-1009.md) | AGT | Approving a load intent runs the member's load | REQ-AGT-006 | 10 |
 | [T-1010](T-1010.md) | AGT | Intent expiry sweep in the worker, never past a started send | REQ-AGT-006 | 10 |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.

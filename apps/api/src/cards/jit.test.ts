@@ -285,3 +285,82 @@ describe('agent purchases (TST-CRD-008)', () => {
     expect((await agentAuth({ amount: 2_400n, currency: 'USD', tokenId: 'tok_agent_2' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
   });
 });
+
+describe('which purse pays (T-0409, ADR-007)', () => {
+  const ari = uuidv7(new Date(NOW.getTime() + 1));
+  let ariCard = '';
+  let ariIls = '';
+  let ariUsd = '';
+  const credit = async (account: string, currency: 'USD' | 'ILS', minor: bigint, key: string) => {
+    const partner = await app.services.accounts.systemAccount('partner_settlement', currency);
+    await app.services.ledger.post({ idempotencyKey: key, kind: 'load', postings: [{ accountId: partner, currency, amountMinor: minor }, { accountId: account, currency, amountMinor: -minor }] });
+  };
+  const holdPostings = async (authId: string) =>
+    (
+      await db.query<{ type: string; currency: string; amount_minor: string }>(
+        `select a.type::text, p.currency::text, p.amount_minor::text from ledger.posting p join ledger.account a on a.id = p.account_id join ledger.journal j on j.id = p.journal_id where j.idempotency_key = $1 order by p.amount_minor desc`,
+        [holdKey(authId)],
+      )
+    ).rows;
+  const usdPay = (minor: bigint, country: string, now = NOW) => authorize({ card: ariCard, amount: minor, currency: 'USD', country, now });
+
+  beforeAll(async () => {
+    const s = await app.services.kyc.start(ari, 'T2', 'kyc-ari', NOW);
+    await dispatch(app, { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: 'evt-ari', sessionId: s.sessionId, status: 'approved' }), now: NOW });
+    ariCard = (await db.query<{ processor_card_id: string }>(`select processor_card_id from cards.card where party_id = $1`, [ari])).rows[0]!.processor_card_id;
+    ariIls = await app.services.accounts.memberAccount(ari, 'wallet', 'ILS');
+    ariUsd = await app.services.accounts.memberAccount(ari, 'wallet', 'USD');
+    await credit(ariIls, 'ILS', 50_000n, 'load:ari:ils');
+    await app.services.rates.publishFromPort('USD/ILS', 3_700_000n, NOW);
+  });
+
+  it('a $50 purchase in Israel holds from the shekel purse at the club rate plus the plan markup; a replay holds nothing more', async () => {
+    const r = await usdPay(5_000n, 'IL');
+    expect(r.body).toEqual({ result: 'APPROVED', holdAmount: { minor: '5000', currency: 'USD' } });
+    // $50 × 3.70 = ₪185.00; the default 75 bps is ₪1.39; the shekel purse pays ₪186.39 and the dollar pending purse holds $50.
+    expect(await holdPostings(r.authId)).toEqual([
+      { type: 'wallet', currency: 'ILS', amount_minor: '18639' },
+      { type: 'fx_position', currency: 'USD', amount_minor: '5000' },
+      { type: 'fee_income', currency: 'ILS', amount_minor: '-139' },
+      { type: 'pending', currency: 'USD', amount_minor: '-5000' },
+      { type: 'fx_position', currency: 'ILS', amount_minor: '-18500' },
+    ]);
+    const meta = (await db.query<{ metadata: Record<string, unknown> }>(`select metadata from ledger.journal where idempotency_key = $1`, [holdKey(r.authId)])).rows[0]!.metadata;
+    expect(meta).toMatchObject({ fx_rate_version: expect.any(Number), fx_markup_bps: 75, rate: '3.700000', paidFrom: { minor: '18639', currency: 'ILS' }, markup: { minor: '139', currency: 'ILS' } });
+    expect(-(await app.services.ledger.balance(ariIls, 'ILS'))).toBe(50_000n - 18_639n);
+
+    const signed = sim.authorize(ariCard, { amount: { minor: 5_000n, currency: 'USD' }, merchant: MERCHANT, channel: 'pos' });
+    const replay = await dispatch(app, { method: 'POST', url: '/v1/jit/card-authorizations', headers: signed.headers, rawBody: JSON.stringify({ ...(JSON.parse(signed.rawBody) as Record<string, unknown>), authId: r.authId }), now: NOW });
+    expect(replay.body).toEqual({ result: 'APPROVED', holdAmount: { minor: '5000', currency: 'USD' } });
+    expect(-(await app.services.ledger.balance(ariIls, 'ILS'))).toBe(50_000n - 18_639n);
+  });
+
+  it('in Israel with the shekel purse short, the dollar purse pays unconverted', async () => {
+    await credit(ariUsd, 'USD', 100_000n, 'load:ari:usd');
+    const r = await usdPay(100_000n, 'IL'); // $1,000 is ₪3,700 and more: the shekel purse cannot cover it
+    expect(r.body).toMatchObject({ result: 'APPROVED' });
+    expect(await holdPostings(r.authId)).toEqual([
+      { type: 'wallet', currency: 'USD', amount_minor: '100000' },
+      { type: 'pending', currency: 'USD', amount_minor: '-100000' },
+    ]);
+  });
+
+  it('elsewhere the dollar purse pays first, and a short dollar purse is covered by the shekel purse converted', async () => {
+    const empty = await usdPay(1_000n, 'US'); // the dollar purse is empty after the $1,000 hold
+    expect(empty.body).toMatchObject({ result: 'APPROVED' });
+    // $10 × 3.70 = ₪37.00, plus ₪0.28 at 75 bps.
+    expect((await holdPostings(empty.authId))[0]).toEqual({ type: 'wallet', currency: 'ILS', amount_minor: '3728' });
+    await credit(ariUsd, 'USD', 5_000n, 'load:ari:usd-2');
+    const direct = await usdPay(1_000n, 'US');
+    expect(await holdPostings(direct.authId)).toEqual([
+      { type: 'wallet', currency: 'USD', amount_minor: '1000' },
+      { type: 'pending', currency: 'USD', amount_minor: '-1000' },
+    ]);
+  });
+
+  it('with no valid club rate only the same-currency purse is tried', async () => {
+    const later = new Date(NOW.getTime() + 20 * 60_000); // the port rate is good for 15 minutes
+    expect((await usdPay(1_000n, 'IL', later)).body).toMatchObject({ result: 'APPROVED' }); // dollars pay, unconverted
+    expect((await usdPay(100_000n, 'US', later)).body).toEqual({ result: 'DECLINED', reason: 'INSUFFICIENT_FUNDS' }); // the shekel purse would need a rate
+  });
+});

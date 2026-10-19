@@ -5,8 +5,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import type { Database, QueryResult, SqlClient } from './db.ts';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const SCHEMA_ORDER = ['ledger', 'identity', 'org', 'billing', 'legal', 'addons', 'notify', 'audit', 'agent'];
 
 export interface TestDatabase extends Database {

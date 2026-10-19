@@ -204,7 +204,7 @@ describe('approving a load intent (T-1009)', () => {
     expect(await journals(loadSettleKey(`intent:${declined.id}`))).toBe(0);
   });
 
-  it('the wallet flag off answers FEATURE_OFF and the intent stays pending; a load into the other purse converts at the club rate (T-0517)', async () => {
+  it('the wallet flag off answers FEATURE_OFF and the intent stays pending; a load into the other purse converts at the club rate less the plan markup (T-0517, T-0519)', async () => {
     const s = app.services;
     const off = new IntentService(db, s.transfers, s.stepUp, { p2p: s.p2p, loads: s.loads }, new StaticFlags(undefined, { 'p2p.enabled': true }));
     const i = await proposeLoad(principal.partyId, '10000', 'USD');
@@ -214,9 +214,9 @@ describe('approving a load intent (T-1009)', () => {
     await s.rates.publishFromPort('USD/ILS', 3_700_000n, clock.now());
     const before = await available(principal.partyId);
     const r = await approve(i.id, { method: 'card', paymentMethodId: 'pm_ok', purseCurrency: 'ILS' });
-    // $100 → ₪370.00 at the club rate, no markup on a load.
-    expect(r.load).toMatchObject({ state: 'settled', amount: { minor: '10000', currency: 'USD' }, credited: ils('37000'), rateVersion: expect.any(Number) });
-    expect(await available(principal.partyId)).toBe(before + 37_000n);
+    // $100 → ₪370.00 at the club rate, less the default 75 bps plan markup (₪2.78) → ₪367.22.
+    expect(r.load).toMatchObject({ state: 'settled', amount: { minor: '10000', currency: 'USD' }, credited: ils('36722'), rateVersion: expect.any(Number) });
+    expect(await available(principal.partyId)).toBe(before + 36_722n);
   });
 });
 

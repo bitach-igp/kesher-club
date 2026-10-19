@@ -894,6 +894,31 @@ export function t(key: CopyKey, locale: Locale, vars: Record<string, string | nu
 
 export const isRtl = (locale: Locale): boolean => locale === 'he';
 
+/** The copy tables, read-only, for the parity and bidi checks. */
+export const COPY: Readonly<Record<Locale, Readonly<Record<CopyKey, string>>>> = maps;
+
+/** Glyphs that point "onward" in reading order: right in English, left in Hebrew. */
+export const onward = (locale: Locale): { arrow: string; chevron: string } => (isRtl(locale) ? { arrow: '←', chevron: '‹' } : { arrow: '→', chevron: '›' });
+
+/** The slice of React Native's I18nManager the app drives. */
+export interface LayoutDirection {
+  readonly isRTL: boolean;
+  allowRTL(allow: boolean): void;
+  forceRTL(force: boolean): void;
+}
+
+/**
+ * Native layout direction for the app's locale (T-0013): Hebrew mirrors every row and start/end edge,
+ * English never does, whatever the device language. The app root calls this with I18nManager at boot.
+ * Returns true when the direction changes, which React Native applies on the next launch.
+ */
+export function applyLayoutDirection(locale: Locale, manager: LayoutDirection): boolean {
+  const rtl = isRtl(locale);
+  manager.allowRTL(rtl);
+  manager.forceRTL(rtl);
+  return manager.isRTL !== rtl;
+}
+
 /** Locale for `format()` from @kesher/domain. */
 export const intlLocale = (locale: Locale): 'en-US' | 'he-IL' => (locale === 'he' ? 'he-IL' : 'en-US');
 

@@ -4,12 +4,13 @@ import { loadConfig, defineConfig } from '@kesher/domain';
 import { z } from 'zod';
 import { SimulatorHost } from './host.ts';
 import { createServer } from './server.ts';
+import { pathToFileURL } from 'node:url';
 
 export { SimulatorHost, SIM_PROVIDER } from './host.ts';
 export type { Simulators, Hook, Fixture } from './host.ts';
 export { createServer, handle } from './server.ts';
 
-const isMain = process.argv[1] !== undefined && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   const config = loadConfig(defineConfig({ SIMULATOR_PORT: z.coerce.number().int().min(1).max(65535) }), process.env);
   if (!['development', 'test', 'preview'].includes(config.NODE_ENV)) {

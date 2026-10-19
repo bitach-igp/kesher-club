@@ -1,7 +1,8 @@
 // Text field from the component library: label above, 52 min height, error below (announced).
+// The entry follows the locale's writing direction instead of a physical left or right alignment.
 import { StyleSheet, TextInput, View, type TextInputProps } from 'react-native';
 import { useTheme } from '../theme.ts';
-import { useLocale } from '../i18n.ts';
+import { isRtl, useLocale } from '../i18n.ts';
 import { Txt } from './Txt.tsx';
 
 export interface TextFieldProps extends Omit<TextInputProps, 'style'> {
@@ -39,7 +40,7 @@ export function TextField({ label, helper, error, testID, ...input }: TextFieldP
             color: th.color.text.primary,
             fontSize: th.typography.body.fontSize,
             fontFamily: locale === 'he' ? th.font.family.hebrew : th.typography.body.fontFamily,
-            textAlign: locale === 'he' ? 'right' : 'left',
+            writingDirection: isRtl(locale) ? 'rtl' : 'ltr',
           },
         ]}
         {...input}

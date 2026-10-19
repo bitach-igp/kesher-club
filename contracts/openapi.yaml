@@ -1847,7 +1847,7 @@ components:
         amount: { $ref: "#/components/schemas/Money" }
         holdUntil: { type: string, format: date }
         clientSecret: { type: string }
-        credited: { $ref: "#/components/schemas/Money", description: What the purse receives when the load converts into the other currency }
+        credited: { $ref: "#/components/schemas/Money", description: What the purse receives when the load converts into the other currency, after the purse owner's plan markup }
         rateVersion: { type: integer, description: The club rate version the load converted at }
     TransferPreview:
       type: object

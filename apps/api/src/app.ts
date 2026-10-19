@@ -113,6 +113,10 @@ function buildServices(o: AppOptions) {
   const kyc = new KycService(o.db, o.registry.resolve<KycPort>('kyc', o.market), o.market, o.registry.bindingFor('kyc', o.market)?.provider ?? 'issuer-kyc');
   const cardIssuing = o.registry.resolve<CardIssuingPort>('card-issuing', o.market);
   const cards = new CardService(o.db, cardIssuing, kyc, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
+  // Club rates (REQ-FX-003) price every conversion: a card purchase the other purse pays (T-0409), a load into
+  // the other purse (REQ-WAL-006), a converted send (REQ-PAY-006) and the convert screen.
+  const rates = new RateService(o.db, approvals, audit);
+  const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
   const provisioning = new ProvisioningService(o.db, cards, detailsTokenProvisioning(cardIssuing), flags);
   const physical = new PhysicalCardService(o.db, cardIssuing, kyc, cards, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
   // The processor's token lifecycle events land on /hooks/card-issuing and are applied at receipt; the
@@ -130,20 +134,17 @@ function buildServices(o: AppOptions) {
   });
   // Loads (REQ-WAL-002): the vendor's payment events land on /hooks/funding; the port verifies and parses,
   // the service settles or fails the transfer once, whatever the webhook count (SEQ-02).
-  // Club rates (REQ-FX-003): a load into the other purse (REQ-WAL-006) and a converted send price at them.
-  const rates = new RateService(o.db, approvals, audit);
-  const loads = new LoadService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, memberships, flags, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', rates });
+  const loads = new LoadService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, memberships, flags, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', rates, markups: fx });
   webhooks.bind(FUNDING_PROVIDER, { verifier: loads.webhookVerifier(), process: (e) => loads.applyWebhook(e, clock.now()).then(() => undefined) });
   const autoReload = new AutoReloadService(o.db, accounts, loads, flags);
   const p2pLimits = new P2pLimitService(o.db, memberships, entitlements, plans);
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
   const preferences = new PreferenceService(o.db);
-  const fx = new FxService({ port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
   // A send to a member who receives in the other currency prices at the club rate with their plan's markup (REQ-PAY-006).
   const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort, preferences, rates, markups: fx });
   // An approved agent intent runs the member's own send or load (T-1008, T-1009), so the intents come after them, and the JIT after the intents.
   const intents = new IntentService(o.db, transfers, stepUp, { p2p, loads }, flags);
-  const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans, flags, intents });
+  const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans, flags, intents, fx: { rates, markups: fx } });
   const requests = new PaymentRequestService(o.db, p2p, identity);
   // Payouts (REQ-PO-001/002): the rail's status webhooks land on /hooks/payout; settled and failed are applied once (SEQ-09).
   const collections = new CollectionsService(o.db, ledger, accounts, transfers, flags);
