@@ -15,3 +15,59 @@ Steps (from repo root, PowerShell on Windows unless stated):
 12. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with ledger at 15 migrations. Step 5 reports no pending migrations. Step 6 shows job, run_date, started_at and finished_at, all not null, with the primary key on (job, run_date). Step 7 prints `INSERT 0 1`. Step 8 fails with a duplicate key violation on `job_run_pkey` (one run per job and day). Step 9 prints `INSERT 0 0`, the worker's own write. Step 10 fails with a check constraint violation (finished before started). Step 11 fails with `permission denied for table job_run` (insert-only for the service role).
 Report back: the console output of steps 4, 5, 6, 8, 9, 10 and 11.
+
+## Result
+PASS, 2026-10-19 14:08 (Asia/Jerusalem), desktop checker on Zvi's PC (Docker 29.8.2, postgres:16), runner worktree at a7f0d13.
+
+Step 4 (exit 0): ledger "Migrating to version 0015 (15 migrations in total)", 15 migrations, 98 statements, every
+version `-- ok`; then identity (3), org (2), billing (1), … and:
+```
+ok   ledger
+ok   identity
+ok   org
+ok   billing
+ok   legal
+ok   addons
+ok   notify
+ok   audit
+ok   agent
+```
+
+Step 5 (exit 0): `No migration files to execute` for each of the 9 schemas, then the same nine `ok` lines.
+
+Step 6:
+```
+                           Table "ops.job_run"
+   Column    |           Type           | Collation | Nullable | Default
+-------------+--------------------------+-----------+----------+---------
+ job         | text                     |           | not null |
+ run_date    | date                     |           | not null |
+ started_at  | timestamp with time zone |           | not null |
+ finished_at | timestamp with time zone |           | not null |
+Indexes:
+    "job_run_pkey" PRIMARY KEY, btree (job, run_date)
+Check constraints:
+    "job_run_check" CHECK (finished_at >= started_at)
+```
+
+Step 7: `INSERT 0 1`
+
+Step 8 (exit 1):
+```
+ERROR:  duplicate key value violates unique constraint "job_run_pkey"
+DETAIL:  Key (job, run_date)=(balance-proof, 2026-10-20) already exists.
+```
+
+Step 9: `INSERT 0 0`
+
+Step 10 (exit 1):
+```
+ERROR:  new row for relation "job_run" violates check constraint "job_run_check"
+DETAIL:  Failing row contains (catalogue-sync, 2026-10-20, 2026-10-20 01:00:00+00, 2026-10-20 00:59:00+00).
+```
+
+Step 11 (exit 1): `ERROR:  permission denied for table job_run`
+
+Step 12: container `kesher-pg` removed.
+
+All expectations met.
