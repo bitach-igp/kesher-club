@@ -116,6 +116,30 @@ importers:
         specifier: 8.15.5
         version: 8.15.5
 
+  apps/demo:
+    dependencies:
+      '@kesher/api':
+        specifier: workspace:*
+        version: link:../api
+      '@kesher/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@kesher/ports':
+        specifier: workspace:*
+        version: link:../../packages/ports
+      '@kesher/simulators':
+        specifier: workspace:*
+        version: link:../simulators
+      '@kesher/worker':
+        specifier: workspace:*
+        version: link:../worker
+      jose:
+        specifier: 6.2.12
+        version: 6.2.12
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+
   apps/mobile:
     dependencies:
       '@kesher/domain':
