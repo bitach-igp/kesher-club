@@ -1,10 +1,11 @@
 # CI (T-0002, Tab 3 §9): lint, typecheck, unit + contract tests, trace, Spectral + oasdiff,
 # Semgrep, tfsec and pnpm audit. Every job runs on each PR; nothing here needs a secret.
+# Pull requests only (T-0029): a merge to main re-ran the same jobs on the tree its PR had just
+# passed, which doubled the Actions minutes. Run it on main by hand from the Actions tab when needed.
 name: ci
 on:
   pull_request:
-  push:
-    branches: [main]
+  workflow_dispatch:
 permissions:
   contents: read
   security-events: write
