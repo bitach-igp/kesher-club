@@ -1,9 +1,10 @@
 // TST-AUTH-009 (REQ-AUTH-009): admin access is SSO + phishing-resistant MFA, reachable only over the VPN.
 // Given a non-VPN IP, when /admin is requested, then 403.
+import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { parseCidr } from './vpn.ts';
-import { adminProxy, type ProxyEnv } from './proxy.ts';
+import { adminProxy, PROXY_MATCHER, type ProxyEnv } from './proxy.ts';
 import { parseAdminConfig } from '../config.ts';
 
 const ISSUER = 'https://idc.example.com/oidc';
@@ -102,5 +103,11 @@ describe('admin proxy (TST-AUTH-009)', () => {
     expect(() => parseAdminConfig({ ...env, ADMIN_API_SIGNING_KEY: JSON.stringify({ kty: 'EC', crv: 'P-256', x: 'a', y: 'b' }) })).toThrow(/private/);
     expect(() => parseAdminConfig({ ...env, ADMIN_DATA: 'memory' })).toThrow(/local and preview/);
     expect(parseAdminConfig({ ...env, ADMIN_DATA: 'memory', ADMIN_ENVIRONMENT: 'preview', NODE_ENV: 'preview' }).ADMIN_DATA).toBe('memory');
+  });
+
+  it('the Next proxy exports PROXY_MATCHER as the literal next build requires (T-0915)', () => {
+    const source = fs.readFileSync(new URL('../../proxy.ts', import.meta.url), 'utf8');
+    const literal = /export const config = \{ matcher: (\[[^\]]*\]) \};/.exec(source)?.[1];
+    expect(literal && (JSON.parse(literal.replaceAll("'", '"')) as unknown)).toEqual(PROXY_MATCHER);
   });
 });

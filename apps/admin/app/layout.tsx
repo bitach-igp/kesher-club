@@ -5,6 +5,9 @@ import { getConfig } from '../src/config.ts';
 import { currentActor } from '../src/ui/actor.ts';
 
 export const metadata = { title: 'Kesher Club admin' };
+// Every page renders per request and reads its config then, never at build: one image serves every
+// environment and the build needs no settings or secrets (T-0915).
+export const dynamic = 'force-dynamic';
 
 const AREAS = [
   ['A01', 'Customer 360', '/customers'],
