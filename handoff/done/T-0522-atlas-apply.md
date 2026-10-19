@@ -15,3 +15,14 @@ Steps (from repo root, PowerShell on Windows unless stated):
 12. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with ledger at 17 migrations. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`. Step 7 prints `INSERT 0 1`. Step 8 prints `UPDATE 1` (the conversion's key spends the quote). Step 9 prints `UPDATE 0` (another key cannot spend it again). Step 10 fails with a unique violation on (party_id, idempotency_key). Step 11 fails with a check constraint violation (from and to are the same currency).
 Report back: the console output of steps 4, 5, 8, 9, 10 and 11.
+
+## Result
+Outcome: PASS. Run 2026-10-19 18:05 (Asia/Jerusalem) by the desktop checker on Zvi's PC, runner worktree at 2238672, Docker 29.8.2, postgres:16.
+- Step 4: applied (the first call's console output was lost to a tool timeout; the database shows it). `atlas_ledger.atlas_schema_revisions`: 17 rows, latest `0017 fx_quote` (0016 row_market, 0015 job_run); `ops.fx_quote` exists.
+- Step 5: `No migration files to execute` for every schema, then `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent; exit 0.
+- Step 6: `INSERT 0 1`. Step 7: `SET` / `INSERT 0 1`.
+- Step 8: `UPDATE 1` (the conversion key spends the quote).
+- Step 9: `UPDATE 0` (another key cannot spend it).
+- Step 10: `ERROR: duplicate key value violates unique constraint "fx_quote_party_id_idempotency_key_key"` / `Key (party_id, idempotency_key)=(00000000-0000-7000-8000-000000052202, t0522-key-a) already exists.`
+- Step 11: `ERROR: new row for relation "fx_quote" violates check constraint "fx_quote_check"` (from = to = USD).
+- Step 12: container removed.
