@@ -16,7 +16,7 @@ const member = uuidv7();
 async function fulfilledOrder(): Promise<{ orderId: string; iccid: string }> {
   const o = await esim.order('IL-5GB-30D', `o-${uuidv7()}`);
   const orderId = uuidv7();
-  await db.query(`insert into addons.addon_order (id, idempotency_key, member_party_id, sku, kind, provider, state, cost_minor, price_minor, list_price_minor, currency, fulfilment) values ($1, $2, $3, 'esim:simulator:IL-5GB-30D', 'esim', 'simulator', 'fulfilled', 950, 1199, 1199, 'USD', $4)`, [orderId, `k-${orderId}`, member, JSON.stringify({ iccid: o.iccid, installUrl: o.installUrl })]);
+  await db.query(`insert into addons.addon_order (id, idempotency_key, member_party_id, sku, kind, provider, state, cost_minor, price_minor, list_price_minor, currency, fulfilment, market) values ($1, $2, $3, 'esim:simulator:IL-5GB-30D', 'esim', 'simulator', 'fulfilled', 950, 1199, 1199, 'USD', $4, 'IL')`, [orderId, `k-${orderId}`, member, JSON.stringify({ iccid: o.iccid, installUrl: o.installUrl })]);
   return { orderId, iccid: o.iccid };
 }
 

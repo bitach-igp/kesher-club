@@ -6,6 +6,7 @@
 // Given a $25 eSIM with $20 cost: addon_payable $20 and fee_income $5. Fulfilment is the
 // AddonWorkflow's job through the port; failure refunds to source and restores the credit.
 import { DomainError, money, uuidv7, type Currency, type Money } from '@kesher/domain';
+import type { Market } from '@kesher/ports';
 import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
 import type { MembershipRef } from '../billing/entitlements.ts';
 import type { AccountService } from '../ledger/accounts.ts';
@@ -80,16 +81,20 @@ export class AddonOrderService {
   private readonly ledger: PostgresLedger;
   private readonly accounts: AccountService;
   private readonly credit: CreditService;
+  /** The market whose API this is: every row written carries it (T-0027). createApp always passes it. */
+  private readonly market: Market;
   constructor(
     db: Database,
     ledger: PostgresLedger,
     accounts: AccountService,
     credit: CreditService,
+    market: Market = 'IL',
   ) {
     this.db = db;
     this.ledger = ledger;
     this.accounts = accounts;
     this.credit = credit;
+    this.market = market;
   }
 
   async catalogueItem(sku: string, db: SqlClient = this.db): Promise<CatalogueItem | undefined> {
@@ -112,9 +117,9 @@ export class AddonOrderService {
     try {
       await this.db.transaction(async (tx) => {
         await tx.query(
-          `insert into addons.addon_order (id, idempotency_key, member_party_id, sku, kind, provider, quantity, state, cost_minor, price_minor, list_price_minor, credit_minor, currency, created_at, updated_at)
-           values ($1, $2, $3, $4, $5, $6, $7, 'created', $8, $9, $10, $11, $12, $13, $13)`,
-          [id, input.idempotencyKey, input.memberPartyId, item.sku, item.kind, item.provider, quantity, cost.minor.toString(), q.price.minor.toString(), q.listPrice.minor.toString(), q.credit.minor.toString(), item.price.currency, now],
+          `insert into addons.addon_order (id, idempotency_key, member_party_id, sku, kind, provider, quantity, state, cost_minor, price_minor, list_price_minor, credit_minor, currency, created_at, updated_at, market)
+           values ($1, $2, $3, $4, $5, $6, $7, 'created', $8, $9, $10, $11, $12, $13, $13, $14)`,
+          [id, input.idempotencyKey, input.memberPartyId, item.sku, item.kind, item.provider, quantity, cost.minor.toString(), q.price.minor.toString(), q.listPrice.minor.toString(), q.credit.minor.toString(), item.price.currency, now, this.market],
         );
         await tx.query(`insert into addons.addon_order_event (order_id, from_state, to_state, at) values ($1, null, 'created', $2)`, [id, now]);
         await enqueue(tx, 'addon_order', id, 'addon_order.created', { sku: item.sku, kind: item.kind, price: q.price, credit: q.credit });

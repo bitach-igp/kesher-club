@@ -2,12 +2,13 @@
 // $200, balance $45 → one $155 load; a second pass within 24 h creates nothing; a failed load does not
 // retry inside the window (the worker job that drives it is tested in apps/worker).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { money } from '@kesher/domain';
+import { money, uuidv7 } from '@kesher/domain';
 import { fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
+import { isPgError } from '../db.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { WINDOW_MS, type AutoReloadView } from './auto-reload.ts';
@@ -131,5 +132,19 @@ describe('/accounts/{id}/auto-reload', () => {
     expect(await s.autoReload.due(now)).not.toContainEqual(expect.objectContaining({ accountId: usdWallet }));
     now = new Date(now.getTime() + 1);
     expect(await s.autoReload.due(now)).toContainEqual(expect.objectContaining({ accountId: usdWallet }));
+  });
+
+  it('every row a US app writes carries US: the rule, its loads, a webhook and an add-on order (T-0027)', async () => {
+    const rules = await db.query<{ market: string }>('select distinct market from ops.auto_reload');
+    expect(rules.rows).toEqual([{ market: 'US' }]);
+    const loads = await db.query<{ market: string }>(`select distinct market from ops.transfer where kind = 'load'`);
+    expect(loads.rows).toEqual([{ market: 'US' }]);
+    await app.services.inbound.record({ provider: 'simulator', eventId: 'evt-us-app', signatureOk: true, payload: {}, receivedAt: now });
+    expect((await db.query<{ market: string }>(`select market from ops.inbound_event where event_id = 'evt-us-app'`)).rows).toEqual([{ market: 'US' }]);
+    await db.query(`insert into addons.catalogue_item (sku, kind, provider, vendor_sku, title, attributes, cost_minor, price_minor, currency, synced_at) values ('esim:simulator:US-1GB', 'esim', 'simulator', 'US-1GB', 'US 1 GB', '{}', 100, 150, 'USD', now())`);
+    const order = await app.services.orders.create({ idempotencyKey: 'order-us-app', memberPartyId: member, sku: 'esim:simulator:US-1GB' }, now);
+    expect((await db.query<{ market: string }>('select market from addons.addon_order where id = $1', [order.id])).rows).toEqual([{ market: 'US' }]);
+    const err = await db.query(`insert into ops.auto_reload (id, party_id, account_id, currency, enabled, threshold_minor, target_minor, method, payment_method_id, created_at, updated_at) values ($1, $2, $3, 'USD', true, 1, 2, 'card', 'pm', now(), now())`, [uuidv7(), member, uuidv7()]).catch((e: unknown) => e);
+    expect(isPgError(err, '23514')).toBe(true);
   });
 });

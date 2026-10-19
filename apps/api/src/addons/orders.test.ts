@@ -10,6 +10,7 @@ import { MembershipService } from '../billing/memberships.ts';
 import { PlanService } from '../billing/plans.ts';
 import { AccountService } from '../ledger/accounts.ts';
 import { PostgresLedger } from '../ledger/post.ts';
+import { isPgError } from '../db.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { CreditService } from './credit.ts';
 import { AddonOrderService } from './orders.ts';
@@ -128,5 +129,17 @@ describe('addon_order lifecycle (REQ-MKT-001)', () => {
     const o = await orders.create({ idempotencyKey: 'o-7', memberPartyId, sku: 'insurance:cover-genius:gadget', disclosuresAcknowledged: true }, now);
     expect(o.state).toBe('charged');
     await expect(orders.create({ idempotencyKey: 'o-8', memberPartyId, sku: 'nope' }, now)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('records the market of the API that placed the order; the database refuses an order without one (T-0027)', async () => {
+    const { memberPartyId } = await member(false);
+    const us = await new AddonOrderService(db, ledger, accounts, new CreditService(entitlements), 'US').create({ idempotencyKey: 'o-market-us', memberPartyId, sku: 'esim:airalo:IL-5GB-30D' }, now);
+    const il = await orders.create({ idempotencyKey: 'o-market-il', memberPartyId, sku: 'esim:airalo:IL-5GB-30D' }, now);
+    const r = await db.query<{ id: string; market: string }>('select id, market from addons.addon_order where id = any($1)', [[us.id, il.id]]);
+    expect(Object.fromEntries(r.rows.map((x) => [x.id, x.market]))).toEqual({ [us.id]: 'US', [il.id]: 'IL' });
+    const err = await db
+      .query(`insert into addons.addon_order (id, idempotency_key, member_party_id, sku, kind, provider, state, cost_minor, price_minor, list_price_minor, currency) values ($1, 'o-market-none', $2, 'esim:airalo:IL-5GB-30D', 'esim', 'airalo', 'created', 2000, 2500, 2500, 'USD')`, [uuidv7(), memberPartyId])
+      .catch((e: unknown) => e);
+    expect(isPgError(err, '23514')).toBe(true);
   });
 });

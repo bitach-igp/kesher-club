@@ -1,6 +1,7 @@
 // Inbound event store (T-0204, REQ-LED-003) over ops.inbound_event: every provider webhook is
 // written first, keyed by (provider, event_id), with the raw payload and whether its signature
 // verified. Processing happens after the write and is idempotent, so replay is always safe.
+import type { Market } from '@kesher/ports';
 import { isPgError, PG, type Database } from '../db.ts';
 
 export interface InboundEvent {
@@ -25,14 +26,17 @@ interface Row {
 
 export class InboundEventStore {
   private readonly db: Database;
-  constructor(db: Database) {
+  /** The market whose API this is: every row written carries it (T-0027). createApp always passes it. */
+  private readonly market: Market;
+  constructor(db: Database, market: Market = 'IL') {
     this.db = db;
+    this.market = market;
   }
 
   /** Returns `duplicate: true` when the (provider, eventId) pair was already stored; the stored row wins. */
   async record(e: { provider: string; eventId: string; signatureOk: boolean; payload: unknown; receivedAt: Date }): Promise<{ duplicate: boolean; event: InboundEvent }> {
     try {
-      await this.db.query('insert into ops.inbound_event (provider, event_id, received_at, signature_ok, payload) values ($1, $2, $3, $4, $5)', [e.provider, e.eventId, e.receivedAt, e.signatureOk, JSON.stringify(e.payload)]);
+      await this.db.query('insert into ops.inbound_event (provider, event_id, received_at, signature_ok, payload, market) values ($1, $2, $3, $4, $5, $6)', [e.provider, e.eventId, e.receivedAt, e.signatureOk, JSON.stringify(e.payload), this.market]);
       return { duplicate: false, event: (await this.get(e.provider, e.eventId))! };
     } catch (err) {
       if (isPgError(err, PG.UNIQUE_VIOLATION)) return { duplicate: true, event: (await this.get(e.provider, e.eventId))! };

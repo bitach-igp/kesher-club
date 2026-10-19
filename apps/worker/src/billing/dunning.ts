@@ -3,7 +3,7 @@
 // smart retry (3, 5, 7 days); the third failure pauses collection and the membership; a paid
 // invoice resumes it; the tenth paid invoice ends the academic-year term at period end.
 import { DomainError, uuidv7 } from '@kesher/domain';
-import type { BillingEvent, BillingPort, NotifyPort } from '@kesher/ports';
+import type { BillingEvent, BillingPort, Market, NotifyPort } from '@kesher/ports';
 import type { Database } from '@kesher/api/db';
 import type { Membership, MembershipService } from '@kesher/api/billing/memberships';
 
@@ -29,16 +29,20 @@ export class DunningService {
   private readonly memberships: MembershipService;
   private readonly billing: BillingPort;
   private readonly notify: NotifyPort;
+  /** The worker's market: its dedupe markers in ops.inbound_event carry it like every other row (T-0027). */
+  private readonly market: Market;
   constructor(
     db: Database,
     memberships: MembershipService,
     billing: BillingPort,
     notify: NotifyPort,
+    market: Market = 'IL',
   ) {
     this.db = db;
     this.memberships = memberships;
     this.billing = billing;
     this.notify = notify;
+    this.market = market;
   }
 
   async onBillingEvent(event: BillingEvent, now: Date): Promise<DunningResult> {
@@ -46,7 +50,7 @@ export class DunningService {
     const m = await this.memberships.bySubscriptionRef(subscriptionId);
     if (!m) throw new DomainError('NOT_FOUND', 'No membership for this subscription');
     if (await this.seen(event.eventId)) return this.result(m, await this.paidCount(m.id));
-    await this.db.query(`insert into ops.inbound_event (provider, event_id, signature_ok, payload) values ('stripe', $1, true, $2) on conflict do nothing`, [`dunning:${event.eventId}`, JSON.stringify({ type: event.type })]);
+    await this.db.query(`insert into ops.inbound_event (provider, event_id, signature_ok, payload, market) values ('stripe', $1, true, $2, $3) on conflict do nothing`, [`dunning:${event.eventId}`, JSON.stringify({ type: event.type }), this.market]);
 
     if (event.type === 'invoice.payment_failed') return this.onFailed(m, now);
     if (event.type === 'invoice.paid') return this.onPaid(m, event.eventId, now);
