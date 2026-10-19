@@ -1,9 +1,10 @@
-output "api_url" {
-  value = "https://${local.hosts.api}"
+output "api_urls" {
+  description = "Each market's API, keyed by market (T-0026)."
+  value       = { for k, h in local.market_hosts : k => "https://${h.api}" }
 }
 
 output "hosts" {
-  value = local.hosts
+  value = merge(local.hosts, { markets = local.market_hosts })
 }
 
 output "cluster_name" {

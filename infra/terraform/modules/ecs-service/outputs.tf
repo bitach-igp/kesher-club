@@ -25,3 +25,13 @@ output "target_group_arn" {
 output "log_group_name" {
   value = aws_cloudwatch_log_group.this.name
 }
+
+output "image" {
+  description = "The container image the task runs."
+  value       = var.image
+}
+
+output "environment" {
+  description = "The container's plain environment (secrets travel separately, as ARNs)."
+  value       = var.environment
+}
