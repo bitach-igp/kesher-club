@@ -11,7 +11,10 @@ export class IlPayInitSimulator implements IlPayInitPort {
   private readonly ids = new Sequence('ilp');
   private readonly evIds = new Sequence('evt');
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async initiate(input: { amount: Money; payerHint?: { bankCode: string }; reference: string; returnUrl: string }, key: string): Promise<PayInitiation> {
     if (input.payerHint?.bankCode === '000') throw new IlPayInitError('PROVIDER_UNAVAILABLE', 'Simulated PISP outage');

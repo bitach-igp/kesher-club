@@ -35,11 +35,13 @@ export interface WalletProvisioningPort {
 export type WalletProvisioningErrorCode = 'UNKNOWN_CARD' | 'BAD_SIGNATURE' | 'UNSUPPORTED_WALLET' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class WalletProvisioningError extends Error {
+  readonly code: WalletProvisioningErrorCode;
   constructor(
-    readonly code: WalletProvisioningErrorCode,
+    code: WalletProvisioningErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'WalletProvisioningError';
   }
 }

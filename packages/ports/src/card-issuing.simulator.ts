@@ -13,7 +13,10 @@ export class CardIssuingSimulator implements CardIssuingPort {
   private readonly chIds = new Sequence('ch');
   private readonly authIds = new Sequence('auth');
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async createCardholder(input: { partyId: string; kycSessionId: string }, key: string): Promise<{ cardholderId: string }> {
     if (input.kycSessionId === 'kyc_outage') throw new CardIssuingError('PROVIDER_UNAVAILABLE', 'Simulated processor outage');

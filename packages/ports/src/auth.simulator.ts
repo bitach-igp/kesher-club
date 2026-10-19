@@ -44,7 +44,10 @@ export class AuthSimulator implements AuthPort {
   /** Test hook: the last OTP code issued (a real adapter never exposes this). */
   lastCode: string | undefined;
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async startOtp(phoneE164: string): Promise<OtpStart> {
     if (phoneE164 === SIM_OTP_OUTAGE_PHONE) throw new AuthError('PROVIDER_UNAVAILABLE', 'Simulated SMS outage');
@@ -165,7 +168,10 @@ export class SimPasskeyDevice {
   private counter = 0;
   readonly credentialId = b64u(crypto.getRandomValues(new Uint8Array(16)));
 
-  constructor(readonly origin = `https://${RP_ID}`) {}
+  readonly origin: string;
+  constructor(origin = `https://${RP_ID}`) {
+    this.origin = origin;
+  }
 
   async register(options: PasskeyRegistrationOptions): Promise<PasskeyRegistrationResponse> {
     this.keys = await crypto.subtle.generateKey(ES256, true, ['sign', 'verify']);

@@ -39,11 +39,13 @@ export interface FxPort {
 export type FxErrorCode = 'QUOTE_EXPIRED' | 'UNKNOWN_QUOTE' | 'UNSUPPORTED_PAIR' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class FxError extends Error {
+  readonly code: FxErrorCode;
   constructor(
-    readonly code: FxErrorCode,
+    code: FxErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'FxError';
   }
 }

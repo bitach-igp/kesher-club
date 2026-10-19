@@ -22,7 +22,10 @@ export class InsuranceSimulator implements InsurancePort {
   private readonly ids = new Sequence('inq');
   private readonly polIds = new Sequence('pol');
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async quote(input: { product: string; memberId: string; market: 'US' | 'IL'; startsAt: string; days: number }): Promise<InsuranceQuote> {
     if (input.product === 'outage') throw new InsuranceError('PROVIDER_UNAVAILABLE', 'Simulated insurer outage');

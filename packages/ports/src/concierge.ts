@@ -33,11 +33,13 @@ export interface ConciergePort {
 export type ConciergeErrorCode = 'UNKNOWN_CASE' | 'CASE_CLOSED' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class ConciergeError extends Error {
+  readonly code: ConciergeErrorCode;
   constructor(
-    readonly code: ConciergeErrorCode,
+    code: ConciergeErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'ConciergeError';
   }
 }

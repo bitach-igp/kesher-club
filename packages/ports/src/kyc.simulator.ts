@@ -11,7 +11,10 @@ export class KycSimulator implements KycPort {
   private readonly events = new Map<string, KycDecision & { eventId: string }>();
   private readonly ids = new Sequence('kyc');
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async start(input: { partyId: string; tier: KycTier; market: 'US' | 'IL' }, idempotencyKey: string): Promise<KycSession> {
     if (input.partyId.endsWith('-outage')) throw new KycError('PROVIDER_UNAVAILABLE', 'Simulated KYC outage');

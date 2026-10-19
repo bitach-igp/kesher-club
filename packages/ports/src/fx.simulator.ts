@@ -14,7 +14,10 @@ export class FxSimulator implements FxPort {
   private readonly ids = new Sequence('fxq');
   private readonly convIds = new Sequence('fxc');
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async quote(input: { from: Money; to: Currency; markupBps: bigint }): Promise<FxQuote> {
     if (input.from.currency === input.to) throw new FxError('UNSUPPORTED_PAIR', 'Same currency');

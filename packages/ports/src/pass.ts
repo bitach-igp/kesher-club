@@ -23,11 +23,13 @@ export interface PassPort {
 export type PassErrorCode = 'UNKNOWN_PASS' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class PassError extends Error {
+  readonly code: PassErrorCode;
   constructor(
-    readonly code: PassErrorCode,
+    code: PassErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'PassError';
   }
 }

@@ -33,11 +33,13 @@ export interface FederatedIdPPort {
 export type FederatedIdPErrorCode = 'INVALID_CODE' | 'NONCE_MISMATCH' | 'UNSUPPORTED_PROVIDER' | 'PROVIDER_UNAVAILABLE';
 
 export class FederatedIdPError extends Error {
+  readonly code: FederatedIdPErrorCode;
   constructor(
-    readonly code: FederatedIdPErrorCode,
+    code: FederatedIdPErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'FederatedIdPError';
   }
 }
