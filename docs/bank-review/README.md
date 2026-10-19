@@ -18,7 +18,7 @@ State described: commit `fb4c6de` on branch `claude/practical-babbage-80xevv`, 1
   contract (`README.md:6-8`). The tests cited here run against those simulators and an in-memory
   Postgres.
 - **The workflows run under tests, not yet as a service.** Each money flow is a deterministic function
-  meant to be hosted by a workflow engine (for example `apps/api/src/wallet/loads.ts:17-19`), but the
+  meant to be hosted by a workflow engine (for example `apps/api/src/wallet/loads.ts:18-20`), but the
   API and worker entry points do not start anything yet (`apps/api/src/index.ts:1-2`;
   `apps/worker/src/index.ts:1-2`).
 - **Where the code leaves a question unanswered, the document says so.** Such lines start with

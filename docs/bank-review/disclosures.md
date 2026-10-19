@@ -109,8 +109,8 @@ These are shown before money moves. They are part of the transaction, not versio
 | Catalogue disclosures | any add-on that carries them | the item's disclosures, listed with its price | `apps/api/src/app.ts:177-181` | none found |
 | FX quote | converting between purses | rate, markup, markup in basis points, total, rate version, expiry (30 s) | `apps/api/src/fx/service.ts:24-36`, `:22` | TST-FX-001, `apps/api/src/fx/service.test.ts:63`; `apps/mobile/app/convert/fx.model.test.ts:67` |
 | P2P conversion preview | a send the recipient receives in the other currency | sent amount, received amount, rate, rate version | `apps/api/src/p2p/send.ts:133-148` | `apps/api/src/p2p/send.test.ts:268`; `apps/mobile/app/pay/pay.model.test.ts:271` |
-| Load conversion | a load into the other purse | the amount credited and the rate version | `apps/api/src/wallet/loads.ts:304-314` | TST-WAL-006, `apps/api/src/wallet/loads.test.ts:335` |
-| ACH hold | an ACH load | "on hold until" the release date | `apps/api/src/wallet/loads.ts:310`; `packages/ports/src/funding.ts:15-16` | `apps/api/src/wallet/loads.test.ts:175` |
+| Load conversion | a load into the other purse | the amount credited and the rate version | `apps/api/src/wallet/loads.ts:307-317` | TST-WAL-006, `apps/api/src/wallet/loads.test.ts:335` |
+| ACH hold | an ACH load | "on hold until" the release date | `apps/api/src/wallet/loads.ts:313`; `packages/ports/src/funding.ts:15-16` | `apps/api/src/wallet/loads.test.ts:175` |
 | New-counterparty hold | a first large send | the release time and a cancel option | `apps/api/src/p2p/send.ts:355-363`; `apps/api/src/p2p/holds.ts:1-5` | `apps/mobile/app/pay/pay.model.test.ts:225` |
 | Payout cooling-off | a large first payout | the scheduled date | `apps/api/src/payouts/service.ts:322` | `apps/api/src/payouts/service.test.ts:90` |
 
