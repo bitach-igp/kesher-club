@@ -76,6 +76,7 @@ describe('buildJobs (T-0022)', () => {
       'agent-expire-intents': 900,
       monitoring: 3600,
       'esim-usage': 3600,
+      'card-release-holds': 3600,
       ...Object.fromEntries(Object.keys(NIGHTLY).map((n) => [n, DAILY_TICK_MS / 1000])),
     });
     // The nightly jobs tick every minute and run once a day at their Israel time.
@@ -85,7 +86,7 @@ describe('buildJobs (T-0022)', () => {
   it('gives every job a scope: market jobs sweep their own market\'s rows, club jobs run one at a time in the club (T-0028)', () => {
     const byScope = (scope: string) => jobs.filter((j) => j.scope === scope).map((j) => j.name).sort();
     expect(byScope('market')).toEqual(['ach-release-holds', 'auto-reload', 'card-token-events', 'catalogue-sync', 'esim-usage', 'load-sweep', 'p2p-release-holds', 'payout-sweep', 'webhook-replay']);
-    expect(byScope('club')).toEqual(['agent-expire-intents', 'balance-proof', 'fx-refresh-rates', 'fx-void-stale', 'monitoring', 'p2p-expire-requests', 'send-sweep']);
+    expect(byScope('club')).toEqual(['agent-expire-intents', 'balance-proof', 'card-release-holds', 'fx-refresh-rates', 'fx-void-stale', 'monitoring', 'p2p-expire-requests', 'send-sweep']);
     expect(jobs.every((j) => j.scope === 'market' || j.scope === 'club')).toBe(true);
   });
 
