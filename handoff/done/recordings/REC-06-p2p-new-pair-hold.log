@@ -1,0 +1,30 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/p2p/holds.test.ts > TST-PAY-003 > a first send of ₪600 to a new counterparty holds for 2 h with the money reserved; the sender cancels and the hold is reversed once 340ms
+ ✓ src/p2p/holds.test.ts > TST-PAY-003 > the release settles an expired hold once: pending → the recipient, usage and the notification follow; the pair is then known 341ms
+ ✓ src/p2p/holds.test.ts > TST-PAY-003 > ₪500 exactly, or any dollar amount under $150, is not held; a dollar send over the threshold is 5ms
+ ✓ src/p2p/send.test.ts > POST /transfers > TST-PAY-001: A sends ₪50 to verified B; both wallets move in one journal and B is told within 5 s 435ms
+ ✓ src/p2p/send.test.ts > POST /transfers > TST-PAY-005: two POSTs with one key are one transfer, one journal, one notification; the key of another operation is refused 246ms
+ ✓ src/p2p/send.test.ts > POST /transfers > TST-PAY-002: ₪1,200 against ₪1,000 remaining is refused with the remaining amount; the lower cap binds 465ms
+ ✓ src/p2p/send.test.ts > POST /transfers > TST-PAY-003: a first ₪600 to a new counterparty waits two hours with cancel; the next send to that pair does not 624ms
+ ✓ src/p2p/send.test.ts > POST /transfers > the gate and the eligibility: step-up, flag, key, verified members on both sides, the balance, the body 222ms
+ ✓ src/p2p/send.test.ts > TST-PAY-006: the receiving currency > converts at the club rate with the recipient's plan markup, in one journal through fx_position; limits judge the sent amount; the SMS names the received amount 532ms
+ ✓ src/p2p/send.test.ts > TST-PAY-006: the receiving currency > T-0518: the preview prices exactly as the send does, under the bearer alone, and creates nothing 282ms
+ ✓ src/p2p/send.test.ts > TST-PAY-006: the receiving currency > a converted hold is priced when it begins and releases at that price; no valid rate refuses before anything is created 500ms
+
+ Test Files  2 passed (2)
+      Tests  11 passed (11)
+   Start at  04:12:27
+   Duration  14.17s (transform 4.22s, setup 0ms, import 6.41s, tests 17.05s, environment 1ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/worker
+
+ ✓ src/p2p/release-holds.test.ts > TST-PAY-003: the release job > settles expired holds once, leaves young and cancelled ones alone, and reports a failing one 840ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  04:12:43
+   Duration  8.79s (transform 1.13s, setup 0ms, import 1.69s, tests 6.59s, environment 1ms)
+

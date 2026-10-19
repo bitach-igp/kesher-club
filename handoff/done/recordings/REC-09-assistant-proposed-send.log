@@ -1,0 +1,14 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/intents/service.test.ts > IntentService (REQ-AGT-006) > proposing creates a pending intent with a 24 h expiry and a push to the member; no journal, no transfer 41ms
+ ✓ src/intents/service.test.ts > IntentService (REQ-AGT-006) > approval needs a fresh passkey step-up; then the transfer is created under the member, keyed by the intent 74ms
+ ✓ src/intents/service.test.ts > IntentService (REQ-AGT-006) > a stranger cannot approve, a rejected intent stays rejected, and an expired one cannot be approved 45ms
+ ✓ src/intents/service.test.ts > IntentService (REQ-AGT-006) > a revoked grant blocks approval of its money intents; a recovery hold blocks P2P (REQ-AUTH-003) 39ms
+ ✓ src/intents/service.test.ts > IntentService (REQ-AGT-006) > validates money and payload shape at proposal time 2ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  04:13:52
+   Duration  8.89s (transform 1.00s, setup 0ms, import 1.65s, tests 6.74s, environment 0ms)
+

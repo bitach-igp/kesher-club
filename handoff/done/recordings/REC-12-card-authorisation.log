@@ -1,0 +1,27 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/cards/jit.test.ts > approve (TST-CRD-003) > posts one hold journal wallet → pending keyed by the authorisation id, and a replay answers the same without a second hold 28ms
+ ✓ src/cards/jit.test.ts > declines > INSUFFICIENT_FUNDS when the purse cannot cover the amount; nothing is held 13ms
+ ✓ src/cards/jit.test.ts > declines > LIMIT_EXCEEDED against the daily and monthly limits, counting what is already held today 81ms
+ ✓ src/cards/jit.test.ts > declines > MCC_BLOCKED, COUNTRY_BLOCKED and CHANNEL_BLOCKED from the controls 57ms
+ ✓ src/cards/jit.test.ts > declines > AGENT_NOT_ALLOWED for an agentic token while the mode is off; a human token on the same card is fine 26ms
+ ✓ src/cards/jit.test.ts > declines > CARD_FROZEN for a frozen or inactive card, UNKNOWN_CARD for a closed or unknown one 30ms
+ ✓ src/cards/jit.test.ts > declines > a forged signature is 401 and nothing is decided 9ms
+ ✓ src/cards/jit.test.ts > declines > LIMIT_EXCEEDED when the plan caps card spend and the cap is reached; the entitlement is consumed on approval 83ms
+ ✓ src/cards/jit.test.ts > declines > the velocity rule declines the eleventh approval within a minute 193ms
+ ✓ src/cards/jit.test.ts > fail closed > any throw inside the decision is a TIMEOUT decline, never an approval or a 500 1ms
+ ✓ src/cards/jit.test.ts > fail closed > a dependency slower than the budget is a TIMEOUT decline within the budget 52ms
+ ✓ src/cards/jit.test.ts > fail closed > a non-positive amount is declined without touching the ledger 2ms
+ ✓ src/cards/jit.test.ts > freeze and tokens (TST-CRD-004) > a suspended or deleted wallet token is declined CARD_FROZEN on an active card; an unknown token is the processor’s to know 66ms
+ ✓ src/cards/jit.test.ts > freeze and tokens (TST-CRD-004) > a freeze through the card service declines the next authorisation and suspends the live token; unfreezing restores both 50ms
+ ✓ src/cards/jit.test.ts > agent purchases (TST-CRD-008) > mode off declines AGENT_NOT_ALLOWED and opens nothing; a human token on the same card is fine 24ms
+ ✓ src/cards/jit.test.ts > agent purchases (TST-CRD-008) > the card.agentic flag is the kill switch whatever the mode 5ms
+ ✓ src/cards/jit.test.ts > agent purchases (TST-CRD-008) > under_amount approves below the threshold in the card’s currency only; above it, or in another currency, it asks 52ms
+ ✓ src/cards/jit.test.ts > agent purchases (TST-CRD-008) > with_approval opens one pending intent per token, MCC and amount, declines until approved, then one authorisation spends the approval 66ms
+
+ Test Files  1 passed (1)
+      Tests  18 passed (18)
+   Start at  04:15:18
+   Duration  9.76s (transform 2.28s, setup 0ms, import 3.27s, tests 6.06s, environment 0ms)
+

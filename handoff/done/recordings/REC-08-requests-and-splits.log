@@ -1,0 +1,49 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/p2p/requests.test.ts > TST-PAY-004 > a 4-way split of ₪200 creates 3 requests of ₪50 to the others, once per key; the requester keeps their share 184ms
+ ✓ src/p2p/requests.test.ts > TST-PAY-004 > paying a request runs the send through T-0505 once; the requester is told; a second pay is the same transfer 367ms
+ ✓ src/p2p/requests.test.ts > TST-PAY-004 > a request over the payer's limit or balance is refused by the send and stays open; a big first request to a new pair holds 308ms
+ ✓ src/p2p/requests.test.ts > TST-PAY-004 > declined and 14-day-old requests expire and cannot be paid; cancel is the requester's; the inbox expires on read 182ms
+ ✓ src/p2p/requests.test.ts > TST-PAY-004 > request text is untrusted data: stored and returned verbatim, capped at 140 characters, never acted on 64ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  04:13:27
+   Duration  10.45s (transform 2.16s, setup 0ms, import 3.08s, tests 6.90s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/worker
+
+ ✓ src/p2p/expire-requests.test.ts > the expiry job > expires only what is 14 days old and open, in batches, once 144ms
+
+ Test Files  1 passed (1)
+      Tests  1 passed (1)
+   Start at  04:13:39
+   Duration  7.24s (transform 1.16s, setup 0ms, import 1.74s, tests 5.08s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/mobile
+
+ ✓ app/pay/pay.model.test.ts > pure helpers > reads the member id from the access token without trusting anything else in it 5ms
+ ✓ app/pay/pay.model.test.ts > pure helpers > parses amounts, codes and splits 4ms
+ ✓ app/pay/pay.model.test.ts > pure helpers > turns server refusals into copy with the server's numbers 1ms
+ ✓ app/pay/pay.model.test.ts > pure helpers > sorts the inbox into owed, asked and history 1ms
+ ✓ app/pay/pay.model.test.ts > the send flow (M13 → M15) > validates the recipient and the amount against the balance before moving on, with the flow in the URL 3ms
+ ✓ app/pay/pay.model.test.ts > the send flow (M13 → M15) > the confirm sheet mints one key and keeps it through a step-up and a retry: one transfer 2ms
+ ✓ app/pay/pay.model.test.ts > the send flow (M13 → M15) > over the limit shows the remaining amount the server sent; insufficient funds shows the available; the key survives 2ms
+ ✓ app/pay/pay.model.test.ts > the send flow (M13 → M15) > a held send shows the hold banner with cancel; cancelling returns the money and the notice says so 5ms
+ ✓ app/pay/pay.model.test.ts > currencies (T-0516, REQ-PAY-006) > M14 offers the purses the member holds with what is available in each, and opens on one with enough 1ms
+ ✓ app/pay/pay.model.test.ts > currencies (T-0516, REQ-PAY-006) > M15 shows what the recipient receives and the rate from the server's preview; the sent sheet shows both amounts 3ms
+ ✓ app/pay/pay.model.test.ts > currencies (T-0516, REQ-PAY-006) > a same-currency preview converts nothing; a send keeps the plain notice 1ms
+ ✓ app/pay/pay.model.test.ts > currencies (T-0516, REQ-PAY-006) > rates unavailable reads as such, on the preview and on the send 1ms
+ ✓ app/pay/pay.model.test.ts > recipient from a contact or a code (M13, M19) > contacts denied, unresolved and resolved; a scan denied, unavailable, bad, self, and good with an amount 3ms
+ ✓ app/pay/pay.model.test.ts > requests, splits and the inbox (M16–M18) > a request needs a recipient and an amount; the note goes as written 3ms
+ ✓ app/pay/pay.model.test.ts > requests, splits and the inbox (M16–M18) > split maths: ₪200 with three others is three requests of ₪50; a total too small, or nobody else, is refused 2ms
+ ✓ app/pay/pay.model.test.ts > requests, splits and the inbox (M16–M18) > the inbox pays a request with a key fixed per request and declines once; a step-up on pay is asked for, not an error 1ms
+
+ Test Files  1 passed (1)
+      Tests  16 passed (16)
+   Start at  04:13:49
+   Duration  1.58s (transform 396ms, setup 0ms, import 760ms, tests 44ms, environment 0ms)
+

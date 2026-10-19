@@ -1,0 +1,40 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > the gate: the flag first, then the step-up, then the key 29ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > a $100 Apple Pay load settles at once: partner_settlement → wallet, one journal keyed by the workflow id, the vendor pull keyed by the Idempotency-Key 199ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > a replay with the same key returns the same load and posts nothing; the key of another operation is refused 64ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > validates the body and refuses a stranger's purse; bank methods wait on their own cards 34ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > a funder loads the purse of a member they fund 182ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > a decline fails the transfer with the vendor code and posts nothing 85ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > a vendor outage answers 503 and leaves the transfer submitted; the same key then completes it 107ms
+ ✓ src/wallet/loads.test.ts > the webhook (/hooks/funding) > a second notice of a settled load changes nothing; a forged one is refused; an unknown load is acknowledged 80ms
+ ✓ src/wallet/loads.test.ts > the webhook (/hooks/funding) > an ACH load is held in the pending purse until Thursday; the vendor confirming during the hold leaves it held (REQ-WAL-003) 151ms
+ ✓ src/wallet/loads.test.ts > the webhook (/hooks/funding) > an ACH return during the hold fails the load once and reverses the hold, so the money leaves the pending purse 169ms
+ ✓ src/wallet/loads.test.ts > requires_action (a scripted vendor) > returns the client secret to the member only, then the webhook settles exactly once 131ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > the same purse changes nothing; an unknown purse is refused; with no rate published the load is refused before the vendor 80ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > $100 into the shekel purse at 3.70 credits ₪367.22 after the 75 bps plan markup, in one journal through fx_position and fee income, and a replay keeps its price 294ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > an ACH hold credits the pending shekel purse, and the release moves the credited amount within it 196ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > the purse owner's plan sets the markup: a 25 bps plan keeps more of the load 112ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > a stale rate refuses a converted load before the vendor, while a same-currency load still goes 82ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > an auto-reload rule tops up the purse of its own currency 173ms
+
+ Test Files  1 passed (1)
+      Tests  17 passed (17)
+   Start at  04:10:14
+   Duration  15.29s (transform 4.09s, setup 0ms, import 5.93s, tests 8.61s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/worker
+
+ ✓ src/wallet/load-workflow.test.ts > the run (TST-WAL-002) > settles a $100 Apple Pay load with one journal, the vendor pull keyed by the workflow id; every rerun is a replay 220ms
+ ✓ src/wallet/load-workflow.test.ts > the run (TST-WAL-002) > a decline fails the transfer once with the vendor code; an outage leaves it submitted and the next run with the same key finishes 200ms
+ ✓ src/wallet/load-workflow.test.ts > the run (TST-WAL-002) > an ACH load the vendor holds goes to pending_hold with the release date and the money in pending; a rerun leaves it there 105ms
+ ✓ src/wallet/load-workflow.test.ts > the sweep > asks the vendor about loads submitted past the stale window and applies the answer once; younger or unresolved ones wait 353ms
+ ✓ src/wallet/load-workflow.test.ts > the sweep > a vendor error on one load is reported and does not stop the others 126ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+   Start at  04:10:31
+   Duration  9.15s (transform 1.43s, setup 0ms, import 2.08s, tests 6.60s, environment 0ms)
+

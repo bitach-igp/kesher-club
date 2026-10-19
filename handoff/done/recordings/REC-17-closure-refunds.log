@@ -1,0 +1,17 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/wallet/closure.test.ts > TST-WAL-005 > closing with $30 refunds it to the source of the load and closes only once the refund journal posts 347ms
+ ✓ src/wallet/closure.test.ts > TST-WAL-005 > a zero balance closes at once, with no refund 145ms
+ ✓ src/wallet/closure.test.ts > TST-WAL-005 > refunds newest load first and only up to what each gave; spent money comes back across loads 206ms
+ ✓ src/wallet/closure.test.ts > TST-WAL-005 > holds and an overdrawn purse block the closure; a disabled auto-reload rule is left off 174ms
+ ✓ src/wallet/closure.test.ts > TST-WAL-005 > a refund the vendor refuses blocks the closure with the failure; money with no load behind it waits on a payout 179ms
+ ✓ src/wallet/closure.test.ts > TST-WAL-005 > a refund the vendor takes time over leaves the closure refunding; the next read settles it and closes 284ms
+ ✓ src/wallet/closure.test.ts > TST-WAL-005: a load that converted into the other purse (T-0521) > refunds what is left to the card in dollars at the load's own rate, markup included, through fx_position, and closes 266ms
+ ✓ src/wallet/closure.test.ts > TST-WAL-005: a load that converted into the other purse (T-0521) > with half of it spent, the card gets half of what it paid: ₪183.61 back to $50.00 120ms
+
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+   Start at  04:20:20
+   Duration  9.74s (transform 2.05s, setup 0ms, import 2.94s, tests 6.41s, environment 0ms)
+

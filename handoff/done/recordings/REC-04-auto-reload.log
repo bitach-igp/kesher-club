@@ -1,0 +1,25 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/wallet/auto-reload.test.ts > /accounts/{id}/auto-reload > 404 before a rule exists; setting one needs a fresh step-up and a key; the body is validated against the purse 193ms
+ ✓ src/wallet/auto-reload.test.ts > /accounts/{id}/auto-reload > sets, reads, replaces and disables the rule; a disabled app answers FEATURE_OFF 147ms
+ ✓ src/wallet/auto-reload.test.ts > /accounts/{id}/auto-reload > TST-WAL-004: $45 below a $50 threshold loads $155 to the $200 target once; the window then holds, and the view says until when 383ms
+ ✓ src/wallet/auto-reload.test.ts > /accounts/{id}/auto-reload > above the threshold nothing is claimed; a decline claims the window and is not retried inside it 163ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  04:11:25
+   Duration  11.53s (transform 2.84s, setup 0ms, import 4.07s, tests 6.92s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/worker
+
+ ✓ src/wallet/auto-reload-job.test.ts > TST-WAL-004 > $45 under a $50 threshold loads $155 once; the next pass inside 24 h creates nothing; after the window it tops up again 672ms
+ ✓ src/wallet/auto-reload-job.test.ts > TST-WAL-004 > a declined load counts as the attempt: no retry inside the window, one retry after it; above the threshold nothing is claimed 946ms
+ ✓ src/wallet/auto-reload-job.test.ts > TST-WAL-004 > a vendor outage is reported, claims the window all the same, and leaves the other rules running 532ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  04:11:39
+   Duration  10.51s (transform 1.30s, setup 0ms, import 1.91s, tests 8.11s, environment 0ms)
+

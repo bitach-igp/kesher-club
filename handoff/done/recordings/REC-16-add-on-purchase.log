@@ -1,0 +1,16 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/addons/orders.test.ts > price rules (REQ-MKT-002) > price = max(floor, cost × (1 + margin)) rounded up to .99 7ms
+ ✓ src/addons/orders.test.ts > price rules (REQ-MKT-002) > the lowest-priority matching rule wins 1ms
+ ✓ src/addons/orders.test.ts > addon_order lifecycle (REQ-MKT-001) > a $25 eSIM with $20 cost posts addon_payable $20 and fee_income $5 (TST-MKT-001) 172ms
+ ✓ src/addons/orders.test.ts > addon_order lifecycle (REQ-MKT-001) > with a 5 GB credit, buying 5 GB costs $0 and the club absorbs the cost (TST-ESIM-002) 186ms
+ ✓ src/addons/orders.test.ts > addon_order lifecycle (REQ-MKT-001) > a 10 GB purchase with a 5 GB credit is half price 120ms
+ ✓ src/addons/orders.test.ts > addon_order lifecycle (REQ-MKT-001) > fulfilment states and a failure refund to source with the credit restored (SEQ-10 compensation) 271ms
+ ✓ src/addons/orders.test.ts > addon_order lifecycle (REQ-MKT-001) > insurance needs acknowledged disclosures before payment (REQ-INSR-001) and unknown SKUs are 404 142ms
+
+ Test Files  1 passed (1)
+      Tests  7 passed (7)
+   Start at  04:19:20
+   Duration  6.96s (transform 902ms, setup 0ms, import 1.42s, tests 5.14s, environment 0ms)
+

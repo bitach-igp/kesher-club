@@ -1,0 +1,64 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/transfers/service.test.ts > state machine > follows SEQ-06 and refuses every other transition 16ms
+ ✓ src/transfers/service.test.ts > TransferService > create is idempotent by key and a replay with a different amount returns the original (THR-04) 137ms
+ ✓ src/transfers/service.test.ts > TransferService > every state change appends history and an outbox row in the same transaction 138ms
+ ✓ src/transfers/service.test.ts > TransferService > an invalid transition rolls back everything: no row change, no history, no outbox 56ms
+ ✓ src/transfers/service.test.ts > TransferService > cancel is only possible before submission or while on hold (REQ-PAY-003) 94ms
+ ✓ src/transfers/service.test.ts > TransferService > the publisher drains the outbox at least once and leaves failed rows for the next run 104ms
+ ✓ src/transfers/service.test.ts > TransferService > the app role can run the whole lifecycle (grants on ops.transfer / transfer_event / outbox) 46ms
+ ✓ src/p2p/limits.test.ts > TST-PAY-002 > a member without a plan entitlement is bound by the risk tier: new is ₪1,000 a month 82ms
+ ✓ src/p2p/limits.test.ts > TST-PAY-002 > this month's sends count against the tier, failed ones and last month's do not; a basic plan adds no cap 274ms
+ ✓ src/p2p/limits.test.ts > TST-PAY-002 > the lower of entitlement and tier wins: ₪1,200 against ₪1,000 remaining is refused with ₪1,000 175ms
+ ✓ src/p2p/send.test.ts > POST /transfers > TST-PAY-001: A sends ₪50 to verified B; both wallets move in one journal and B is told within 5 s 370ms
+ ✓ src/p2p/send.test.ts > POST /transfers > TST-PAY-005: two POSTs with one key are one transfer, one journal, one notification; the key of another operation is refused 223ms
+ ✓ src/p2p/send.test.ts > POST /transfers > TST-PAY-002: ₪1,200 against ₪1,000 remaining is refused with the remaining amount; the lower cap binds 436ms
+ ✓ src/p2p/send.test.ts > POST /transfers > TST-PAY-003: a first ₪600 to a new counterparty waits two hours with cancel; the next send to that pair does not 502ms
+ ✓ src/p2p/send.test.ts > POST /transfers > the gate and the eligibility: step-up, flag, key, verified members on both sides, the balance, the body 267ms
+ ✓ src/p2p/send.test.ts > TST-PAY-006: the receiving currency > converts at the club rate with the recipient's plan markup, in one journal through fx_position; limits judge the sent amount; the SMS names the received amount 515ms
+ ✓ src/p2p/send.test.ts > TST-PAY-006: the receiving currency > T-0518: the preview prices exactly as the send does, under the bearer alone, and creates nothing 233ms
+ ✓ src/p2p/send.test.ts > TST-PAY-006: the receiving currency > a converted hold is priced when it begins and releases at that price; no valid rate refuses before anything is created 418ms
+
+ Test Files  3 passed (3)
+      Tests  18 passed (18)
+   Start at  04:11:51
+   Duration  16.09s (transform 4.87s, setup 0ms, import 7.96s, tests 27.40s, environment 1ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/worker
+
+ ✓ src/p2p/send-workflow.test.ts > the run (TST-PAY-001, TST-PAY-005) > moves the money once, tells the recipient once, and every rerun is a replay 238ms
+ ✓ src/p2p/send-workflow.test.ts > the run (TST-PAY-001, TST-PAY-005) > a run that dies after the journal is finished by the sweep with the same journal and one notification 180ms
+ ✓ src/p2p/send-workflow.test.ts > a converted run (TST-PAY-006) > is priced once when it begins; a run that dies after the journal is finished by the sweep at that price after the rate has run out 219ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  04:12:09
+   Duration  10.62s (transform 2.01s, setup 0ms, import 3.03s, tests 7.07s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/mobile
+
+ ✓ app/pay/pay.model.test.ts > pure helpers > reads the member id from the access token without trusting anything else in it 9ms
+ ✓ app/pay/pay.model.test.ts > pure helpers > parses amounts, codes and splits 6ms
+ ✓ app/pay/pay.model.test.ts > pure helpers > turns server refusals into copy with the server's numbers 5ms
+ ✓ app/pay/pay.model.test.ts > pure helpers > sorts the inbox into owed, asked and history 2ms
+ ✓ app/pay/pay.model.test.ts > the send flow (M13 → M15) > validates the recipient and the amount against the balance before moving on, with the flow in the URL 4ms
+ ✓ app/pay/pay.model.test.ts > the send flow (M13 → M15) > the confirm sheet mints one key and keeps it through a step-up and a retry: one transfer 4ms
+ ✓ app/pay/pay.model.test.ts > the send flow (M13 → M15) > over the limit shows the remaining amount the server sent; insufficient funds shows the available; the key survives 2ms
+ ✓ app/pay/pay.model.test.ts > the send flow (M13 → M15) > a held send shows the hold banner with cancel; cancelling returns the money and the notice says so 8ms
+ ✓ app/pay/pay.model.test.ts > currencies (T-0516, REQ-PAY-006) > M14 offers the purses the member holds with what is available in each, and opens on one with enough 3ms
+ ✓ app/pay/pay.model.test.ts > currencies (T-0516, REQ-PAY-006) > M15 shows what the recipient receives and the rate from the server's preview; the sent sheet shows both amounts 1ms
+ ✓ app/pay/pay.model.test.ts > currencies (T-0516, REQ-PAY-006) > a same-currency preview converts nothing; a send keeps the plain notice 1ms
+ ✓ app/pay/pay.model.test.ts > currencies (T-0516, REQ-PAY-006) > rates unavailable reads as such, on the preview and on the send 1ms
+ ✓ app/pay/pay.model.test.ts > recipient from a contact or a code (M13, M19) > contacts denied, unresolved and resolved; a scan denied, unavailable, bad, self, and good with an amount 2ms
+ ✓ app/pay/pay.model.test.ts > requests, splits and the inbox (M16–M18) > a request needs a recipient and an amount; the note goes as written 1ms
+ ✓ app/pay/pay.model.test.ts > requests, splits and the inbox (M16–M18) > split maths: ₪200 with three others is three requests of ₪50; a total too small, or nobody else, is refused 4ms
+ ✓ app/pay/pay.model.test.ts > requests, splits and the inbox (M16–M18) > the inbox pays a request with a key fixed per request and declines once; a step-up on pay is asked for, not an error 3ms
+
+ Test Files  1 passed (1)
+      Tests  16 passed (16)
+   Start at  04:12:22
+   Duration  1.98s (transform 595ms, setup 0ms, import 1.07s, tests 59ms, environment 0ms)
+

@@ -1,0 +1,28 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/payouts/iban.test.ts > checkPayee > accepts a well-formed Israeli IBAN with a plausible name and reports the bank code and last four 4ms
+ ✓ src/payouts/iban.test.ts > checkPayee > refuses a bad checksum, a foreign IBAN, a malformed string, and a name that is missing, too long or not a name 1ms
+ ✓ src/payouts/iban.test.ts > checkPayee > normalises and masks for display 0ms
+ ✓ src/payouts/service.test.ts > TST-PO-001: the payee > refuses a bad checksum, a foreign account, a missing name and a name the bank does not know, before any money 49ms
+ ✓ src/payouts/service.test.ts > TST-PO-002: cooling off, approval, settlement and reversal > a new payee at ₪3,000 is scheduled +24 h in cooling_off with nothing moved; the worker-side resume submits it after 24 h 203ms
+ ✓ src/payouts/service.test.ts > TST-PO-002: cooling off, approval, settlement and reversal > ₪2,000 exactly to a new payee goes straight to the rail; a failed webhook reverses the journal once and pushes to the payer 240ms
+ ✓ src/payouts/service.test.ts > TST-PO-002: cooling off, approval, settlement and reversal > over the two-person threshold the payout waits for a finance approver; approved, it submits; a forged webhook is refused 111ms
+ ✓ src/payouts/service.test.ts > TST-PO-002: cooling off, approval, settlement and reversal > a rail outage leaves the payout retryable under the same key with the money reserved; the flag off answers FEATURE_OFF 65ms
+
+ Test Files  2 passed (2)
+      Tests  8 passed (8)
+   Start at  04:16:19
+   Duration  8.16s (transform 2.38s, setup 0ms, import 3.74s, tests 4.96s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/worker
+
+ ✓ src/payouts/payout-workflow.test.ts > the sweep > submits a payout once its cooling-off ends and once its approval lands; leaves the rest; every rerun is a replay 659ms
+ ✓ src/payouts/payout-workflow.test.ts > the sweep > a failing resume is reported and does not stop the others 363ms
+
+ Test Files  1 passed (1)
+      Tests  2 passed (2)
+   Start at  04:16:29
+   Duration  6.89s (transform 902ms, setup 0ms, import 1.40s, tests 5.07s, environment 0ms)
+

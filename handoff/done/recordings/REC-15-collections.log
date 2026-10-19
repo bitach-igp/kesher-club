@@ -1,0 +1,14 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/institutions/export.test.ts > TST-INS-006: the monthly export > reads the institution's month from the ledger and its totals equal the postings, reversals included; members come from the wallet paid; other institutions and other months stay out 58ms
+ ✓ src/institutions/export.test.ts > TST-INS-006: the monthly export > CSV and XLSX carry the same rows, with the header and the three totals; a formula-shaped name is neutralised in the CSV only, and numbers stay numbers; the zip opens 97ms
+ ✓ src/institutions/collections.test.ts > TST-INS-006 > a paid fee item produces a receipt number and one journal; paying again is the same receipt; the member sees it on the list 215ms
+ ✓ src/institutions/collections.test.ts > TST-INS-006 > a journal the ledger holds without its row (a crash after posting) reads as paid and is caught up by the next pay, with nothing moved twice 47ms
+ ✓ src/institutions/collections.test.ts > TST-INS-006 > the institution's staff list the month with roster names as data and export it; the totals equal the ledger; other staff are refused 48ms
+
+ Test Files  2 passed (2)
+      Tests  5 passed (5)
+   Start at  04:18:20
+   Duration  9.09s (transform 2.78s, setup 0ms, import 4.24s, tests 10.11s, environment 0ms)
+

@@ -1,0 +1,38 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > the gate: the flag first, then the step-up, then the key 15ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > a $100 Apple Pay load settles at once: partner_settlement → wallet, one journal keyed by the workflow id, the vendor pull keyed by the Idempotency-Key 125ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > a replay with the same key returns the same load and posts nothing; the key of another operation is refused 42ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > validates the body and refuses a stranger's purse; bank methods wait on their own cards 19ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > a funder loads the purse of a member they fund 150ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > a decline fails the transfer with the vendor code and posts nothing 64ms
+ ✓ src/wallet/loads.test.ts > POST /loads (TST-WAL-002) > a vendor outage answers 503 and leaves the transfer submitted; the same key then completes it 89ms
+ ✓ src/wallet/loads.test.ts > the webhook (/hooks/funding) > a second notice of a settled load changes nothing; a forged one is refused; an unknown load is acknowledged 81ms
+ ✓ src/wallet/loads.test.ts > the webhook (/hooks/funding) > an ACH load is held in the pending purse until Thursday; the vendor confirming during the hold leaves it held (REQ-WAL-003) 175ms
+ ✓ src/wallet/loads.test.ts > the webhook (/hooks/funding) > an ACH return during the hold fails the load once and reverses the hold, so the money leaves the pending purse 161ms
+ ✓ src/wallet/loads.test.ts > requires_action (a scripted vendor) > returns the client secret to the member only, then the webhook settles exactly once 157ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > the same purse changes nothing; an unknown purse is refused; with no rate published the load is refused before the vendor 60ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > $100 into the shekel purse at 3.70 credits ₪367.22 after the 75 bps plan markup, in one journal through fx_position and fee income, and a replay keeps its price 257ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > an ACH hold credits the pending shekel purse, and the release moves the credited amount within it 151ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > the purse owner's plan sets the markup: a 25 bps plan keeps more of the load 88ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > a stale rate refuses a converted load before the vendor, while a same-currency load still goes 69ms
+ ✓ src/wallet/loads.test.ts > TST-WAL-006: loads into the chosen purse > an auto-reload rule tops up the purse of its own currency 149ms
+
+ Test Files  1 passed (1)
+      Tests  17 passed (17)
+   Start at  04:10:42
+   Duration  12.17s (transform 2.51s, setup 0ms, import 3.55s, tests 8.09s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/worker
+
+ ✓ src/wallet/release-holds.test.ts > TST-WAL-003 > a Monday ACH load is held in pending until Thursday, then released to the wallet exactly once 331ms
+ ✓ src/wallet/release-holds.test.ts > TST-WAL-003 > the vendor confirming during the hold leaves it held; an ACH return reverses the hold and fails the load 136ms
+ ✓ src/wallet/release-holds.test.ts > TST-WAL-003 > a late hold shows as lag over the cycle, and one failing release does not stop the rest 235ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  04:10:57
+   Duration  10.71s (transform 1.73s, setup 0ms, import 2.42s, tests 7.75s, environment 0ms)
+

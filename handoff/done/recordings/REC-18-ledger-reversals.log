@@ -1,0 +1,39 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > posts a balanced journal and materialises balances (REQ-LED-001) 35ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > rejects an unbalanced journal with UNBALANCED and writes nothing: +100 / −99 USD (TST-LED-001) 11ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > the database trigger alone rejects an unbalanced journal, even bypassing post() (TST-LED-001) 6ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > a journal must balance per currency, not across currencies 13ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > the app role cannot UPDATE, DELETE or TRUNCATE ledger rows (TST-LED-002) 38ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > post() itself works under the app role (it only inserts and maintains the balance cache) 15ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > the same idempotency key returns the original journal, even with different postings (TST-LED-003) 16ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > concurrent posts with one key produce exactly one journal 39ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > reverses exactly once and restores balances (invariant 4) 59ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > validates before touching the database: zero legs, single leg, unknown reversal target 3ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > matches the reference ledger on random balanced journals and keeps system totals at zero (invariant 1) 463ms
+ ✓ src/ledger/post.test.ts > PostgresLedger.post() > account_balance equals the sum of postings for every account (invariant 2, the nightly proof query) 2ms
+
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+   Start at  04:21:21
+   Duration  6.44s (transform 235ms, setup 0ms, import 818ms, tests 5.29s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/worker
+
+ ✓ src/recon/recon.test.ts > ReconJob (REQ-LED-004) > matches journals to partner records by external ref with zero breaks 111ms
+ ✓ src/ledger/balance-proof.test.ts > nightly balance proof > passes when every cached balance equals its postings and system totals are zero 86ms
+ ✓ src/ledger/balance-proof.test.ts > nightly balance proof > detects a tampered cache row, reports the exact delta, and opens an ops case (THR-03) 51ms
+ ✓ src/ledger/balance-proof.test.ts > nightly balance proof > rebuildBalanceCache restores the cache from postings (used only by the restore runbook, RUN-08) 73ms
+ ✓ src/ledger/balance-proof.test.ts > nightly balance proof > flags a system-wide non-zero total as a break even when every account reconciles 24ms
+ ✓ src/recon/recon.test.ts > ReconJob (REQ-LED-004) > a 1-cent difference opens a case holding both amounts, before 06:00 IL (TST-LED-004) 37ms
+ ✓ src/recon/recon.test.ts > ReconJob (REQ-LED-004) > reports partner records we never journaled and journals the partner never saw 30ms
+ ✓ src/recon/recon.test.ts > ReconJob (REQ-LED-004) > re-running the same night does not duplicate cases; a new night does 97ms
+ ✓ src/recon/recon.test.ts > ReconJob (REQ-LED-004) > flags a run that finishes after 06:00 Israel time 27ms
+
+ Test Files  2 passed (2)
+      Tests  9 passed (9)
+   Start at  04:21:29
+   Duration  5.97s (transform 593ms, setup 0ms, import 1.31s, tests 9.70s, environment 0ms)
+

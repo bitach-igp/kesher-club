@@ -1,0 +1,31 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/fx/service.test.ts > TST-FX-001: quotes lock for 30 s > a $100 → ₪ quote carries the rate, the markup and the total and expires at +30 s; the same key is the same quote 82ms
+ ✓ src/fx/service.test.ts > TST-FX-001: quotes lock for 30 s > converting an expired quote answers QUOTE_EXPIRED and moves nothing; a fresh quote converts once, under the step-up 218ms
+ ✓ src/fx/service.test.ts > TST-FX-002: the markup on the journal > a 0.75 % plan writes fx_markup_bps=75 on the journal; fx_position and fee_income post, balanced per currency 24ms
+ ✓ src/fx/service.test.ts > TST-FX-002: the markup on the journal > the plan's own markup wins over the default: a 1.25 % plan writes 125 96ms
+ ✓ src/fx/service.test.ts > TST-FX-002: the markup on the journal > an FX outage leaves the conversion retryable under the same key; the flag off answers FEATURE_OFF 80ms
+ ✓ src/fx/service.test.ts > TST-FX-003/004: the club rate behind every quote > a port rate past its 15 minutes refuses the quote with PROVIDER_UNAVAILABLE and creates nothing; the next published rate prices the next quote and reaches the journal 126ms
+ ✓ src/fx/service.test.ts > T-0520: a failed vendor leg closes the conversion (SEQ-08) > a reject fails the conversion and voids the quote with no journal; a replay answers the same 48ms
+ ✓ src/fx/service.test.ts > T-0520: a failed vendor leg closes the conversion (SEQ-08) > an outage stays retryable while the quote lives and settles once; after the quote expired the retry fails it 153ms
+ ✓ src/fx/service.test.ts > T-0520: a failed vendor leg closes the conversion (SEQ-08) > the sweep fails a conversion still submitted once its quote cannot be alive, and only then, once 70ms
+
+ Test Files  1 passed (1)
+      Tests  9 passed (9)
+   Start at  04:14:04
+   Duration  9.35s (transform 2.37s, setup 0ms, import 3.37s, tests 5.46s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/mobile
+
+ ✓ app/convert/fx.model.test.ts > helpers > parses amounts, swaps currencies, formats the markup and counts down 6ms
+ ✓ app/convert/fx.model.test.ts > TST-FX-001/002 at the screen > a $100 quote shows rate, markup and total, counts down 30 s, and converts once under the quote's key 4ms
+ ✓ app/convert/fx.model.test.ts > TST-FX-001/002 at the screen > the countdown reaching zero drops the quote; confirming at zero, or getting QUOTE_EXPIRED, fetches a fresh quote with a fresh key 1ms
+ ✓ app/convert/fx.model.test.ts > TST-FX-001/002 at the screen > a step-up keeps the quote and its key; insufficient funds and bad amounts are refused before any quote 2ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  04:14:15
+   Duration  805ms (transform 261ms, setup 0ms, import 458ms, tests 16ms, environment 0ms)
+

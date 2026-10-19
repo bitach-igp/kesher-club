@@ -1,0 +1,28 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/worker
+
+ ✓ src/allowance/workflow.test.ts > allowance workflow (REQ-INS-003) > dry run previews members and total without moving money 94ms
+ ✓ src/allowance/workflow.test.ts > allowance workflow (REQ-INS-003) > executes once per date: a rerun returns the same journals and pays nobody twice 333ms
+ ✓ src/allowance/workflow.test.ts > allowance workflow (REQ-INS-003) > over ₪5,000 the run waits for a second finance approver (REQ-INS-004), then completes 147ms
+ ✓ src/allowance/workflow.test.ts > allowance workflow (REQ-INS-003) > a failing child is retried 3× then reported; the others still get paid; parallelism is capped at 20 10ms
+
+ Test Files  1 passed (1)
+      Tests  4 passed (4)
+   Start at  04:17:19
+   Duration  6.36s (transform 355ms, setup 0ms, import 714ms, tests 5.18s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/approvals/service.test.ts > approversRequired > two for money flags and bindings; two for institution money over ₪5,000; one otherwise 2ms
+ ✓ src/approvals/service.test.ts > ApprovalService (REQ-INS-004) > an allowance run over ₪5,000 is awaiting_second_approval after the requester, approved after a distinct finance user 72ms
+ ✓ src/approvals/service.test.ts > ApprovalService (REQ-INS-004) > a run under ₪5,000 is approved by the requester alone; the request is idempotent per subject 16ms
+ ✓ src/approvals/service.test.ts > ApprovalService (REQ-INS-004) > a rejection ends the request; an expired request cannot be decided 31ms
+ ✓ src/approvals/service.test.ts > ApprovalService (REQ-ADM-002) > a money flag flip needs two distinct admins; with one approval the flag stays unchanged 38ms
+ ✓ src/approvals/service.test.ts > ApprovalService (REQ-ADM-002) > decisions are insert-only for the app role 5ms
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  04:17:27
+   Duration  6.03s (transform 309ms, setup 0ms, import 660ms, tests 4.93s, environment 0ms)
+

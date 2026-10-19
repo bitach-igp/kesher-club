@@ -1,0 +1,27 @@
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/api
+
+ ✓ src/fx/rates.test.ts > rate arithmetic > parses decimals to fixed point, formats them back, and inverts half-up 5ms
+ ✓ src/fx/rates.test.ts > TST-FX-003: the club rate table > starts empty: no current rate, and a conversion is refused with PROVIDER_UNAVAILABLE 19ms
+ ✓ src/fx/rates.test.ts > TST-FX-003: the club rate table > the worker publishes a port rate valid for 15 minutes; the next one supersedes it; both directions come from one row 38ms
+ ✓ src/fx/rates.test.ts > TST-ADM-003: finance publishes manual rates with two approvers > a finance user proposes 3.7000 with a reason: the proposer is the first approver and the active rate is unchanged 56ms
+ ✓ src/fx/rates.test.ts > TST-ADM-003: finance publishes manual rates with two approvers > a second, distinct finance user activates it: the port rate is superseded, the audit chain has the entry, and quotes would use 3.7000 50ms
+ ✓ src/fx/rates.test.ts > TST-ADM-003: finance publishes manual rates with two approvers > a manual rate holds past the port window and keeps the worker from publishing; a rejected proposal changes nothing 62ms
+
+ Test Files  1 passed (1)
+      Tests  6 passed (6)
+   Start at  04:14:17
+   Duration  7.38s (transform 1.81s, setup 0ms, import 2.63s, tests 4.40s, environment 0ms)
+
+
+ RUN  v4.1.12 C:/dev/bitach/IGP/05-code/_runner/kesher-club/apps/worker
+
+ ✓ src/fx/refresh-rates.test.ts > TST-FX-004: the refresh job > publishes the port mid for 15 minutes, supersedes it on the next cycle, and reports what it did 53ms
+ ✓ src/fx/refresh-rates.test.ts > TST-FX-004: the refresh job > a port outage publishes nothing and is reported; the last rate runs out on its own 7ms
+ ✓ src/fx/refresh-rates.test.ts > TST-FX-004: the refresh job > an active manual rate stops the job from publishing 46ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  04:14:27
+   Duration  5.26s (transform 755ms, setup 0ms, import 1.18s, tests 3.71s, environment 0ms)
+
