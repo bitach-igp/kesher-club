@@ -78,6 +78,16 @@ export default tseslint.config(
   {
     files: ['**/*.js', '**/*.mjs'],
     languageOptions: { globals: { console: 'readonly', process: 'readonly', URL: 'readonly', Buffer: 'readonly', fetch: 'readonly' } },
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          // new URL(import.meta.url).pathname is /C:/... on Windows, which path.resolve turns into C:\\C:\\...
+          selector: "MemberExpression[property.name='pathname'][object.type='NewExpression'] MetaProperty",
+          message: 'Use fileURLToPath(import.meta.url) from node:url: a URL pathname is not a file path on Windows.',
+        },
+      ],
+    },
   },
   {
     files: ['**/*.ts', '**/*.tsx'],
@@ -97,6 +107,11 @@ export default tseslint.config(
         {
           selector: "LogicalExpression[operator='||'][left.object.object.name='process'][left.object.property.name='env']",
           message: 'No fallback for environment variables; read config through the Zod loader (constitution art. 6).',
+        },
+        {
+          // new URL(import.meta.url).pathname is /C:/... on Windows, which path.resolve turns into C:\\C:\\...
+          selector: "MemberExpression[property.name='pathname'][object.type='NewExpression'] MetaProperty",
+          message: 'Use fileURLToPath(import.meta.url) from node:url: a URL pathname is not a file path on Windows.',
         },
       ],
     },

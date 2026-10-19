@@ -1,5 +1,8 @@
 # Runbooks
 
+Security evidence lives beside these: [pentest scope and rules](../security/pentest/README.md) and the
+[SOC 2 evidence index](../security/soc2/README.md), both indexed in [../security/README.md](../security/README.md).
+
 One file per alert that pages, in the format of Tab 3 §11 of the live spec. The alert's definition
 (infra/terraform, the observability stack) links the runbook by its RUN number; nobody should need
 to search for one at 03:00.

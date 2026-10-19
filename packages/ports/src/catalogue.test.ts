@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PORTS } from './catalogue.ts';
+import { fileURLToPath } from 'node:url';
 
-const src = path.dirname(new URL(import.meta.url).pathname);
+const src = path.dirname(fileURLToPath(import.meta.url));
 const flags = new Set((JSON.parse(fs.readFileSync(path.resolve(src, '../../../config/flags.json'), 'utf8')) as { key: string }[]).map((f) => f.key));
 
 describe('port catalogue', () => {

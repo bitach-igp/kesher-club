@@ -313,7 +313,7 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
       parseWebhook: (headers: Record<string, string>, rawBody: string) => sim.parseWebhook(headers, rawBody),
     };
     const s = app.services;
-    return { port, svc: new LoadService({ db, port, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider: 'simulator', rates: s.rates }) };
+    return { port, svc: new LoadService({ db, port, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider: 'simulator', rates: s.rates, markups: s.fx }) };
   };
 
   it('the same purse changes nothing; an unknown purse is refused; with no rate published the load is refused before the vendor', async () => {
@@ -332,59 +332,73 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     expect((await load({ purseCurrency: 'ILS' }, 'load-ils-no-rate-2')).body).toMatchObject({ status: 503, code: 'PROVIDER_UNAVAILABLE' });
   });
 
-  it('$100 into the shekel purse at 3.70 credits ₪370.00 in one journal through fx_position, and a replay keeps its price', async () => {
+  it('$100 into the shekel purse at 3.70 credits ₪367.22 after the 75 bps plan markup, in one journal through fx_position and fee income, and a replay keeps its price', async () => {
     const v1 = (await app.services.rates.publishFromPort('USD/ILS', 3_700_000n, NOW))!;
     const usdBefore = await purse('USD');
     const ilsBefore = await purse('ILS');
     const r = await load({ purseCurrency: 'ILS' }, 'load-into-ils-1');
     expect(r.status).toBe(201);
-    expect(r.body).toEqual({ id: expect.any(String), state: 'settled', amount: USD_100, credited: { minor: '37000', currency: 'ILS' }, rateVersion: v1.version });
-    expect((await purse('ILS')).available).toBe(ilsBefore.available + 37_000n);
+    expect(r.body).toEqual({ id: expect.any(String), state: 'settled', amount: USD_100, credited: { minor: '36722', currency: 'ILS' }, rateVersion: v1.version });
+    expect((await purse('ILS')).available).toBe(ilsBefore.available + 36_722n);
     expect(await purse('USD')).toEqual(usdBefore);
 
     expect(await postingsOf(settleKey('load-into-ils-1'))).toEqual([
       { type: 'fx_position', currency: 'ILS', amount_minor: '37000' },
       { type: 'partner_settlement', currency: 'USD', amount_minor: '10000' },
+      { type: 'fee_income', currency: 'ILS', amount_minor: '-278' },
       { type: 'fx_position', currency: 'USD', amount_minor: '-10000' },
-      { type: 'wallet', currency: 'ILS', amount_minor: '-37000' },
+      { type: 'wallet', currency: 'ILS', amount_minor: '-36722' },
     ]);
-    expect(await metadataOf(settleKey('load-into-ils-1'))).toMatchObject({ fx_rate_version: v1.version, fx_rate_id: v1.id, rate: '3.700000', loaded: USD_100, credited: { minor: '37000', currency: 'ILS' } });
+    expect(await metadataOf(settleKey('load-into-ils-1'))).toMatchObject({ fx_rate_version: v1.version, fx_rate_id: v1.id, rate: '3.700000', fx_markup_bps: 75, loaded: USD_100, credited: { minor: '36722', currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' } });
     const t = (await app.services.transfers.byKey('load-into-ils-1'))!;
-    expect(t.conversion).toMatchObject({ received: money(37_000n, 'ILS'), rateVersion: v1.version, markupBps: 0n });
+    expect(t.conversion).toMatchObject({ received: money(36_722n, 'ILS'), rateVersion: v1.version, markupBps: 75n });
 
     // A new rate does not re-price a replay; the next load takes it.
     const v2 = (await app.services.rates.publishFromPort('USD/ILS', 3_800_000n, NOW))!;
     expect(v2.version).toBeGreaterThan(v1.version);
-    expect((await load({ purseCurrency: 'ILS' }, 'load-into-ils-1')).body).toMatchObject({ credited: { minor: '37000', currency: 'ILS' }, rateVersion: v1.version });
+    expect((await load({ purseCurrency: 'ILS' }, 'load-into-ils-1')).body).toMatchObject({ credited: { minor: '36722', currency: 'ILS' }, rateVersion: v1.version });
     expect(await journals('load-into-ils-1')).toBe(1);
-    expect((await purse('ILS')).available).toBe(ilsBefore.available + 37_000n);
+    expect((await purse('ILS')).available).toBe(ilsBefore.available + 36_722n);
 
-    // ₪370.00 into the dollar purse: the inverse rate, rounded half up.
+    // ₪370.00 into the dollar purse: the inverse rate, rounded half up, gives $97.37 gross; less 75 bps ($0.73).
     const back = await load({ amount: { minor: '37000', currency: 'ILS' }, purseCurrency: 'USD' }, 'load-into-usd-1');
-    expect(back.body).toMatchObject({ state: 'settled', amount: { minor: '37000', currency: 'ILS' }, credited: { minor: '9737', currency: 'USD' }, rateVersion: v2.version });
+    expect(back.body).toMatchObject({ state: 'settled', amount: { minor: '37000', currency: 'ILS' }, credited: { minor: '9664', currency: 'USD' }, rateVersion: v2.version });
   });
 
   it('an ACH hold credits the pending shekel purse, and the release moves the credited amount within it', async () => {
     const key = 'load-ach-ils-1';
     const before = await purse('ILS');
     const r = await load({ method: 'ach', paymentMethodId: 'pm_bank', purseCurrency: 'ILS' }, key);
-    expect(r.body).toMatchObject({ state: 'on_hold', holdUntil: '2026-11-05', amount: USD_100, credited: { minor: '38000', currency: 'ILS' } });
-    expect(await purse('ILS')).toEqual({ available: before.available, holds: before.holds + 38_000n });
+    expect(r.body).toMatchObject({ state: 'on_hold', holdUntil: '2026-11-05', amount: USD_100, credited: { minor: '37715', currency: 'ILS' } });
+    expect(await purse('ILS')).toEqual({ available: before.available, holds: before.holds + 37_715n });
     expect(await postingsOf(holdKey(key))).toEqual([
       { type: 'fx_position', currency: 'ILS', amount_minor: '38000' },
       { type: 'partner_settlement', currency: 'USD', amount_minor: '10000' },
+      { type: 'fee_income', currency: 'ILS', amount_minor: '-285' },
       { type: 'fx_position', currency: 'USD', amount_minor: '-10000' },
-      { type: 'pending', currency: 'ILS', amount_minor: '-38000' },
+      { type: 'pending', currency: 'ILS', amount_minor: '-37715' },
     ]);
 
     const thursday = new Date('2026-11-05T09:00:00Z');
     const released = await app.services.loads.release((await app.services.transfers.byKey(key))!, thursday);
     expect(released.state).toBe('settled');
-    expect(await purse('ILS')).toEqual({ available: before.available + 38_000n, holds: before.holds });
+    expect(await purse('ILS')).toEqual({ available: before.available + 37_715n, holds: before.holds });
     expect(await postingsOf(releaseKey(key))).toEqual([
-      { type: 'pending', currency: 'ILS', amount_minor: '38000' },
-      { type: 'wallet', currency: 'ILS', amount_minor: '-38000' },
+      { type: 'pending', currency: 'ILS', amount_minor: '37715' },
+      { type: 'wallet', currency: 'ILS', amount_minor: '-37715' },
     ]);
+  });
+
+  it('the purse owner\'s plan sets the markup: a 25 bps plan keeps more of the load', async () => {
+    const kid = uuidv7(NOW);
+    await app.services.plans.ensurePlan('lean', 'Kesher Lean');
+    await app.services.plans.createVersion({ planCode: 'lean', price: money(9_900n, 'USD'), termMonths: 12, entitlements: {}, fxMarkupBps: 25n, effectiveFrom: new Date('2026-01-01T00:00:00Z') });
+    const m = await app.services.memberships.create({ idempotencyKey: 'm-kid-lean', memberPartyId: kid, funderPartyId: member, funderEmail: 'f@example.com', planCode: 'lean' }, NOW);
+    await app.services.memberships.setStatus(m.id, 'active', NOW);
+    // $100 at 3.80 is ₪380.00 gross; 25 bps is ₪0.95.
+    const r = await load({ memberPartyId: kid, purseCurrency: 'ILS' }, 'load-kid-lean-1');
+    expect(r.body).toMatchObject({ state: 'settled', credited: { minor: '37905', currency: 'ILS' } });
+    expect(await metadataOf(settleKey('load-kid-lean-1'))).toMatchObject({ fx_markup_bps: 25, markup: { minor: '95', currency: 'ILS' } });
   });
 
   it('a stale rate refuses a converted load before the vendor, while a same-currency load still goes', async () => {
