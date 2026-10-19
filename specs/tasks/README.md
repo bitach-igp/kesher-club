@@ -19,6 +19,7 @@
 | [T-0015](T-0015.md) | SETUP | File paths from import.meta.url work on Windows | — | 9 |
 | [T-0016](T-0016.md) | SETUP | Simulators boot under Node strip-only type stripping (no parameter properties in runtime packages) | — | 9 |
 | [T-0017](T-0017.md) | SETUP | api, worker and adapters load under Node strip-only type stripping (after T-0016) | — | 9 |
+| [T-0018](T-0018.md) | SETUP | erasableSyntaxOnly from tsconfig.base.json for every package (after T-0017) | — | 9 |
 | [T-0020](T-0020.md) | SETUP | Postgres driver binding and the process config | — | 9 |
 | [T-0021](T-0021.md) | SETUP | The API runs as a process | — | 9 |
 | [T-0022](T-0022.md) | SETUP | The worker runs every sweep on its cycle | — | 9 |

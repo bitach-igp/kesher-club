@@ -33,11 +33,15 @@ export interface RequestOptions<P extends Path, M extends HttpMethod> {
 }
 
 export class ApiError extends Error {
+  readonly status: number;
+  readonly problem: Problem;
   constructor(
-    readonly status: number,
-    readonly problem: Problem,
+    status: number,
+    problem: Problem,
   ) {
     super(problem.detail ?? problem.title);
+    this.status = status;
+    this.problem = problem;
     this.name = 'ApiError';
   }
   get code(): ErrorCode | Problem['code'] {
