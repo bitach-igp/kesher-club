@@ -40,7 +40,9 @@ export function looksLikeStaffToken(token: string): boolean {
 export class StaffTokenVerifier {
   private readonly keys: ReturnType<typeof createLocalJWKSet>;
 
-  constructor(private readonly opts: StaffVerifierOptions) {
+  private readonly opts: StaffVerifierOptions;
+  constructor(opts: StaffVerifierOptions) {
+    this.opts = opts;
     if (opts.jwks.length === 0) throw new Error('Staff JWKS is empty');
     this.keys = createLocalJWKSet({ keys: [...opts.jwks] });
   }

@@ -74,7 +74,10 @@ interface Row {
 }
 
 export class TransferService {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   /** Idempotent by key: a replayed create returns the existing transfer unchanged (REQ-PAY-005). */
   async create(input: CreateTransferInput, now: Date): Promise<Transfer> {

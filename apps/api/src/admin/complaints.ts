@@ -89,10 +89,15 @@ const toComplaint = (r: Row): Complaint => ({
 });
 
 export class ComplaintService {
+  private readonly db: Database;
+  private readonly audit: AuditService;
   constructor(
-    private readonly db: Database,
-    private readonly audit: AuditService,
-  ) {}
+    db: Database,
+    audit: AuditService,
+  ) {
+    this.db = db;
+    this.audit = audit;
+  }
 
   /** Every complaint, open ones first by age, then closed ones newest first. This is also the export. */
   async list(): Promise<Complaint[]> {

@@ -20,12 +20,21 @@ export interface PushTokenLookup {
 }
 
 export class EsimUsagePoller {
+  private readonly db: Database;
+  private readonly esim: (provider: string) => EsimPort;
+  private readonly notify: NotifyPort;
+  private readonly pushToken: PushTokenLookup;
   constructor(
-    private readonly db: Database,
-    private readonly esim: (provider: string) => EsimPort,
-    private readonly notify: NotifyPort,
-    private readonly pushToken: PushTokenLookup,
-  ) {}
+    db: Database,
+    esim: (provider: string) => EsimPort,
+    notify: NotifyPort,
+    pushToken: PushTokenLookup,
+  ) {
+    this.db = db;
+    this.esim = esim;
+    this.notify = notify;
+    this.pushToken = pushToken;
+  }
 
   async poll(now: Date): Promise<UsagePollReport> {
     const orders = await this.db.query<{ id: string; member_party_id: string; provider: string; fulfilment: { iccid: string; expiresAt?: string } }>(

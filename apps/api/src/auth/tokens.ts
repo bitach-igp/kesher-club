@@ -45,11 +45,17 @@ export interface TokenServiceOptions {
 
 export class TokenService {
   private readonly clock: Clock;
+  private readonly repo: IdentityRepository;
+  private readonly key: SigningKey;
+  private readonly opts: TokenServiceOptions;
   constructor(
-    private readonly repo: IdentityRepository,
-    private readonly key: SigningKey,
-    private readonly opts: TokenServiceOptions,
+    repo: IdentityRepository,
+    key: SigningKey,
+    opts: TokenServiceOptions,
   ) {
+    this.repo = repo;
+    this.key = key;
+    this.opts = opts;
     this.clock = opts.clock ?? fixedClock(new Date().toISOString());
   }
 

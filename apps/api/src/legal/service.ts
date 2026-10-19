@@ -59,7 +59,10 @@ interface ConsentRow {
 }
 
 export class LegalService {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   async publish(input: { docKey: DocKey; title: Localised; body: Localised; material: boolean; changeSummary?: Localised; publishedBy: string; effectiveAt: Date }): Promise<DocumentVersion> {
     if (!input.body.en.trim() || !input.body.he.trim()) throw new DomainError('VALIDATION_FAILED', 'Both en and he bodies are required (ui.hebrew)');

@@ -23,7 +23,9 @@ export class TwilioNotifyAdapter implements NotifyPort {
   private readonly idem = new IdempotencyStore<Delivery>();
   private readonly known = new Map<string, Delivery>();
 
-  constructor(private readonly opts: TwilioOptions) {
+  private readonly opts: TwilioOptions;
+  constructor(opts: TwilioOptions) {
+    this.opts = opts;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.base = opts.baseUrl ?? 'https://api.twilio.com';
   }

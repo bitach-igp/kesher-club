@@ -39,7 +39,10 @@ interface Row {
 }
 
 export class PlanService {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   async ensurePlan(code: string, name: string): Promise<void> {
     await this.db.query('insert into billing.plan (code, name) values ($1, $2) on conflict (code) do nothing', [code, name]);

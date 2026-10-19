@@ -34,7 +34,8 @@ export interface AppleFederatedIdPOptions {
 export class AppleFederatedIdPAdapter extends OidcFederatedIdPAdapter {
   private signingKey: Promise<CryptoKey> | undefined;
 
-  constructor(private readonly apple: AppleFederatedIdPOptions) {
+  private readonly apple: AppleFederatedIdPOptions;
+  constructor(apple: AppleFederatedIdPOptions) {
     for (const k of ['clientId', 'teamId', 'keyId', 'privateKeyPem'] as const) {
       if (!apple[k]) throw new Error(`Apple federated IdP: ${k} is required`);
     }
@@ -48,6 +49,7 @@ export class AppleFederatedIdPAdapter extends OidcFederatedIdPAdapter {
       ...(apple.clock ? { clock: apple.clock } : {}),
       ...(apple.jwksMaxAgeMs !== undefined ? { jwksMaxAgeMs: apple.jwksMaxAgeMs } : {}),
     });
+    this.apple = apple;
   }
 
   /** Apple's client_secret: ES256 JWT, iss = team id, sub = client id, aud = Apple, kid in the header. */

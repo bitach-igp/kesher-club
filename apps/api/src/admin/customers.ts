@@ -61,7 +61,10 @@ const likeContains = (q: string): string => `%${q.replace(/[\\%_]/g, (c) => `\\$
 const iso = (v: string | Date): string => new Date(v).toISOString();
 
 export class CustomerReadModel {
-  constructor(private readonly d: CustomerReadModelDeps) {}
+  private readonly d: CustomerReadModelDeps;
+  constructor(d: CustomerReadModelDeps) {
+    this.d = d;
+  }
 
   /**
    * Phone (E.164, exact), party id (exact), email (exact, via the roster invite hash) or roster name

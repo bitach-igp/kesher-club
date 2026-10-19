@@ -55,13 +55,24 @@ export class PasskeyService {
   /** Domain events for notifications (consumed by the outbox / NotifyService). */
   readonly events: AuthEvent[] = [];
 
+  private readonly port: AuthPort;
+  private readonly repo: IdentityRepository;
+  private readonly tokens: TokenService;
+  private readonly clock: Clock;
+  private readonly otp: OtpService | undefined;
   constructor(
-    private readonly port: AuthPort,
-    private readonly repo: IdentityRepository,
-    private readonly tokens: TokenService,
-    private readonly clock: Clock,
-    private readonly otp?: OtpService,
-  ) {}
+    port: AuthPort,
+    repo: IdentityRepository,
+    tokens: TokenService,
+    clock: Clock,
+    otp?: OtpService,
+  ) {
+    this.port = port;
+    this.repo = repo;
+    this.tokens = tokens;
+    this.clock = clock;
+    this.otp = otp;
+  }
 
   async register(input: RegisterInput): Promise<RegisterResult> {
     const now = this.clock.now();

@@ -34,10 +34,15 @@ export interface Purse {
 }
 
 export class AccountService {
+  private readonly db: Database;
+  private readonly ledger: PostgresLedger;
   constructor(
-    private readonly db: Database,
-    private readonly ledger: PostgresLedger,
-  ) {}
+    db: Database,
+    ledger: PostgresLedger,
+  ) {
+    this.db = db;
+    this.ledger = ledger;
+  }
 
   /** Creates wallet + pending in every currency; safe to call again (unique constraint). */
   async provisionMember(partyId: string): Promise<LedgerAccount[]> {

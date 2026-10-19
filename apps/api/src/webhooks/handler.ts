@@ -17,7 +17,10 @@ export interface ProviderBinding {
 
 export class WebhookRouter {
   private readonly providers = new Map<string, ProviderBinding>();
-  constructor(private readonly store: InboundEventStore) {}
+  private readonly store: InboundEventStore;
+  constructor(store: InboundEventStore) {
+    this.store = store;
+  }
 
   bind(provider: string, binding: ProviderBinding): void {
     this.providers.set(provider, binding);

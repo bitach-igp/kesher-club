@@ -16,11 +16,18 @@ export class StepUpService {
   private readonly issued = new Map<string, { tokenHash: string; expiresAt: number }>();
   private readonly secret = randomBytes(32);
 
+  private readonly port: AuthPort;
+  private readonly repo: IdentityRepository;
+  private readonly clock: Clock;
   constructor(
-    private readonly port: AuthPort,
-    private readonly repo: IdentityRepository,
-    private readonly clock: Clock,
-  ) {}
+    port: AuthPort,
+    repo: IdentityRepository,
+    clock: Clock,
+  ) {
+    this.port = port;
+    this.repo = repo;
+    this.clock = clock;
+  }
 
   async start(principal: Principal): Promise<{ options: PasskeyAuthenticationOptions }> {
     const creds = await this.repo.listPasskeys(principal.partyId);

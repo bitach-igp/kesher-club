@@ -21,10 +21,15 @@ export async function enqueue(tx: SqlClient, aggregate: string, aggregateId: str
 }
 
 export class OutboxPublisher {
+  private readonly db: Database;
+  private readonly sink: OutboxSink;
   constructor(
-    private readonly db: Database,
-    private readonly sink: OutboxSink,
-  ) {}
+    db: Database,
+    sink: OutboxSink,
+  ) {
+    this.db = db;
+    this.sink = sink;
+  }
 
   /** Publishes up to `limit` unpublished rows in id order. A sink failure leaves the row unpublished for the next run (at-least-once). */
   async publishBatch(limit = 100): Promise<{ published: number; failed: number }> {

@@ -31,7 +31,10 @@ const E164 = /^\+[1-9]\d{6,14}$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export class RosterService {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   async import(input: { idempotencyKey: string; institutionId: string; csv: string; mapping: Mapping; commit: boolean; createdBy: string }, now: Date): Promise<ImportResult> {
     const existing = await this.byKey(input.idempotencyKey);

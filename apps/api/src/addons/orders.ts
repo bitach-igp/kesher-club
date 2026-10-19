@@ -76,12 +76,21 @@ interface Row {
 }
 
 export class AddonOrderService {
+  private readonly db: Database;
+  private readonly ledger: PostgresLedger;
+  private readonly accounts: AccountService;
+  private readonly credit: CreditService;
   constructor(
-    private readonly db: Database,
-    private readonly ledger: PostgresLedger,
-    private readonly accounts: AccountService,
-    private readonly credit: CreditService,
-  ) {}
+    db: Database,
+    ledger: PostgresLedger,
+    accounts: AccountService,
+    credit: CreditService,
+  ) {
+    this.db = db;
+    this.ledger = ledger;
+    this.accounts = accounts;
+    this.credit = credit;
+  }
 
   async catalogueItem(sku: string, db: SqlClient = this.db): Promise<CatalogueItem | undefined> {
     const r = await db.query<{ sku: string; kind: CatalogueItem['kind']; provider: string; vendor_sku: string; title: string; attributes: Record<string, unknown>; cost_minor: string; price_minor: string; currency: Currency; active: boolean }>('select * from addons.catalogue_item where sku = $1', [sku]);

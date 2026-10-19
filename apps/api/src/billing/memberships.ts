@@ -30,11 +30,18 @@ interface Row {
 }
 
 export class MembershipService {
+  private readonly db: Database;
+  private readonly plans: PlanService;
+  private readonly billing: BillingPort;
   constructor(
-    private readonly db: Database,
-    private readonly plans: PlanService,
-    private readonly billing: BillingPort,
-  ) {}
+    db: Database,
+    plans: PlanService,
+    billing: BillingPort,
+  ) {
+    this.db = db;
+    this.plans = plans;
+    this.billing = billing;
+  }
 
   async create(input: { idempotencyKey: string; memberPartyId: string; funderPartyId: string; funderEmail: string; planCode: string; termMonths?: number }, now: Date): Promise<Membership> {
     const existing = await this.byKey(input.idempotencyKey);

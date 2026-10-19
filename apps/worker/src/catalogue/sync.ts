@@ -25,10 +25,15 @@ export interface InsuranceProduct {
 }
 
 export class CatalogueSync {
+  private readonly db: Database;
+  private readonly clock: () => Date;
   constructor(
-    private readonly db: Database,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    db: Database,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.db = db;
+    this.clock = clock;
+  }
 
   async rules(): Promise<PriceRule[]> {
     const r = await this.db.query<{ id: string; kind: PriceRule['kind']; provider: string; sku_pattern: string; margin_bps: number; floor_minor: string; currency: Currency; round_to_99: boolean; priority: number }>('select * from addons.price_rule where active order by priority');

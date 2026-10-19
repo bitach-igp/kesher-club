@@ -72,14 +72,27 @@ interface Row {
 }
 
 export class PhysicalCardService {
+  private readonly db: Database;
+  private readonly port: CardIssuingPort;
+  private readonly kyc: KycService;
+  private readonly cards: CardService;
+  private readonly flags: FeatureFlags;
+  private readonly processor: string;
   constructor(
-    private readonly db: Database,
-    private readonly port: CardIssuingPort,
-    private readonly kyc: KycService,
-    private readonly cards: CardService,
-    private readonly flags: FeatureFlags,
-    private readonly processor = 'simulator',
-  ) {}
+    db: Database,
+    port: CardIssuingPort,
+    kyc: KycService,
+    cards: CardService,
+    flags: FeatureFlags,
+    processor = 'simulator',
+  ) {
+    this.db = db;
+    this.port = port;
+    this.kyc = kyc;
+    this.cards = cards;
+    this.flags = flags;
+    this.processor = processor;
+  }
 
   /**
    * Orders one physical card for the member: flag on, T2 approved, a valid US or IL address, and no

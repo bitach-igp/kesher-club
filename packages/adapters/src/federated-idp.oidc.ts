@@ -46,10 +46,14 @@ export abstract class OidcFederatedIdPAdapter implements FederatedIdPPort {
   private readonly revocations = new IdempotencyStore<{ revoked: true; auditRef: string }>();
   private jwks: { set: ReturnType<typeof createLocalJWKSet>; fetchedAt: number } | undefined;
 
+  readonly provider: FederatedProvider;
+  protected readonly opts: OidcAdapterOptions;
   protected constructor(
-    readonly provider: FederatedProvider,
-    protected readonly opts: OidcAdapterOptions,
+    provider: FederatedProvider,
+    opts: OidcAdapterOptions,
   ) {
+    this.provider = provider;
+    this.opts = opts;
     if (!opts.clientId) throw new Error(`${provider} federated IdP: clientId is required`);
     this.fetch = opts.fetch ?? ((input, init) => globalThis.fetch(input, init));
     this.clock = opts.clock ?? systemClock;
@@ -186,7 +190,10 @@ export const truthyClaim = (v: unknown): boolean => v === true || v === 'true';
  * Apple and Google together (REQ-AUTH-004: both or neither).
  */
 export class FederatedIdPRouter implements FederatedIdPPort {
-  constructor(private readonly adapters: Readonly<Record<FederatedProvider, FederatedIdPPort>>) {}
+  private readonly adapters: Readonly<Record<FederatedProvider, FederatedIdPPort>>;
+  constructor(adapters: Readonly<Record<FederatedProvider, FederatedIdPPort>>) {
+    this.adapters = adapters;
+  }
 
   async authorizationUrl(provider: FederatedProvider, input: { state: string; nonce: string; redirectUri: string }): Promise<FederatedAuthorization> {
     return this.pick(provider).authorizationUrl(provider, input);

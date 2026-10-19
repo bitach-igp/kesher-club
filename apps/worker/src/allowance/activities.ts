@@ -10,14 +10,27 @@ import type { OutboxSink } from '@kesher/api/transfers/outbox';
 import type { AllowanceActivities, Preview, RunSummary } from './workflow.ts';
 
 export class PostgresAllowanceActivities implements AllowanceActivities {
+  private readonly db: Database;
+  private readonly ledger: PostgresLedger;
+  private readonly accounts: AccountService;
+  private readonly approvals: ApprovalService;
+  private readonly events: OutboxSink;
+  private readonly clock: () => Date;
   constructor(
-    private readonly db: Database,
-    private readonly ledger: PostgresLedger,
-    private readonly accounts: AccountService,
-    private readonly approvals: ApprovalService,
-    private readonly events: OutboxSink,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    db: Database,
+    ledger: PostgresLedger,
+    accounts: AccountService,
+    approvals: ApprovalService,
+    events: OutboxSink,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.db = db;
+    this.ledger = ledger;
+    this.accounts = accounts;
+    this.approvals = approvals;
+    this.events = events;
+    this.clock = clock;
+  }
 
   async loadSchedule(scheduleId: string) {
     const r = await this.db.query<{ institution_id: string; amount_minor: string; currency: Currency; member_filter: string[]; active: boolean }>('select institution_id, amount_minor::text as amount_minor, currency, member_filter, active from org.allowance_schedule where id = $1', [scheduleId]);

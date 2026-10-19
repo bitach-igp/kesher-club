@@ -22,7 +22,10 @@ export interface ProofReport {
 }
 
 export class BalanceProof {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   async run(now: Date): Promise<ProofReport> {
     const drift = await this.db.query<{ account_id: string; cached: string; posted: string }>(

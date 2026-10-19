@@ -5,7 +5,10 @@ import { DEFAULT_PREFERENCES, type Category, type Channel, type PreferenceStore,
 import type { Database } from '../db.ts';
 
 export class PostgresPreferenceStore implements PreferenceStore {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   async get(partyId: string): Promise<Preferences | undefined> {
     const r = await this.db.query<{ channels: Partial<Record<Category, Channel[]>>; opt_out: string[]; time_zone: string; quiet_start: string; quiet_end: string }>('select * from notify.preference where party_id = $1', [partyId]);

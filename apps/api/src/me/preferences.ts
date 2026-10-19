@@ -16,7 +16,10 @@ export interface Preferences {
 }
 
 export class PreferenceService {
-  constructor(private readonly db: Database) {}
+  private readonly db: Database;
+  constructor(db: Database) {
+    this.db = db;
+  }
 
   async get(partyId: string): Promise<Preferences> {
     const r = await this.db.query<{ receive_currency: ReceiveCurrency; updated_at: string | Date }>('select receive_currency, updated_at from identity.member_preference where party_id = $1', [partyId]);

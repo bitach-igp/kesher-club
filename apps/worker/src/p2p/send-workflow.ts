@@ -17,10 +17,15 @@ export interface SweepReport {
 }
 
 export class SendWorkflow {
+  private readonly send: P2pSendService;
+  private readonly clock: () => Date;
   constructor(
-    private readonly send: P2pSendService,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    send: P2pSendService,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.send = send;
+    this.clock = clock;
+  }
 
   /** Starts, or resumes, the run whose id is `workflowId`. */
   run(input: SendInput, workflowId: string): Promise<SendRun> {

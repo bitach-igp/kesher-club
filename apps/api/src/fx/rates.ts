@@ -106,11 +106,18 @@ export const invert = (midScaled: bigint): bigint => {
 };
 
 export class RateService {
+  private readonly db: Database;
+  private readonly approvals: ApprovalService;
+  private readonly audit: AuditService;
   constructor(
-    private readonly db: Database,
-    private readonly approvals: ApprovalService,
-    private readonly audit: AuditService,
-  ) {}
+    db: Database,
+    approvals: ApprovalService,
+    audit: AuditService,
+  ) {
+    this.db = db;
+    this.approvals = approvals;
+    this.audit = audit;
+  }
 
   /** The active rate for the pair, if it is valid now; a port rate past its window is not. */
   async current(pair: RatePair, now: Date): Promise<ClubRate | undefined> {

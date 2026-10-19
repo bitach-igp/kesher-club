@@ -24,12 +24,21 @@ export interface LimitDecision {
 }
 
 export class P2pLimitService {
+  private readonly db: Database;
+  private readonly memberships: MembershipService;
+  private readonly entitlements: EntitlementService;
+  private readonly plans: PlanService;
   constructor(
-    private readonly db: Database,
-    private readonly memberships: MembershipService,
-    private readonly entitlements: EntitlementService,
-    private readonly plans: PlanService,
-  ) {}
+    db: Database,
+    memberships: MembershipService,
+    entitlements: EntitlementService,
+    plans: PlanService,
+  ) {
+    this.db = db;
+    this.memberships = memberships;
+    this.entitlements = entitlements;
+    this.plans = plans;
+  }
 
   async tierOf(partyId: string): Promise<RiskTier> {
     const r = await this.db.query<{ tier: RiskTier }>('select tier from ops.risk_tier where party_id = $1', [partyId]);

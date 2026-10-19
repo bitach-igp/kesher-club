@@ -20,7 +20,9 @@ export class PostmarkNotifyAdapter implements NotifyPort {
   private readonly idem = new IdempotencyStore<Delivery>();
   private readonly known = new Map<string, Delivery>();
 
-  constructor(private readonly opts: PostmarkOptions) {
+  private readonly opts: PostmarkOptions;
+  constructor(opts: PostmarkOptions) {
+    this.opts = opts;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.base = opts.baseUrl ?? 'https://api.postmarkapp.com';
   }

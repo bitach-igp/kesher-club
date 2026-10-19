@@ -75,11 +75,18 @@ export function splitShares(total: Money, participants: number): Money {
 export const payKey = (requestId: string): string => `request:${requestId}:pay`;
 
 export class PaymentRequestService {
+  private readonly db: Database;
+  private readonly send: P2pSendService;
+  private readonly identity: IdentityRepository;
   constructor(
-    private readonly db: Database,
-    private readonly send: P2pSendService,
-    private readonly identity: IdentityRepository,
-  ) {}
+    db: Database,
+    send: P2pSendService,
+    identity: IdentityRepository,
+  ) {
+    this.db = db;
+    this.send = send;
+    this.identity = identity;
+  }
 
   /** POST /requests. Idempotent by key. */
   async create(requesterPartyId: string, body: unknown, key: string, now: Date): Promise<PaymentRequestView> {

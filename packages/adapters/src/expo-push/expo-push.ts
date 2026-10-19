@@ -27,7 +27,9 @@ export class ExpoPushNotifyAdapter implements NotifyPort {
   private readonly idem = new IdempotencyStore<Delivery>();
   private readonly receipts = new Map<string, Delivery>();
 
-  constructor(private readonly opts: ExpoPushOptions) {
+  private readonly opts: ExpoPushOptions;
+  constructor(opts: ExpoPushOptions) {
+    this.opts = opts;
     this.fetchImpl = opts.fetch ?? globalThis.fetch;
     this.base = opts.baseUrl ?? 'https://exp.host/--/api/v2/push';
   }

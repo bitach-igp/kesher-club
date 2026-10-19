@@ -17,10 +17,15 @@ export const INSTITUTION_EVENTS: Readonly<Record<string, OutboundEventType>> = {
 };
 
 export class OutboundEventsService implements OutboxSink {
+  private readonly db: Database;
+  private readonly port: EventsPort;
   constructor(
-    private readonly db: Database,
-    private readonly port: EventsPort,
-  ) {}
+    db: Database,
+    port: EventsPort,
+  ) {
+    this.db = db;
+    this.port = port;
+  }
 
   /** Console: register an endpoint. Returns the secret ONCE; it is never stored on our side. */
   async createEndpoint(input: { institutionId: string; url: string; eventTypes: readonly OutboundEventType[]; createdBy: string }, now: Date): Promise<Endpoint> {

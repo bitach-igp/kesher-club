@@ -11,11 +11,18 @@ export interface ExpireReport {
 }
 
 export class ExpireRequestsJob {
+  private readonly requests: PaymentRequestService;
+  private readonly clock: () => Date;
+  private readonly batch: number;
   constructor(
-    private readonly requests: PaymentRequestService,
-    private readonly clock: () => Date = () => new Date(),
-    private readonly batch = 500,
-  ) {}
+    requests: PaymentRequestService,
+    clock: () => Date = () => new Date(),
+    batch = 500,
+  ) {
+    this.requests = requests;
+    this.clock = clock;
+    this.batch = batch;
+  }
 
   async run(): Promise<ExpireReport> {
     const now = this.clock();

@@ -156,7 +156,10 @@ interface Deps {
 }
 
 export class LoadService implements LoadActivities {
-  constructor(private readonly d: Deps) {}
+  private readonly d: Deps;
+  constructor(d: Deps) {
+    this.d = d;
+  }
 
   /** POST /loads: the gate, the eligibility, then the workflow, synchronously, so the payment sheet's secret can go back. */
   async request(payerPartyId: string, body: unknown, key: string, now: Date): Promise<LoadView> {

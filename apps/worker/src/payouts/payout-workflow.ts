@@ -16,10 +16,15 @@ export interface SweepReport {
 }
 
 export class PayoutWorkflow {
+  private readonly payouts: PayoutService;
+  private readonly clock: () => Date;
   constructor(
-    private readonly payouts: PayoutService,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    payouts: PayoutService,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.payouts = payouts;
+    this.clock = clock;
+  }
 
   /** Starts, or resumes, the run whose id is `workflowId`. */
   run(input: PayoutInput, workflowId: string): Promise<PayoutRun> {

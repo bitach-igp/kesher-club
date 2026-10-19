@@ -19,7 +19,12 @@ afterAll(async () => db.close());
 
 /** A vendor whose costs we can change between syncs. */
 class MutableEsim implements EsimPort {
-  constructor(private readonly inner: EsimSimulator, public costOverride: Record<string, bigint> = {}) {}
+  private readonly inner: EsimSimulator;
+  public costOverride: Record<string, bigint>;
+  constructor(inner: EsimSimulator, costOverride: Record<string, bigint> = {}) {
+    this.inner = inner;
+    this.costOverride = costOverride;
+  }
   async listPackages(country: string): Promise<EsimPackage[]> {
     return (await this.inner.listPackages(country)).map((p) => (this.costOverride[p.sku] !== undefined ? { ...p, cost: money(this.costOverride[p.sku]!, 'USD') } : p));
   }

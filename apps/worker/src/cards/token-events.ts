@@ -20,12 +20,21 @@ export interface TokenEventsReport {
 }
 
 export class TokenEventsJob {
+  private readonly store: InboundEventStore;
+  private readonly apply: (event: InboundEvent, now: Date) => Promise<unknown>;
+  private readonly clock: () => Date;
+  private readonly batch: number;
   constructor(
-    private readonly store: InboundEventStore,
-    private readonly apply: (event: InboundEvent, now: Date) => Promise<unknown>,
-    private readonly clock: () => Date = () => new Date(),
-    private readonly batch = 200,
-  ) {}
+    store: InboundEventStore,
+    apply: (event: InboundEvent, now: Date) => Promise<unknown>,
+    clock: () => Date = () => new Date(),
+    batch = 200,
+  ) {
+    this.store = store;
+    this.apply = apply;
+    this.clock = clock;
+    this.batch = batch;
+  }
 
   async run(): Promise<TokenEventsReport> {
     const now = this.clock();

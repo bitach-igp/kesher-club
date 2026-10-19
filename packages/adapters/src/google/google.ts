@@ -23,7 +23,8 @@ export interface GoogleFederatedIdPOptions {
 }
 
 export class GoogleFederatedIdPAdapter extends OidcFederatedIdPAdapter {
-  constructor(private readonly google: GoogleFederatedIdPOptions) {
+  private readonly google: GoogleFederatedIdPOptions;
+  constructor(google: GoogleFederatedIdPOptions) {
     if (!google.clientId || !google.clientSecret) throw new Error('Google federated IdP: clientId and clientSecret are required');
     super('google', {
       clientId: google.clientId,
@@ -36,6 +37,7 @@ export class GoogleFederatedIdPAdapter extends OidcFederatedIdPAdapter {
       ...(google.clock ? { clock: google.clock } : {}),
       ...(google.jwksMaxAgeMs !== undefined ? { jwksMaxAgeMs: google.jwksMaxAgeMs } : {}),
     });
+    this.google = google;
   }
 
   protected async clientSecret(): Promise<string> {

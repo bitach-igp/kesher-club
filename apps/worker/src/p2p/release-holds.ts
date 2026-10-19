@@ -19,11 +19,18 @@ export interface ReleaseReport {
 }
 
 export class P2pReleaseHoldsJob {
+  private readonly send: P2pSendService;
+  private readonly transfers: TransferService;
+  private readonly clock: () => Date;
   constructor(
-    private readonly send: P2pSendService,
-    private readonly transfers: TransferService,
-    private readonly clock: () => Date = () => new Date(),
-  ) {}
+    send: P2pSendService,
+    transfers: TransferService,
+    clock: () => Date = () => new Date(),
+  ) {
+    this.send = send;
+    this.transfers = transfers;
+    this.clock = clock;
+  }
 
   async run(): Promise<ReleaseReport> {
     const now = this.clock();

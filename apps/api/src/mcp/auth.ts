@@ -25,11 +25,15 @@ export interface AuthServerKeys {
 export class McpTokenValidator {
   private readonly getKey: ReturnType<typeof createLocalJWKSet>;
 
+  private readonly db: Database;
+  private readonly resource: string;
   constructor(
-    private readonly db: Database,
+    db: Database,
     keys: AuthServerKeys | { key: CryptoKey; issuer: string },
-    private readonly resource: string,
+    resource: string,
   ) {
+    this.db = db;
+    this.resource = resource;
     this.issuer = keys.issuer;
     this.getKey = 'jwks' in keys ? createLocalJWKSet(keys.jwks) : ((async () => keys.key) as unknown as ReturnType<typeof createLocalJWKSet>);
   }
