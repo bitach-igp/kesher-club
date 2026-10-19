@@ -95,6 +95,10 @@ describe('admin proxy (TST-AUTH-009)', () => {
     expect(parseAdminConfig(env).ADMIN_VPN_CIDRS.map((c) => c.text)).toEqual(['10.8.0.0/16', 'fd00:1234::/48']);
     expect(() => parseAdminConfig({ ...env, ADMIN_OIDC_CLIENT_SECRET: undefined })).toThrow(/ADMIN_OIDC_CLIENT_SECRET/);
     expect(() => parseAdminConfig({ ...env, ADMIN_VPN_CIDRS: '0.0.0.0/33' })).toThrow();
+    // The boot log prints this message (T-0918): it names the key and the entry, never the value.
+    const bad = (() => { try { parseAdminConfig({ ...env, ADMIN_VPN_CIDRS: '10.8.0.0/16, vpn-range-typo' }); } catch (e) { return (e as Error).message; } return ''; })();
+    expect(bad).toMatch(/ADMIN_VPN_CIDRS: entry 2 is not a CIDR/);
+    expect(bad).not.toContain('vpn-range-typo');
     // ADR-013: the API binding needs its URL and signing key; the seeded store is for local and preview only.
     expect(() => parseAdminConfig({ ...env, ADMIN_API_SIGNING_KEY: undefined })).toThrow(/ADMIN_API_SIGNING_KEY/);
     // One API per market (T-0913): both are required, and boot names the one missing.

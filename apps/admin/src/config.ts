@@ -9,9 +9,10 @@ const cidrList = z
   .min(1)
   .transform((raw, ctx): readonly Cidr[] => {
     const out: Cidr[] = [];
-    for (const part of raw.split(',').map((s) => s.trim()).filter(Boolean)) {
+    // The message names the entry by position, never by value: it reaches the boot log (T-0918).
+    for (const [i, part] of raw.split(',').map((s) => s.trim()).filter(Boolean).entries()) {
       const cidr = parseCidr(part);
-      if (!cidr) ctx.addIssue({ code: 'custom', message: `not a CIDR: ${part}` });
+      if (!cidr) ctx.addIssue({ code: 'custom', message: `entry ${i + 1} is not a CIDR` });
       else out.push(cidr);
     }
     if (out.length === 0) ctx.addIssue({ code: 'custom', message: 'at least one CIDR is required' });

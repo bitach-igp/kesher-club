@@ -117,6 +117,7 @@
 | [T-0915](T-0915.md) | ADM | The console builds, with no settings, into one image for every environment | REQ-AUTH-009 | 9 |
 | [T-0916](T-0916.md) | ADM | A market's provider row is live only where a vendor is bound | — | 9 |
 | [T-0917](T-0917.md) | ADM | The console ships as an image that turns healthy only when configured | REQ-AUTH-009 | 9 |
+| [T-0918](T-0918.md) | ADM | A misconfigured console stops at boot and says why | REQ-AUTH-009 | 9 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |
