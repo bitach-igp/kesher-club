@@ -1,10 +1,12 @@
 // T-0020: the API and worker configuration. Missing or bad values crash with every problem named;
 // a secret never reaches an error message or a log line.
+import { randomBytes } from 'node:crypto';
 import { ConfigError, Secret } from '@kesher/domain';
 import { describe, expect, it } from 'vitest';
 import { loadApiConfig, loadWorkerConfig } from './config.ts';
 
 const SIGNING_JWK = '{"kty":"EC","crv":"P-256","x":"x","y":"y","d":"super-secret-d"}';
+const DATA_KEY = randomBytes(32).toString('base64');
 const env = {
   NODE_ENV: 'preview',
   DATABASE_URL: 'postgres://club_app@db.internal:5432/club',
@@ -16,6 +18,8 @@ const env = {
   MARKET: 'IL',
   STAFF_JWKS: '{"keys":[{"kty":"EC","crv":"P-256","x":"x","y":"y","kid":"staff-1"}]}',
   PORT: '8080',
+  PII_DATA_KEY: DATA_KEY,
+  PII_INDEX_KEY: randomBytes(32).toString('base64'),
 };
 
 const thrown = (fn: () => unknown): ConfigError => {
@@ -55,6 +59,21 @@ describe('API and worker config (T-0020)', () => {
     const c = loadApiConfig(env);
     expect(JSON.stringify(c)).not.toContain('super-secret-d');
     expect(String(c.TOKEN_SIGNING_JWK)).toBe('[redacted]');
+  });
+
+  it('takes two distinct 32-byte PII keys and never prints them (T-0024)', () => {
+    expect(loadApiConfig(env).PII_DATA_KEY.reveal()).toBe(DATA_KEY);
+    const bad = [
+      ['PII_DATA_KEY', randomBytes(16).toString('base64')],
+      ['PII_DATA_KEY', `${DATA_KEY.slice(0, 10)}*${DATA_KEY.slice(10)}`], // lenient base64 would read the same 32 bytes
+      ['PII_INDEX_KEY', DATA_KEY],
+    ] as const;
+    for (const [k, v] of bad) {
+      const e = thrown(() => loadApiConfig({ ...env, [k]: v }));
+      expect(e.invalid.join()).toMatch(new RegExp(k));
+      expect(e.message).not.toContain(v);
+    }
+    expect(thrown(() => loadApiConfig({ ...env, PII_INDEX_KEY: undefined })).missing).toEqual(['PII_INDEX_KEY']);
   });
 
   it('refuses a staff JWKS that is not a key set', () => {
