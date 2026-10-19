@@ -80,6 +80,7 @@
 | [T-0520](T-0520.md) | FX | A failed vendor leg closes the conversion | REQ-FX-001 | 9 |
 | [T-0521](T-0521.md) | WAL | Closure refunds a converted load pro rata at the load's rate | REQ-WAL-005 | 9 |
 | [T-0522](T-0522.md) | FX | Durable FX quotes before a second API instance | REQ-FX-001 | scale-out |
+| [T-0523](T-0523.md) | WAL | Closure keeps the conversion markup | REQ-WAL-005 | 9 |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |

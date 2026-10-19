@@ -5,14 +5,13 @@
 // the last purse reads zero (REQ-WAL-005): sessions no longer sign in, auto-reload is off, and the audit
 // chain carries the closure. Money that has no load behind it (received by transfer) cannot be refunded
 // here and waits on a payout (T-0510): the closure reports it as blocked rather than guessing.
-// A load that converted into the other purse (T-0517) refunds to its source in the instrument currency, pro
-// rata at the load's own rate (T-0521, ADR-014 decision 12): the purse gives back what is left of what the
-// load credited, and the card gets back that share of what it paid, so neither side gains from a rate move
-// between the load and the closure. The last refund against a load takes exactly what remains of it.
-// The load's markup is refunded with it, pro rata: fee income gives back its share, so the club's position
-// unwinds exactly the gross the load booked.
+// A load that converted into the other purse (T-0517) refunds to its source in the instrument currency at
+// the load's own club rate (T-0521, ADR-014 decision 12), so neither side gains from a rate move between
+// the load and the closure. The club keeps the load's markup (T-0523, ADR-015): the conversion was
+// delivered, so what is left in the purse goes back at the rate before markup, rounded down, and never
+// more than the load paid. No second markup is charged on the way back.
 import { DomainError, money, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
-import { applyRate, FundingError, type FundingPort, type Refund } from '@kesher/ports';
+import { FundingError, RATE_SCALE, type FundingPort, type Refund } from '@kesher/ports';
 import type { IdentityRepository } from '../auth/repository.ts';
 import type { AuditService } from '../audit/service.ts';
 import type { Database } from '../db.ts';
@@ -44,7 +43,6 @@ interface Deps {
 }
 
 export const refundKey = (partyId: string, loadTransferId: string): string => `closure:${partyId}:${loadTransferId}`;
-const loadOfRefund = (key: string): string => key.slice(key.lastIndexOf(':') + 1);
 export const refundSettleKey = (key: string): string => `${key}:settle`;
 
 export class ClosureService {
@@ -141,9 +139,9 @@ export class ClosureService {
 
   /**
    * The member's purse back to partner_settlement. Same currency: two legs. Converted: fx_position takes
-   * back the gross the source amount bought at the load's own rate, paid by the purse and, for the markup
-   * share, by fee income; fx_position pays partner_settlement in the instrument's currency. Balanced per
-   * currency, and the club's position nets to zero for a load refunded whole.
+   * the purse amount and pays partner_settlement the source amount in the instrument's currency. Fee income
+   * keeps the load's markup (ADR-015), so after a whole refund the club's FX position holds exactly the
+   * shekels (or dollars) the markup earned.
    */
   private async refundLegs(t: Transfer): Promise<Posting[]> {
     const { minor, currency } = t.amount;
@@ -157,14 +155,9 @@ export class ClosureService {
       ];
     }
     const to = c.received.currency;
-    const load = await this.d.db.query<{ fx_rate_scaled: string }>(`select fx_rate_scaled::text from ops.transfer where id = $1 and kind = 'load'`, [loadOfRefund(t.idempotencyKey)]);
-    const gross = applyRate(c.received.minor, BigInt(load.rows[0]!.fx_rate_scaled));
-    // Rounding down on a tiny partial refund can leave the gross under the purse amount: then no markup comes back.
-    const markup = gross > minor ? gross - minor : 0n;
     return [
       { accountId: wallet, currency, amountMinor: minor },
-      ...(markup > 0n ? [{ accountId: await this.d.accounts.systemAccount('fee_income', currency), currency, amountMinor: markup }] : []),
-      { accountId: await this.d.accounts.systemAccount('fx_position', currency), currency, amountMinor: -(minor + markup) },
+      { accountId: await this.d.accounts.systemAccount('fx_position', currency), currency, amountMinor: -minor },
       { accountId: await this.d.accounts.systemAccount('fx_position', to), currency: to, amountMinor: c.received.minor },
       { accountId: await this.d.accounts.systemAccount('partner_settlement', to), currency: to, amountMinor: -c.received.minor },
     ];
@@ -205,8 +198,8 @@ export class ClosureService {
    * from the instrument; its refunds so far are counted on both sides.
    */
   private async refundableLoads(partyId: string, currency: Currency): Promise<RefundableLoad[]> {
-    const r = await this.d.db.query<{ id: string; amount_minor: string; currency: Currency; received_minor: string | null; fx_rate_id: string | null; fx_rate_version: number | null; external_id: string; refunded: string; refunded_source: string }>(
-      `select t.id, t.amount_minor::text, t.currency, t.received_minor::text, t.fx_rate_id, t.fx_rate_version, x.external_id,
+    const r = await this.d.db.query<{ id: string; amount_minor: string; currency: Currency; received_minor: string | null; fx_rate_id: string | null; fx_rate_version: number | null; fx_rate_scaled: string | null; external_id: string; refunded: string; refunded_source: string }>(
+      `select t.id, t.amount_minor::text, t.currency, t.received_minor::text, t.fx_rate_id, t.fx_rate_version, t.fx_rate_scaled::text, x.external_id,
               coalesce((select sum(r.amount_minor) from ops.transfer r where r.kind = 'refund' and r.idempotency_key = $3 || t.id and r.state <> 'failed'), 0)::text as refunded,
               coalesce((select sum(coalesce(r.received_minor, r.amount_minor)) from ops.transfer r where r.kind = 'refund' and r.idempotency_key = $3 || t.id and r.state <> 'failed'), 0)::text as refunded_source
          from ops.transfer t join ops.external_ref x on x.entity_type = 'transfer' and x.entity_id = t.id and x.provider = $4
@@ -218,8 +211,8 @@ export class ClosureService {
       .map((x): RefundableLoad => {
         const credited = BigInt(x.received_minor ?? x.amount_minor);
         const base = { transferId: x.id, vendorLoadId: x.external_id, refundable: credited - BigInt(x.refunded) };
-        if (x.received_minor === null || x.fx_rate_id === null || x.fx_rate_version === null) return base;
-        return { ...base, converted: { credited, paid: money(BigInt(x.amount_minor), x.currency), paidRemaining: BigInt(x.amount_minor) - BigInt(x.refunded_source), rateId: x.fx_rate_id, rateVersion: x.fx_rate_version } };
+        if (x.received_minor === null || x.fx_rate_id === null || x.fx_rate_version === null || x.fx_rate_scaled === null) return base;
+        return { ...base, converted: { credited, paid: money(BigInt(x.amount_minor), x.currency), paidRemaining: BigInt(x.amount_minor) - BigInt(x.refunded_source), rateId: x.fx_rate_id, rateVersion: x.fx_rate_version, rateScaled: BigInt(x.fx_rate_scaled) } };
       })
       .filter((l) => l.refundable > 0n);
   }
@@ -245,18 +238,20 @@ interface RefundableLoad {
   vendorLoadId: string;
   /** What the load can still give back, in the purse's currency. */
   refundable: bigint;
-  /** Set when the load converted into this purse: what it paid at the source, and what of that is left. */
-  converted?: { credited: bigint; paid: Money; paidRemaining: bigint; rateId: string; rateVersion: number };
+  /** Set when the load converted into this purse: what it paid at the source, what of that is left, and the
+   *  club rate it converted at (purse units per source unit × 1e6, before markup). */
+  converted?: { credited: bigint; paid: Money; paidRemaining: bigint; rateId: string; rateVersion: number; rateScaled: bigint };
 }
 
 /**
- * The source's share of a refund from a converted load: pro rata at the load's own rate, rounded down so a
- * refund never returns more than was paid, and the whole of what is left when the purse gives back all it
- * still can. The scaled rate recorded is the one this refund applied (source units per purse unit × 1e6).
+ * The source's share of a refund from a converted load: the purse amount back at the load's club rate,
+ * before markup (ADR-015: the club keeps the markup), rounded down and never more than the load has left
+ * to give. The scaled rate recorded is the one this refund applied (source units per purse unit × 1e6).
  */
 function backToSource(load: RefundableLoad, fromPurse: Money): TransferConversion {
   const c = load.converted!;
-  const source = fromPurse.minor === load.refundable ? c.paidRemaining : (fromPurse.minor * c.paid.minor) / c.credited;
+  const atClubRate = (fromPurse.minor * RATE_SCALE) / c.rateScaled;
+  const source = atClubRate < c.paidRemaining ? atClubRate : c.paidRemaining;
   if (source <= 0n) throw new DomainError('VALIDATION_FAILED', 'The amount is too small to refund to the source');
   return { received: money(source, c.paid.currency), rateId: c.rateId, rateVersion: c.rateVersion, rateScaled: (source * 1_000_000n) / fromPurse.minor || 1n, markupBps: 0n };
 }
