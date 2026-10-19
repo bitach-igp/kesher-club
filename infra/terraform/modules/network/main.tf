@@ -4,10 +4,12 @@
 
 locals {
   az_count = length(var.availability_zones)
-  # /16 split into /20 blocks: 0-2 public, 3-5 private (app), 6-8 database.
+  # /16 split into /20 blocks: 0-2 public, 3-5 private (app), 6-8 database; the Client VPN's own /24s
+  # sit at the start of block 9.
   public_cidrs   = [for i in range(local.az_count) : cidrsubnet(var.cidr, 4, i)]
   private_cidrs  = [for i in range(local.az_count) : cidrsubnet(var.cidr, 4, i + 3)]
   database_cidrs = [for i in range(local.az_count) : cidrsubnet(var.cidr, 4, i + 6)]
+  vpn_cidrs      = [for i in range(local.az_count) : cidrsubnet(var.cidr, 8, 144 + i)]
   nat_count      = var.single_nat_gateway ? 1 : local.az_count
 }
 
@@ -285,11 +287,24 @@ resource "aws_ec2_client_vpn_endpoint" "this" {
   tags = merge(var.tags, { Name = "${var.name}-client-vpn" })
 }
 
+# Client VPN source-NATs every client to its network interface in the subnet it is associated with, so
+# the VPN gets subnets nothing else uses: then "came from these CIDRs" means "came through the VPN", and
+# the admin console's IP gate (REQ-AUTH-009) does not also pass the ECS tasks in the app subnets (T-0914).
+resource "aws_subnet" "vpn" {
+  count = var.client_vpn == null ? 0 : local.az_count
+
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = local.vpn_cidrs[count.index]
+  availability_zone       = var.availability_zones[count.index]
+  map_public_ip_on_launch = false
+  tags                    = merge(var.tags, { Name = "${var.name}-vpn-${var.availability_zones[count.index]}", Tier = "vpn" })
+}
+
 resource "aws_ec2_client_vpn_network_association" "this" {
   count = var.client_vpn == null ? 0 : local.az_count
 
   client_vpn_endpoint_id = aws_ec2_client_vpn_endpoint.this[0].id
-  subnet_id              = aws_subnet.private[count.index].id
+  subnet_id              = aws_subnet.vpn[count.index].id
 }
 
 resource "aws_ec2_client_vpn_authorization_rule" "vpc" {

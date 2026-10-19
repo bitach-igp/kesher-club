@@ -112,6 +112,7 @@
 | [T-0911](T-0911.md) | ADM | Status endpoint and incident banner wired to the kill switches (CLUB-39) | — | 9 |
 | [T-0912](T-0912.md) | CMP | Bank-review package (CLUB-40) | — | 9 |
 | [T-0913](T-0913.md) | ADM | The console reaches each market's API | — | 9 |
+| [T-0914](T-0914.md) | ADM | The console gets its config; only VPN traffic passes its IP gate | REQ-AUTH-009 | 9 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |

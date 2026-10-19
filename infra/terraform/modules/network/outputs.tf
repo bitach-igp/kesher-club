@@ -29,3 +29,8 @@ output "vpc_endpoints_security_group_id" {
 output "client_vpn_endpoint_id" {
   value = var.client_vpn == null ? null : aws_ec2_client_vpn_endpoint.this[0].id
 }
+
+output "client_vpn_source_cidrs" {
+  description = "Where Client VPN traffic comes from inside the VPC: its own subnets, after source NAT. Empty without a VPN."
+  value       = aws_subnet.vpn[*].cidr_block
+}

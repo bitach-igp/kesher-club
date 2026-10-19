@@ -118,6 +118,55 @@ run "endpoints_and_flow_logs" {
   }
 }
 
+# T-0914: Client VPN source-NATs to its interface in the associated subnet, so it gets subnets of its own
+# and the admin console's IP gate can tell VPN traffic from the ECS tasks in the app subnets. Applied
+# against the mocks (nothing reaches AWS) so the association's subnet ids are known to compare.
+run "client_vpn_has_its_own_subnets" {
+  command = apply
+
+  module {
+    source = "./modules/network"
+  }
+
+  # A mocked apply invents ARNs as random strings; the flow log validates the two it is given.
+  override_resource {
+    target = aws_cloudwatch_log_group.flow
+    values = { arn = "arn:aws:logs:us-east-1:111111111111:log-group:/kesher/test/flow" }
+  }
+
+  override_resource {
+    target = aws_iam_role.flow
+    values = { arn = "arn:aws:iam::111111111111:role/kesher-test-flow" }
+  }
+
+  variables {
+    client_vpn = {
+      server_certificate_arn = "arn:aws:acm:us-east-1:111111111111:certificate/00000000-0000-0000-0000-000000000000"
+      saml_provider_arn      = "arn:aws:iam::111111111111:saml-provider/kesher-test"
+    }
+  }
+
+  assert {
+    condition     = length(aws_subnet.vpn) == 3 && toset(aws_subnet.vpn[*].availability_zone) == toset(aws_subnet.private[*].availability_zone)
+    error_message = "expected one VPN subnet per AZ"
+  }
+
+  assert {
+    condition     = length(distinct(concat(aws_subnet.public[*].cidr_block, aws_subnet.private[*].cidr_block, aws_subnet.database[*].cidr_block, aws_subnet.vpn[*].cidr_block))) == 12
+    error_message = "the VPN subnets must not overlap any other tier"
+  }
+
+  assert {
+    condition     = toset(aws_ec2_client_vpn_network_association.this[*].subnet_id) == toset(aws_subnet.vpn[*].id)
+    error_message = "the VPN must be associated with its own subnets, never the app subnets"
+  }
+
+  assert {
+    condition     = output.client_vpn_source_cidrs == aws_subnet.vpn[*].cidr_block && length(setintersection(toset(output.client_vpn_source_cidrs), toset(aws_subnet.private[*].cidr_block))) == 0
+    error_message = "the console's IP gate must list the VPN subnets and nothing the ECS tasks run in"
+  }
+}
+
 run "rejects_wrong_az_count" {
   command = plan
 
