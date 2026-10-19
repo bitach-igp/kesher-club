@@ -69,7 +69,14 @@ const seedComplaints = (customers: readonly CustomerRecord[]): Complaint[] => [
   { id: 'cmp-3', partyId: customers[1]!.partyId, channel: 'bank', category: 'disclosure', summary: 'Asked for the accepted terms version as PDF', openedAt: '2026-09-20T10:00:00Z', acknowledgedAt: '2026-09-22T09:00:00Z', resolvedAt: '2026-10-05T12:00:00Z', status: 'resolved', owner: 'admin:cmp-1', escalatedToBank: true },
 ];
 
-const seedBindings = (): ProviderBinding[] => PORTS.map((p) => ({ capability: p.capability, binding: p.capability === 'billing' ? 'stripe' : 'simulator', degraded: false, contractGreenNights: p.capability === 'billing' ? 9 : 0, ...(p.capability === 'billing' ? { lastContractRunAt: '2026-10-31T02:00:00Z' } : {}) }));
+// Per market (T-0913): IL bills through Stripe; US runs everything on the simulators.
+const seedBindings = (): ProviderBinding[] =>
+  (['IL', 'US'] as const).flatMap((market) =>
+    PORTS.map((p) => {
+      const live = market === 'IL' && p.capability === 'billing';
+      return { capability: p.capability, market, binding: live ? 'stripe' : 'simulator', degraded: false, contractGreenNights: live ? 9 : 0, ...(live ? { lastContractRunAt: '2026-10-31T02:00:00Z' } : {}) };
+    }),
+  );
 
 const seedFlags = (): FlagState[] => (flagsRegistry as { key: string; defaultProd: boolean }[]).map((f) => ({ key: f.key, on: f.defaultProd, gatesTicked: f.defaultProd ? gatesFor(f.key).map((g) => g.id) : [] }));
 

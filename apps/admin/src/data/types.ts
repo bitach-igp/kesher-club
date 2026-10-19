@@ -1,6 +1,7 @@
 // What the admin screens read and write, as a port. The day-one binding is the seeded in-memory
 // store (src/data/memory.ts); the API-backed binding lands with the admin endpoints (ADR pending).
 // Everything that came from members, merchants or partners is text: rendered, never interpreted.
+import type { Market } from '@kesher/ports';
 import type { Money } from '@kesher/domain';
 
 export interface CustomerSummary {
@@ -60,6 +61,8 @@ export interface Complaint {
 
 export interface ProviderBinding {
   capability: string;
+  /** Bindings are per market: each market's API serves its own providers (T-0913). */
+  market: Market;
   /** Which adapter serves the port right now. */
   binding: 'simulator' | string;
   degraded: boolean;

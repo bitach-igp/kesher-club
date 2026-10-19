@@ -86,7 +86,8 @@ describe('admin proxy (TST-AUTH-009)', () => {
       ADMIN_OIDC_CLIENT_SECRET: 'secret',
       ADMIN_OIDC_JWKS_URL: `${ISSUER}/keys`,
       ADMIN_DATA: 'api',
-      ADMIN_API_URL: 'https://api.kesher.example/v1',
+      ADMIN_API_URL_IL: 'https://api-il.kesher.example/v1',
+      ADMIN_API_URL_US: 'https://api-us.kesher.example/v1',
       ADMIN_API_SIGNING_KEY: JSON.stringify(signing),
       ADMIN_API_SIGNING_KID: 'admin-1',
     };
@@ -95,6 +96,9 @@ describe('admin proxy (TST-AUTH-009)', () => {
     expect(() => parseAdminConfig({ ...env, ADMIN_VPN_CIDRS: '0.0.0.0/33' })).toThrow();
     // ADR-013: the API binding needs its URL and signing key; the seeded store is for local and preview only.
     expect(() => parseAdminConfig({ ...env, ADMIN_API_SIGNING_KEY: undefined })).toThrow(/ADMIN_API_SIGNING_KEY/);
+    // One API per market (T-0913): both are required, and boot names the one missing.
+    expect(() => parseAdminConfig({ ...env, ADMIN_API_URL_US: undefined })).toThrow(/ADMIN_API_URL_US/);
+    expect(() => parseAdminConfig({ ...env, ADMIN_API_URL_IL: undefined })).toThrow(/ADMIN_API_URL_IL/);
     expect(() => parseAdminConfig({ ...env, ADMIN_API_SIGNING_KEY: JSON.stringify({ kty: 'EC', crv: 'P-256', x: 'a', y: 'b' }) })).toThrow(/private/);
     expect(() => parseAdminConfig({ ...env, ADMIN_DATA: 'memory' })).toThrow(/local and preview/);
     expect(parseAdminConfig({ ...env, ADMIN_DATA: 'memory', ADMIN_ENVIRONMENT: 'preview', NODE_ENV: 'preview' }).ADMIN_DATA).toBe('memory');
