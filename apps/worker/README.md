@@ -16,11 +16,48 @@ until then; every money movement's workflow ID is its idempotency key.
 | `fx/refresh-rates` | T-0513 | Every 5 minutes, publishes the FX port's mid as the club rate for 15 minutes unless a manual rate is active (ADR-007) |
 | `monitoring/` | T-0909 | Transaction monitoring rules v1 over the last day of `ops.transfer`; one `ops.case` per finding for the compliance console, behind `monitoring.rules` |
 
+## Running it (T-0022)
+
+`src/index.ts` boots the worker from the environment (the same keys as the API, without `PORT`; see
+`apps/api/src/config.ts`), builds the API's services through `createApp` and runs every job in
+`src/jobs.ts` on the plain scheduler (`src/scheduler.ts`, ADR-002) until SIGTERM. Each job runs at boot,
+then once per cycle timed from the end of the last run, so a job never overlaps itself. A failed run
+logs one line (job, error class and code; never a message or a payload) and runs again next cycle.
+
+One runner per job per market across tasks: a run holds a Postgres advisory lock on its market and
+job name (`src/lock.ts`), on a one-connection pool of its own, and a task that finds the lock held skips that run.
+SIGTERM schedules nothing more and lets running jobs finish (up to 20 s; ECS kills at 30 s). Jobs keep
+their own flag checks.
+
+| Job | Module | Cycle |
+| --- | --- | --- |
+| `card-token-events` | `cards/token-events` | 30 s |
+| `load-sweep` | `wallet/load-workflow` | 1 min |
+| `send-sweep` | `p2p/send-workflow` | 1 min |
+| `payout-sweep` | `payouts/payout-workflow` | 1 min |
+| `p2p-release-holds` | `p2p/release-holds` | 1 min |
+| `fx-void-stale` | `fx/void-stale` | 1 min |
+| `webhook-replay` | `apps/api` `webhooks/handler` (RUN-05) | 1 min |
+| `fx-refresh-rates` | `fx/refresh-rates` | 5 min |
+| `ach-release-holds` | `wallet/release-holds` | 5 min |
+| `p2p-expire-requests` | `p2p/expire-requests` | 15 min |
+| `auto-reload` | `wallet/auto-reload-job` | 15 min |
+| `agent-expire-intents` | `agent/expire-intents` | 15 min |
+| `monitoring` | `monitoring/job` | 1 h |
+| `esim-usage` | `esim/usage` | 1 h |
+
+Not on the scheduler: the nightly balance proof, reconciliation and catalogue sync (T-0023), allowance
+runs (started by T-0607's endpoint) and the card issue workflow (started by a KYC approval). Dunning
+waits on billing events. `src/jobs.test.ts` fails on a new job module that is neither in the table nor
+in `JOB_EXCLUSIONS` with its reason.
+
 ## Commands
 
 ```
 pnpm --filter @kesher/worker typecheck
 pnpm --filter @kesher/worker test
+pnpm --filter @kesher/worker start        # needs the environment above
+docker build -f apps/worker/Dockerfile .  # from the repository root
 ```
 
 ## Monitoring rules v1 (T-0909)

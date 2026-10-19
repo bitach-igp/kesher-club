@@ -18,7 +18,9 @@ let db: PgDatabase;
 
 beforeAll(async () => {
   lite = await createMigratedPGlite();
-  server = new PGLiteSocketServer({ db: lite, host: '127.0.0.1', port: 0 });
+  // Room beyond the shared pool for the idle-timeout test's pools: the server frees a closed client's slot
+  // a tick late, so a pool that connects right after another closes would be refused at a tight limit.
+  server = new PGLiteSocketServer({ db: lite, host: '127.0.0.1', port: 0, maxConnections: 4 });
   await server.start();
   db = createPgDatabase(`postgres://postgres@${server.getServerConn()}/postgres?sslmode=disable`, { max: 1 });
 }, MIGRATED_PGLITE_MS);
@@ -92,5 +94,23 @@ describe('createPgDatabase (T-0020)', () => {
   it('keeps working after a failed transaction: the connection went back clean', async () => {
     await db.transaction(async () => Promise.reject(new Error('boom'))).catch(() => undefined);
     expect((await db.query<{ ok: number }>(`select 1 as ok`)).rows).toEqual([{ ok: 1 }]);
+  });
+
+  it('reaps an idle connection after idleTimeoutMs, and with 0 keeps it, so session state such as an advisory lock survives', async () => {
+    const url = `postgres://postgres@${server.getServerConn()}/postgres?sslmode=disable`;
+    const opened = async (idleTimeoutMs: number): Promise<number> => {
+      let n = 0;
+      const count = (): void => void (n += 1);
+      server.addEventListener('connection', count);
+      const pool = createPgDatabase(url, { max: 1, idleTimeoutMs });
+      await pool.query('select 1');
+      await new Promise((r) => setTimeout(r, 150));
+      await pool.query('select 1');
+      await pool.close();
+      server.removeEventListener('connection', count);
+      return n;
+    };
+    expect(await opened(20)).toBe(2);
+    expect(await opened(0)).toBe(1);
   });
 });

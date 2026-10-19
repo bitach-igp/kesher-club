@@ -16,6 +16,9 @@ export interface PgOptions {
   max?: number;
   /** Abandon a query after this long, server side (default 30 s): a stuck statement must not pin a connection. */
   statementTimeoutMs?: number;
+  /** Close a connection idle this long (default 10 s); 0 keeps it. A pool holding session state, such as
+   * the worker's advisory locks, needs 0: reaping the connection would let the locks go. */
+  idleTimeoutMs?: number;
 }
 
 const wrap = (q: pg.Pool | pg.PoolClient): SqlClient => ({
@@ -26,7 +29,12 @@ const wrap = (q: pg.Pool | pg.PoolClient): SqlClient => ({
 });
 
 export function createPgDatabase(url: string, opts: PgOptions = {}): PgDatabase {
-  const pool = new pg.Pool({ connectionString: url, max: opts.max ?? 10, statement_timeout: opts.statementTimeoutMs ?? 30_000 });
+  const pool = new pg.Pool({
+    connectionString: url,
+    max: opts.max ?? 10,
+    statement_timeout: opts.statementTimeoutMs ?? 30_000,
+    idleTimeoutMillis: opts.idleTimeoutMs ?? 10_000,
+  });
   // An idle client that loses its connection emits here; without a listener Node would crash the process.
   // The pool drops the client and opens a fresh one on the next query.
   pool.on('error', () => undefined);
