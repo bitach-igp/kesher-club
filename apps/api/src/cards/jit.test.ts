@@ -221,7 +221,7 @@ describe('agent purchases (TST-CRD-008)', () => {
     await app.services.ledger.post({ idempotencyKey: `load:${agentParty}:ils`, kind: 'load', postings: [{ accountId: partnerIls, currency: 'ILS', amountMinor: 100_000n }, { accountId: wIls, currency: 'ILS', amountMinor: -100_000n }] });
   });
   const mode = (agentPurchases: Parameters<typeof controlsToWire>[0]['agentPurchases']) => db.query(`update cards.card set controls = $2 where id = $1`, [agentCardId, JSON.stringify(controlsToWire({ ...DEFAULT_VIRTUAL_CONTROLS, agentPurchases }))]);
-  const pendingIntents = () => app.services.intents.listPending(agentParty);
+  const pendingIntents = () => app.services.intents.listPending(agentParty, NOW);
 
   it('mode off declines AGENT_NOT_ALLOWED and opens nothing; a human token on the same card is fine', async () => {
     await mode('off');

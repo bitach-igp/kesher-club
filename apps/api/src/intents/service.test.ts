@@ -3,6 +3,7 @@
 // (T-1008) runs the member's own send under the key `intent:{id}`: eligibility, limits, balance, the
 // new-pair hold and the receiving-currency conversion all apply, and a second approval finds the same send.
 // A load intent (T-1009) runs the member's load the same way, paid by the method the approval names.
+// Expiry (T-1010): the sweep and a late approval never expire an intent whose money already started.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { SIM_OTP_CODE, SimPasskeyDevice, fixedClock, type AdvanceableClock } from '@kesher/ports';
@@ -15,7 +16,7 @@ import { settleKey } from '../p2p/send.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { runLoad, settleKey as loadSettleKey } from '../wallet/loads.ts';
-import { INTENT_TTL_MS, IntentService } from './service.ts';
+import { INTENT_TTL_MS, IntentService, intentKey } from './service.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -71,7 +72,7 @@ describe('IntentService (REQ-AGT-006)', () => {
     expect(Date.parse(i.expiresAt) - clock.now().getTime()).toBe(INTENT_TTL_MS);
     expect(notified.at(-1)).toMatch(/Send ILS 5000/);
     expect((await db.query(`select count(*)::int as n from ops.transfer where kind = 'p2p'`)).rows[0]).toEqual({ n: 0 });
-    expect((await intents.listPending(principal.partyId)).map((x) => x.id)).toContain(i.id);
+    expect((await intents.listPending(principal.partyId, clock.now())).map((x) => x.id)).toContain(i.id);
   });
 
   it('approval needs a fresh passkey step-up; then the member\'s send runs and settles in one journal keyed by the intent; a second approval is a no-op', async () => {
@@ -134,7 +135,7 @@ describe('IntentService (REQ-AGT-006)', () => {
     expect((await intents.get(load.id))!.status).toBe('pending');
     expect(await app.services.transfers.byKey(`intent:${load.id}`)).toBeUndefined();
     clock.advance(INTENT_TTL_MS + 1);
-    expect(await intents.expire(clock.now())).toBeGreaterThanOrEqual(1);
+    expect((await intents.expire(clock.now())).expired).toBeGreaterThanOrEqual(1);
     expect((await intents.get(load.id))!.status).toBe('expired');
   });
 
@@ -216,5 +217,46 @@ describe('approving a load intent (T-1009)', () => {
     // $100 → ₪370.00 at the club rate, no markup on a load.
     expect(r.load).toMatchObject({ state: 'settled', amount: { minor: '10000', currency: 'USD' }, credited: ils('37000'), rateVersion: expect.any(Number) });
     expect(await available(principal.partyId)).toBe(before + 37_000n);
+  });
+});
+
+describe('expiry (T-1010)', () => {
+  const ils = (minor: string) => ({ minor, currency: 'ILS' });
+  /** The approval crashed between the send and its status write: the money moved, the intent still says pending. */
+  const crashedApproval = async (toPartyId: string, minor: string) => {
+    const i = await proposeP2p(toPartyId, minor);
+    await app.services.p2p.send(principal.partyId, { toPartyId, amount: ils(minor) }, intentKey(i.id), clock.now());
+    return i;
+  };
+
+  it('listPending hides intents past their time before the sweep runs', async () => {
+    const i = await proposeP2p(uuidv7(), '100');
+    clock.advance(INTENT_TTL_MS + 1);
+    expect((await intents.listPending(principal.partyId, clock.now())).map((x) => x.id)).not.toContain(i.id);
+    expect((await intents.get(i.id))!.status).toBe('pending');
+  });
+
+  it('a send that started under the intent key is finished, never expired, by a late approval and by the sweep', async () => {
+    const dan = (await register('+972501234573')).principal;
+    const late = await crashedApproval(dan.partyId, '1000');
+    const swept = await crashedApproval(dan.partyId, '1100');
+    const plain = await proposeP2p(dan.partyId, '1200');
+    clock.advance(INTENT_TTL_MS + 1);
+
+    const r = await intents.approve(approveReq(await freshStepUp()), late.id, 'k');
+    expect(r.intent).toMatchObject({ status: 'approved', decidedBy: principal.partyId });
+    expect(r.transfer).toMatchObject({ state: 'settled', idempotencyKey: intentKey(late.id) });
+    expect(await journals(settleKey(intentKey(late.id)))).toBe(1);
+
+    // Earlier tests' leftovers expire in the same sweep; only the started send is approved.
+    const swept1 = await intents.expire(clock.now());
+    expect(swept1.approved).toBe(1);
+    expect(swept1.expired).toBeGreaterThanOrEqual(1);
+    const s = (await intents.get(swept.id))!;
+    expect(s).toMatchObject({ status: 'approved', decidedBy: principal.partyId });
+    expect(Date.parse(s.decidedAt!)).toBeLessThan(clock.now().getTime());
+    expect((await intents.get(plain.id))!.status).toBe('expired');
+    expect(await intents.expire(clock.now())).toEqual({ expired: 0, approved: 0 });
+    expect(await available(dan.partyId)).toBe(2_100n);
   });
 });

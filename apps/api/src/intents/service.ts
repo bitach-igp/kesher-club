@@ -5,7 +5,9 @@
 // receiving-currency conversion all apply, keyed `intent:{id}` so a second approval finds the same send.
 // A load intent (T-1009) runs the member's POST /loads the same way; the agent names no funding method,
 // so the approval does, and the intent keeps that choice so a second approval replays the same load.
-// A refusal leaves the intent pending.
+// A refusal leaves the intent pending. Expiry (T-1010): past 24 h a pending intent is hidden, refused and
+// swept to expired, unless its money already started under its key (an approval that crashed before its
+// status write): that one is the member's approval, finished as such by a late approval or by the sweep.
 import { createHash } from 'node:crypto';
 import { DomainError, fromWire, uuidv7, type Money } from '@kesher/domain';
 import type { Database } from '../db.ts';
@@ -20,8 +22,9 @@ import type { TransferService, Transfer } from '../transfers/service.ts';
 import { WALLET_FLAG, type LoadService, type LoadView } from '../wallet/loads.ts';
 
 export const INTENT_TTL_MS = 24 * 3_600_000;
+const INTENT_KEY_PREFIX = 'intent:';
 /** The money workflow's id for an approved intent (SEQ-04: start(transfer:{intentId})). */
-export const intentKey = (intentId: string): string => `intent:${intentId}`;
+export const intentKey = (intentId: string): string => `${INTENT_KEY_PREFIX}${intentId}`;
 export type IntentKind = 'p2p' | 'load' | 'limit_change';
 export type IntentStatus = 'pending' | 'approved' | 'rejected' | 'expired';
 
@@ -126,14 +129,19 @@ export class IntentService {
     requireStepUp(this.stepUp, req);
     const intent = await this.get(intentId);
     if (!intent || intent.partyId !== principal.partyId) throw new DomainError('NOT_FOUND', 'Intent not found');
-    if (intent.status === 'approved') return { intent, ...(await this.execute(intent, intent.payload['approval'] as LoadChoice | undefined, req.now)) };
+    // A replay reuses the first approval's funding choice; one the sweep finished has none stored, so the body's.
+    if (intent.status === 'approved') return { intent, ...(await this.execute(intent, (intent.payload['approval'] as LoadChoice | undefined) ?? loadChoice(req.body), req.now)) };
     if (intent.status !== 'pending') throw new DomainError('IDEMPOTENCY_CONFLICT', `Intent is ${intent.status}`);
-    if (Date.parse(intent.expiresAt) <= req.now.getTime()) {
-      await this.setStatus(intentId, 'expired', req.now);
-      throw new DomainError('IDEMPOTENCY_CONFLICT', 'Intent expired');
+    // Money already under the key is this approval resuming: finish it, whatever the clock or the grant says now.
+    const started = intent.kind !== 'limit_change' && (await this.transfers.byKey(intentKey(intent.id))) !== undefined;
+    if (!started) {
+      if (Date.parse(intent.expiresAt) <= req.now.getTime()) {
+        await this.setStatus(intentId, 'expired', req.now);
+        throw new DomainError('IDEMPOTENCY_CONFLICT', 'Intent expired');
+      }
+      if (intent.kind === 'p2p') assertNotRestricted(principal, 'p2p_send', req.now);
+      if (intent.kind !== 'limit_change') await this.grantAllowsMoney(intent.grantId);
     }
-    if (intent.kind === 'p2p') assertNotRestricted(principal, 'p2p_send', req.now);
-    if (intent.kind !== 'limit_change') await this.grantAllowsMoney(intent.grantId);
     const choice = intent.kind === 'load' ? loadChoice(req.body) : undefined;
     // Money first: a refusal (limit, balance, eligibility) throws before the intent is marked approved.
     const executed = await this.execute(intent, choice, req.now);
@@ -189,10 +197,29 @@ export class IntentService {
     return r.rowCount > 0;
   }
 
-  /** Nightly: expire pending intents past their deadline. */
-  async expire(now: Date): Promise<number> {
-    const r = await this.db.query(`update agent.pending_intent set status = 'expired', decided_at = $1 where status = 'pending' and expires_at <= $1`, [now]);
-    return r.rowCount;
+  /**
+   * The sweep (worker ExpireIntentsJob): up to `limit` pending intents past their deadline expire, except one
+   * whose money started under its key, which is marked approved by the member as of the transfer's creation.
+   */
+  async expire(now: Date, limit = 500): Promise<{ expired: number; approved: number }> {
+    const r = await this.db.query<{ status: IntentStatus }>(
+      `with due as (
+         select i.id, i.party_id, (select min(t.created_at) from ops.transfer t where t.idempotency_key = $3 || i.id::text) as started_at
+           from agent.pending_intent i
+          where i.status = 'pending' and i.expires_at <= $1
+          order by i.expires_at limit $2
+            for update skip locked
+       )
+       update agent.pending_intent p
+          set status = case when due.started_at is null then 'expired' else 'approved' end,
+              decided_at = coalesce(due.started_at, $1),
+              decided_by = case when due.started_at is null then null else due.party_id end
+         from due where p.id = due.id
+       returning p.status`,
+      [now, limit, INTENT_KEY_PREFIX],
+    );
+    const approved = r.rows.filter((x) => x.status === 'approved').length;
+    return { expired: r.rows.length - approved, approved };
   }
 
   async get(id: string): Promise<PendingIntent | undefined> {
@@ -200,8 +227,9 @@ export class IntentService {
     return r.rows[0] ? toIntent(r.rows[0]) : undefined;
   }
 
-  async listPending(partyId: string): Promise<PendingIntent[]> {
-    const r = await this.db.query<Row>(`select * from agent.pending_intent where party_id = $1 and status = 'pending' order by expires_at`, [partyId]);
+  /** What the member can still approve: pending and inside its 24 h, whether or not the sweep has run. */
+  async listPending(partyId: string, now: Date): Promise<PendingIntent[]> {
+    const r = await this.db.query<Row>(`select * from agent.pending_intent where party_id = $1 and status = 'pending' and expires_at > $2 order by expires_at`, [partyId, now]);
     return r.rows.map(toIntent);
   }
 
