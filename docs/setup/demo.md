@@ -37,5 +37,50 @@ On Windows PowerShell, set the two variables first (`$env:APP_ENV="development"`
   flag page still shows the database's state.
 - The jobs run on their own cycles against the shared clock; advancing the clock does not run them early.
 
-Seed personas (T-0032), the member app in a browser (T-0033) and staff sign-in to the console (T-0919)
-build on this.
+## Seed the personas
+
+With the stack running, from the repository root:
+
+```sh
+pnpm --filter @kesher/demo seed
+```
+
+`DEMO_API_URL` and `DEMO_PANEL_URL` point it elsewhere; they default to the ports above. The seed makes
+the people the money flows in `docs/bank-review/money-flows.md` start from, through the API and the panel
+only, never by writing tables (T-0032):
+
+- Each persona signs up with the simulator's OTP and a passkey derived from its key.
+- KYC is decided through the panel's `kyc/decide` hook. The decision then reaches the API as the vendor's
+  webhook, and a T2 approval issues the virtual card.
+- Purses are funded with card loads (fixture `pm_ok`, settled at once).
+
+Every keyed call derives its idempotency key from the persona (`seed-<persona>-…`). A persona that already
+exists is signed in with its passkey instead of being made again, so a second run creates nothing and
+prints the same table. The table holds no token.
+
+| Persona | Name | Market | Phone | KYC | Funded with | Recordings |
+|---|---|---|---|---|---|---|
+| `dana` | Dana Example | US | +1 555 555 0101 | T2, virtual card open | $500.00 | REC-01, 02, 04, 05, 07, 09, 16 |
+| `avi` | Avi Example | US | +1 555 555 0102 | T1 | nothing | REC-05 (Dana pays him), REC-08 |
+| `noa` | Noa Example | IL | +1 555 555 0103 | T2, virtual card open | ₪5,000.00 and $100.00 | REC-03, 07, 08, 10, 13 |
+| `maya` | Maya Example | IL | +1 555 555 0104 | T1 | ₪1,000.00 | REC-06 (sender) |
+| `eli` | Eli Example | IL | +1 555 555 0105 | T1 | nothing | REC-06 (recipient; never paid by Maya) |
+| `tamar` | Tamar Example | US | +1 555 555 0106 | T2, virtual card open | $200.00 | REC-12 |
+| `ruth` | Ruth Example | US | +1 555 555 0107 | T1 | $30.00 by card | REC-17 (ready to close: no holds, every dollar refundable) |
+| `ben` | Ben Example | US | +1 555 555 0108 | T1 | nothing | REC-01 funder mode, once the link below exists |
+
+Market is the market whose walkthroughs use the persona. The party itself has no market, since every
+member holds both purses; a transfer takes the market of the process that wrote it. Seed and record the
+IL flows against a `MARKET=IL` process. REC-11 (club rates) and REC-18 (ledger reversals) need a staff
+console session (T-0919), not a member.
+
+### Not seeded: the contract cannot make these yet
+
+| Who | Recordings | Why |
+|---|---|---|
+| Funder linked to a member (Ben to Dana) | REC-01 funder mode, REC-04 | `POST /memberships` needs a plan in `billing.plan_version`, and no endpoint or migration creates one |
+| Institution with a roster | REC-14, REC-15 | No endpoint creates `org.institution`. A roster import only makes invited members, and nothing over HTTP activates them |
+| Finance requester and second approver | REC-14 | No endpoint creates `org.staff` or grants `org_finance`; sign-up always gives the member role |
+| Allowance schedule | REC-14 | No endpoint creates `org.allowance_schedule` |
+
+The member app in a browser (T-0033) and staff sign-in to the console (T-0919) build on this.
