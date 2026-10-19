@@ -3,11 +3,11 @@
 // the workflow boundary: a run over ₪5,000 waits for a second finance approver.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
-import { AccountService } from '@kesher/api/ledger/accounts';
-import { PostgresLedger } from '@kesher/api/ledger/post';
-import { ApprovalService } from '@kesher/api/approvals/service';
-import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
-import type { OutboxMessage } from '@kesher/api/transfers/outbox';
+import { AccountService } from '../../ledger/accounts.ts';
+import { PostgresLedger } from '../../ledger/post.ts';
+import { ApprovalService } from '../../approvals/service.ts';
+import { createTestDatabase, type TestDatabase } from '../../test-db.ts';
+import { TransferService } from '../../transfers/service.ts';
 import { PostgresAllowanceActivities } from './activities.ts';
 import { MAX_PARALLEL, preview, run, workflowId, type AllowanceActivities } from './workflow.ts';
 
@@ -17,7 +17,6 @@ let accounts: AccountService;
 let approvals: ApprovalService;
 let activities: PostgresAllowanceActivities;
 let institutionId: string;
-const published: OutboxMessage[] = [];
 const finance1 = uuidv7();
 const finance2 = uuidv7();
 const now = new Date('2026-11-01T08:00:00Z');
@@ -41,7 +40,7 @@ beforeAll(async () => {
   ledger = new PostgresLedger(db);
   accounts = new AccountService(db, ledger);
   approvals = new ApprovalService(db);
-  activities = new PostgresAllowanceActivities(db, ledger, accounts, approvals, { publish: async (m) => void published.push(m) }, () => now);
+  activities = new PostgresAllowanceActivities(db, ledger, accounts, approvals, new TransferService(db), () => now);
   institutionId = uuidv7();
   await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Example', 'IL')`, [institutionId]);
 }, 60_000);
@@ -56,7 +55,7 @@ describe('allowance workflow (REQ-INS-003)', () => {
     expect((await db.query(`select count(*)::int as n from ledger.journal where kind = 'allowance'`)).rows[0]).toEqual({ n: 0 });
   });
 
-  it('executes once per date: a rerun returns the same journals and pays nobody twice', async () => {
+  it('executes once per date: each payment is an allowance transfer, and a rerun pays nobody twice (T-0607)', async () => {
     const sched = await schedule(20_000n, 3);
     const first = await run(activities, sched, '2026-11-02', finance1);
     expect(first).toMatchObject({ status: 'completed', paid: 3, failures: 0, total: money(60_000n, 'ILS') });
@@ -66,7 +65,15 @@ describe('allowance workflow (REQ-INS-003)', () => {
     expect((await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where kind = 'allowance'`)).rows[0]!.n).toBe(journalsBefore);
     const master = await accounts.systemAccount('institution_master', 'ILS');
     expect(await ledger.balance(master, 'ILS')).toBe(60_000n);
-    expect(published.filter((m) => m.type === 'allowance.run.completed').length).toBeGreaterThanOrEqual(2);
+    // Each payment is an ops.transfer of kind allowance keyed by the run and the member, settled by its journal.
+    const wf = workflowId(sched, '2026-11-02');
+    const transfers = await db.query<{ state: string; n: number }>(`select state, count(*)::int as n from ops.transfer where kind = 'allowance' and idempotency_key like $1 group by state`, [`${wf}:%`]);
+    expect(transfers.rows).toEqual([{ state: 'settled', n: 3 }]);
+    const unlinked = await db.query(`select 1 from ops.transfer t where t.kind = 'allowance' and t.idempotency_key like $1 and not exists (select 1 from ledger.journal j where j.id = t.journal_id and j.transfer_id = t.id)`, [`${wf}:%`]);
+    expect(unlinked.rowCount).toBe(0);
+    // One completion event for the run, through the outbox, addressed to the institution.
+    const events = await db.query<{ payload: Record<string, string> }>(`select payload from ops.outbox where type = 'allowance.run.completed' and payload->>'workflowId' = $1`, [wf]);
+    expect(events.rows).toEqual([{ payload: expect.objectContaining({ institutionId, workflowId: wf, status: 'completed', paid: '3', failures: '0' }) }]);
     expect((await db.query(`select status from org.allowance_payment where workflow_id = $1`, [workflowId(sched, '2026-11-02')])).rows).toEqual([{ status: 'paid' }, { status: 'paid' }, { status: 'paid' }]);
   });
 
@@ -75,9 +82,11 @@ describe('allowance workflow (REQ-INS-003)', () => {
     await expect(run(activities, sched, '2026-11-03', finance1)).rejects.toMatchObject({ code: 'FORBIDDEN' });
     const wf = workflowId(sched, '2026-11-03');
     expect((await db.query(`select status from org.allowance_run where workflow_id = $1`, [wf])).rows[0]).toEqual({ status: 'awaiting_second_approval' });
-    const req = (await approvals.find('allowance_run', wf))!;
-    await approvals.decide(req.id, { partyId: finance2, role: 'finance' }, 'approve', now);
-    const done = await run(activities, sched, '2026-11-03', finance1);
+    // The requester asking again is not a second approver.
+    await expect(run(activities, sched, '2026-11-03', finance1)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect((await approvals.find('allowance_run', wf))!.status).toBe('awaiting_second_approval');
+    // A different finance member running the same request is (T-0607).
+    const done = await run(activities, sched, '2026-11-03', finance2);
     expect(done.status).toBe('completed');
     expect(done.paid).toBe(2);
   });

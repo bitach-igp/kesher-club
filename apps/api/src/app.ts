@@ -51,6 +51,8 @@ import { FUNDING_PROVIDER, LoadService } from './wallet/loads.ts';
 import { AddonOrderService } from './addons/orders.ts';
 import { CreditService } from './addons/credit.ts';
 import { CollectionsService, collectionsHandlers } from './institutions/collections.ts';
+import { allowanceRunHandlers } from './institutions/allowance-runs.ts';
+import { PostgresAllowanceActivities } from './institutions/allowance/activities.ts';
 import { exportHandler } from './institutions/export.ts';
 import { RosterService, importRosterHandler } from './institutions/roster.ts';
 import { ApprovalService } from './approvals/service.ts';
@@ -190,6 +192,7 @@ export function createApp(o: AppOptions): App {
     }),
     importRoster: importRosterHandler({ roster: s.roster, staffInstitution }),
     ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
+    ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.clock.now), flags: s.flags, staffInstitution }),
     ...fxAdminHandlers(s.rates),
     ...preferenceHandlers(s.preferences),
     exportCollections: exportHandler(o.db, staffInstitution),

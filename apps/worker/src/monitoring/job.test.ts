@@ -116,4 +116,13 @@ describe('TST-CMP-001: the monitoring job', () => {
     expect(await off.run()).toMatchObject({ skipped: 'flag_off', movements: 0, findings: 0, opened: 0 });
     expect((await cases()).length).toBe(before);
   });
+
+  it('reads allowance payments too (T-0607): 25 to one member in a day are movements, and no rule fires on them', async () => {
+    const later = new Date(now.getTime() + 30 * 86_400_000);
+    const member = uuidv7();
+    for (let i = 0; i < 25; i++) await transfers.create({ idempotencyKey: `allowance:mon:${i.toString().padStart(3, '0')}:${member}`, kind: 'allowance', toPartyId: member, amount: money(20_000n, 'ILS') }, new Date(later.getTime() - i * 60_000));
+    const before = (await cases()).length;
+    expect(await new MonitoringJob(db, new StaticFlags(undefined, { [MONITORING_FLAG]: true }), () => later).run()).toMatchObject({ movements: 25, findings: 0, opened: 0 });
+    expect((await cases()).length).toBe(before);
+  });
 });
