@@ -172,3 +172,58 @@ describe('TST-WAL-005', () => {
     expect(uuidv7(NOW)).toBeTruthy();
   });
 });
+
+describe('TST-WAL-005: a load that converted into the other purse (T-0521)', () => {
+  const ils = async (partyId: string) => (await app.services.accounts.purses(partyId)).find((p) => p.currency === 'ILS')!;
+  const loadIntoIls = (m: Member, key: string) => runLoad(app.services.loads, { payerPartyId: m.partyId, memberPartyId: m.partyId, method: 'card', amount: money(10_000n, 'USD'), paymentMethodId: 'pm_ok', purse: 'ILS' }, key, NOW);
+  const postings = async (journalId: string) =>
+    (await db.query<{ type: string; currency: string; amount_minor: string }>(`select a.type::text, p.currency::text, p.amount_minor::text from ledger.posting p join ledger.account a on a.id = p.account_id where p.journal_id = $1 order by p.amount_minor desc`, [journalId])).rows;
+
+  it('refunds what is left to the card in dollars at the load\'s own rate, markup included, through fx_position, and closes', async () => {
+    await app.services.rates.publishFromPort('USD/ILS', 3_700_000n, NOW);
+    const m = await register('+12125550301');
+    const l = await loadIntoIls(m, 'load-ils-close-1');
+    // $100 at 3.70 less the default 75 bps credits ₪367.22 (T-0519).
+    expect((await ils(m.partyId)).available.minor).toBe(36_722n);
+
+    const view = (await close(m, 'closure-ils-1')).body as ClosureView;
+    expect(view).toMatchObject({ state: 'closed', refunds: [{ amount: { minor: '36722', currency: 'ILS' }, state: 'settled' }] });
+    const refund = (await app.services.transfers.byKey(refundKey(m.partyId, l.transfer.id)))!;
+    expect(refund).toMatchObject({ kind: 'refund', state: 'settled', amount: money(36_722n, 'ILS'), conversion: { received: money(10_000n, 'USD') } });
+    expect(await postings(refund.journalId!)).toEqual([
+      { type: 'wallet', currency: 'ILS', amount_minor: '36722' },
+      { type: 'fx_position', currency: 'USD', amount_minor: '10000' },
+      { type: 'fee_income', currency: 'ILS', amount_minor: '278' },
+      { type: 'partner_settlement', currency: 'USD', amount_minor: '-10000' },
+      { type: 'fx_position', currency: 'ILS', amount_minor: '-37000' },
+    ]);
+    // The club's position from the load and its refund nets to zero in both currencies.
+    const net = await db.query<{ currency: string; total: string }>(
+      `select p.currency::text, sum(p.amount_minor)::text as total from ledger.posting p join ledger.account a on a.id = p.account_id join ledger.journal j on j.id = p.journal_id
+        where a.type in ('fx_position', 'fee_income') and j.transfer_id in ($1, $2) group by p.currency order by 1`,
+      [l.transfer.id, refund.id],
+    );
+    expect(net.rows).toEqual([{ currency: 'ILS', total: '0' }, { currency: 'USD', total: '0' }]);
+    const vendorRefund = (await db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'refund' and entity_id = $1`, [refund.id])).rows[0]!.external_id;
+    expect(await host.simulators.funding.getRefund(vendorRefund)).toMatchObject({ amount: money(10_000n, 'USD'), status: 'succeeded' });
+    expect((await ils(m.partyId)).available.minor).toBe(0n);
+  });
+
+  it('with half of it spent, the card gets half of what it paid: ₪183.61 back to $50.00', async () => {
+    const m = await register('+12125550302');
+    const l = await loadIntoIls(m, 'load-ils-close-2');
+    await bump((await ils(m.partyId)).id, 18_361n); // a card spend of ₪183.61
+    expect((await ils(m.partyId)).available.minor).toBe(18_361n);
+    expect((await close(m, 'closure-ils-2')).body).toMatchObject({ state: 'closed', refunds: [{ amount: { minor: '18361', currency: 'ILS' }, state: 'settled' }] });
+    const refund = (await app.services.transfers.byKey(refundKey(m.partyId, l.transfer.id)))!;
+    expect(refund.conversion).toMatchObject({ received: money(5_000n, 'USD'), markupBps: 0n });
+    // Half the load's ₪2.78 markup comes back with half of what it paid.
+    expect(await postings(refund.journalId!)).toEqual([
+      { type: 'wallet', currency: 'ILS', amount_minor: '18361' },
+      { type: 'fx_position', currency: 'USD', amount_minor: '5000' },
+      { type: 'fee_income', currency: 'ILS', amount_minor: '139' },
+      { type: 'partner_settlement', currency: 'USD', amount_minor: '-5000' },
+      { type: 'fx_position', currency: 'ILS', amount_minor: '-18500' },
+    ]);
+  });
+});
