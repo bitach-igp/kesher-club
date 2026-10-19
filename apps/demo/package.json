@@ -6,12 +6,14 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "dev": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/dev.ts"
+    "dev": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/dev.ts",
+    "seed": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/seed.ts"
   },
   "dependencies": {
     "@kesher/api": "workspace:*",
     "@kesher/domain": "workspace:*",
     "@kesher/ports": "workspace:*",
+    "@kesher/sdk": "workspace:*",
     "@kesher/simulators": "workspace:*",
     "@kesher/worker": "workspace:*",
     "jose": "6.2.12",

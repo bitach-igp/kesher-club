@@ -127,6 +127,9 @@ importers:
       '@kesher/ports':
         specifier: workspace:*
         version: link:../../packages/ports
+      '@kesher/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
       '@kesher/simulators':
         specifier: workspace:*
         version: link:../simulators
