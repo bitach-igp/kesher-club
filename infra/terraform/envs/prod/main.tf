@@ -12,14 +12,28 @@ locals {
   }
 
   hosts = {
-    api      = "api.${var.domain}"
-    jit      = "jit.${var.domain}"
-    webhooks = "webhooks.${var.domain}"
-    admin    = "admin.${var.domain}"
-    app      = "app.${var.domain}"
-    console  = "console.${var.domain}"
-    vpn      = "vpn.${var.domain}"
+    admin   = "admin.${var.domain}"
+    app     = "app.${var.domain}"
+    console = "console.${var.domain}"
+    vpn     = "vpn.${var.domain}"
   }
+
+  # One api, jit and worker service per market (T-0026): the same image with MARKET set, on the shared
+  # database, KMS keys and secrets (party ids are unique across markets). `rule` offsets each market's
+  # listener rule priorities so they never collide.
+  markets = {
+    il = { code = "IL", rule = 0 }
+    us = { code = "US", rule = 1 }
+  }
+  market_hosts = {
+    for k, _ in local.markets : k => {
+      api      = "api-${k}.${var.domain}"
+      jit      = "jit-${k}.${var.domain}"
+      webhooks = "webhooks-${k}.${var.domain}"
+    }
+  }
+  # The member token issuer names the club, not a host: both markets' APIs mint and accept the same tokens.
+  token_issuer = "https://api.${var.domain}"
 
   database_url = "postgres://club_app@${module.rds.address}:${module.rds.port}/${module.rds.database_name}?sslmode=verify-full&sslrootcert=/app/db/certs/rds-global-bundle.pem"
 
@@ -31,7 +45,7 @@ locals {
     TEMPORAL_ADDRESS      = var.temporal_address
     TEMPORAL_NAMESPACE    = var.temporal_namespace
     AWS_REGION            = var.region
-    TOKEN_ISSUER          = "https://${local.hosts.api}"
+    TOKEN_ISSUER          = local.token_issuer
     JWT_SIGNING_KID       = "kesher-${local.env}-1"
     PORT                  = "3000"
   }
@@ -273,7 +287,8 @@ module "admin_alb" {
 
 module "api" {
   source                     = "../../modules/ecs-service"
-  name                       = "${local.name}-api"
+  for_each                   = local.markets
+  name                       = "${local.name}-api-${each.key}"
   cluster_arn                = aws_ecs_cluster.this.arn
   cluster_name               = aws_ecs_cluster.this.name
   vpc_id                     = module.network.vpc_id
@@ -284,7 +299,7 @@ module "api" {
   desired_count              = 2
   min_capacity               = 2
   max_capacity               = 8
-  environment                = merge(local.common_env, { SERVICE_ROLE = "api" })
+  environment                = merge(local.common_env, { SERVICE_ROLE = "api", MARKET = each.value.code })
   secrets                    = merge(local.common_secrets, { STRIPE_API_KEY = module.secrets.arns["stripe-api-key"], STRIPE_WEBHOOK_SECRET = module.secrets.arns["stripe-webhook-secret"], PROVIDER_WEBHOOK_SECRETS = module.secrets.arns["provider-webhook-secrets"] })
   secret_kms_key_arns        = [module.kms_secrets.key_arn]
   database_security_group_id = module.rds.security_group_id
@@ -292,27 +307,28 @@ module "api" {
   ingress = {
     listener_arn          = module.alb.https_listener_arn
     alb_security_group_id = module.alb.security_group_id
-    host_headers          = [local.hosts.api]
-    priority              = 10
+    host_headers          = [local.market_hosts[each.key].api]
+    priority              = 10 + each.value.rule
     health_check_path     = "/v1/status"
   }
 }
 
 # Provider webhooks arrive on the dedicated listener and land on the api target group.
+# Each market's providers post to that market's host, so its own api service verifies and applies them.
 resource "aws_lb_listener_rule" "webhooks" {
-  count = length(var.webhook_provider_cidrs) == 0 ? 0 : 1
+  for_each = length(var.webhook_provider_cidrs) == 0 ? {} : local.markets
 
   listener_arn = module.alb.webhook_listener_arn
-  priority     = 10
+  priority     = 10 + each.value.rule
 
   action {
     type             = "forward"
-    target_group_arn = module.api.target_group_arn
+    target_group_arn = module.api[each.key].target_group_arn
   }
 
   condition {
     host_header {
-      values = [local.hosts.webhooks]
+      values = [local.market_hosts[each.key].webhooks]
     }
   }
 
@@ -325,7 +341,8 @@ resource "aws_lb_listener_rule" "webhooks" {
 
 module "jit" {
   source                     = "../../modules/ecs-service"
-  name                       = "${local.name}-jit"
+  for_each                   = local.markets
+  name                       = "${local.name}-jit-${each.key}"
   cluster_arn                = aws_ecs_cluster.this.arn
   cluster_name               = aws_ecs_cluster.this.name
   vpc_id                     = module.network.vpc_id
@@ -336,7 +353,7 @@ module "jit" {
   desired_count              = 2
   min_capacity               = 2
   max_capacity               = 6
-  environment                = merge(local.common_env, { SERVICE_ROLE = "jit" })
+  environment                = merge(local.common_env, { SERVICE_ROLE = "jit", MARKET = each.value.code })
   secrets                    = local.common_secrets
   secret_kms_key_arns        = [module.kms_secrets.key_arn]
   database_security_group_id = module.rds.security_group_id
@@ -344,14 +361,15 @@ module "jit" {
   ingress = {
     listener_arn          = module.alb.https_listener_arn
     alb_security_group_id = module.alb.security_group_id
-    host_headers          = [local.hosts.jit]
-    priority              = 20
+    host_headers          = [local.market_hosts[each.key].jit]
+    priority              = 20 + each.value.rule
   }
 }
 
 module "worker" {
   source                     = "../../modules/ecs-service"
-  name                       = "${local.name}-worker"
+  for_each                   = local.markets
+  name                       = "${local.name}-worker-${each.key}"
   cluster_arn                = aws_ecs_cluster.this.arn
   cluster_name               = aws_ecs_cluster.this.name
   vpc_id                     = module.network.vpc_id
@@ -362,7 +380,7 @@ module "worker" {
   desired_count              = 2
   min_capacity               = 2
   max_capacity               = 6
-  environment                = merge(local.common_env, { SERVICE_ROLE = "worker" })
+  environment                = merge(local.common_env, { SERVICE_ROLE = "worker", MARKET = each.value.code })
   secrets                    = merge(local.common_secrets, { STRIPE_API_KEY = module.secrets.arns["stripe-api-key"] })
   secret_kms_key_arns        = [module.kms_secrets.key_arn]
   database_security_group_id = module.rds.security_group_id
@@ -382,7 +400,7 @@ module "admin" {
   desired_count   = 1
   min_capacity    = 1
   max_capacity    = 2
-  environment     = { NODE_ENV = "production", APP_ENV = local.env, API_BASE_URL = "https://${local.hosts.api}" }
+  environment     = { NODE_ENV = "production", APP_ENV = local.env, API_BASE_URL = "https://${local.market_hosts.il.api}" }
   log_kms_key_arn = module.kms_logs.key_arn
   ingress = {
     listener_arn          = module.admin_alb.https_listener_arn
@@ -394,11 +412,11 @@ module "admin" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "db_from_services" {
-  for_each = {
-    api    = module.api.security_group_id
-    jit    = module.jit.security_group_id
-    worker = module.worker.security_group_id
-  }
+  for_each = merge(
+    { for k, m in module.api : "api-${k}" => m.security_group_id },
+    { for k, m in module.jit : "jit-${k}" => m.security_group_id },
+    { for k, m in module.worker : "worker-${k}" => m.security_group_id },
+  )
 
   security_group_id            = module.rds.security_group_id
   description                  = "Postgres from ${each.key}"
@@ -406,6 +424,42 @@ resource "aws_vpc_security_group_ingress_rule" "db_from_services" {
   from_port                    = 5432
   to_port                      = 5432
   ip_protocol                  = "tcp"
+}
+
+# The single-market services became the IL ones (T-0026); state moves instead of a destroy and create.
+moved {
+  from = module.api
+  to   = module.api["il"]
+}
+
+moved {
+  from = module.jit
+  to   = module.jit["il"]
+}
+
+moved {
+  from = module.worker
+  to   = module.worker["il"]
+}
+
+moved {
+  from = aws_lb_listener_rule.webhooks[0]
+  to   = aws_lb_listener_rule.webhooks["il"]
+}
+
+moved {
+  from = aws_vpc_security_group_ingress_rule.db_from_services["api"]
+  to   = aws_vpc_security_group_ingress_rule.db_from_services["api-il"]
+}
+
+moved {
+  from = aws_vpc_security_group_ingress_rule.db_from_services["jit"]
+  to   = aws_vpc_security_group_ingress_rule.db_from_services["jit-il"]
+}
+
+moved {
+  from = aws_vpc_security_group_ingress_rule.db_from_services["worker"]
+  to   = aws_vpc_security_group_ingress_rule.db_from_services["worker-il"]
 }
 
 # ---- web apps ----------------------------------------------------------------------------------
@@ -436,7 +490,7 @@ module "console" {
 
 resource "aws_route53_record" "alb" {
   provider = aws.dns
-  for_each = toset([local.hosts.api, local.hosts.jit, local.hosts.webhooks])
+  for_each = toset(flatten([for h in values(local.market_hosts) : values(h)]))
 
   zone_id = var.hosted_zone_id
   name    = each.key
