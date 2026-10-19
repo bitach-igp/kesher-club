@@ -41,6 +41,16 @@ const bearerToken = (req: HttpRequest): string => {
   return m[1]!;
 };
 
+/**
+ * The install id both passkey ceremonies are keyed by (and refresh later names). Without it every
+ * device would share one pending challenge and one device row, so it is refused, never defaulted.
+ */
+const deviceIdOf = (body: { deviceId?: unknown } | undefined): string => {
+  const id = body?.deviceId;
+  if (typeof id !== 'string' || id.length < 1 || id.length > 128) throw new DomainError('VALIDATION_FAILED', 'deviceId is required: 1 to 128 characters');
+  return id;
+};
+
 export function authHandlers(deps: AuthDeps): Record<string, Handler> {
   const startOtp: Handler<{ phone: string; locale?: 'en' | 'he' }> = async (req) => created(await deps.otp.start({ phone: req.body.phone, locale: req.body.locale ?? 'en' }));
 
@@ -49,21 +59,22 @@ export function authHandlers(deps: AuthDeps): Record<string, Handler> {
 
   /** otp-session bearer for a new account; access bearer for adding a device; purpose=recovery runs recovery. */
   const registerPasskey: Handler<{ deviceId: string; deviceName?: string; response?: PasskeyRegistrationResponse; purpose?: 'register' | 'recovery' }> = async (req) => {
+    const deviceId = deviceIdOf(req.body);
     const deviceName = req.body.deviceName ?? 'This device';
     if (req.principal) {
-      return ok(await deps.passkeys.register({ principal: req.principal, deviceId: req.body.deviceId, deviceName, ...(req.body.response ? { response: req.body.response } : {}) }));
+      return ok(await deps.passkeys.register({ principal: req.principal, deviceId, deviceName, ...(req.body.response ? { response: req.body.response } : {}) }));
     }
     const otpSessionToken = bearerToken(req);
     if (req.body.purpose === 'recovery') {
-      return ok(await deps.recovery.recover({ otpSessionToken, deviceId: req.body.deviceId, deviceName, ...(req.body.response ? { response: req.body.response } : {}) }));
+      return ok(await deps.recovery.recover({ otpSessionToken, deviceId, deviceName, ...(req.body.response ? { response: req.body.response } : {}) }));
     }
-    return ok(await deps.passkeys.register({ otpSessionToken, deviceId: req.body.deviceId, deviceName, ...(req.body.response ? { response: req.body.response } : {}) }));
+    return ok(await deps.passkeys.register({ otpSessionToken, deviceId, deviceName, ...(req.body.response ? { response: req.body.response } : {}) }));
   };
 
   const authenticatePasskey: Handler<{ deviceId: string; response?: PasskeyAuthenticationResponse }> = async (req) =>
-    ok(await deps.passkeys.authenticate({ deviceId: req.body.deviceId, ...(req.body.response ? { response: req.body.response } : {}) }));
+    ok(await deps.passkeys.authenticate({ deviceId: deviceIdOf(req.body), ...(req.body.response ? { response: req.body.response } : {}) }));
 
-  const refreshToken: Handler<{ deviceId: string }> = async (req) => ok(await deps.tokens.refresh(bearerToken(req), req.body.deviceId));
+  const refreshToken: Handler<{ deviceId: string }> = async (req) => ok(await deps.tokens.refresh(bearerToken(req), deviceIdOf(req.body)));
 
   const stepUp: Handler<{ response?: PasskeyAuthenticationResponse }> = async (req) => {
     const principal = requirePrincipal(req);

@@ -17,10 +17,15 @@ export interface Session {
   setOtpSession(token: string | undefined): void;
   accessToken(): string | undefined;
   otpSession(): string | undefined;
+  /**
+   * This install's id: generated once, kept in the secure store, sent with every passkey ceremony and
+   * refresh. It names the app install, not the hardware, and survives sign-out.
+   */
+  deviceId(): string;
   restrictedUntil(): string | undefined;
 }
 
-export function memorySession(): Session {
+export function memorySession(deviceId: string): Session {
   let tokens: TokenPair | undefined;
   let otp: string | undefined;
   return {
@@ -35,6 +40,7 @@ export function memorySession(): Session {
     setOtpSession: (t) => void (otp = t),
     accessToken: () => tokens?.accessToken,
     otpSession: () => otp,
+    deviceId: () => deviceId,
     restrictedUntil: () => tokens?.restrictedUntil,
   };
 }

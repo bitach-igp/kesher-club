@@ -41,8 +41,8 @@ function fakeAuthApi(opts: { otpCode?: string; attempts?: number; fail?: 'locked
       if (attemptsLeft <= 0) throw new ApiProblem('RATE_LIMITED', 429);
       return { verified: false, attemptsLeft };
     },
-    async registerPasskey({ response }) {
-      calls.push(`registerPasskey:${response ? 'response' : 'options'}`);
+    async registerPasskey({ purpose, response }) {
+      calls.push(`registerPasskey:${purpose}:${response ? 'response' : 'options'}`);
       return response ? { credentialId: 'cred-1', tokens: tokens(lastPurpose) } : { options: { challenge: 'c1' } as unknown as Record<string, never> };
     },
     async authenticatePasskey({ response }) {
@@ -58,7 +58,7 @@ const now = () => new Date('2026-11-01T09:00:00Z');
 
 function setup(opts: Parameters<typeof fakeAuthApi>[0] = {}, authenticator = fakeAuthenticator()) {
   const { api, calls } = fakeAuthApi(opts);
-  const session = memorySession();
+  const session = memorySession('test-install');
   const router = memoryRouter('/sign-in');
   const model = createSignInModel({ api, authenticator, session, router, now, locale: 'en' });
   return { model, calls, session, router, authenticator };
@@ -107,7 +107,7 @@ describe('M03 sign-in: passkey first (TST-AUTH-002)', () => {
     await model.submitCode();
     expect(model.store.get().mode).toBe('enrol');
     await model.createPasskey();
-    expect(calls.at(-2)).toBe('registerPasskey:options');
+    expect(calls.slice(-2)).toEqual(['registerPasskey:recovery:options', 'registerPasskey:recovery:response']);
     expect(session.restrictedUntil()).toBe('2026-11-02T09:00:00Z');
     expect(model.store.get()).toMatchObject({ mode: 'done', recoveryHold: true });
   });
@@ -139,7 +139,7 @@ describe('M03 sign-up: phone + OTP + passkey (TST-AUTH-001)', () => {
     expect(session.otpSession()).toBe('otp-session');
     expect(model.store.get().mode).toBe('enrol');
     await model.createPasskey();
-    expect(calls.slice(-2)).toEqual(['registerPasskey:options', 'registerPasskey:response']);
+    expect(calls.slice(-2)).toEqual(['registerPasskey:register:options', 'registerPasskey:register:response']);
     expect(session.accessToken()).toBe('at-register');
     expect(session.otpSession()).toBeUndefined();
     expect(model.store.get()).toMatchObject({ mode: 'done', recoveryHold: false });
@@ -162,7 +162,7 @@ describe('M03 sign-up: phone + OTP + passkey (TST-AUTH-001)', () => {
   it('an expired code (5 minutes) is refused locally and offers a resend', async () => {
     const { api } = fakeAuthApi();
     let clock = new Date('2026-11-01T09:00:00Z');
-    const model = createSignInModel({ api, authenticator: fakeAuthenticator(), session: memorySession(), router: memoryRouter(), now: () => clock, locale: 'en' });
+    const model = createSignInModel({ api, authenticator: fakeAuthenticator(), session: memorySession('test-install'), router: memoryRouter(), now: () => clock, locale: 'en' });
     model.startSignUp();
     model.setPhone('+972501234567');
     await model.sendCode();

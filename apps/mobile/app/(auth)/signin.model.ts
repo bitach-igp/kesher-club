@@ -160,10 +160,12 @@ export function createSignInModel(deps: SignInDeps): SignInModel {
     async createPasskey() {
       store.patch({ busy: true, error: undefined });
       try {
-        const start = await deps.api.registerPasskey(deps.deviceName ? { deviceName: deps.deviceName } : {});
+        // A recovery verification's otp-session enrols through the recovery ceremony (REQ-AUTH-003).
+        const purpose = store.get().purpose;
+        const start = await deps.api.registerPasskey({ purpose, ...(deps.deviceName ? { deviceName: deps.deviceName } : {}) });
         if (!start.options) return fail('verify.passkey.failed');
         const response = await deps.authenticator.create(start.options);
-        const done = await deps.api.registerPasskey({ response });
+        const done = await deps.api.registerPasskey({ purpose, response });
         if (!done.tokens) return fail('verify.passkey.failed');
         finish(done.tokens);
       } catch (e) {

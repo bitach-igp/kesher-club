@@ -19,7 +19,7 @@ const api: AuthApi = {
 
 describe('M03 screen', () => {
   it('renders the passkey prompt first and reveals the phone field only behind "Can\'t use passkey?"', async () => {
-    const model = createSignInModel({ api, authenticator: fakeAuthenticator(), session: memorySession(), router: memoryRouter(), now: () => new Date(), locale: 'en' });
+    const model = createSignInModel({ api, authenticator: fakeAuthenticator(), session: memorySession('test-install'), router: memoryRouter(), now: () => new Date(), locale: 'en' });
     render(<SignInView model={model} />);
     expect(screen.getByTestId('signin-passkey')).toBeTruthy();
     expect(screen.queryByTestId('signin-phone')).toBeNull();
