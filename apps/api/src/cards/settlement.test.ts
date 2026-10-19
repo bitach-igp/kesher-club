@@ -2,7 +2,8 @@
 // once, however often it arrives: pending gives back what was held, partner_settlement takes what was
 // claimed, and the difference comes from or goes back to the purse that paid. A converted hold (T-0409)
 // clears in the authorisation currency at the hold's own rate. A hold nobody clears within 7 days is
-// released to the purse that paid; the club keeps the markup on what it converted (ADR-015).
+// released to the purse that paid, markup and all: the member pays the conversion only on what was spent
+// (ADR-016, T-0411).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7, type Currency } from '@kesher/domain';
 import { type CardIssuingPort, type CardIssuingSimulator } from '@kesher/ports';
@@ -107,7 +108,7 @@ describe('clearing (TST-CRD-003)', () => {
     expect(await held(noa.pending.ILS, 'ILS')).toBe(0n);
   });
 
-  it('a converted hold clears in dollars: more claimed converts with the markup, less goes back at the hold\'s rate', async () => {
+  it('a converted hold clears in dollars: more claimed converts with the markup; less costs what the cleared amount costs (T-0411)', async () => {
     const shekels = await held(ari.wallet.ILS, 'ILS');
     const fees = await feeIncome('ILS');
     const owed = await partner('USD');
@@ -120,9 +121,10 @@ describe('clearing (TST-CRD-003)', () => {
     expect(await partner('USD')).toBe(owed - 5_200n);
 
     const under = await authorize(ari, 5_000n, 'USD');
-    await clear(under, 4_500n, 'USD'); // $5 back: ₪18.50 at the club rate, the markup on the hold stays
-    expect(await held(ari.wallet.ILS, 'ILS')).toBe(shekels - 18_639n - 746n - 18_639n + 1_850n);
-    expect(await feeIncome('ILS')).toBe(fees + 139n + 6n + 139n);
+    // $45 costs ₪166.50 + ₪1.25 at 75 bps (1.24875 rounds up): of the ₪186.39 held, ₪18.64 goes back, ₪0.14 of it markup.
+    await clear(under, 4_500n, 'USD');
+    expect(await held(ari.wallet.ILS, 'ILS')).toBe(shekels - 18_639n - 746n - 16_775n); // the $45 cost ₪167.75 in all
+    expect(await feeIncome('ILS')).toBe(fees + 139n + 6n + 125n);
     expect(await held(ari.pending.USD, 'USD')).toBe(0n);
   });
 
@@ -179,7 +181,7 @@ describe('release after 7 days (TST-CRD-003)', () => {
     expect(await journals(authId)).toEqual([{ idempotency_key: holdKey(authId), kind: 'auth_hold' }, { idempotency_key: endKey(authId), kind: 'card_clearing' }]);
   });
 
-  it('a converted hold goes back to the purse that paid at the hold\'s rate; the club keeps the markup', async () => {
+  it('a converted hold released unspent goes back to the purse that paid whole, markup included (T-0411)', async () => {
     now = NOW;
     const shekels = await held(ari.wallet.ILS, 'ILS');
     const fees = await feeIncome('ILS');
@@ -187,8 +189,8 @@ describe('release after 7 days (TST-CRD-003)', () => {
     expect(await held(ari.wallet.ILS, 'ILS')).toBe(shekels - 3_728n);
     now = new Date(NOW.getTime() + HOLD_RELEASE_MS + 180_000);
     expect((await app.services.settlement.releaseExpired(now)).released).toBe(1);
-    expect(await held(ari.wallet.ILS, 'ILS')).toBe(shekels - 28n);
+    expect(await held(ari.wallet.ILS, 'ILS')).toBe(shekels);
     expect(await held(ari.pending.USD, 'USD')).toBe(0n);
-    expect(await feeIncome('ILS')).toBe(fees + 28n);
+    expect(await feeIncome('ILS')).toBe(fees);
   });
 });
