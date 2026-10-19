@@ -1,0 +1,158 @@
+# Release images (T-0030): builds the api, worker and admin images for one commit already on main and
+# pushes them to club-shared's ECR as `sha-<12-char commit>`, the tag staging and prod deploy with
+# `terraform apply -var image_tag=…`. Run by hand from the Actions tab. Credentials come from GitHub OIDC,
+# as in preview.yml, with no static keys. The repositories are IMMUTABLE, so an image already pushed for
+# this commit is skipped, never pushed again. Deploying is not this workflow's job. One-time setup:
+# docs/setup/release.md.
+name: release
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, tag or branch to build. It must already be on main.
+        required: true
+        default: main
+
+permissions:
+  contents: read
+  id-token: write
+
+# Releases run one at a time, so two runs for the same commit cannot race to push the same tag.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  resolve:
+    name: resolve the commit
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+      tag: ${{ steps.commit.outputs.tag }}
+    steps:
+      # The CI role trusts `ref:refs/heads/main` only (infra/terraform/modules/oidc), so a run started
+      # from any other branch could not assume it. Say so now rather than after the build.
+      - name: Require a run from main and the AWS variables
+        env:
+          ROLE: ${{ vars.AWS_CI_ROLE_ARN }}
+          SHARED: ${{ vars.AWS_SHARED_ACCOUNT_ID }}
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Run this workflow from main (Use workflow from: main); pass the commit to build as the ref input."
+            exit 1
+          fi
+          if [ -z "$ROLE" ] || [ -z "$SHARED" ]; then
+            echo "::error::Set the repository variables AWS_CI_ROLE_ARN and AWS_SHARED_ACCOUNT_ID first; see docs/setup/release.md."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      # Only reviewed code reaches the registry: the commit must be reachable from main.
+      - name: Resolve the ref and require it on main
+        id: commit
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          sha="$(git rev-parse --verify "${REF}^{commit}")"
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::${sha} is not on main; merge it first."
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${sha:0:12}" >> "$GITHUB_OUTPUT"
+
+  image:
+    name: ${{ matrix.app }}
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        app: [api, worker, admin]
+    env:
+      APP: ${{ matrix.app }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - name: Assume the CI role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: release-${{ matrix.app }}-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR (club-shared)
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registries: ${{ vars.AWS_SHARED_ACCOUNT_ID }}
+
+      # An IMMUTABLE repository refuses a second push of a tag; a rerun for the same commit skips instead.
+      # Only "not found" means build; any other error (permissions, a missing repository) fails the run.
+      - name: Is this tag already in ECR?
+        id: existing
+        env:
+          REGISTRY_ID: ${{ vars.AWS_SHARED_ACCOUNT_ID }}
+        run: |
+          if out="$(aws ecr describe-images --registry-id "$REGISTRY_ID" --repository-name "kesher/${APP}" --image-ids "imageTag=${TAG}" 2>&1)"; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "kesher/${APP}:${TAG} is already in ECR; skipping the push."
+          elif grep -q ImageNotFoundException <<<"$out"; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "$out"
+            exit 1
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.existing.outputs.found == 'false'
+
+      - name: Build and push
+        if: steps.existing.outputs.found == 'false'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/${{ matrix.app }}/Dockerfile
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/kesher/${{ matrix.app }}:${{ env.TAG }}
+          labels: org.opencontainers.image.revision=${{ needs.resolve.outputs.sha }}
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,scope=${{ matrix.app }},mode=max
+          provenance: false
+
+      - name: Record the result
+        env:
+          FOUND: ${{ steps.existing.outputs.found }}
+        run: |
+          if [ "$FOUND" = "true" ]; then state="already there, skipped"; else state="pushed"; fi
+          echo "kesher/${APP}:${TAG}: ${state}" >> "$GITHUB_STEP_SUMMARY"
+
+  summary:
+    name: tag to deploy
+    needs: [resolve, image]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print the tag for terraform apply
+        env:
+          SHA: ${{ needs.resolve.outputs.sha }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          {
+            echo "### Images for ${SHA}"
+            echo
+            echo "api, worker and admin are in ECR as \`${TAG}\`. Deploy staging or prod with:"
+            echo
+            echo '```sh'
+            echo "terraform apply -var image_tag=${TAG} …"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
