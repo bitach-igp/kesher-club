@@ -5,6 +5,7 @@ export * from './registry.ts';
 
 export * from './auth.ts';
 export * from './auth.simulator.ts';
+export * from './auth.seeded.ts';
 export * from './federated-idp.ts';
 export * from './federated-idp.simulator.ts';
 export * from './org-idp.ts';

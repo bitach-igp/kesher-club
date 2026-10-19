@@ -45,6 +45,35 @@ export function memorySession(deviceId: string): Session {
   };
 }
 
+/** Where an install id lives between launches; the browser's localStorage on web. */
+export interface InstallIdStore {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+const INSTALL_ID_KEY = 'kesher.installId';
+
+/**
+ * This install's id (T-0033): read from the store, else made once and kept there. A store that throws
+ * (private window, blocked storage) still gets an id for this launch, so a sign-in never goes without
+ * one. The native app keeps it in the secure store instead.
+ */
+export function installId(store: InstallIdStore | undefined, newId: () => string): string {
+  try {
+    const kept = store?.getItem(INSTALL_ID_KEY);
+    if (kept) return kept;
+  } catch {
+    // fall through to a fresh id
+  }
+  const id = newId();
+  try {
+    store?.setItem(INSTALL_ID_KEY, id);
+  } catch {
+    // this launch keeps it in memory
+  }
+  return id;
+}
+
 export const SessionContext = createContext<Session | undefined>(undefined);
 export const SessionProvider = SessionContext.Provider;
 export function useSession(): Session {

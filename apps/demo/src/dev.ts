@@ -33,11 +33,18 @@ export const DEFAULT_PORT = 3000;
 export const DEFAULT_SIMULATOR_PORT = 4010;
 
 const port = z.coerce.number().int().min(1).max(65535);
+const LOOPBACK_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\]):\d+$/;
 /** The demo's own keys; the API's are checked by its loader. Only development may boot. */
 const demoConfigSchema = z.object({
   APP_ENV: z.literal('development', { error: 'the demo runs only in development' }),
   PORT: port.default(DEFAULT_PORT),
   SIMULATOR_PORT: port.default(DEFAULT_SIMULATOR_PORT),
+  /** Where the member app's web build is served (T-0033); comma-separated, loopback http origins only. */
+  DEMO_WEB_ORIGINS: z
+    .string()
+    .default('http://localhost:8081,http://127.0.0.1:8081')
+    .transform((v) => v.split(',').map((o) => o.trim()).filter(Boolean))
+    .refine((list) => list.every((o) => LOOPBACK_ORIGIN.test(o)), { error: 'every entry must be an http origin on localhost, 127.0.0.1 or [::1]' }),
 });
 
 export interface DevOptions {
@@ -97,6 +104,32 @@ const listen = (server: http.Server, port: number): Promise<number> =>
     server.listen(port, () => resolve((server.address() as AddressInfo).port));
   });
 
+/**
+ * Development-only CORS in front of the API for the member app's web build (T-0033): only the configured
+ * origins, which DEMO_WEB_ORIGINS keeps to this machine, get the API's own headers; preflight ends here.
+ */
+export function withLoopbackCors(server: http.Server, origins: readonly string[]): http.Server {
+  const [inner] = server.listeners('request') as ((req: http.IncomingMessage, res: http.ServerResponse) => void)[];
+  if (!inner) throw new Error('The API server has no request listener');
+  server.removeAllListeners('request');
+  server.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
+    const allowed = origins.find((o) => o === req.headers.origin);
+    if (allowed) {
+      res.setHeader('access-control-allow-origin', allowed);
+      res.setHeader('access-control-allow-headers', 'authorization, content-type, idempotency-key, x-step-up, traceparent');
+      res.setHeader('access-control-allow-methods', 'GET, POST, PATCH, DELETE');
+      res.setHeader('access-control-expose-headers', 'x-trace-id');
+    }
+    res.setHeader('vary', 'origin');
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204).end();
+      return;
+    }
+    inner(req, res);
+  });
+  return server;
+}
+
 const close = (server: http.Server): Promise<void> =>
   new Promise((resolve) => {
     server.closeAllConnections();
@@ -120,7 +153,7 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
     const jobs: Job[] = buildJobs({ app, db, registry, market: config.MARKET, clock: now, runs: pgRunLog(db), catalogue: loadCatalogueConfig() });
     const scheduler = new Scheduler(jobs, noLock, (event, fields) => log(event, fields));
 
-    const api = createServer(app);
+    const api = withLoopbackCors(createServer(app), demo.DEMO_WEB_ORIGINS);
     const panel = createPanel(simulators);
     const apiPort = await listen(api, opts.ports?.api ?? config.PORT);
     const panelPort = await listen(panel, opts.ports?.panel ?? demo.SIMULATOR_PORT);

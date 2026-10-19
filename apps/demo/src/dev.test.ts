@@ -83,6 +83,19 @@ describe('one process, one registry, one clock (T-0031)', () => {
     expect(await usd()).toEqual({ available: before.available + 5_000n, holds: before.holds });
   });
 
+  it('lets the member app on another localhost port call the API, and no other origin (T-0033)', async () => {
+    const preflight = (origin: string) => fetch(`http://127.0.0.1:${dev.apiPort}/v1/accounts`, { method: 'OPTIONS', headers: { origin, 'access-control-request-method': 'GET', 'access-control-request-headers': 'authorization' } });
+    const local = await preflight('http://localhost:8081');
+    expect(local.status).toBe(204);
+    expect(local.headers.get('access-control-allow-origin')).toBe('http://localhost:8081');
+    expect(local.headers.get('access-control-allow-headers')).toContain('x-step-up');
+    const foreign = await preflight('https://evil.example');
+    expect(foreign.headers.get('access-control-allow-origin')).toBeNull();
+    const read = await fetch(`http://127.0.0.1:${dev.apiPort}/v1/status`, { headers: { origin: 'http://localhost:8081' } });
+    expect(read.status).toBe(200);
+    expect(read.headers.get('access-control-allow-origin')).toBe('http://localhost:8081');
+  });
+
   it('refuses to boot outside development: one boot_failed line, exit 1', async () => {
     const entry = fileURLToPath(new URL('./dev.ts', import.meta.url));
     const child = spawn(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', entry], { env: { ...(process.env['PATH'] ? { PATH: process.env['PATH'] } : {}), APP_ENV: 'preview', DATABASE_URL: 'postgres://demo@localhost/unused' } });

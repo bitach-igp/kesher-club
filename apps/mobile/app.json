@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "Kesher Club",
+    "slug": "kesher-club",
+    "scheme": "kesher",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "platforms": ["ios", "android", "web"],
+    "plugins": ["expo-router"],
+    "web": { "bundler": "metro", "output": "single" },
+    "experiments": { "typedRoutes": false }
+  }
+}

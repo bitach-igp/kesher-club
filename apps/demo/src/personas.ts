@@ -2,8 +2,9 @@
 // and a passkey each can sign in with on every run. Names and phones are fictional: phones sit in the
 // reserved 555-01xx range. A persona's key derives everything else (device id, passkey, idempotency keys),
 // so a second seed run finds the first run's people instead of making new ones.
-import { createECDH, createHash, createPrivateKey, createPublicKey, sign, type KeyObject } from 'node:crypto';
-import type { PasskeyAuthenticationOptions, PasskeyAuthenticationResponse, PasskeyRegistrationOptions, PasskeyRegistrationResponse } from '@kesher/ports';
+// Browser-safe (the member app's development build imports it for its persona picker, T-0033): no
+// `node:` imports, and the passkey comes from @kesher/ports/seeded, which is WebCrypto only.
+import { SeededPasskey } from '@kesher/ports/seeded';
 
 export type Market = 'US' | 'IL';
 export type Currency = 'USD' | 'ILS';
@@ -44,67 +45,8 @@ export const MISSING: readonly { who: string; recs: readonly string[]; why: stri
   { who: 'Allowance schedule', recs: ['REC-14'], why: 'no endpoint creates org.allowance_schedule' },
 ];
 
-const b64u = (b: Uint8Array): string => Buffer.from(b).toString('base64url');
-const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
-const sha256 = (s: string): Buffer => createHash('sha256').update(s).digest();
-
-/**
- * A passkey whose ES256 key derives from a seed, in the simulator's wire format (SimPasskeyDevice in
- * @kesher/ports): the same persona has the same credential on every run, in every process. Simulator only:
- * anyone holding the seed can sign, which is the point for a demo and why the RP is `kesher.example`.
- */
-export class SeededPasskey {
-  readonly credentialId: string;
-  readonly origin: string;
-  private readonly key: KeyObject;
-  private readonly publicKey: string;
-  private counter = 0;
-
-  constructor(seed: string, origin = 'https://kesher.example') {
-    this.origin = origin;
-    this.credentialId = b64u(sha256(`kesher-demo-credential:${seed}`).subarray(0, 16));
-    const ecdh = createECDH('prime256v1');
-    // A SHA-256 digest is a valid P-256 scalar but for a chance of 2^-32; rehash in that case.
-    for (let d = sha256(`kesher-demo-passkey:${seed}`); ; d = createHash('sha256').update(d).digest()) {
-      try {
-        ecdh.setPrivateKey(d);
-        break;
-      } catch {
-        continue;
-      }
-    }
-    const point = ecdh.getPublicKey(); // 0x04 || x || y
-    this.key = createPrivateKey({ format: 'jwk', key: { kty: 'EC', crv: 'P-256', d: b64u(ecdh.getPrivateKey()), x: b64u(point.subarray(1, 33)), y: b64u(point.subarray(33)) } });
-    this.publicKey = b64u(createPublicKey(this.key).export({ type: 'spki', format: 'der' }));
-  }
-
-  register(options: PasskeyRegistrationOptions): PasskeyRegistrationResponse {
-    return { credentialId: this.credentialId, publicKey: this.publicKey, clientDataJSON: this.clientData(options.challenge, 'webauthn.create'), attestation: this.sign(utf8(options.challenge)), transports: ['internal'] };
-  }
-
-  /**
-   * The server keeps the last counter and refuses one that does not grow. A derived key has no memory
-   * between runs, so the counter follows the wall clock: a fresh process starts above the last one's.
-   */
-  authenticate(options: PasskeyAuthenticationOptions): PasskeyAuthenticationResponse {
-    this.counter = Math.max(this.counter + 1, Date.now());
-    const clientDataJSON = this.clientData(options.challenge, 'webauthn.get');
-    const authenticatorData = b64u(utf8(`${options.rpId}|uv|${this.counter}`));
-    const signature = this.sign(new Uint8Array([...Buffer.from(authenticatorData, 'base64url'), ...utf8(clientDataJSON)]));
-    return { credentialId: this.credentialId, clientDataJSON, authenticatorData, signature, counter: this.counter };
-  }
-
-  private sign(data: Uint8Array): string {
-    return b64u(sign('sha256', data, { key: this.key, dsaEncoding: 'ieee-p1363' }));
-  }
-
-  private clientData(challenge: string, type: string): string {
-    return Buffer.from(JSON.stringify({ type, challenge, origin: this.origin })).toString('base64url');
-  }
-}
-
 export const deviceIdOf = (p: Persona): string => `demo-${p.key}`;
 
 // One device per persona per process, so assertions made within the same millisecond still count up.
-const devices = new Map<string, SeededPasskey>();
-export const passkeyOf = (p: Persona): SeededPasskey => devices.get(p.key) ?? devices.set(p.key, new SeededPasskey(p.key)).get(p.key)!;
+const devices = new Map<string, Promise<SeededPasskey>>();
+export const passkeyOf = (p: Persona): Promise<SeededPasskey> => devices.get(p.key) ?? devices.set(p.key, SeededPasskey.fromSeed(p.key)).get(p.key)!;
