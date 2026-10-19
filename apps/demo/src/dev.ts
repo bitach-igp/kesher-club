@@ -97,6 +97,32 @@ const listen = (server: http.Server, port: number): Promise<number> =>
     server.listen(port, () => resolve((server.address() as AddressInfo).port));
   });
 
+/** The member app's web build (T-0033) is served from another port on this machine; only such origins may call. */
+const LOOPBACK_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1|\[::1\]):\d+$/;
+
+/** Development-only CORS in front of the API: loopback origins, the API's own headers, preflight answered here. */
+export function withLoopbackCors(server: http.Server): http.Server {
+  const [inner] = server.listeners('request') as ((req: http.IncomingMessage, res: http.ServerResponse) => void)[];
+  if (!inner) throw new Error('The API server has no request listener');
+  server.removeAllListeners('request');
+  server.on('request', (req: http.IncomingMessage, res: http.ServerResponse) => {
+    const origin = req.headers.origin;
+    if (origin && LOOPBACK_ORIGIN.test(origin)) {
+      res.setHeader('access-control-allow-origin', origin);
+      res.setHeader('access-control-allow-headers', 'authorization, content-type, idempotency-key, x-step-up, traceparent');
+      res.setHeader('access-control-allow-methods', 'GET, POST, PATCH, DELETE');
+      res.setHeader('access-control-expose-headers', 'x-trace-id');
+    }
+    res.setHeader('vary', 'origin');
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204).end();
+      return;
+    }
+    inner(req, res);
+  });
+  return server;
+}
+
 const close = (server: http.Server): Promise<void> =>
   new Promise((resolve) => {
     server.closeAllConnections();
@@ -120,7 +146,7 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
     const jobs: Job[] = buildJobs({ app, db, registry, market: config.MARKET, clock: now, runs: pgRunLog(db), catalogue: loadCatalogueConfig() });
     const scheduler = new Scheduler(jobs, noLock, (event, fields) => log(event, fields));
 
-    const api = createServer(app);
+    const api = withLoopbackCors(createServer(app));
     const panel = createPanel(simulators);
     const apiPort = await listen(api, opts.ports?.api ?? config.PORT);
     const panelPort = await listen(panel, opts.ports?.panel ?? demo.SIMULATOR_PORT);

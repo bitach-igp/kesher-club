@@ -54,7 +54,7 @@ describe('demo seed (T-0032)', () => {
     for (const p of PERSONAS) {
       const deviceId = deviceIdOf(p);
       const { options } = await anon.post('/auth/passkeys/authenticate', { body: { deviceId } });
-      const response = passkeyOf(p).authenticate(options as unknown as PasskeyAuthenticationOptions) as unknown as Record<string, never>;
+      const response = (await (await passkeyOf(p)).authenticate(options as unknown as PasskeyAuthenticationOptions)) as unknown as Record<string, never>;
       const { tokens } = await anon.post('/auth/passkeys/authenticate', { body: { deviceId, response } });
       const principal = await dev.app.services.tokens.verifyAccess(tokens!.accessToken);
       expect(principal.partyId).toBe(byKey(rows, p.key).partyId);

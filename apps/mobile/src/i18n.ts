@@ -15,6 +15,8 @@ const en = {
   'common.error.unavailable': 'This is unavailable right now. Our team is on it.',
   'common.support': 'Contact support',
 
+  'dev.persona.label': 'Development build: sign in as',
+  'dev.persona.none': 'Pick a demo person to sign in with their passkey.',
   'signin.title': 'Welcome back',
   'signin.subtitle': 'Sign in with the passkey on this phone.',
   'signin.passkey': 'Sign in with passkey',
@@ -456,6 +458,8 @@ const he: Record<CopyKey, string> = {
   'common.error.unavailable': 'השירות לא זמין כרגע. הצוות שלנו מטפל בזה.',
   'common.support': 'פנייה לתמיכה',
 
+  'dev.persona.label': 'גרסת פיתוח: התחברות בתור',
+  'dev.persona.none': 'בחרו דמות הדגמה כדי להתחבר עם מפתח הגישה שלה.',
   'signin.title': 'ברוכים השבים',
   'signin.subtitle': 'היכנסו עם מפתח הגישה שבטלפון הזה.',
   'signin.passkey': 'כניסה עם מפתח גישה',

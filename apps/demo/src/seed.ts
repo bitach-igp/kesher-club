@@ -82,7 +82,7 @@ async function signIn(target: SeedTarget, p: Persona): Promise<Schemas['TokenPai
   const deviceId = deviceIdOf(p);
   const { options } = await anon.post('/auth/passkeys/authenticate', { body: { deviceId } });
   try {
-    const { tokens } = await anon.post('/auth/passkeys/authenticate', { body: { deviceId, response: wire(passkeyOf(p).authenticate(options as unknown as PasskeyAuthenticationOptions)) } });
+    const { tokens } = await anon.post('/auth/passkeys/authenticate', { body: { deviceId, response: wire(await (await passkeyOf(p)).authenticate(options as unknown as PasskeyAuthenticationOptions)) } });
     return tokens;
   } catch (e) {
     if (e instanceof ApiError && e.status === 401) return undefined;
@@ -98,7 +98,7 @@ async function signUp(target: SeedTarget, p: Persona): Promise<Schemas['TokenPai
   const begin = { deviceId: deviceIdOf(p), deviceName: 'Demo seed', purpose: 'register' as const };
   try {
     const { options } = await otpSession.post('/auth/passkeys/register', { body: begin });
-    const finish = { ...begin, response: wire(passkeyOf(p).register(options as unknown as PasskeyRegistrationOptions)) };
+    const finish = { ...begin, response: wire(await (await passkeyOf(p)).register(options as unknown as PasskeyRegistrationOptions)) };
     const { tokens } = await otpSession.post('/auth/passkeys/register', { body: finish });
     if (!tokens) throw new Error(`Sign-up for ${p.key} returned no tokens`);
     return tokens;
@@ -115,7 +115,7 @@ function memberClient(target: SeedTarget, p: Persona, accessToken: string): Clie
     getAccessToken: () => accessToken,
     getStepUpToken: async () => {
       const { options } = await client.post('/auth/step-up', { body: {} });
-      const { stepUpToken } = await client.post('/auth/step-up', { body: { response: wire(passkeyOf(p).authenticate(options as unknown as PasskeyAuthenticationOptions)) } });
+      const { stepUpToken } = await client.post('/auth/step-up', { body: { response: wire(await (await passkeyOf(p)).authenticate(options as unknown as PasskeyAuthenticationOptions)) } });
       if (!stepUpToken) throw new Error(`Step-up for ${p.key} returned no token`);
       return stepUpToken;
     },
