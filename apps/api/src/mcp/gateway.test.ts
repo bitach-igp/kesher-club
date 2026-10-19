@@ -69,7 +69,7 @@ beforeAll(async () => {
   const jwk = await exportJWK(key.publicKey);
   const validator = new McpTokenValidator(db, { jwks: { keys: [{ ...jwk, kid: 'k1', alg: 'ES256', use: 'sig' }] }, issuer: AS }, RESOURCE);
   const repo = new InMemoryIdentityRepository();
-  intents = new IntentService(db, new TransferService(db), new StepUpService(new AuthSimulator(), repo, { now: () => now }), { send: () => Promise.reject(new Error('approval is not exercised here')) }, new StaticFlags());
+  intents = new IntentService(db, new TransferService(db), new StepUpService(new AuthSimulator(), repo, { now: () => now }), { p2p: { send: () => Promise.reject(new Error('approval is not exercised here')) }, loads: { request: () => Promise.reject(new Error('approval is not exercised here')) } }, new StaticFlags());
   gateway = new McpGateway({ resource: RESOURCE, authorizationServers: [AS] }, db, validator, toolContext);
   await db.query(`insert into agent.client (client_id, name, metadata, fetched_at) values ($1, 'Assistant', '{}', now())`, [CLIENT]);
   await db.query(`insert into agent.grant (id, client_id, party_id, scopes, status, created_at) values ($1, $2, $3, $4, 'active', now())`, [grantId, CLIENT, member, ['balances:read', 'transactions:read', 'card:status:read', 'esim:read', 'card:freeze', 'limits:propose', 'p2p:propose', 'load:propose']]);

@@ -154,7 +154,7 @@ beforeAll(async () => {
       email.send({ channel: 'email', to: 'noa@example.com', template: 'agent.intent', locale: 'he', data, category: 'security' }, `email:${intent.id}`),
     ]);
   };
-  const intents = new IntentService(db, new TransferService(db), stepUp, { send: () => Promise.reject(new Error('approval is not exercised here')) }, new StaticFlags(), notifyAll);
+  const intents = new IntentService(db, new TransferService(db), stepUp, { p2p: { send: () => Promise.reject(new Error('approval is not exercised here')) }, loads: { request: () => Promise.reject(new Error('approval is not exercised here')) } }, new StaticFlags(), notifyAll);
   const ctx = (at: Date): ToolContext => ({
     now: at,
     accounts: async (m) => (await accounts.purses(m)).map((p) => ({ id: p.id, currency: p.currency, settled: p.settled, holds: p.holds, available: p.available })),

@@ -81,7 +81,6 @@ The ones a bank reviewer is most likely to ask about first:
 - Card settlement (clearing) is not in the code; only the authorisation hold is (money-flows.md, flow 12).
 - Member transfers post an internal journal and call no processor, although the specification calls
   them a partner book transfer (money-flows.md, flow 5).
-- An assistant-proposed transfer, once approved, is never sent (money-flows.md, flow 9).
 - Monitoring thresholds await compliance sign-off, and "escalated" triggers nothing beyond the record
   (monitoring-rules.md).
 - Complaint clocks count Monday to Friday in UTC with no holiday calendar

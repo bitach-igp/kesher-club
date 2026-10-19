@@ -142,8 +142,8 @@ function buildServices(o: AppOptions) {
   const preferences = new PreferenceService(o.db);
   // A send to a member who receives in the other currency prices at the club rate with their plan's markup (REQ-PAY-006).
   const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort, preferences, rates, markups: fx });
-  // An approved agent intent runs the member's own send (T-1008), so the intents come after it, and the JIT after them.
-  const intents = new IntentService(o.db, transfers, stepUp, p2p, flags);
+  // An approved agent intent runs the member's own send or load (T-1008, T-1009), so the intents come after them, and the JIT after the intents.
+  const intents = new IntentService(o.db, transfers, stepUp, { p2p, loads }, flags);
   const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans, flags, intents, fx: { rates, markups: fx } });
   const requests = new PaymentRequestService(o.db, p2p, identity);
   // Payouts (REQ-PO-001/002): the rail's status webhooks land on /hooks/payout; settled and failed are applied once (SEQ-09).
@@ -196,7 +196,7 @@ export function createApp(o: AppOptions): App {
     approveIntent: route(async (req) => {
       const key = requireIdempotencyKey(req);
       const r = await s.intents.approve(req, req.params['id'] ?? '', key);
-      return ok({ id: r.intent.id, kind: r.intent.kind, status: r.intent.status, expiresAt: r.intent.expiresAt, summary: r.intent.summary });
+      return ok({ id: r.intent.id, kind: r.intent.kind, status: r.intent.status, expiresAt: r.intent.expiresAt, summary: r.intent.summary, ...(r.load ? { load: r.load } : {}) });
     }),
     listAgentGrants: route(async (req) => {
       const p = requirePrincipal(req);
