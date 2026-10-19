@@ -108,7 +108,6 @@ function buildServices(o: AppOptions) {
   const flags: FeatureFlags = o.flags ?? new FlagService(o.db, approvals, audit);
   const orders = new AddonOrderService(o.db, ledger, accounts, new CreditService(entitlements));
   const roster = new RosterService(o.db);
-  const intents = new IntentService(o.db, transfers, stepUp);
   const inbound = new InboundEventStore(o.db);
   const webhooks = new WebhookRouter(inbound);
   const kyc = new KycService(o.db, o.registry.resolve<KycPort>('kyc', o.market), o.market, o.registry.bindingFor('kyc', o.market)?.provider ?? 'issuer-kyc');
@@ -118,7 +117,6 @@ function buildServices(o: AppOptions) {
   // the other purse (REQ-WAL-006), a converted send (REQ-PAY-006) and the convert screen.
   const rates = new RateService(o.db, approvals, audit);
   const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
-  const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans, flags, intents, fx: { rates, markups: fx } });
   const provisioning = new ProvisioningService(o.db, cards, detailsTokenProvisioning(cardIssuing), flags);
   const physical = new PhysicalCardService(o.db, cardIssuing, kyc, cards, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
   // The processor's token lifecycle events land on /hooks/card-issuing and are applied at receipt; the
@@ -144,6 +142,9 @@ function buildServices(o: AppOptions) {
   const preferences = new PreferenceService(o.db);
   // A send to a member who receives in the other currency prices at the club rate with their plan's markup (REQ-PAY-006).
   const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort, preferences, rates, markups: fx });
+  // An approved agent intent runs the member's own send (T-1008), so the intents come after it, and the JIT after them.
+  const intents = new IntentService(o.db, transfers, stepUp, p2p, flags);
+  const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans, flags, intents, fx: { rates, markups: fx } });
   const requests = new PaymentRequestService(o.db, p2p, identity);
   // Payouts (REQ-PO-001/002): the rail's status webhooks land on /hooks/payout; settled and failed are applied once (SEQ-09).
   const collections = new CollectionsService(o.db, ledger, accounts, transfers, flags);

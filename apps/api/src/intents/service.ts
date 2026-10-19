@@ -1,6 +1,9 @@
 // Pending intents (T-1005, REQ-AGT-006, constitution art. 7): T2 tools create an intent, never a
 // journal. A human approves in-app with a passkey step-up within 24 h, or it expires. Approval
-// starts the money workflow (TransferService) under the member's own session, not the agent's.
+// starts the money workflow under the member's own session, not the agent's: a P2P intent runs the very
+// send a member's POST /transfers runs (T-1008), so eligibility, limits, balance, the new-pair hold and the
+// receiving-currency conversion all apply, keyed `intent:{id}` so a second approval finds the same send.
+// A refusal leaves the intent pending. Load intents name no funding method yet, so they cannot be approved.
 import { createHash } from 'node:crypto';
 import { DomainError, fromWire, uuidv7, type Money } from '@kesher/domain';
 import type { Database } from '../db.ts';
@@ -8,9 +11,14 @@ import type { HttpRequest, Principal } from '../http.ts';
 import { assertNotRestricted } from '../auth/recovery.ts';
 import type { StepUpService } from '../auth/step-up.ts';
 import { requireStepUp } from '../auth/step-up.ts';
+import type { FeatureFlags } from '../billing/capabilities.ts';
+import { P2P_FLAG } from '../p2p/handlers.ts';
+import type { P2pSendService } from '../p2p/send.ts';
 import type { TransferService, Transfer } from '../transfers/service.ts';
 
 export const INTENT_TTL_MS = 24 * 3_600_000;
+/** The money workflow's id for an approved intent (SEQ-04: start(transfer:{intentId})). */
+export const intentKey = (intentId: string): string => `intent:${intentId}`;
 export type IntentKind = 'p2p' | 'load' | 'limit_change';
 export type IntentStatus = 'pending' | 'approved' | 'rejected' | 'expired';
 
@@ -72,16 +80,22 @@ export class IntentService {
   private readonly db: Database;
   private readonly transfers: TransferService;
   private readonly stepUp: StepUpService;
+  private readonly sends: Pick<P2pSendService, 'send'>;
+  private readonly flags: Pick<FeatureFlags, 'isOn'>;
   private readonly notify: (partyId: string, intent: PendingIntent) => Promise<void>;
   constructor(
     db: Database,
     transfers: TransferService,
     stepUp: StepUpService,
+    sends: Pick<P2pSendService, 'send'>,
+    flags: Pick<FeatureFlags, 'isOn'>,
     notify: (partyId: string, intent: PendingIntent) => Promise<void> = async () => undefined,
   ) {
     this.db = db;
     this.transfers = transfers;
     this.stepUp = stepUp;
+    this.sends = sends;
+    this.flags = flags;
     this.notify = notify;
   }
 
@@ -105,7 +119,7 @@ export class IntentService {
     requireStepUp(this.stepUp, req);
     const intent = await this.get(intentId);
     if (!intent || intent.partyId !== principal.partyId) throw new DomainError('NOT_FOUND', 'Intent not found');
-    if (intent.status === 'approved') return { intent, ...(await this.transferFor(intent, idempotencyKey)) };
+    if (intent.status === 'approved') return { intent, ...(await this.execute(intent, req.now)) };
     if (intent.status !== 'pending') throw new DomainError('IDEMPOTENCY_CONFLICT', `Intent is ${intent.status}`);
     if (Date.parse(intent.expiresAt) <= req.now.getTime()) {
       await this.setStatus(intentId, 'expired', req.now);
@@ -113,9 +127,11 @@ export class IntentService {
     }
     if (intent.kind === 'p2p') assertNotRestricted(principal, 'p2p_send', req.now);
     if (intent.kind !== 'limit_change') await this.grantAllowsMoney(intent.grantId);
+    // Money first: a refusal (limit, balance, eligibility) throws before the intent is marked approved.
+    const executed = await this.execute(intent, req.now);
+    void idempotencyKey; // the intent id is the money key; the HTTP key only dedupes the approval call
     await this.setStatus(intentId, 'approved', req.now, principal.partyId);
-    const approved = (await this.get(intentId))!;
-    return { intent: approved, ...(await this.transferFor(approved, idempotencyKey, req.now)) };
+    return { intent: (await this.get(intentId))!, ...executed };
   }
 
   async reject(principal: Principal, intentId: string, now: Date): Promise<PendingIntent> {
@@ -181,17 +197,16 @@ export class IntentService {
     return r.rows.map(toIntent);
   }
 
-  private async transferFor(intent: PendingIntent, idempotencyKey: string, now = new Date()): Promise<{ transfer?: Transfer }> {
+  /** The money the intent moves, through the member's own path; a replay finds its transfer by the intent key. */
+  private async execute(intent: PendingIntent, now: Date): Promise<{ transfer?: Transfer }> {
     if (intent.kind === 'limit_change') return {};
-    const amount = parseMoney(intent.payload['amount']);
-    const transfer = await this.transfers.create(
-      intent.kind === 'p2p'
-        ? { idempotencyKey: `intent:${intent.id}`, kind: 'p2p', fromPartyId: intent.partyId, toPartyId: String(intent.payload['toPartyId']), amount, ...(typeof intent.payload['note'] === 'string' ? { note: intent.payload['note'] } : {}) }
-        : { idempotencyKey: `intent:${intent.id}`, kind: 'load', toPartyId: String(intent.payload['memberPartyId'] ?? intent.partyId), amount },
-      now,
-    );
-    void idempotencyKey; // the intent id is the money key; the HTTP key only dedupes the approval call
-    return { transfer };
+    if (intent.kind === 'load') throw new DomainError('FEATURE_OFF', 'Loads proposed by your assistant cannot be approved yet');
+    if (!(await this.flags.isOn(P2P_FLAG))) throw new DomainError('FEATURE_OFF', 'Member transfers are not enabled yet');
+    const { fromPartyId, toPartyId, amount, note } = intent.payload;
+    if (fromPartyId !== undefined && fromPartyId !== intent.partyId) throw new DomainError('FORBIDDEN', 'You can approve sends from your own purse only');
+    const key = intentKey(intent.id);
+    await this.sends.send(intent.partyId, { toPartyId, amount, ...(note !== undefined ? { note } : {}) }, key, now);
+    return { transfer: (await this.transfers.byKey(key))! };
   }
 
   private async grantAllowsMoney(grantId: string): Promise<void> {
