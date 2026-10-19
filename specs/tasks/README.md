@@ -16,6 +16,7 @@
 | [T-0012](T-0012.md) | SETUP | Migration safety lint without Atlas Pro (Squawk), and move the balance cache to ops.account_balance | — | 2 |
 | [T-0013](T-0013.md) | SETUP | Hebrew/RTL full pass and Dynamic Type 200% (CLUB-37) | — | 9 |
 | [T-0014](T-0014.md) | SETUP | Pentest readiness: ZAP baseline on the preview, evidence folders (CLUB-38) | — | 9 |
+| [T-0015](T-0015.md) | SETUP | File paths from import.meta.url work on Windows | — | 9 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
