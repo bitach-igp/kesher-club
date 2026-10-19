@@ -633,32 +633,38 @@ A member closes their account. Whatever remains is refunded to where it came fro
 | SEQ: not in Tab 3 §7 | REQ-WAL-005 | none | REC-17 closure refunds |
 
 - Closing is refused while holds are outstanding or a purse is overdrawn
-  (`apps/api/src/wallet/closure.ts:52-53`). Auto-reload is switched off (`apps/api/src/wallet/closure.ts:54`).
+  (`apps/api/src/wallet/closure.ts:59-60`). Auto-reload is switched off (`apps/api/src/wallet/closure.ts:61`).
 - Refunds go against the member's settled loads, newest first, each up to what that load gave
-  (`apps/api/src/wallet/closure.ts:56-66`, `:161-170`), through the funding provider
-  (`apps/api/src/wallet/closure.ts:94`).
-- The journal posts only when the provider confirms (`apps/api/src/wallet/closure.ts:104-127`). The
+  (`apps/api/src/wallet/closure.ts:63-73`, `:199-222`), through the funding provider
+  (`apps/api/src/wallet/closure.ts:102`).
+- The journal posts only when the provider confirms (`apps/api/src/wallet/closure.ts:112-135`). The
   account closes when every purse reads zero, and the audit chain records it
-  (`apps/api/src/wallet/closure.ts:132-139`).
+  (`apps/api/src/wallet/closure.ts:171-178`).
 - Money with no load behind it (received by transfer) cannot be refunded here; the closure reports
-  `NO_REFUND_SOURCE` (`apps/api/src/wallet/closure.ts:6-7`, `:142`).
+  `NO_REFUND_SOURCE` (`apps/api/src/wallet/closure.ts:6-7`, `:181`).
 
 | Journal kind | Key | Dr | Cr | Currency |
 |---|---|---|---|---|
 | `refund` | `closure:{partyId}:{loadTransferId}:settle` | member `wallet` | `partner_settlement` | purse currency |
+| `refund`, converted load | same | member `wallet` (purse), `fee_income` (the markup share) | `fx_position` (the gross at the load's rate) | purse currency |
+| | | `fx_position` | `partner_settlement` | instrument currency |
 
-Source: `apps/api/src/wallet/closure.ts:40-41`, `:113-125`.
+Source: `apps/api/src/wallet/closure.ts:46`, `:48`, `:120-135`, `:145-169`.
 
 Tests: TST-WAL-005 (`apps/api/src/wallet/closure.test.ts:60`, `:96`, `:104`, `:121`, `:140`, `:158`).
 Example: closing with $30.00 refunds it to the load's source and closes once the refund posts
 (`apps/api/src/wallet/closure.test.ts:60`).
 
-Gap found: refundable loads are matched by the load's own currency (`apps/api/src/wallet/closure.ts:166`). A
-load that converted into the other purse (flow 3) carries the instrument currency, so its credited
-balance would report `NO_REFUND_SOURCE`. No test covers this. Compliance and the founder decide whether
-such balances refund to source (and at what rate) or leave by payout.
+Gap found: refundable loads were matched by the load's own currency, so a load that converted into the
+other purse (flow 3) left its credited balance with `NO_REFUND_SOURCE`.
 
-Decided (ADR-014, decision 12): refund to source in the instrument currency, pro rata at the load's own rate. Card T-0521.
+Decided (ADR-014, decision 12): refund to source in the instrument currency, pro rata at the load's own
+rate. Built in T-0521: loads are matched by the purse they credited
+(`apps/api/src/wallet/closure.ts:210`), the source's share is computed in
+`apps/api/src/wallet/closure.ts:254-260`, and the refund journal passes through `fx_position` in both
+currencies (`apps/api/src/wallet/closure.ts:145-169`). The load's markup comes back with it pro rata:
+fee income gives back its share, so a load refunded whole leaves `fx_position` and `fee_income` at zero
+in both currencies. Tests: `apps/api/src/wallet/closure.test.ts:176-229`.
 
 Open: REQ-WAL-005 says the balance is withdrawn or refunded. Money with no load behind it waits for the
 member to request a payout (flow 13); the closure only reports it (`apps/api/src/wallet/closure.ts:6-7`).
