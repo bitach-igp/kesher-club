@@ -7,7 +7,7 @@
 // next one is published; a manual rate holds.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
-import { fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock } from '@kesher/ports';
+import { fixedClock, FxError, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type FxPort } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
@@ -16,7 +16,7 @@ import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { runLoad } from '../wallet/loads.ts';
-import { rateString, settleKey, type FxConversionView, type FxQuoteView } from './service.ts';
+import { FxService, rateString, settleKey, STALE_CONVERSION_MS, type FxConversionView, type FxQuoteView } from './service.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -181,5 +181,80 @@ describe('TST-FX-003/004: the club rate behind every quote', () => {
     await s.rates.approve(proposed.rate.id, { partyId: uuidv7(later), role: 'finance' }, later);
     const dayLater = new Date(later.getTime() + 24 * 60 * 60_000);
     expect(await s.fx.quote(member, { from: { minor: '10000', currency: 'USD' }, to: 'ILS' }, 'fx-manual-1', dayLater)).toMatchObject({ rate: '3.700000', rateVersion: proposed.rate.version, total: { minor: '36722', currency: 'ILS' } });
+  });
+});
+
+describe('T-0520: a failed vendor leg closes the conversion (SEQ-08)', () => {
+  /** The FX simulator behind a switch: ok, an outage, or a reject at convert. */
+  const scripted = () => {
+    const sim = host.simulators.fx;
+    const port = {
+      mode: 'ok' as 'ok' | 'outage' | 'reject',
+      quote: (input: Parameters<FxPort['quote']>[0]) => sim.quote(input),
+      async convert(quoteId: string, key: string) {
+        if (port.mode === 'outage') throw new FxError('PROVIDER_UNAVAILABLE', 'scripted outage');
+        if (port.mode === 'reject') throw new FxError('VALIDATION_FAILED', 'scripted reject');
+        return sim.convert(quoteId, key);
+      },
+    };
+    const s = app.services;
+    const svc = new FxService({ db, port, rates: s.rates, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, plans: s.plans, flags: s.flags });
+    return { port, svc };
+  };
+  const journals = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [settleKey(key)])).rows[0]!.n;
+  const usd10 = { from: { minor: '1000', currency: 'USD' }, to: 'ILS' };
+
+  it('a reject fails the conversion and voids the quote with no journal; a replay answers the same', async () => {
+    // Two days on, under the manual 3.70 rate an earlier test left active (a manual rate never runs out).
+    const t0 = new Date(NOW.getTime() + 2 * 86_400_000);
+    const { port, svc } = scripted();
+    const q = await svc.quote(member, usd10, 'fx-t0520-reject-q', t0);
+    port.mode = 'reject';
+    await expect(svc.convert(member, { quoteId: q.quoteId }, 'fx-t0520-reject', t0)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    const t = (await app.services.transfers.byKey('fx-t0520-reject'))!;
+    expect(t).toMatchObject({ state: 'failed', failureCode: 'VALIDATION_FAILED' });
+    expect(await journals('fx-t0520-reject')).toBe(0);
+    port.mode = 'ok';
+    await expect(svc.convert(member, { quoteId: q.quoteId }, 'fx-t0520-reject', t0)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(svc.convert(member, { quoteId: q.quoteId }, 'fx-t0520-reject-2', t0)).rejects.toMatchObject({ code: 'QUOTE_EXPIRED' });
+    expect((await app.services.transfers.history(t.id)).filter((e) => e.to === 'failed')).toHaveLength(1);
+  });
+
+  it('an outage stays retryable while the quote lives and settles once; after the quote expired the retry fails it', async () => {
+    // Two days on, under the manual 3.70 rate an earlier test left active (a manual rate never runs out).
+    const t0 = new Date(NOW.getTime() + 2 * 86_400_000);
+    const { port, svc } = scripted();
+    const q = await svc.quote(member, usd10, 'fx-t0520-retry-q', t0);
+    port.mode = 'outage';
+    await expect(svc.convert(member, { quoteId: q.quoteId }, 'fx-t0520-retry', t0)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect((await app.services.transfers.byKey('fx-t0520-retry'))!.state).toBe('submitted');
+    port.mode = 'ok';
+    expect(await svc.convert(member, { quoteId: q.quoteId }, 'fx-t0520-retry', new Date(t0.getTime() + 10_000))).toMatchObject({ status: 'settled' });
+    expect(await journals('fx-t0520-retry')).toBe(1);
+
+    const q2 = await svc.quote(member, usd10, 'fx-t0520-late-q', t0);
+    port.mode = 'outage';
+    await expect(svc.convert(member, { quoteId: q2.quoteId }, 'fx-t0520-late', t0)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    port.mode = 'ok';
+    await expect(svc.convert(member, { quoteId: q2.quoteId }, 'fx-t0520-late', new Date(t0.getTime() + 31_000))).rejects.toMatchObject({ code: 'QUOTE_EXPIRED' });
+    expect(await app.services.transfers.byKey('fx-t0520-late')).toMatchObject({ state: 'failed', failureCode: 'QUOTE_EXPIRED' });
+    expect(await journals('fx-t0520-late')).toBe(0);
+  });
+
+  it('the sweep fails a conversion still submitted once its quote cannot be alive, and only then, once', async () => {
+    // Two days on, under the manual 3.70 rate an earlier test left active (a manual rate never runs out).
+    const t0 = new Date(NOW.getTime() + 2 * 86_400_000);
+    const { port, svc } = scripted();
+    const q = await svc.quote(member, usd10, 'fx-t0520-stale-q', t0);
+    port.mode = 'outage';
+    await expect(svc.convert(member, { quoteId: q.quoteId }, 'fx-t0520-stale', t0)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    const id = (await app.services.transfers.byKey('fx-t0520-stale'))!.id;
+    expect((await svc.voidStale(new Date(t0.getTime() + 60_000))).map((t) => t.id)).not.toContain(id);
+    expect((await app.services.transfers.get(id))!.state).toBe('submitted');
+    const swept = await svc.voidStale(new Date(t0.getTime() + STALE_CONVERSION_MS + 1_000));
+    expect(swept.map((t) => t.id)).toContain(id);
+    expect(await app.services.transfers.get(id)).toMatchObject({ state: 'failed', failureCode: 'QUOTE_EXPIRED' });
+    expect((await svc.voidStale(new Date(t0.getTime() + STALE_CONVERSION_MS + 60_000))).map((t) => t.id)).not.toContain(id);
+    expect(await journals('fx-t0520-stale')).toBe(0);
   });
 });
