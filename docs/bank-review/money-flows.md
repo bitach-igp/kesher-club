@@ -66,7 +66,7 @@ These controls hold for every journal below.
   (`apps/api/src/transfers/state-machine.ts:25-29`). A replayed create returns the existing transfer
   (`apps/api/src/transfers/service.ts:79-102`).
 - Vendor ids are stored in `ops.external_ref`, never on the transfer (`db/migrations/ledger/0001_init.sql:62`;
-  for example `apps/api/src/wallet/loads.ts:191`).
+  for example `apps/api/src/wallet/loads.ts:194`).
 - Night controls. A balance proof compares every cached balance with its postings and opens a case per
   break (`apps/worker/src/ledger/balance-proof.ts:1-4`; tests `apps/worker/src/ledger/balance-proof.test.ts:31`, `:40`).
   Reconciliation matches partner records to journals and opens a case for any break before 06:00
@@ -79,7 +79,7 @@ These controls hold for every journal below.
 
 Gap found: Tab 3 §7 names workflow keys with a prefix (`load:{key}` in SEQ-02, `transfer:{key}` in SEQ-06,
 `fx:{quoteId}` in SEQ-08, `payout:{key}` in SEQ-09). The code uses the member's Idempotency-Key as
-it arrives (`apps/api/src/wallet/loads.ts:162`, `apps/api/src/p2p/send.ts:130`,
+it arrives (`apps/api/src/wallet/loads.ts:165`, `apps/api/src/p2p/send.ts:130`,
 `apps/api/src/fx/service.ts:127`, `apps/api/src/payouts/service.ts:151`). The engineering lead decides
 whether the spec or the code changes.
 
@@ -94,24 +94,24 @@ lands only when the provider confirms the payment.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-02 | REQ-WAL-002, REQ-LED-003 | `wallet.enabled` (`apps/api/src/wallet/loads.ts:160`) | REC-01 load by card |
+| SEQ-02 | REQ-WAL-002, REQ-LED-003 | `wallet.enabled` (`apps/api/src/wallet/loads.ts:163`) | REC-01 load by card |
 
 Steps as coded:
-- Methods: card, Apple Pay, Google Pay (`apps/api/src/wallet/loads.ts:37`). A funder may load only a
-  member with an active membership they fund (`apps/api/src/wallet/loads.ts:368-371`).
+- Methods: card, Apple Pay, Google Pay (`apps/api/src/wallet/loads.ts:38`). A funder may load only a
+  member with an active membership they fund (`apps/api/src/wallet/loads.ts:380-383`).
 - The transfer (kind `load`) is created and submitted; the provider pull carries the workflow id as its
-  idempotency key (`apps/api/src/wallet/loads.ts:169-188`).
-- A decline fails the transfer and posts nothing (`apps/api/src/wallet/loads.ts:112`). An outage leaves
-  it submitted for a retry with the same key (`apps/api/src/wallet/loads.ts:113-114`). The worker asks
+  idempotency key (`apps/api/src/wallet/loads.ts:172-191`).
+- A decline fails the transfer and posts nothing (`apps/api/src/wallet/loads.ts:113`). An outage leaves
+  it submitted for a retry with the same key (`apps/api/src/wallet/loads.ts:114-115`). The worker asks
   the provider about loads still submitted after 10 minutes (`apps/worker/src/wallet/load-workflow.ts:10-12`).
 - Provider webhooks settle or fail the transfer once; a repeat changes nothing
-  (`apps/api/src/wallet/loads.ts:269-279`).
+  (`apps/api/src/wallet/loads.ts:272-282`).
 
 | Journal kind | Key | Dr | Cr | Currency |
 |---|---|---|---|---|
 | `load` | `{Idempotency-Key}:settle` | `partner_settlement` | member `wallet` | the load's currency |
 
-Source: `apps/api/src/wallet/loads.ts:194-205`, `:336-341`. Example from the test: a $100.00 Apple Pay
+Source: `apps/api/src/wallet/loads.ts:197-208`, `:336-341`. Example from the test: a $100.00 Apple Pay
 load (10,000 cents) posts Dr `partner_settlement` USD 10,000, Cr member wallet USD 10,000
 (`apps/api/src/wallet/loads.test.ts:65`).
 
@@ -123,7 +123,7 @@ Tests: TST-WAL-002 in `apps/api/src/wallet/loads.test.ts:56-151` (settle, replay
 
 Gap found: SEQ-02 shows a program funding transfer to the processor or bank before the journal posts. The
 code posts on the funding provider's confirmation and calls no bank or processor
-(`apps/api/src/wallet/loads.ts:194-205`). This waits on the processor and bank choice (ADR-006); the
+(`apps/api/src/wallet/loads.ts:197-208`). This waits on the processor and bank choice (ADR-006); the
 founder decides with the bank.
 
 Decided (ADR-014, decision 4): the ledger stays a shadow until ADR-006 picks the processor; the funding transfer then arrives as a port call before the journal.
@@ -135,15 +135,15 @@ date, then it moves to the spendable purse.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ: not in Tab 3 §7 | REQ-WAL-002, REQ-WAL-003 | `funding.ach` (`apps/api/src/wallet/loads.ts:356`) | REC-02 ACH load hold and release |
+| SEQ: not in Tab 3 §7 | REQ-WAL-002, REQ-WAL-003 | `funding.ach` (`apps/api/src/wallet/loads.ts:368`) | REC-02 ACH load hold and release |
 
 - The provider answers `on_hold` with a release date. The simulator holds 3 business days, Monday to
   Friday (`packages/ports/src/funding.simulator.ts:11-23`, `:48`).
-- A provider confirmation during the hold leaves the load held (`apps/api/src/wallet/loads.ts:124-125`).
+- A provider confirmation during the hold leaves the load held (`apps/api/src/wallet/loads.ts:125-126`).
 - The worker's release job runs every 5 minutes and releases each hold whose date has passed
   (`apps/worker/src/wallet/release-holds.ts:9`, `:31-36`).
 - An ACH return during the hold reverses the hold journal and fails the load
-  (`apps/api/src/wallet/loads.ts:242-245`).
+  (`apps/api/src/wallet/loads.ts:245-248`).
 
 | Journal kind | Key | Dr | Cr | Currency |
 |---|---|---|---|---|
@@ -151,41 +151,43 @@ date, then it moves to the spendable purse.
 | `load_release` | `{key}:release` | member `pending` | member `wallet` | load currency |
 | `reversal` (on return) | `{key}:hold:reversal` | member `pending` | `partner_settlement` | load currency |
 
-Source: `apps/api/src/wallet/loads.ts:207-218`, `:220-240`, `:242-245`; keys `:138-139`.
+Source: `apps/api/src/wallet/loads.ts:210-221`, `:220-240`, `:242-245`; keys `:138-139`.
 
 Tests: TST-WAL-003 in `apps/api/src/wallet/loads.test.ts:175`, `:197` and
 `apps/worker/src/wallet/release-holds.test.ts:47`, `:86`, `:114`.
 
 Open: the real hold days come from the bank's hold policy; the code takes the date the provider returns
-(`apps/api/src/wallet/loads.ts:129`). The flag's turn-on condition is "Bank hold policy; Plaid contract"
+(`apps/api/src/wallet/loads.ts:130`). The flag's turn-on condition is "Bank hold policy; Plaid contract"
 (`config/flags.json:150-154`). The bank sets the days.
 
 ## 3. Load into the other purse at the club rate
 
 A load paid in one currency can credit the other purse. It is priced once, when it begins, at the
-club rate with no markup.
+club rate less the purse owner's plan markup, like every conversion (ADR-014, decision 2).
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ: not in Tab 3 §7 | REQ-WAL-006, REQ-FX-003, REQ-FX-004 | `wallet.enabled` | REC-03 load into the other purse |
+| SEQ: not in Tab 3 §7 | REQ-WAL-006, REQ-FX-002, REQ-FX-003, REQ-FX-004 | `wallet.enabled` | REC-03 load into the other purse |
 
-- Price: the club rate for the pair, markup 0 (`apps/api/src/wallet/loads.ts:317-325`). With no valid
-  club rate the load is refused with PROVIDER_UNAVAILABLE before the provider is asked
-  (`apps/api/src/wallet/loads.ts:320-321`; `apps/api/src/fx/rates.ts:125-130`).
+- Price: the club rate for the pair, less the purse owner's plan markup in basis points
+  (`apps/api/src/wallet/loads.ts:324-333`). With no valid club rate the load is refused with
+  PROVIDER_UNAVAILABLE before the provider is asked (`apps/api/src/wallet/loads.ts:327`;
+  `apps/api/src/fx/rates.ts:125-130`).
 - The price rides on the transfer; a replay or late webhook never re-prices
-  (`apps/api/src/wallet/loads.ts:168-172`). The journal metadata carries the rate version and both
-  amounts (`apps/api/src/wallet/loads.ts:406-410`).
+  (`apps/api/src/wallet/loads.ts:173-175`). The journal metadata carries the rate version, the markup in
+  basis points and all three amounts (`apps/api/src/wallet/loads.ts:418-431`).
 
 | Journal kind | Key | Postings |
 |---|---|---|
-| `load` | `{key}:settle` | Dr `partner_settlement` (load currency); Cr `fx_position` (load currency); Dr `fx_position` (purse currency); Cr member `wallet` (purse currency) |
+| `load` | `{key}:settle` | Dr `partner_settlement` (load currency); Cr `fx_position` (load currency); Dr `fx_position` (purse currency, gross); Cr member `wallet` (purse currency, credited); Cr `fee_income` (purse currency, markup, when above zero) |
 
-Source: `apps/api/src/wallet/loads.ts:343-350`. An ACH load converts the same way into `pending`, and
-the release moves the credited amount within the purse currency (`apps/api/src/wallet/loads.ts:223-235`).
-Example: $100.00 into the shekel purse at 3.70 credits ₪370.00 (37,000 agorot)
-(`apps/api/src/wallet/loads.test.ts:335`).
+Source: `apps/api/src/wallet/loads.ts:342-362`. An ACH load converts the same way into `pending`, and
+the release moves the credited amount within the purse currency (`apps/api/src/wallet/loads.ts:223`).
+Example: $100.00 into the shekel purse at 3.70 is ₪370.00 gross; the default 75 basis points keep ₪2.78,
+so the purse is credited ₪367.22 (36,722 agorot) (`apps/api/src/wallet/loads.test.ts:335`). A member on a
+25 basis-point plan keeps more (`apps/api/src/wallet/loads.test.ts:392`).
 
-Tests: TST-WAL-006 in `apps/api/src/wallet/loads.test.ts:287-401`.
+Tests: TST-WAL-006 in `apps/api/src/wallet/loads.test.ts:287-427`.
 
 ## 4. Auto-reload
 
