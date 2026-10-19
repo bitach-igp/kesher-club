@@ -83,3 +83,14 @@ Date: 2026-10-19 02:20 Asia/Jerusalem (desktop checker), runner worktree at e7ef
   `worker src/wallet/load-workflow.test.ts: Test Files 1 failed (1), Tests 5 skipped (5)` (same createTestDatabase error).
 - Cause: apps/api/src/test-db.ts:9 builds ROOT from `new URL(import.meta.url).pathname`, which on Windows is `/C:/dev/...`; path.resolve turns it into `C:\C:\dev\...`. Every PGlite-backed test in steps 5-22 goes through createTestDatabase, so none can pass on the PC. The same tests pass on Linux (CI green on 33ca87c).
 - Fix needed (a card, not done here): use `fileURLToPath(import.meta.url)` from `node:url` in apps/api/src/test-db.ts (and the other `.pathname` uses: apps/api/src/routes.ts, server.ts, billing/capabilities.ts, mcp/metadata.ts, apps/simulators/src/server.ts, apps/admin/proxy.ts, packages/ports/src/catalogue.test.ts). Steps 6-23 were not run; re-file the request after that fix lands.
+
+## Videos
+Date: 2026-10-20 00:45 Asia/Jerusalem (desktop checker, at Zvi's request). Commit 8ebacbe (main).
+- The PC screen capture could not be used: gdigrab from the checker's shell gets a black frame for the terminal window (tried again tonight, same result). Zvi chose a terminal recording instead of a live screen capture.
+- How they were made: each flow's commands ran in a real 120×36 terminal (pseudo-terminal) on Linux, recorded with asciinema, then rendered frame by frame (10 fps, original timing, last frame held 3 s) to `REC-NN-<name>.mp4` with ffmpeg. Nothing outside that terminal is in the videos. The `.log` files beside them are the earlier Windows run (04:22); the videos are a fresh run of the same tests at 8ebacbe.
+- Every run passed. "Tests" lines in command order:
+  - REC-01: 18; 5 · REC-02: 18; 3 · REC-03: 18 · REC-04: 6; 3 · REC-05: 20; 3; 16 · REC-06: 11; 1
+  - REC-07: 10; 3; 16 · REC-08: 5; 1; 16 · REC-09: 12 · REC-10: 12; 4 · REC-11: 6; 3 · REC-12: 22
+  - REC-13: 9; 2 · REC-14: 9; 6 · REC-15: 5 · REC-16: 8 · REC-17: 8 · REC-18: 12; 9
+- One change from the request: REC-14's allowance workflow test moved to the api package in T-0607, so it runs `pnpm --filter @kesher/api exec vitest run src/institutions/allowance/workflow.test.ts src/institutions/allowance-runs.test.ts` instead of `@kesher/worker ... src/allowance/workflow.test.ts`, which no longer exists.
+- Counts above the earlier run come from cards merged since (for example loads 17 → 18, intents 5 → 12, card JIT 18 → 22).
