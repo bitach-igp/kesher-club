@@ -24,6 +24,8 @@
 | [T-0022](T-0022.md) | SETUP | The worker runs every sweep on its cycle | — | 9 |
 | [T-0023](T-0023.md) | SETUP | The worker runs the nightly jobs at their Israel times | — | 9 |
 | [T-0024](T-0024.md) | SETUP | Field-level PII sealing with a blind index | — | 9 |
+| [T-0025](T-0025.md) | SETUP | The containers get the config the processes read | — | 9 |
+| [T-0026](T-0026.md) | SETUP | One API, worker and JIT service per market | — | 9 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
