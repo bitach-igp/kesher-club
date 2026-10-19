@@ -77,11 +77,13 @@ These controls hold for every journal below.
   `funding.ach`, `p2p.enabled`, `fx.enabled`, `payouts.nium`, `institutions.money`, `mcp.money.propose`
   (`config/flags.json:73-77`, `:150-154`, `:122-126`, `:129-133`, `:136-140`, `:143-147`, `:178-182`).
 
-Open: Tab 3 §7 names workflow keys with a prefix (`load:{key}` in SEQ-02, `transfer:{key}` in SEQ-06,
+Gap found: Tab 3 §7 names workflow keys with a prefix (`load:{key}` in SEQ-02, `transfer:{key}` in SEQ-06,
 `fx:{quoteId}` in SEQ-08, `payout:{key}` in SEQ-09). The code uses the member's Idempotency-Key as
 it arrives (`apps/api/src/wallet/loads.ts:162`, `apps/api/src/p2p/send.ts:130`,
 `apps/api/src/fx/service.ts:127`, `apps/api/src/payouts/service.ts:151`). The engineering lead decides
 whether the spec or the code changes.
+
+Decided (ADR-014, decision 3): the workflow id is the Idempotency-Key as received; the spec follows the code.
 
 ---
 
@@ -119,10 +121,12 @@ the journal key is `{key}:settle` (`apps/api/src/wallet/loads.ts:2-6`, `:137`).
 Tests: TST-WAL-002 in `apps/api/src/wallet/loads.test.ts:56-151` (settle, replay, decline, outage),
 `:153-174` (webhooks), `:249` (payment sheet), and `apps/worker/src/wallet/load-workflow.test.ts:76-189`.
 
-Open: SEQ-02 shows a program funding transfer to the processor or bank before the journal posts. The
+Gap found: SEQ-02 shows a program funding transfer to the processor or bank before the journal posts. The
 code posts on the funding provider's confirmation and calls no bank or processor
 (`apps/api/src/wallet/loads.ts:194-205`). This waits on the processor and bank choice (ADR-006); the
 founder decides with the bank.
+
+Decided (ADR-014, decision 4): the ledger stays a shadow until ADR-006 picks the processor; the funding transfer then arrives as a port call before the journal.
 
 ## 2. ACH load with bank hold and release
 
@@ -247,11 +251,13 @@ Tests: TST-PAY-001 (`apps/api/src/p2p/send.test.ts:74`; `apps/worker/src/p2p/sen
 TST-PAY-002 (`apps/api/src/p2p/send.test.ts:126`; `apps/api/src/p2p/limits.test.ts:42-67`),
 TST-PAY-005 (`apps/api/src/p2p/send.test.ts:104`; `apps/api/src/transfers/service.test.ts:1-2`).
 
-Open: REQ-PAY-001 and SEQ-06 say settlement is a book transfer at the partner (processor). The code posts
+Gap found: REQ-PAY-001 and SEQ-06 say settlement is a book transfer at the partner (processor). The code posts
 the internal journal only and calls no processor (`apps/api/src/p2p/send.ts:199-210`), so SEQ-06's
 compensation (processor failure, no journal, PROVIDER_UNAVAILABLE) has no code path yet. This waits on
 ADR-006; the founder decides with the bank. The flag's turn-on condition is "Bank approves book
 transfers" (`config/flags.json:122-126`).
+
+Decided (ADR-014, decision 4): the book transfer arrives with the processor adapter, inside the send workflow before the journal, with SEQ-06's compensation; `p2p.enabled` stays off until then.
 
 ## 6. P2P new-counterparty hold, cancel and release
 
@@ -282,8 +288,10 @@ fixed when it began, with the flow 7 postings drawn from `pending` (`apps/api/sr
 Tests: TST-PAY-003 in `apps/api/src/p2p/holds.test.ts:67`, `:98`, `:132`, `apps/api/src/p2p/send.test.ts:146`
 and `apps/worker/src/p2p/release-holds.test.ts:66`.
 
-Open: Tab 3 §3 states the threshold in shekels only (₪500). The dollar threshold of $150.00 is the
+Gap found: Tab 3 §3 states the threshold in shekels only (₪500). The dollar threshold of $150.00 is the
 code's choice (`apps/api/src/p2p/holds.ts:14`). Compliance confirms or sets it.
+
+Decided (ADR-014, decision 5): ₪500 or $150; REQ-PAY-003 names both. Compliance may lower either.
 
 ## 7. P2P send across currencies
 
@@ -356,12 +364,14 @@ with a passkey step-up, can approve it within 24 hours.
 
 Tests: TST-AGT-006 in `apps/api/src/intents/service.test.ts:53`, `:62`, `:72`, `:84`.
 
-Open: approval creates the transfer in state `created` and nothing in the code then runs the send
+Gap found: approval creates the transfer in state `created` and nothing in the code then runs the send
 (`apps/api/src/intents/service.ts:178-183`). The worker only finishes sends that are `submitted`
 (`apps/api/src/p2p/send.ts:278-279`). So no journal posts, and the limit, eligibility and balance checks
 of flow 5 are not applied to it. SEQ-04 shows `start(transfer:{intentId})`. An engineering card is
 needed before `mcp.money.propose` is turned on; the flag already waits on "Bank sign-off on agent intent
 flow" (`config/flags.json:182`).
+
+Decided (ADR-014, decision 6): approval runs the member's own send path. Card T-1008; `mcp.money.propose` stays off until it merges.
 
 ## 10. FX conversion between purses
 
@@ -392,15 +402,19 @@ Source: `apps/api/src/fx/service.ts:159-193`. Example from the test: $100.00 at 
 Tests: TST-FX-001 (`apps/api/src/fx/service.test.ts:62-78`; `apps/mobile/app/convert/fx.model.test.ts:67-115`),
 TST-FX-002 (`apps/api/src/fx/service.test.ts:104-147`), TST-FX-003/004 (`apps/api/src/fx/service.test.ts:163`).
 
-Open: quotes are held in process memory, so a restart forgets them and the member is asked for a fresh
+Gap found: quotes are held in process memory, so a restart forgets them and the member is asked for a fresh
 quote (`apps/api/src/fx/service.ts:7-9`, `:75-76`). The engineering lead confirms this is acceptable
 when more than one API instance runs.
 
-Open: SEQ-08's compensation is "provider reject, quote void, no journal". In the code a provider error
+Decided (ADR-014, decision 8): acceptable while one API instance runs; quotes move to a table before a second. Card T-0522.
+
+Gap found: SEQ-08's compensation is "provider reject, quote void, no journal". In the code a provider error
 leaves the transfer `submitted` (`apps/api/src/fx/service.ts:134-136`, `:224-230`), and no worker sweep
 finishes or fails submitted FX transfers (the only FX worker job publishes rates,
 `apps/worker/src/fx/refresh-rates.ts:1-5`). The
 engineering lead decides how such a transfer is closed.
+
+Decided (ADR-014, decision 7): a vendor reject fails the transfer and voids the quote; a stale submitted conversion is failed by a sweep. Card T-0520.
 
 ## 11. Club rates: published rate and two-person manual rate
 
@@ -449,15 +463,19 @@ Source: `apps/api/src/cards/jit.ts:27`, `:179-188`.
 Tests: TST-CRD-003 (`apps/api/src/cards/jit.test.ts:56-175`; `apps/api/src/cards/jit.bench.test.ts`),
 TST-CRD-004 (`apps/api/src/cards/jit.test.ts:182-191`), TST-CRD-008 (`apps/api/src/cards/jit.test.ts:202-257`).
 
-Open: settlement is not in the code. SEQ-01 ends with "transaction.cleared, settle hold, journal". No
+Gap found: settlement is not in the code. SEQ-01 ends with "transaction.cleared, settle hold, journal". No
 code handles the processor's clearing, moves the hold out of `pending`, or releases a hold that never
 clears (no `auth_hold` consumer besides `apps/api/src/cards/jit.ts:165`, `:198`). This waits on the
 processor choice (ADR-006); the engineering lead writes the card.
 
-Open: SEQ-01 and ADR-007 say an ILS card authorisation draws on the ILS purse, converted at the club
+Decided (ADR-014, decision 9): built against the simulator before `card.virtual` turns on, with a 7-day release for holds that never clear. Card T-0410.
+
+Gap found: SEQ-01 and ADR-007 say an ILS card authorisation draws on the ILS purse, converted at the club
 rate if needed (`docs/adr/ADR-007.md:35-38`). The code holds only in the purse of the authorisation's
 own currency, with no conversion (`apps/api/src/cards/jit.ts:144-161`). The founder decides with the
 processor.
+
+Decided (ADR-014, decision 10): the shekel purse pays first for a merchant in Israel; a short purse is covered by the other, converted at the club rate with the plan markup. Card T-0409.
 
 ## 13. Payout to an Israeli bank account
 
@@ -522,23 +540,29 @@ Source: `apps/worker/src/allowance/activities.ts:55-62`; key `apps/worker/src/al
 Tests: TST-INS-003 (`apps/worker/src/allowance/workflow.test.ts:51`, `:59`, `:85`), TST-INS-004
 (`apps/worker/src/allowance/workflow.test.ts:73`; `apps/api/src/approvals/service.test.ts:35`, `:47`).
 
-Open: the endpoint `POST /institutions/{id}/allowance-runs` has no handler and answers FEATURE_OFF
+Gap found: the endpoint `POST /institutions/{id}/allowance-runs` has no handler and answers FEATURE_OFF
 (`apps/api/src/routes.ts:61`; `apps/api/src/app.ts:213`, `:225-227`). The run exists only as the worker
 body, and the worker has no running entry yet (`apps/worker/src/index.ts:1-2`). The engineering lead
 schedules the card.
 
-Open: allowance payments post the journal directly and create no `ops.transfer` row
+Decided (ADR-014, decision 11): card T-0607.
+
+Gap found: allowance payments post the journal directly and create no `ops.transfer` row
 (`apps/worker/src/allowance/activities.ts:60`), unlike every other member movement. The engineering lead
 decides whether they should.
+
+Decided (ADR-014, decision 11): each payment becomes an `ops.transfer` of kind `allowance`. Card T-0607.
 
 Open: `institution_master` is one system account per currency for all institutions; the institution is
 named only in the journal metadata (`apps/api/src/ledger/accounts.ts:55-57`;
 `apps/worker/src/allowance/activities.ts:58-60`). How an institution's money reaches that account is not
 in the code. The founder decides with the bank (ADR-006).
 
-Open: the `institutions.money` flag gates collections (`apps/api/src/institutions/collections.ts:19`, `:104`)
+Gap found: the `institutions.money` flag gates collections (`apps/api/src/institutions/collections.ts:19`, `:104`)
 but is not checked by the allowance run (`apps/worker/src/allowance/workflow.ts:61-100`). The engineering
 lead decides whether the run must check it.
+
+Decided (ADR-014, decision 11): the run checks the flag. Card T-0607.
 
 ## 15. Institution collections (fee payment)
 
@@ -625,10 +649,12 @@ Tests: TST-WAL-005 (`apps/api/src/wallet/closure.test.ts:60`, `:96`, `:104`, `:1
 Example: closing with $30.00 refunds it to the load's source and closes once the refund posts
 (`apps/api/src/wallet/closure.test.ts:60`).
 
-Open: refundable loads are matched by the load's own currency (`apps/api/src/wallet/closure.ts:166`). A
+Gap found: refundable loads are matched by the load's own currency (`apps/api/src/wallet/closure.ts:166`). A
 load that converted into the other purse (flow 3) carries the instrument currency, so its credited
 balance would report `NO_REFUND_SOURCE`. No test covers this. Compliance and the founder decide whether
 such balances refund to source (and at what rate) or leave by payout.
+
+Decided (ADR-014, decision 12): refund to source in the instrument currency, pro rata at the load's own rate. Card T-0521.
 
 Open: REQ-WAL-005 says the balance is withdrawn or refunded. Money with no load behind it waits for the
 member to request a payout (flow 13); the closure only reports it (`apps/api/src/wallet/closure.ts:6-7`).

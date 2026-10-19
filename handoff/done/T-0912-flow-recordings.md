@@ -43,3 +43,15 @@ Steps (from repo root, PowerShell on Windows unless stated):
 23. Get-ChildItem handoff/done/recordings | Select-Object Name, Length
 Expected: step 1 prints the commit the recordings were made at. Step 2 finishes without errors. Step 4 prints the path of ffmpeg, or nothing if it is not installed (then no .mp4 files are made and the .log files are the record; do not install anything). Each of steps 5 to 22 writes REC-NN-<name>.log, and REC-NN-<name>.mp4 when ffmpeg is present, and every vitest run in it ends with "Test Files ... passed" and no "failed". Test counts per run, in command order: step 5: 16, 5. Step 6: 16, 3. Step 7: 16. Step 8: 4, 3. Step 9: 18, 3, 16. Step 10: 11, 1. Step 11: 10, 3, 16. Step 12: 5, 1, 16. Step 13: 5. Step 14: 6, 4. Step 15: 6, 3. Step 16: 18. Step 17: 8, 2. Step 18: 4, 6. Step 19: 5. Step 20: 7. Step 21: 6. Step 22: 12, 9. Step 23 lists 18 .log files (and 18 .mp4 files with ffmpeg).
 Report back: commit the files under handoff/done/recordings/ (the 18 .log files and any .mp4 files), and in the Result section give the step 1 commit, the step 4 output, and the "Tests" line of every vitest run in steps 5 to 22 with any failure in full.
+
+## Blocked
+Date: 2026-10-19 02:20 Asia/Jerusalem (desktop checker), runner worktree at e7efdea.
+- Step 1: e7efdea. Step 2: `pnpm install` OK (pnpm 10.28.0 via corepack; pnpm is not on the PC's PATH). Step 3 OK.
+- Step 4: empty, ffmpeg is not installed, so no .mp4 files would be made (nothing installed).
+- Step 5 (REC-01): both vitest runs fail before any test body, on Windows only:
+  `api src/wallet/loads.test.ts: Test Files 1 failed (1), Tests 16 skipped (16)`
+  `Error: ENOENT: no such file or directory, open 'C:\C:\dev\bitach\IGP\05-code\_runner\kesher-club\db\roles.sql'`
+  `❯ createTestDatabase src/test-db.ts:20:20`
+  `worker src/wallet/load-workflow.test.ts: Test Files 1 failed (1), Tests 5 skipped (5)` (same createTestDatabase error).
+- Cause: apps/api/src/test-db.ts:9 builds ROOT from `new URL(import.meta.url).pathname`, which on Windows is `/C:/dev/...`; path.resolve turns it into `C:\C:\dev\...`. Every PGlite-backed test in steps 5-22 goes through createTestDatabase, so none can pass on the PC. The same tests pass on Linux (CI green on 33ca87c).
+- Fix needed (a card, not done here): use `fileURLToPath(import.meta.url)` from `node:url` in apps/api/src/test-db.ts (and the other `.pathname` uses: apps/api/src/routes.ts, server.ts, billing/capabilities.ts, mcp/metadata.ts, apps/simulators/src/server.ts, apps/admin/proxy.ts, packages/ports/src/catalogue.test.ts). Steps 6-23 were not run; re-file the request after that fix lands.
