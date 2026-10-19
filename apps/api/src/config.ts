@@ -28,8 +28,16 @@ const key32 = () =>
   }, 'must be 32 bytes, standard base64');
 
 const shared = {
-  /** The member token key: a private ES256 JWK as JSON, from Secrets Manager. */
-  TOKEN_SIGNING_JWK: secret(),
+  /** The member token key: a private ES256 JWK as JSON, from Secrets Manager. Checked here, because a
+   *  JSON.parse error quotes its input and would carry the key into a boot log. */
+  TOKEN_SIGNING_JWK: secret().refine((k) => {
+    try {
+      const jwk = JSON.parse(k.reveal()) as Record<string, unknown>;
+      return jwk['kty'] === 'EC' && jwk['crv'] === 'P-256' && ['x', 'y', 'd'].every((f) => typeof jwk[f] === 'string');
+    } catch {
+      return false;
+    }
+  }, 'must be a private ES256 JWK (kty EC, crv P-256, with x, y and d)'),
   TOKEN_SIGNING_KID: z.string().min(1),
   TOKEN_ISSUER: z.string().url(),
   MARKET: z.enum(['US', 'IL']),

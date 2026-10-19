@@ -1,0 +1,19 @@
+# Build context for the service images (T-0021). Only sources and manifests go in: no installed
+# modules, no git history, no local env files, no handoff results or docs.
+**/node_modules
+**/.turbo
+**/dist
+**/.next
+**/.expo
+.git
+.github
+.claude
+**/.env
+**/.env.*
+handoff
+docs
+infra
+specs
+**/*.test.ts
+**/*.test.tsx
+**/*.bench.test.ts
