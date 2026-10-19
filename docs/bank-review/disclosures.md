@@ -46,7 +46,7 @@ which screen shows which document. Product and legal decide the placement.
 Open: no version of any document is published. Legal supplies the first versions of all seven, in
 English and Hebrew.
 
-Open: the API builds no legal service and has no legal route (`apps/api/src/app.ts:86-156` creates no
+Open: the API builds no legal service and has no legal route (`apps/api/src/app.ts:86-157` creates no
 `LegalService`; `apps/api/src/routes.ts:15-89` has no `/legal` path). The mobile app has no consent or
 terms screen: its screen copy (`apps/mobile/src/i18n.ts`) has no terms, privacy, consent or disclosure
 text, and its routes are sign-in, home, card, club, convert, help, pay, settings and wallet
@@ -106,7 +106,7 @@ These are shown before money moves. They are part of the transaction, not versio
 |---|---|---|---|---|
 | Insurance: licensed entity, policy wording link, commission | buying cover | the three items, returned with every quote | `packages/ports/src/insurance.ts:1-10` | TST-INSR-001, `packages/ports/src/insurance.contract.ts:14-18` |
 | Insurance: acknowledgement | paying for cover | an order without the acknowledgement is refused | `apps/api/src/addons/orders.ts:98` | `apps/api/src/addons/orders.test.ts:125` |
-| Catalogue disclosures | any add-on that carries them | the item's disclosures, listed with its price | `apps/api/src/app.ts:178-182` | none found |
+| Catalogue disclosures | any add-on that carries them | the item's disclosures, listed with its price | `apps/api/src/app.ts:179-183` | none found |
 | FX quote | converting between purses | rate, markup, markup in basis points, total, rate version, expiry (30 s) | `apps/api/src/fx/service.ts:31-43`, `:22` | TST-FX-001, `apps/api/src/fx/service.test.ts:63`; `apps/mobile/app/convert/fx.model.test.ts:67` |
 | P2P conversion preview | a send the recipient receives in the other currency | sent amount, received amount, rate, rate version | `apps/api/src/p2p/send.ts:133-148` | `apps/api/src/p2p/send.test.ts:268`; `apps/mobile/app/pay/pay.model.test.ts:271` |
 | Load conversion | a load into the other purse | the amount credited and the rate version | `apps/api/src/wallet/loads.ts:307-317` | TST-WAL-006, `apps/api/src/wallet/loads.test.ts:335` |

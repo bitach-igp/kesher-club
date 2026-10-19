@@ -20,7 +20,7 @@ for example ₪500.00 (50,000 agorot).
 | 6 | P2P new-counterparty hold, cancel, release | SEQ-06 | REQ-PAY-003 | TST-PAY-003 | REC-06 P2P new-pair hold |
 | 7 | P2P send across currencies | SEQ-06 | REQ-PAY-006, REQ-PAY-007, REQ-FX-002, REQ-FX-003 | TST-PAY-006, TST-PAY-007 | REC-07 P2P cross-currency send |
 | 8 | Payment requests and splits | SEQ: not in Tab 3 §7 | REQ-PAY-004 | TST-PAY-004 | REC-08 requests and splits |
-| 9 | P2P proposed by an AI assistant | SEQ-04 | REQ-AGT-006 | TST-AGT-006 | REC-09 assistant-proposed send |
+| 9 | Send or load proposed by an AI assistant | SEQ-04 | REQ-AGT-006 | TST-AGT-006 | REC-09 assistant-proposed send |
 | 10 | FX conversion between purses | SEQ-08 | REQ-FX-001, REQ-FX-002, REQ-FX-003, REQ-FX-004 | TST-FX-001 to TST-FX-004 | REC-10 FX conversion |
 | 11 | Club rates: published rate and two-person manual rate | SEQ: not in Tab 3 §7 | REQ-FX-003, REQ-FX-004, REQ-ADM-003 | TST-FX-003, TST-FX-004, TST-ADM-003 | REC-11 club rates |
 | 12 | Card authorisation (JIT) and settlement | SEQ-01 | REQ-CRD-003, REQ-CRD-004, REQ-CRD-005, REQ-CRD-008 | TST-CRD-003, TST-CRD-004, TST-CRD-008 | REC-12 card authorisation |
@@ -350,30 +350,54 @@ Keys: a request uses the member's Idempotency-Key; each request of a split uses 
 Tests: TST-PAY-004 in `apps/api/src/p2p/requests.test.ts:63-182`; the screen model in
 `apps/mobile/app/pay/pay.model.test.ts:353-402`.
 
-## 9. P2P proposed by an AI assistant
+## 9. Send or load proposed by an AI assistant
 
-An assistant the member connected may propose a send. It creates a pending intent; only the member,
-with a passkey step-up, can approve it within 24 hours.
+An assistant the member connected may propose a send or a load. It creates a pending intent; only the
+member, with a passkey step-up, can approve it within 24 hours. Approval runs the same send (flows 5 to 7)
+or load (flows 1 to 3) the member would start in the app, keyed `intent:{intentId}`.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-04 | REQ-AGT-006 | `mcp.money.propose` (`config/flags.json:178-182`) | REC-09 assistant-proposed send |
+| SEQ-04 | REQ-AGT-006 | `mcp.money.propose` (`config/flags.json:178-182`); approving a send also needs `p2p.enabled`, a load `wallet.enabled` (`apps/api/src/intents/service.ts:246`, `:241`) | REC-09 assistant-proposed send |
 
 - Proposing creates an intent that expires in 24 hours; no journal and no transfer
-  (`apps/api/src/intents/service.ts:1-3`, `:13`).
-- Approval creates an `ops.transfer` of kind `p2p` keyed `intent:{intentId}`
-  (`apps/api/src/intents/service.ts:175-186`).
+  (`apps/api/src/intents/service.ts:1-2`, `:24`, `:112-123`).
+- Approval needs a step-up token younger than 5 minutes, from the member the intent belongs to
+  (`apps/api/src/intents/service.ts:125-131`). A revoked assistant grant or a recovery hold refuses it
+  (`apps/api/src/intents/service.ts:142-143`).
+- A send runs `P2pSendService.send`, the `POST /transfers` path: eligibility, the monthly limit, the
+  balance, the new-pair hold and the receiving-currency price of flows 5 to 7 all apply
+  (`apps/api/src/intents/service.ts:246-250`; `apps/api/src/p2p/send.ts:119-130`). A send from a purse
+  other than the approver's is refused (`apps/api/src/intents/service.ts:248`).
+- A load runs `LoadService.request`, the `POST /loads` path. The assistant names no funding method, so
+  the approval does (`contracts/openapi.yaml:884-908`, `:2245-2257`;
+  `apps/api/src/intents/service.ts:240-245`; `apps/api/src/wallet/loads.ts:162-167`). The approver
+  pays, into their own purse or one they fund; a load into the other purse is priced as in flow 3.
+- The money runs before the intent is marked approved, so a refusal (LIMIT_EXCEEDED, INSUFFICIENT_FUNDS,
+  no method, a purse the approver does not fund) leaves it pending (`apps/api/src/intents/service.ts:145-150`).
+  A declined card fails the load; the intent is approved and the assistant proposes again.
+- A second approval replays the first: the same transfer, the same load with the same funding choice,
+  no new journal (`apps/api/src/intents/service.ts:132-133`).
+- The worker expires pending intents past 24 hours every 15 minutes (`apps/worker/src/agent/expire-intents.ts:8`,
+  `:24-35`; `apps/api/src/intents/service.ts:200-223`); the member's list hides them before that
+  (`apps/api/src/intents/service.ts:230-234`). An intent whose money already started under its key is
+  never expired: a late approval or the sweep marks it approved by the member, as of the transfer's
+  creation (`apps/api/src/intents/service.ts:135-144`, `:214-216`).
 
-Tests: TST-AGT-006 in `apps/api/src/intents/service.test.ts:53`, `:62`, `:72`, `:84`.
+Journals are those of the flow the intent runs (flows 1 to 3 for a load, 5 to 7 for a send), keyed from
+`intent:{intentId}`: for example `intent:{intentId}:settle`, `:hold`, `:release`.
 
-Gap found: approval creates the transfer in state `created` and nothing in the code then runs the send
-(`apps/api/src/intents/service.ts:178-183`). The worker only finishes sends that are `submitted`
-(`apps/api/src/p2p/send.ts:278-279`). So no journal posts, and the limit, eligibility and balance checks
-of flow 5 are not applied to it. SEQ-04 shows `start(transfer:{intentId})`. An engineering card is
-needed before `mcp.money.propose` is turned on; the flag already waits on "Bank sign-off on agent intent
-flow" (`config/flags.json:182`).
+Tests: TST-AGT-006 in `apps/api/src/intents/service.test.ts:69`, `:78`, `:97`, `:114`, `:127`, `:142`
+(sends), `:165`, `:181`, `:207` (loads), `:232`, `:239` (expiry); `apps/worker/src/agent/expire-intents.test.ts:30`.
 
-Decided (ADR-014, decision 6): approval runs the member's own send path. Card T-1008; `mcp.money.propose` stays off until it merges.
+Gap found: before T-1008, approval created the transfer in state `created` and nothing then ran the send.
+The worker only finishes sends that are `submitted` (`apps/api/src/p2p/send.ts:278-279`), so no journal
+posted and the limit, eligibility and balance checks of flow 5 were not applied. SEQ-04 shows
+`start(transfer:{intentId})`.
+
+Decided (ADR-014, decision 6): approval runs the member's own send path. Built in T-1008; T-1009 does the
+same for loads and T-1010 adds the expiry sweep. `mcp.money.propose` still waits on "Bank sign-off on
+agent intent flow" (`config/flags.json:182`).
 
 ## 10. FX conversion between purses
 
@@ -554,7 +578,7 @@ Tests: TST-INS-003 (`apps/worker/src/allowance/workflow.test.ts:51`, `:59`, `:85
 (`apps/worker/src/allowance/workflow.test.ts:73`; `apps/api/src/approvals/service.test.ts:35`, `:47`).
 
 Gap found: the endpoint `POST /institutions/{id}/allowance-runs` has no handler and answers FEATURE_OFF
-(`apps/api/src/routes.ts:61`; `apps/api/src/app.ts:214`, `:225-227`). The run exists only as the worker
+(`apps/api/src/routes.ts:61`; `apps/api/src/app.ts:215`, `:226-228`). The run exists only as the worker
 body, and the worker has no running entry yet (`apps/worker/src/index.ts:1-2`). The engineering lead
 schedules the card.
 
@@ -611,7 +635,7 @@ A member buys an add-on from the club catalogue with their purse.
 | SEQ-10 | REQ-MKT-001, REQ-ESIM-002, REQ-INSR-001 | none in the order path (see Open) | REC-16 add-on purchase |
 
 - The order is keyed by the member's Idempotency-Key (`apps/api/src/addons/orders.ts:93-114`;
-  `apps/api/src/app.ts:183-189`).
+  `apps/api/src/app.ts:184-190`).
 - Insurance is refused unless the member acknowledged the disclosures (`apps/api/src/addons/orders.ts:98`).
 - A fulfilment failure after the charge reverses the charge and restores any data credit
   (`apps/api/src/addons/orders.ts:156-164`).
@@ -628,7 +652,7 @@ posts `addon_payable` $20.00 (2,000 cents) and `fee_income` $5.00 (500 cents)
 Tests: TST-MKT-001 (`apps/api/src/addons/orders.test.ts:75`), TST-ESIM-002 (`apps/api/src/addons/orders.test.ts:89`),
 the SEQ-10 compensation (`apps/api/src/addons/orders.test.ts:108`), REQ-INSR-001 (`apps/api/src/addons/orders.test.ts:125`).
 
-Open: the order endpoint checks no flag (`apps/api/src/app.ts:183-189`), although `esim.airalo` and
+Open: the order endpoint checks no flag (`apps/api/src/app.ts:184-190`), although `esim.airalo` and
 `insurance.coverGenius` exist and are off (`config/flags.json:45`, `:59`). Orders also create no
 `ops.transfer` row (`apps/api/src/addons/orders.ts:106`), so the monitoring job does not see them. The
 engineering lead decides both.
