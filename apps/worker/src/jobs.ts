@@ -136,7 +136,6 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue }:
 
 /** Job-like modules the table leaves out, each with the reason. A path is relative to `apps/worker/src`. */
 export const JOB_EXCLUSIONS: Readonly<Record<string, string>> = {
-  'allowance/workflow.ts': 'started per schedule by the funder endpoint (T-0607), not on a cycle',
   'cards/issue-workflow.ts': 'started by a KYC approval, not on a cycle',
   'recon/recon.ts': 'nightly at 04:00 once the processor adapter (ADR-006) brings a partner statement source',
 };

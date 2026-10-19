@@ -559,47 +559,47 @@ An institution's finance user pays a scheduled allowance to every member on a da
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-07 | REQ-INS-003, REQ-INS-004 | none checked in the run (see Open) | REC-14 allowance run |
+| SEQ-07 | REQ-INS-003, REQ-INS-004 | `institutions.money` | REC-14 allowance run |
 
-- Dry run first: the members and the total, with nothing moved (`apps/worker/src/allowance/workflow.ts:50-58`).
-- One run per schedule and date, keyed `allowance:{scheduleId}:{date}` (`apps/worker/src/allowance/workflow.ts:47`).
+- `POST /institutions/{id}/allowance-runs` is for the institution's own finance staff, behind
+  `institutions.money` (`apps/api/src/institutions/allowance-runs.ts:42-51`); another institution's
+  schedule is not found (`:51`).
+- Dry run first: the members and the total, with nothing moved
+  (`apps/api/src/institutions/allowance/workflow.ts:50-58`).
+- One run per schedule and date, keyed `allowance:{scheduleId}:{date}`
+  (`apps/api/src/institutions/allowance/workflow.ts:47`).
 - A total above ₪5,000.00 (500,000 agorot) waits for a second finance approver
-  (`apps/worker/src/allowance/workflow.ts:45`, `:55`, `:64-67`; `apps/worker/src/allowance/activities.ts:48-53`).
+  (`apps/api/src/institutions/allowance/workflow.ts:45`, `:55`, `:64-67`). The requester's call is the
+  first approval; the same run asked for by a different finance member is the second
+  (`apps/api/src/institutions/allowance/activities.ts:67-74`); until then the endpoint answers
+  `awaiting_second_approval` (`apps/api/src/institutions/allowance-runs.ts:60`).
 - Payments fan out, at most 20 at once; a failed member is retried 3 times and then reported, and the
-  others still get paid (`apps/worker/src/allowance/workflow.ts:43-44`, `:72-95`).
+  others still get paid (`apps/api/src/institutions/allowance/workflow.ts:43-44`, `:72-95`).
+- Each payment is an `ops.transfer` of kind `allowance`, keyed by the run and the member, settled by its
+  journal (`apps/api/src/institutions/allowance/activities.ts:76-96`); the monitoring job reads them
+  (`apps/worker/src/monitoring/job.ts:78`). The run's completion goes to the institution once, through
+  the outbox (`apps/api/src/institutions/allowance/activities.ts:107-114`).
 
 | Journal kind | Key | Dr | Cr | Currency |
 |---|---|---|---|---|
-| `allowance` | `allowance:{scheduleId}:{date}:{memberPartyId}` | `institution_master` | member `wallet` | schedule currency |
+| `allowance` | `allowance:{scheduleId}:{date}:{memberPartyId}:settle` | `institution_master` | member `wallet` | schedule currency |
 
-Source: `apps/worker/src/allowance/activities.ts:55-62`; key `apps/worker/src/allowance/workflow.ts:48`.
+Source: `apps/api/src/institutions/allowance/activities.ts:76-96`; key
+`apps/api/src/institutions/allowance/workflow.ts:48`.
 
-Tests: TST-INS-003 (`apps/worker/src/allowance/workflow.test.ts:51`, `:59`, `:85`), TST-INS-004
-(`apps/worker/src/allowance/workflow.test.ts:73`; `apps/api/src/approvals/service.test.ts:35`, `:47`).
+Tests: TST-INS-003 (`apps/api/src/institutions/allowance-runs.test.ts:59`, `:66`, `:91`, `:96`;
+`apps/api/src/institutions/allowance/workflow.test.ts:50`, `:58`, `:94`), TST-INS-004
+(`apps/api/src/institutions/allowance-runs.test.ts:82`; `apps/api/src/institutions/allowance/workflow.test.ts:80`;
+`apps/api/src/approvals/service.test.ts:35`, `:47`).
 
-Gap found: the endpoint `POST /institutions/{id}/allowance-runs` has no handler and answers FEATURE_OFF
-(`apps/api/src/routes.ts:61`; `apps/api/src/app.ts:215`, `:226-228`). The run exists only as the worker
-body, and the worker has no running entry yet (`apps/worker/src/index.ts:1-2`). The engineering lead
-schedules the card.
-
-Decided (ADR-014, decision 11): card T-0607.
-
-Gap found: allowance payments post the journal directly and create no `ops.transfer` row
-(`apps/worker/src/allowance/activities.ts:60`), unlike every other member movement. The engineering lead
-decides whether they should.
-
-Decided (ADR-014, decision 11): each payment becomes an `ops.transfer` of kind `allowance`. Card T-0607.
+Decided (ADR-014, decision 11) and built in T-0607: the endpoint runs the workflow, which moved from the
+worker to `apps/api/src/institutions/allowance/` beside `runLoad` and `runPayout`; each payment is an
+`allowance` transfer; and the run checks `institutions.money`.
 
 Open: `institution_master` is one system account per currency for all institutions; the institution is
 named only in the journal metadata (`apps/api/src/ledger/accounts.ts:55-57`;
-`apps/worker/src/allowance/activities.ts:58-60`). How an institution's money reaches that account is not
-in the code. The founder decides with the bank (ADR-006).
-
-Gap found: the `institutions.money` flag gates collections (`apps/api/src/institutions/collections.ts:19`, `:104`)
-but is not checked by the allowance run (`apps/worker/src/allowance/workflow.ts:61-100`). The engineering
-lead decides whether the run must check it.
-
-Decided (ADR-014, decision 11): the run checks the flag. Card T-0607.
+`apps/api/src/institutions/allowance/activities.ts:92`). How an institution's money reaches that account
+is not in the code. The founder decides with the bank (ADR-006).
 
 ## 15. Institution collections (fee payment)
 

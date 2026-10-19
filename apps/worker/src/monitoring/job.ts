@@ -70,11 +70,12 @@ export class MonitoringJob {
     return { ...report, durationMs: Date.now() - started };
   }
 
-  /** Every p2p and payout attempt in the window, whatever became of it: a declined send is still a pattern. */
+  /** Every p2p, payout and allowance attempt in the window, whatever became of it: a declined send is still a
+   *  pattern. Allowance payments have no member sender, so today's rules pass over them (T-0607). */
   private async load(from: Date, to: Date): Promise<Movement[]> {
     const r = await this.db.query<Row>(
       `select id, kind, from_party_id, to_party_id, amount_minor::text, currency, created_at
-         from ops.transfer where kind in ('p2p', 'payout') and created_at >= $1 and created_at <= $2
+         from ops.transfer where kind in ('p2p', 'payout', 'allowance') and created_at >= $1 and created_at <= $2
         order by created_at, id`,
       [from, to],
     );

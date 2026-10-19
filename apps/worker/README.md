@@ -1,6 +1,6 @@
 # apps/worker
 
-Background work: the ledger balance proof, reconciliation, dunning, allowance runs, catalogue
+Background work: the ledger balance proof, reconciliation, dunning, catalogue
 sync and eSIM usage polling. Each workflow is a deterministic function over an activities
 interface, so it runs under Temporal unchanged once ADR-002 lands and under a plain scheduler
 until then; every money movement's workflow ID is its idempotency key.
@@ -10,7 +10,6 @@ until then; every money movement's workflow ID is its idempotency key.
 | `ledger/balance-proof` | T-0203 | Nightly proof that every account balance equals its postings and the system sums to zero; breaks open `ops.case` rows |
 | `recon/recon` | T-0204 | Partner statement vs ledger; `ops.recon_break` per mismatch, dedupe by (provider, external id, run date) |
 | `billing/dunning` | T-0304 | Past-due memberships: retries, grace, pause |
-| `allowance/` | T-0605 | Institution allowance runs with preview, two-person approval above the threshold, per-member failures |
 | `catalogue/sync` | T-0702 | Pulls vendor packages into the catalogue with the markup policy |
 | `esim/usage` | T-0710 | Usage polling and low-data / expiry notifications |
 | `fx/refresh-rates` | T-0513 | Every 5 minutes, publishes the FX port's mid as the club rate for 15 minutes unless a manual rate is active (ADR-007) |
@@ -64,8 +63,9 @@ the clocks jump past the slot, the first tick after the jump runs it. Idle ticks
 Reconciliation joins at 04:00 Israel time with the processor adapter, which brings its statement
 source, ahead of REQ-LED-004's 06:00 deadline.
 
-Not on the scheduler: allowance runs (started by T-0607's endpoint) and the card issue workflow (started
-by a KYC approval). Dunning waits on billing events. `src/jobs.test.ts` fails on a new job module that is neither in the table nor
+Not on the scheduler: the card issue workflow (started by a KYC approval). Allowance runs moved to
+the API (`apps/api/src/institutions/allowance/`, T-0607), where the institution's finance staff start
+them. Dunning waits on billing events. `src/jobs.test.ts` fails on a new job module that is neither in the table nor
 in `JOB_EXCLUSIONS` with its reason.
 
 ## Commands
