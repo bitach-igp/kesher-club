@@ -1,5 +1,5 @@
-// A07 Providers & Flags (T-0902): every port with its binding, the flags that gate it, release
-// gate progress, pending two-person flips, and the kill switch.
+// A07 Providers & Flags (T-0902): every port with its binding in each market (T-0913), the flags that
+// gate it (club-wide), release gate progress, pending two-person flips, and the kill switch.
 import { getAdminData } from '../../src/data/index.ts';
 import { providerRows } from '../../src/providers/bindings.ts';
 
@@ -14,6 +14,7 @@ export default async function ProvidersPage() {
         <thead>
           <tr>
             <th>Port</th>
+            <th>Market</th>
             <th>Binding</th>
             <th>Status</th>
             <th>Contract nights</th>
@@ -22,7 +23,7 @@ export default async function ProvidersPage() {
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.capability}>
+            <tr key={`${r.capability}:${r.market}`}>
               <td>
                 <strong>{r.port}</strong>
                 <br />
@@ -30,6 +31,7 @@ export default async function ProvidersPage() {
                   {r.capability} · {r.direction} · vendors: {r.vendors.join(', ')}
                 </span>
               </td>
+              <td>{r.market}</td>
               <td>{r.binding}</td>
               <td>
                 <span className={`tag ${r.status}`}>{r.status}</span>

@@ -29,7 +29,7 @@ const noa360 = {
 async function setup() {
   const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
   const signer = await staffSigner(await exportJWK(privateKey), 'admin-1');
-  const calls: { url: string; method: string; auth: string | undefined; body?: unknown }[] = [];
+  const calls: { host: string; url: string; method: string; auth: string | undefined; body?: unknown }[] = [];
   const flags = [
     { key: 'esim.airalo', value: false, default: false, owner: 'Kathleen', gates: 'eSIM purchase', money: false },
     { key: 'billing.stripe', value: true, default: true, owner: 'Ezra', gates: 'Subscriptions', money: false, changedAt: '2026-11-01T09:00:00Z', pendingFlip: { id: 'req-1', kind: 'flag_flip', subject: 'billing.stripe:false:2026-11-01', status: 'awaiting_second_approval', approvals: 1, requestedBy: 'p-ops-1', expiresAt: '2026-11-02T09:00:00Z', payload: { to: false } } },
@@ -38,9 +38,11 @@ async function setup() {
     const url = new URL(String(input));
     url.pathname = url.pathname.replace(/^\/v1/, '');
     const headers = new Headers(init?.headers);
-    calls.push({ url: url.pathname + url.search, method: init?.method ?? 'GET', auth: headers.get('authorization') ?? undefined, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
+    const market = url.host === 'api-us.kesher.example' ? 'US' : 'IL';
+    calls.push({ host: url.host, url: url.pathname + url.search, method: init?.method ?? 'GET', auth: headers.get('authorization') ?? undefined, ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) });
     if (url.pathname === '/admin/flags') return Response.json({ items: flags });
-    if (url.pathname === '/admin/bindings') return Response.json({ items: [{ capability: 'billing', port: 'BillingPort', direction: 'out', vendors: ['stripe'], flags: ['billing.stripe'], market: 'IL', provider: 'stripe', mode: 'sandbox' }, { capability: 'esim', port: 'EsimPort', direction: 'out', vendors: ['airalo'], flags: ['esim.airalo'], market: 'IL', provider: 'simulator', mode: 'sim' }] });
+    // Each market's API reports its own bindings: IL bills through Stripe, US is still on the simulator.
+    if (url.pathname === '/admin/bindings') return Response.json({ items: [{ capability: 'billing', port: 'BillingPort', direction: 'out', vendors: ['stripe'], flags: ['billing.stripe'], market, provider: market === 'IL' ? 'stripe' : 'simulator', mode: market === 'IL' ? 'sandbox' : 'sim' }, { capability: 'esim', port: 'EsimPort', direction: 'out', vendors: ['airalo'], flags: ['esim.airalo'], market, provider: 'simulator', mode: 'sim' }] });
     if (url.pathname === '/admin/flags/not.a.flag/flips') return Response.json({ type: 'about:blank', title: 'Not found', status: 404, code: 'NOT_FOUND', detail: 'Unknown flag' }, { status: 404, headers: { 'content-type': 'application/problem+json' } });
     if (url.pathname.endsWith('/flips')) return Response.json({ id: 'req-2', kind: 'flag_flip', subject: 'x', status: 'awaiting_second_approval', approvals: 1, requestedBy: 'p', expiresAt: '2026-11-02T09:00:00Z', payload: { to: true } }, { status: 201 });
     if (url.pathname === '/admin/flag-flips/req-1/approve') return Response.json({ id: 'req-1', kind: 'flag_flip', subject: 'x', status: 'approved', approvals: 2, requestedBy: 'p', expiresAt: '2026-11-02T09:00:00Z', payload: { to: false } });
@@ -55,7 +57,7 @@ async function setup() {
     if (url.pathname === '/admin/audit') return Response.json({ items: [{ seq: 1, id: 'e1', at: '2026-11-01T09:00:00Z', actorId: 'p-ops-2', actorRole: 'admin', action: 'flag.flip', subject: url.searchParams.get('subject'), reason: 'go live', payload: {}, hash: 'h', prevHash: 'genesis' }] });
     return new Response('nope', { status: 500 });
   };
-  const data = httpAdminData({ baseUrl: 'https://api.kesher.example/v1', signer, actor: async () => ({ subject: 'zvi', roles: ['ops'] }), fetch: fetchImpl });
+  const data = httpAdminData({ apis: { IL: 'https://api-il.kesher.example/v1', US: 'https://api-us.kesher.example/v1' }, signer, actor: async () => ({ subject: 'zvi', roles: ['ops'] }), fetch: fetchImpl });
   return { data, calls, publicKey };
 }
 
@@ -75,9 +77,11 @@ describe('httpAdminData', () => {
     const flags = await data.listFlags();
     expect(flags.find((f) => f.key === 'esim.airalo')).toMatchObject({ on: false, gatesTicked: [] });
     expect(flags.find((f) => f.key === 'billing.stripe')).toMatchObject({ on: true, lastChangedAt: '2026-11-01T09:00:00Z', pendingFlip: { requestId: 'req-1', to: false, requestedBy: 'p-ops-1' } });
-    expect((await data.listBindings()).map((b) => [b.capability, b.binding])).toEqual([
-      ['billing', 'stripe'],
-      ['esim', 'simulator'],
+    expect((await data.listBindings()).map((b) => [b.market, b.capability, b.binding])).toEqual([
+      ['IL', 'billing', 'stripe'],
+      ['IL', 'esim', 'simulator'],
+      ['US', 'billing', 'simulator'],
+      ['US', 'esim', 'simulator'],
     ]);
     const log = await data.auditLog();
     expect(log).toEqual([{ at: '2026-11-01T09:00:00Z', actor: 'p-ops-2', action: 'flag.flip', subject: 'billing.stripe', detail: 'go live' }]);
@@ -138,5 +142,20 @@ describe('httpAdminData', () => {
     expect(view.balances).toEqual([{ id: 'acc-usd', currency: 'USD', available: '$80.00', holds: '$20.00', spendable: '$60.00' }]);
     expect(view.activeGrants).toEqual([]);
     expect(await data.getCustomer('01932e5a-0000-7000-8000-00000000dead')).toBeUndefined();
+  });
+
+  it('sends club-wide calls to the IL API only, and keeps a client per market for provider actions (T-0913)', async () => {
+    const { data, calls } = await setup();
+    await data.listFlags();
+    await data.searchCustomers('noa');
+    await data.listComplaints();
+    await data.listAlerts();
+    expect(new Set(calls.map((c) => c.host))).toEqual(new Set(['api-il.kesher.example']));
+    calls.length = 0;
+    await data.listBindings();
+    expect(calls.map((c) => c.host).sort()).toEqual(['api-il.kesher.example', 'api-us.kesher.example']);
+    calls.length = 0;
+    await data.apiFor('US').get('/admin/bindings');
+    expect(calls).toEqual([expect.objectContaining({ host: 'api-us.kesher.example', url: '/admin/bindings' })]);
   });
 });

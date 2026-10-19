@@ -1,14 +1,23 @@
 // AdminData over the API (T-0906, T-0907, T-0908, ADR-013): the console's server side calls
 // /admin/* through the typed SDK with a fresh staff token per call. The API stamps actors from the
 // token and timestamps from its own clock, so the `by` and `now` the screens pass stay local.
+// One API runs per market on one shared database (T-0026, T-0913): club-wide data comes from the
+// HOME_MARKET API, provider bindings from each market's own, and `apiFor(market)` is the route a
+// provider-calling staff action takes to the member's market.
 import { fromWire } from '@kesher/domain';
 import { ApiError, createClient, type Client, type Schemas } from '@kesher/sdk';
 import type { StaffSigner } from '../auth/staff-token.ts';
+import type { Market } from '@kesher/ports';
 import { gatesFor } from '../providers/release-gates.ts';
 import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type FlagState, type ProviderBinding } from './types.ts';
 
+export const MARKETS: readonly Market[] = ['IL', 'US'];
+/** Club-wide reads and writes go here; any market's API serves them from the shared database, so the choice is fixed. */
+export const HOME_MARKET: Market = 'IL';
+
 export interface HttpAdminDataOptions {
-  baseUrl: string;
+  /** Each market's API base URL, with its `/v1` prefix. */
+  apis: Readonly<Record<Market, string>>;
   signer: StaffSigner;
   /** Who is acting on this request (from the proxy's headers). */
   actor: () => Promise<AdminActor>;
@@ -83,12 +92,15 @@ const mapError = (e: unknown): never => {
   throw e;
 };
 
-export function httpAdminData(o: HttpAdminDataOptions): AdminData {
-  const client: Client = createClient({
-    baseUrl: o.baseUrl,
-    ...(o.fetch ? { fetch: o.fetch } : {}),
-    getAccessToken: async () => o.signer.sign(await o.actor()),
-  });
+export function httpAdminData(o: HttpAdminDataOptions): AdminData & { apiFor(market: Market): Client } {
+  const clientFor = (baseUrl: string): Client =>
+    createClient({
+      baseUrl,
+      ...(o.fetch ? { fetch: o.fetch } : {}),
+      getAccessToken: async () => o.signer.sign(await o.actor()),
+    });
+  const clients: Readonly<Record<Market, Client>> = { IL: clientFor(o.apis.IL), US: clientFor(o.apis.US) };
+  const client = clients[HOME_MARKET];
   const run = async <T>(fn: () => Promise<T>): Promise<T> => {
     try {
       return await fn();
@@ -129,8 +141,9 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData {
     },
 
     async listBindings(): Promise<ProviderBinding[]> {
-      const r = await run(() => client.get('/admin/bindings'));
-      return r.items.map((b) => ({ capability: b.capability, binding: !b.provider || b.provider === 'simulator' ? 'simulator' : b.provider, degraded: false, contractGreenNights: 0 }));
+      // Each market's API reports its own bindings, labelled with the market it serves.
+      const perMarket = await Promise.all(MARKETS.map((m) => run(() => clients[m].get('/admin/bindings'))));
+      return perMarket.flatMap((r) => r.items.map((b) => ({ capability: b.capability, market: b.market, binding: !b.provider || b.provider === 'simulator' ? 'simulator' : b.provider, degraded: false, contractGreenNights: 0 })));
     },
     async listFlags(): Promise<FlagState[]> {
       const r = await run(() => client.get('/admin/flags'));
@@ -170,5 +183,5 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData {
       return out.sort((a, b) => b.at.localeCompare(a.at));
     },
   };
-  return data;
+  return { ...data, apiFor: (market) => clients[market] };
 }

@@ -1,11 +1,13 @@
-// Providers table rows (A07): every port with its current binding, switch-on readiness and kill
-// switch state, built from the port catalogue plus the stored bindings and flags.
-import { PORTS, type PortDescriptor } from '@kesher/ports';
+// Providers table rows (A07): every port in every market with its current binding, switch-on readiness
+// and kill switch state, built from the port catalogue plus the stored bindings and flags. Bindings are
+// per market (T-0913); flags are club-wide, so both markets' rows show the same flags.
+import { PORTS, type Market, type PortDescriptor } from '@kesher/ports';
 import type { FlagState, ProviderBinding } from '../data/types.ts';
 import { evaluateFlip, gatesFor } from './release-gates.ts';
 
 export interface ProviderRow {
   capability: string;
+  market: Market;
   port: string;
   direction: PortDescriptor['direction'];
   binding: string;
@@ -17,10 +19,12 @@ export interface ProviderRow {
   status: 'live' | 'degraded' | 'ready' | 'simulator' | 'blocked';
 }
 
+const MARKETS: readonly Market[] = ['IL', 'US'];
+
 export function providerRows(bindings: readonly ProviderBinding[], flags: readonly FlagState[]): ProviderRow[] {
   const byKey = new Map(flags.map((f) => [f.key, f]));
-  return PORTS.map((p) => {
-    const b = bindings.find((x) => x.capability === p.capability);
+  return PORTS.flatMap((p) => MARKETS.map((market) => {
+    const b = bindings.find((x) => x.capability === p.capability && x.market === market);
     const rows = p.flags.map((key) => {
       const f = byKey.get(key);
       const total = gatesFor(key).length;
@@ -29,6 +33,6 @@ export function providerRows(bindings: readonly ProviderBinding[], flags: readon
     const anyOn = rows.some((r) => r.on);
     const anyReady = rows.some((r) => !r.on && evaluateFlip(r.key, byKey.get(r.key)?.gatesTicked ?? [], []).gatesComplete);
     const status: ProviderRow['status'] = b?.degraded ? 'degraded' : anyOn ? 'live' : !b || b.binding === 'simulator' ? (anyReady ? 'ready' : 'simulator') : anyReady ? 'ready' : 'blocked';
-    return { capability: p.capability, port: p.port, direction: p.direction, binding: b?.binding ?? 'simulator', vendors: p.vendors, degraded: b?.degraded ?? false, contractGreenNights: b?.contractGreenNights ?? 0, flags: rows, status };
-  });
+    return { capability: p.capability, market, port: p.port, direction: p.direction, binding: b?.binding ?? 'simulator', vendors: p.vendors, degraded: b?.degraded ?? false, contractGreenNights: b?.contractGreenNights ?? 0, flags: rows, status };
+  }));
 }

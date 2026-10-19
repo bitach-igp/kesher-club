@@ -25,7 +25,10 @@ Screens read and write through the `AdminData` port (`src/data/types.ts`), chose
 `ADMIN_DATA`:
 
 - `api` (everywhere but local and preview): `src/data/http.ts` calls `/admin/*` on the API through
-  the typed SDK. Each call carries a 5-minute ES256 staff token signed with the console's own key
+  the typed SDK. One API runs per market on one shared database (T-0913): club-wide data (customers,
+  complaints, alerts, flags, audit, FX rates) comes from the IL API (`ADMIN_API_URL_IL`); provider
+  bindings come from each market's own (`ADMIN_API_URL_IL`, `ADMIN_API_URL_US`, each with `/v1`), and
+  a staff action that calls a provider goes through `apiFor(market)` to the member's market. Each call carries a 5-minute ES256 staff token signed with the console's own key
   (`ADMIN_API_SIGNING_KEY`, a private P-256 JWK; `ADMIN_API_SIGNING_KID`), `aud kesher-api:admin`,
   `sub` the Identity Center subject, roles from the SSO session. The API verifies it against the
   console's public JWKS and refuses member and agent tokens on admin routes. The console never holds

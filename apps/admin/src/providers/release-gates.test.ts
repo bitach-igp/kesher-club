@@ -43,13 +43,15 @@ describe('release gates (T-0902)', () => {
     expect((await data.auditLog())[0]).toMatchObject({ action: 'flag.kill_switch', subject: 'billing.stripe' });
   });
 
-  it('provider rows show the binding, gate progress and a status per port', async () => {
+  it('provider rows show the binding, gate progress and a status per port in each market (T-0913)', async () => {
     const data = memoryAdminData();
     const rows = providerRows(await data.listBindings(), await data.listFlags());
-    expect(rows).toHaveLength(18);
-    const billing = rows.find((r) => r.capability === 'billing')!;
+    expect(rows).toHaveLength(36);
+    const billing = rows.find((r) => r.capability === 'billing' && r.market === 'IL')!;
     expect(billing).toMatchObject({ binding: 'stripe', status: 'live', contractGreenNights: 9 });
-    const esim = rows.find((r) => r.capability === 'esim')!;
+    // Flags are club-wide, so both markets' rows show billing.stripe on; the US row still binds the simulator.
+    expect(rows.find((r) => r.capability === 'billing' && r.market === 'US')).toMatchObject({ binding: 'simulator', contractGreenNights: 0 });
+    const esim = rows.find((r) => r.capability === 'esim' && r.market === 'IL')!;
     expect(esim).toMatchObject({ binding: 'simulator', status: 'simulator', flags: [expect.objectContaining({ key: 'esim.airalo', on: false, gatesTicked: 0, gatesTotal: 8 }), expect.anything()] });
   });
 });
