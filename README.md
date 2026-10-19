@@ -32,7 +32,7 @@ vendor sandbox, and flip a flag. See `docs/constitution.md` and the live spec.
   the root; the desktop checker has applied every migration through ledger/0012 on Postgres 16.
 - Decided: ADR-004 (WorkOS for institution SSO and SCIM), ADR-007 (ILS is native: every load, send and
   receipt names its currency; conversions at the club-published rate) and ADR-013 (the admin console
-  talks to the API). ADR-006's build decision: the money epics run against the simulators; the
+  talks to the API), and ADR-014 (pricing and the spec-versus-code calls from the bank-review package). ADR-006's build decision: the money epics run against the simulators; the
   processor adapter is one later card per port. ADR-001, 002, 003, 005, 008 and 010 carry draft
   recommendations awaiting Zvi.
 - Next: the currency-choice and club-rate cards T-0512 to T-0518 (ADR-007), and the Sprint 9 cards

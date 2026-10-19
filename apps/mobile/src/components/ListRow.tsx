@@ -1,5 +1,7 @@
-// List row: 64 min height (72 with a subtitle), trailing text or chevron, inset divider.
+// List row: 64 min height (72 with a subtitle), trailing text or chevron, inset divider. The chevron
+// points onward in reading order: › in English, ‹ in Hebrew, where the row itself mirrors.
 import { Pressable, StyleSheet, View } from 'react-native';
+import { onward, useLocale } from '../i18n.ts';
 import { useTheme } from '../theme.ts';
 import { Txt } from './Txt.tsx';
 
@@ -16,6 +18,7 @@ export interface ListRowProps {
 
 export function ListRow({ title, subtitle, trailing, onPress, accessibilityLabel, accessibilityHint, testID, last = false }: ListRowProps) {
   const th = useTheme();
+  const locale = useLocale();
   const body = (
     <View style={[styles.row, { minHeight: subtitle ? 72 : 64, paddingHorizontal: th.space[4], gap: th.space[3] }]}>
       <View style={styles.text}>
@@ -34,7 +37,7 @@ export function ListRow({ title, subtitle, trailing, onPress, accessibilityLabel
         </Txt>
       ) : onPress ? (
         <Txt variant="body" tone="secondary" accessibilityElementsHidden importantForAccessibility="no">
-          ›
+          {onward(locale).chevron}
         </Txt>
       ) : null}
     </View>

@@ -9,7 +9,8 @@
 // wallet on that date under `{workflowId}:release`; an ACH return before then reverses the hold.
 //
 // A load credits the purse the member chooses (T-0517, REQ-WAL-006, ADR-007). When the instrument settles in
-// the other currency, the load is priced once when it begins, at the club rate (mid, no markup), and the
+// the other currency, the load is priced once when it begins, at the club rate less the purse owner's plan
+// markup like every conversion (ADR-014 decision 2, T-0519), and the
 // price rides on the transfer: settle, hold and release book partner_settlement in the instrument currency,
 // fx_position in both, and the purse in its own currency, so no replay or late webhook ever re-prices it.
 // With no valid club rate the load is refused before the vendor is asked for anything.
@@ -17,7 +18,7 @@
 // `runLoad` is the deterministic workflow body, pure over `LoadActivities`, so Temporal (ADR-002) can
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
-import { DomainError, fromWire, money, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
+import { applyBps, DomainError, fromWire, money, sub, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
 import { applyRate, FundingError, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
@@ -150,6 +151,8 @@ interface Deps {
   provider: string;
   /** The club rates a cross-currency load converts at; without them only same-currency loads go. */
   rates?: Pick<RateService, 'rateFor'>;
+  /** The purse owner's plan markup in basis points (FxService.markupFor); conversions need it beside the rates. */
+  markups?: { markupFor(partyId: string): Promise<bigint> };
 }
 
 export class LoadService implements LoadActivities {
@@ -313,21 +316,28 @@ export class LoadService implements LoadActivities {
     };
   }
 
-  /** The conversion a load into another purse settles at: the club rate, no markup (ADR-007). */
+  /**
+   * The conversion a load into another purse settles at: the club rate, less the purse owner's plan markup,
+   * like every conversion (ADR-007, ADR-014 decision 2). At the mid rate a load through the other purse would
+   * be a free conversion that undercuts the convert screen.
+   */
   private async price(input: LoadInput, now: Date): Promise<TransferConversion | undefined> {
     const purse = input.purse ?? input.amount.currency;
     if (purse === input.amount.currency) return undefined;
-    if (!this.d.rates) throw new DomainError('PROVIDER_UNAVAILABLE', 'Loads into another currency are not available right now');
+    if (!this.d.rates || !this.d.markups) throw new DomainError('PROVIDER_UNAVAILABLE', 'Loads into another currency are not available right now');
     const rate = await this.d.rates.rateFor(input.amount.currency, purse, now);
-    const minor = applyRate(input.amount.minor, rate.rateScaled);
-    if (minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'The amount is too small to convert');
-    return { received: money(minor, purse), rateId: rate.rateId, rateVersion: rate.version, rateScaled: rate.rateScaled, markupBps: 0n };
+    const markupBps = await this.d.markups.markupFor(input.memberPartyId);
+    const gross = money(applyRate(input.amount.minor, rate.rateScaled), purse);
+    const received = sub(gross, applyBps(gross, markupBps));
+    if (received.minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'The amount is too small to convert');
+    return { received, rateId: rate.rateId, rateVersion: rate.version, rateScaled: rate.rateScaled, markupBps };
   }
 
   /**
    * partner_settlement in the instrument currency to the member's wallet or pending purse. Same currency:
-   * two legs. Converting: fx_position takes the instrument amount and pays out the credited amount in the
-   * purse currency, balanced per currency; the gap to the vendor's real rate is fx_position's to carry.
+   * two legs. Converting: fx_position takes the instrument amount and pays out the gross in the purse
+   * currency; the purse takes the credited amount and fee income the markup, when above zero. Balanced per
+   * currency; the gap to the vendor's real rate is fx_position's to carry.
    */
   private async legs(transfer: Transfer, into: 'wallet' | 'pending'): Promise<Posting[]> {
     const { minor, currency } = transfer.amount;
@@ -342,11 +352,13 @@ export class LoadService implements LoadActivities {
     }
     const to = c.received.currency;
     const dest = await this.d.accounts.memberAccount(transfer.toPartyId!, into, to);
+    const markup = markupOf(transfer, c);
     return [
       { accountId: partner, currency, amountMinor: minor },
       { accountId: await this.d.accounts.systemAccount('fx_position', currency), currency, amountMinor: -minor },
-      { accountId: await this.d.accounts.systemAccount('fx_position', to), currency: to, amountMinor: c.received.minor },
+      { accountId: await this.d.accounts.systemAccount('fx_position', to), currency: to, amountMinor: c.received.minor + markup },
       { accountId: dest, currency: to, amountMinor: -c.received.minor },
+      ...(markup > 0n ? [{ accountId: await this.d.accounts.systemAccount('fee_income', to), currency: to, amountMinor: -markup }] : []),
     ];
   }
 
@@ -406,7 +418,21 @@ function credited(t: Transfer): Money {
 function conversionMetadata(t: Transfer): Record<string, unknown> {
   const c = t.conversion;
   if (!c) return {};
-  return { fx_rate_version: c.rateVersion, fx_rate_id: c.rateId, rateScaled: c.rateScaled.toString(), rate: rateString(c.rateScaled), loaded: toWire(t.amount), credited: toWire(c.received) };
+  return {
+    fx_rate_version: c.rateVersion,
+    fx_rate_id: c.rateId,
+    fx_markup_bps: Number(c.markupBps),
+    rateScaled: c.rateScaled.toString(),
+    rate: rateString(c.rateScaled),
+    loaded: toWire(t.amount),
+    credited: toWire(c.received),
+    markup: toWire(money(markupOf(t, c), c.received.currency)),
+  };
+}
+
+/** The markup kept by fee income: the gross at the rate applied, less what the purse was credited. */
+function markupOf(t: Transfer, c: TransferConversion): bigint {
+  return applyRate(t.amount.minor, c.rateScaled) - c.received.minor;
 }
 
 function mapFundingError(e: unknown): Error {

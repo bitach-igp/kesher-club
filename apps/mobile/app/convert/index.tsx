@@ -5,7 +5,7 @@ import { uuidv7 } from '@kesher/domain';
 import { useApi } from '../../src/api.ts';
 import { useNow } from '../../src/clock.ts';
 import { Banner, Button, Card, Screen, Skeleton, TextField, Txt } from '../../src/components/index.ts';
-import { t, useLocale } from '../../src/i18n.ts';
+import { onward, t, useLocale } from '../../src/i18n.ts';
 import { useStore } from '../../src/model.ts';
 import { available, createFxModel, fmt, markupPercent, other, type FxModel } from './fx.model.ts';
 
@@ -52,7 +52,7 @@ export function ConvertView({ model }: { model: FxModel }) {
         <Txt variant="caption" tone="secondary">
           {t('fx.from', locale)}: {s.from} · {t('pay.home.balance', locale)} {fmt(available(s.accounts, s.from), locale)}
         </Txt>
-        <Button label={`${t('fx.swap', locale)} → ${other(s.from)}`} variant="tertiary" onPress={model.swap} testID="fx-swap" />
+        <Button label={`${t('fx.swap', locale)} ${onward(locale).arrow} ${other(s.from)}`} variant="tertiary" onPress={model.swap} testID="fx-swap" />
         <TextField label={t('fx.amount.label', locale)} value={s.amountText} onChangeText={model.setAmount} keyboardType="decimal-pad" testID="fx-amount" />
       </Card>
       {s.quote ? (

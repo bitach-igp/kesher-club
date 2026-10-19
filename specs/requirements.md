@@ -34,7 +34,7 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-CRD-009 | P2 | Physical card shipping and in-app activation |
 | REQ-PAY-001 | P2 | Send to a verified member via book transfer |
 | REQ-PAY-002 | P2 | Enforce the lower of entitlement and risk limits |
-| REQ-PAY-003 | P2 | New counterparty over 500 ILS holds 2 h |
+| REQ-PAY-003 | P2 | New counterparty over 500 ILS or 150 USD holds 2 h |
 | REQ-PAY-004 | P2 | Requests and splits expire in 14 days |
 | REQ-PAY-005 | P2 | Retries never create two transfers |
 | REQ-PAY-006 | P2 | Send from a chosen purse; recipient credited in their receiving currency at the club rate |

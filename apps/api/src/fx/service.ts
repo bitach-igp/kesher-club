@@ -7,11 +7,16 @@
 // vendor fill on the journal, so reconciliation can watch fx_position against it. Quotes are short-lived
 // and process-local: after a restart a quote is unknown and the screen asks for a fresh one, which is
 // what it does on expiry anyway. Every conversion is a transfer of kind 'fx' keyed by the Idempotency-Key.
+// A failed vendor leg closes the conversion (T-0520, SEQ-08, ADR-014 decision 7): a reject fails it and voids
+// the quote with no journal; an outage keeps it submitted for a retry with the same key while the quote lives;
+// a retry after the quote is gone fails it; and voidStale (the worker's sweep) fails whatever is still
+// submitted once its quote can no longer be alive. Nothing stays submitted for ever.
 import { add, applyBps, DomainError, fromWire, money, sub, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
 import { applyRate, FxError, RATE_SCALE, type FxPort, type FxQuote } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import { DEFAULT_FX_MARKUP_BPS, type PlanService } from '../billing/plans.ts';
+import type { Database } from '../db.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferService } from '../transfers/service.ts';
@@ -20,6 +25,8 @@ import type { RateService } from './rates.ts';
 export const FX_FLAG = 'fx.enabled';
 export const FX_JOURNAL_KIND = 'fx';
 export const QUOTE_TTL_MS = 30_000;
+/** A submitted conversion this long after it was submitted has outlived its quote by a wide margin: void it. */
+export const STALE_CONVERSION_MS = QUOTE_TTL_MS + 5 * 60_000;
 
 /** The OpenAPI `FxQuote`. */
 export interface FxQuoteView {
@@ -52,6 +59,7 @@ interface HeldQuote {
 }
 
 interface Deps {
+  db: Database;
   port: FxPort;
   rates: RateService;
   ledger: PostgresLedger;
@@ -113,11 +121,17 @@ export class FxService {
       const done = this.conversionsByTransfer.get(existing.id);
       if (done) return done;
       if (existing.state === 'settled') return this.viewFromTransfer(existing, b.quoteId);
+      if (existing.state === 'failed') throw failedConversion(existing);
     }
     const held = this.quotes.get(b.quoteId);
-    if (!held || held.partyId !== partyId) throw new DomainError('QUOTE_EXPIRED', 'This quote is no longer available; get a fresh one', { quoteId: b.quoteId });
+    if (!held || held.partyId !== partyId) {
+      // A retry whose quote is gone (expired and swept, or the process restarted) can never settle: close it.
+      if (existing?.state === 'submitted') await this.void(existing, 'QUOTE_EXPIRED', 'quote no longer available', now);
+      throw new DomainError('QUOTE_EXPIRED', 'This quote is no longer available; get a fresh one', { quoteId: b.quoteId });
+    }
     if (now.getTime() > Date.parse(held.quote.expiresAt)) {
       this.quotes.delete(b.quoteId);
+      if (existing?.state === 'submitted') await this.void(existing, 'QUOTE_EXPIRED', 'quote expired before the vendor confirmed', now);
       throw new DomainError('QUOTE_EXPIRED', 'This quote expired after 30 seconds; get a fresh one', { quoteId: b.quoteId, expiredAt: held.quote.expiresAt });
     }
     const q = held.quote;
@@ -132,7 +146,13 @@ export class FxService {
       const vendorQuote = await this.d.port.quote({ from: q.from, to: q.total.currency, markupBps: 0n });
       conversion = await this.d.port.convert(vendorQuote.quoteId, key);
     } catch (e) {
-      throw mapFxError(e); // an outage leaves the transfer submitted: the same key retries the vendor call
+      // A reject is final: the quote is void and the conversion fails with no journal (SEQ-08). An outage
+      // (or anything we cannot classify) leaves it submitted: the same key retries the vendor call.
+      if (e instanceof FxError && e.code !== 'PROVIDER_UNAVAILABLE') {
+        this.quotes.delete(q.quoteId);
+        await this.void(t, e.code, `vendor rejected: ${e.message}`.slice(0, 200), now);
+      }
+      throw mapFxError(e);
     }
     const journal = await this.post(partyId, q, held, conversion.conversionId, conversion.rateScaled, conversion.total, t.id, key, now);
     t = await this.d.transfers.apply(t.id, 'settle', now, { journalId: journal.id });
@@ -140,6 +160,25 @@ export class FxService {
     const out: FxConversionView = { conversionId: conversion.conversionId, quoteId: q.quoteId, from: toWire(q.from), total: toWire(q.total), status: 'settled' };
     this.conversionsByTransfer.set(t.id, out);
     return out;
+  }
+
+  /**
+   * The sweep (T-0520): fails every conversion still submitted STALE_CONVERSION_MS after it was submitted,
+   * when no quote can still be alive for it. No journal posts; a vendor fill that did happen is a gap on
+   * fx_position for reconciliation. Idempotent: a failed conversion is not submitted any more.
+   */
+  async voidStale(now: Date, olderThanMs = STALE_CONVERSION_MS, limit = 100): Promise<Transfer[]> {
+    const r = await this.d.db.query<{ id: string }>(`select id from ops.transfer where kind = 'fx' and state = 'submitted' and updated_at <= $1 order by updated_at limit $2`, [new Date(now.getTime() - olderThanMs), limit]);
+    const out: Transfer[] = [];
+    for (const row of r.rows) {
+      const t = await this.d.transfers.get(row.id);
+      if (t?.state === 'submitted') out.push(await this.void(t, 'QUOTE_EXPIRED', 'stale conversion: its quote expired', now));
+    }
+    return out;
+  }
+
+  private async void(t: Transfer, code: string, reason: string, now: Date): Promise<Transfer> {
+    return this.d.transfers.apply(t.id, 'fail', now, { failureCode: code, reason });
   }
 
   /** The member's plan's markup, or the default without an active plan. */
@@ -219,6 +258,12 @@ function parse(body: unknown): { from: Money; to: Currency } {
 function view(h: HeldQuote): FxQuoteView {
   const q = h.quote;
   return { quoteId: q.quoteId, from: toWire(q.from), total: toWire(q.total), markup: toWire(q.markup), markupBps: Number(q.markupBps), rate: rateString(q.rateScaled), rateVersion: h.rateVersion, expiresAt: q.expiresAt };
+}
+
+/** A replay of a conversion that already failed answers as the first attempt did. */
+function failedConversion(t: Transfer): DomainError {
+  if (t.failureCode === 'QUOTE_EXPIRED' || t.failureCode === 'UNKNOWN_QUOTE') return new DomainError('QUOTE_EXPIRED', 'This conversion did not go through; get a fresh quote', { transferId: t.id });
+  return new DomainError('VALIDATION_FAILED', 'This conversion did not go through', { transferId: t.id, failureCode: t.failureCode });
 }
 
 function mapFxError(e: unknown): Error {
