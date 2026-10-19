@@ -61,7 +61,7 @@ describe('TST-INS-006: the monthly export', () => {
     const ledgerSum = (await db.query<{ s: string }>(
       `select coalesce(sum(p.amount_minor), 0)::text as s from ledger.posting p join ledger.account a on a.id = p.account_id join ledger.journal j on j.id = p.journal_id
          left join ledger.journal o on o.id = j.reverses_id
-        where a.type = 'institution_master' and a.currency = 'ILS' and (j.metadata->>'institutionId' = $1 or o.metadata->>'institutionId' = $1) and j.effective_at >= '2026-11-01' and j.effective_at < '2026-12-01'`,
+        where a.type = 'institution_master' and a.currency = 'ILS' and (j.metadata->>'institutionId' = $1 or o.metadata->>'institutionId' = $1) and j.effective_at >= '2026-11-01T00:00:00Z' and j.effective_at < '2026-12-01T00:00:00Z'`,
       [INST],
     )).rows[0]!.s;
     expect(-BigInt(ledgerSum)).toBe(e.totals.net.minor);
