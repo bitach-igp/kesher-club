@@ -4,7 +4,8 @@
 // (its name, the error's name and code; never a payload, a member's data or a token) and runs again
 // next cycle; the other jobs carry on. One runner per job across worker tasks: each run first takes a
 // lock named after the job and is skipped, not queued, when another task holds it. stop() lets in-flight
-// runs finish and schedules nothing more. The job bodies are the same ones Temporal will host.
+// runs finish and schedules nothing more. The job bodies are the same ones Temporal will host. Nightly
+// jobs ride the same loop through `daily()` below.
 
 export interface Job {
   /** Stable name: the lock key and the log label. */
@@ -77,12 +78,62 @@ export class Scheduler {
     const started = Date.now();
     try {
       const outcome = await this.lock.withLock(job.name, () => job.run());
-      this.log(outcome.ran ? 'job_ran' : 'job_skipped', { job: job.name, ms: Date.now() - started });
+      // A daily job's tick before its time, or after today's run, is not news.
+      if (!(outcome.ran && outcome.value === IDLE)) this.log(outcome.ran ? 'job_ran' : 'job_skipped', { job: job.name, ms: Date.now() - started });
     } catch (e) {
       this.log('job_failed', { job: job.name, ms: Date.now() - started, ...errorFields(e) });
     }
     this.schedule(job, Math.max(0, job.everyMs - (Date.now() - started)));
   }
+}
+
+/** What a run returns when it had nothing to do; the scheduler logs nothing for it. */
+export const IDLE: unique symbol = Symbol('idle');
+
+// ---- nightly jobs (T-0023) ------------------------------------------------------------------------
+// A daily job is an ordinary job that ticks every minute: it runs once the Israel wall-clock time has
+// reached its slot and no run is recorded for today's Israel date, and it records the run when it
+// finishes. So a worker that boots late runs it once, a restart the same day does not run it again, a
+// failure records nothing and the next tick retries it, and DST needs no special case: on the night the
+// clocks jump forward past the slot, the first tick after the jump is already past it.
+
+export const ISRAEL_TZ = 'Asia/Jerusalem';
+export const DAILY_TICK_MS = 60_000;
+
+export interface RunLog {
+  ranOn(job: string, day: string): Promise<boolean>;
+  record(job: string, day: string, startedAt: Date, finishedAt: Date): Promise<void>;
+}
+
+export interface DailyJob {
+  name: string;
+  /** Israel wall-clock time, `HH:MM`. */
+  at: string;
+  run(now: Date): Promise<unknown>;
+}
+
+const israelParts = new Intl.DateTimeFormat('en-CA', { timeZone: ISRAEL_TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+
+/** The Israel calendar day (`YYYY-MM-DD`) and wall-clock time (`HH:MM`) at `now`. */
+export function israelClock(now: Date): { day: string; time: string } {
+  const p = Object.fromEntries(israelParts.formatToParts(now).map((x) => [x.type, x.value]));
+  return { day: `${p['year']}-${p['month']}-${p['day']}`, time: `${p['hour']}:${p['minute']}` };
+}
+
+export function daily(job: DailyJob, runs: RunLog, clock: () => Date): Job {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(job.at)) throw new Error(`Job ${job.name} needs an HH:MM time, not ${job.at}`);
+  return {
+    name: job.name,
+    everyMs: DAILY_TICK_MS,
+    run: async () => {
+      const started = clock();
+      const { day, time } = israelClock(started);
+      if (time < job.at || (await runs.ranOn(job.name, day))) return IDLE;
+      const value = await job.run(started);
+      await runs.record(job.name, day, started, clock());
+      return value;
+    },
+  };
 }
 
 /** A lock that always grants: for a single worker and for tests. */

@@ -46,9 +46,22 @@ their own flag checks.
 | `monitoring` | `monitoring/job` | 1 h |
 | `esim-usage` | `esim/usage` | 1 h |
 
-Not on the scheduler: the nightly balance proof, reconciliation and catalogue sync (T-0023), allowance
-runs (started by T-0607's endpoint) and the card issue workflow (started by a KYC approval). Dunning
-waits on billing events. `src/jobs.test.ts` fails on a new job module that is neither in the table nor
+Nightly jobs (T-0023) run once per Israel calendar day at their wall-clock time. Each ticks every minute;
+once Israel time passes its slot and `ops.job_run` has no row for today's Israel date, it runs and then
+records the row. A worker that boots late runs it once, and a restart the same day does not run it
+again. A failed run records nothing, so the next tick retries it. DST needs no special case: on the night
+the clocks jump past the slot, the first tick after the jump runs it. Idle ticks log nothing.
+
+| Job | Module | Israel time |
+| --- | --- | --- |
+| `balance-proof` | `ledger/balance-proof` | 02:30 |
+| `catalogue-sync` | `catalogue/sync`, asking for what `config/catalogue.json` lists | 03:00 |
+
+Reconciliation joins at 04:00 Israel time with the processor adapter, which brings its statement
+source, ahead of REQ-LED-004's 06:00 deadline.
+
+Not on the scheduler: allowance runs (started by T-0607's endpoint) and the card issue workflow (started
+by a KYC approval). Dunning waits on billing events. `src/jobs.test.ts` fails on a new job module that is neither in the table nor
 in `JOB_EXCLUSIONS` with its reason.
 
 ## Commands
