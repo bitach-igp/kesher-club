@@ -16,7 +16,8 @@ export interface TestDatabase extends Database {
   close(): Promise<void>;
 }
 
-export async function createTestDatabase(): Promise<TestDatabase> {
+/** A PGlite instance with the roles and every migration applied: the schema the tests (and the pg binding's wire tests) run against. */
+export async function createMigratedPGlite(): Promise<PGlite> {
   const pg = new PGlite();
   await pg.exec(fs.readFileSync(path.join(ROOT, 'db/roles.sql'), 'utf8'));
   for (const schema of SCHEMA_ORDER) {
@@ -26,6 +27,11 @@ export async function createTestDatabase(): Promise<TestDatabase> {
       await pg.exec(fs.readFileSync(path.join(dir, f), 'utf8'));
     }
   }
+  return pg;
+}
+
+export async function createTestDatabase(): Promise<TestDatabase> {
+  const pg = await createMigratedPGlite();
   const wrap = (q: PGlite | { query: PGlite['query'] }): SqlClient => ({
     async query<R>(text: string, params?: readonly unknown[]): Promise<QueryResult<R>> {
       const r = await q.query<R>(text, params ? [...params] : undefined);
