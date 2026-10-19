@@ -31,6 +31,9 @@
 | [T-0028](T-0028.md) | SETUP | Each market's worker sweeps only its own market's rows | — | 9 |
 | [T-0029](T-0029.md) | SETUP | CI runs on pull requests only | — | 9 |
 | [T-0030](T-0030.md) | SETUP | Images reach ECR: a release workflow builds api, worker and admin and pushes immutable tags | — | 10 |
+| [T-0031](T-0031.md) | SETUP | One local process runs API, jobs and simulator panel on one registry and clock | — | 10 |
+| [T-0032](T-0032.md) | SETUP | Demo seed: the personas the eighteen money flows need | — | 10 |
+| [T-0033](T-0033.md) | SETUP | The member app runs in a browser (Expo web) against the local stack | — | 10 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
@@ -121,6 +124,9 @@
 | [T-0916](T-0916.md) | ADM | A market's provider row is live only where a vendor is bound | — | 9 |
 | [T-0917](T-0917.md) | ADM | The console ships as an image that turns healthy only when configured | REQ-AUTH-009 | 9 |
 | [T-0918](T-0918.md) | ADM | A misconfigured console stops at boot and says why | REQ-AUTH-009 | 9 |
+| [T-0919](T-0919.md) | ADM | Staff sign in to a local console through a simulator identity provider | REQ-AUTH-009 | 10 |
+| [T-0920](T-0920.md) | CMP | Recorded walkthroughs of REC-01 to REC-09 on the running product | — | 10 |
+| [T-0921](T-0921.md) | CMP | Recorded walkthroughs of REC-10 to REC-18; the package points at them | — | 10 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |
