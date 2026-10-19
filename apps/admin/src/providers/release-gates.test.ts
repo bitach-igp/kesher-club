@@ -49,8 +49,11 @@ describe('release gates (T-0902)', () => {
     expect(rows).toHaveLength(36);
     const billing = rows.find((r) => r.capability === 'billing' && r.market === 'IL')!;
     expect(billing).toMatchObject({ binding: 'stripe', status: 'live', contractGreenNights: 9 });
-    // Flags are club-wide, so both markets' rows show billing.stripe on; the US row still binds the simulator.
-    expect(rows.find((r) => r.capability === 'billing' && r.market === 'US')).toMatchObject({ binding: 'simulator', contractGreenNights: 0 });
+    // Flags are club-wide, so both markets' rows show billing.stripe on; the US still binds the simulator, so
+    // its row says so instead of live (T-0916).
+    const us = rows.find((r) => r.capability === 'billing' && r.market === 'US')!;
+    expect(us).toMatchObject({ binding: 'simulator', status: 'simulator', contractGreenNights: 0 });
+    expect(us.flags).toContainEqual(expect.objectContaining({ key: 'billing.stripe', on: true }));
     const esim = rows.find((r) => r.capability === 'esim' && r.market === 'IL')!;
     expect(esim).toMatchObject({ binding: 'simulator', status: 'simulator', flags: [expect.objectContaining({ key: 'esim.airalo', on: false, gatesTicked: 0, gatesTotal: 8 }), expect.anything()] });
   });
