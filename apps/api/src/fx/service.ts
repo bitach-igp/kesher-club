@@ -4,9 +4,10 @@
 // version; without a valid rate the quote is refused with PROVIDER_UNAVAILABLE. The markup comes from the
 // member's active plan (the default when they have none) and rides the journal in basis points. The vendor
 // (FxPort) is the hedge: convert() executes the vendor leg with the same idempotency key and records the
-// vendor fill on the journal, so reconciliation can watch fx_position against it. Quotes are short-lived
-// and process-local: after a restart a quote is unknown and the screen asks for a fresh one, which is
-// what it does on expiry anyway. Every conversion is a transfer of kind 'fx' keyed by the Idempotency-Key.
+// vendor fill on the journal, so reconciliation can watch fx_position against it. Quotes are rows in
+// ops.fx_quote (T-0522, ADR-014 decision 8): any API instance converts a quote another issued, and a quote
+// is spent once, claimed by the conversion's Idempotency-Key, so only a retry under that key may use it
+// again. Every conversion is a transfer of kind 'fx' keyed by the Idempotency-Key.
 // A failed vendor leg closes the conversion (T-0520, SEQ-08, ADR-014 decision 7): a reject fails it and voids
 // the quote with no journal; an outage keeps it submitted for a retry with the same key while the quote lives;
 // a retry after the quote is gone fails it; and voidStale (the worker's sweep) fails whatever is still
@@ -56,6 +57,24 @@ interface HeldQuote {
   quote: FxQuote;
   rateId: string;
   rateVersion: number;
+  /** The Idempotency-Key of the conversion that claimed it, if one has. */
+  spentKey?: string;
+}
+
+interface QuoteRow {
+  id: string;
+  party_id: string;
+  from_minor: string;
+  from_currency: Currency;
+  to_currency: Currency;
+  rate_scaled: string;
+  markup_bps: string;
+  total_minor: string;
+  markup_minor: string;
+  rate_id: string;
+  rate_version: number;
+  expires_at: string | Date;
+  spent_key: string | null;
 }
 
 interface Deps {
@@ -80,10 +99,6 @@ export function rateString(rateScaled: bigint): string {
 export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
 
 export class FxService {
-  private readonly quotes = new Map<string, HeldQuote>();
-  private readonly quotesByKey = new Map<string, string>();
-  private readonly conversionsByTransfer = new Map<string, FxConversionView>();
-
   private readonly d: Deps;
   constructor(d: Deps) {
     this.d = d;
@@ -92,11 +107,8 @@ export class FxService {
   /** POST /fx/quotes: the member's plan sets the markup; the purse must cover the amount now. Idempotent by key. */
   async quote(partyId: string, body: unknown, key: string, now: Date): Promise<FxQuoteView> {
     if (!(await this.d.flags.isOn(FX_FLAG))) throw new DomainError('FEATURE_OFF', 'Currency conversion is not enabled yet');
-    const prior = this.quotesByKey.get(`${partyId}:${key}`);
-    if (prior) {
-      const held = this.quotes.get(prior);
-      if (held) return view(held);
-    }
+    const prior = await this.quoteByKey(partyId, key);
+    if (prior) return view(prior);
     const { from, to } = parse(body);
     const purse = (await this.d.accounts.purses(partyId)).find((p) => p.currency === from.currency)!;
     if (purse.available.minor < from.minor) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the purse to convert', { available: purse.available.minor.toString(), currency: from.currency });
@@ -106,11 +118,13 @@ export class FxService {
     const gross = money(applyRate(from.minor, rate.rateScaled), to);
     const markup = applyBps(gross, markupBps);
     const quote: FxQuote = { quoteId: `cq_${uuidv7(now)}`, from, to, rateScaled: rate.rateScaled, markupBps, total: sub(gross, markup), markup, expiresAt: new Date(now.getTime() + QUOTE_TTL_MS).toISOString() };
-    const held: HeldQuote = { partyId, quote, rateId: rate.rateId, rateVersion: rate.version };
-    this.quotes.set(quote.quoteId, held);
-    this.quotesByKey.set(`${partyId}:${key}`, quote.quoteId);
-    this.sweep(now);
-    return view(held);
+    await this.d.db.query(
+      `insert into ops.fx_quote (id, party_id, idempotency_key, from_minor, from_currency, to_currency, rate_scaled, markup_bps, total_minor, markup_minor, rate_id, rate_version, market, expires_at, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) on conflict (party_id, idempotency_key) do nothing`,
+      [quote.quoteId, partyId, key, from.minor.toString(), from.currency, to, rate.rateScaled.toString(), markupBps.toString(), quote.total.minor.toString(), markup.minor.toString(), rate.rateId, rate.version, this.d.transfers.market, quote.expiresAt, now],
+    );
+    // The same key raced on another instance: its quote is the one.
+    return view((await this.quoteByKey(partyId, key))!);
   }
 
   /** POST /fx/conversions: convert at a live quote, once per key; QUOTE_EXPIRED after 30 s. */
@@ -121,25 +135,26 @@ export class FxService {
     const existing = await this.d.transfers.byKey(key);
     if (existing) {
       if (existing.kind !== 'fx' || existing.fromPartyId !== partyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
-      const done = this.conversionsByTransfer.get(existing.id);
-      if (done) return done;
-      if (existing.state === 'settled') return this.viewFromTransfer(existing, b.quoteId);
+      if (existing.state === 'settled') return this.settledView(existing);
       if (existing.state === 'failed') throw failedConversion(existing);
     }
-    const held = this.quotes.get(b.quoteId);
-    if (!held || held.partyId !== partyId) {
-      // A retry whose quote is gone (expired and swept, or the process restarted) can never settle: close it.
+    const held = await this.quoteById(b.quoteId);
+    if (!held || held.partyId !== partyId || (held.spentKey !== undefined && held.spentKey !== key)) {
+      // Unknown, another member's, or spent by another conversion: no retry can settle on it, so close it.
       if (existing?.state === 'submitted') await this.void(existing, 'QUOTE_EXPIRED', 'quote no longer available', now);
       throw new DomainError('QUOTE_EXPIRED', 'This quote is no longer available; get a fresh one', { quoteId: b.quoteId });
     }
     if (now.getTime() > Date.parse(held.quote.expiresAt)) {
-      this.quotes.delete(b.quoteId);
       if (existing?.state === 'submitted') await this.void(existing, 'QUOTE_EXPIRED', 'quote expired before the vendor confirmed', now);
       throw new DomainError('QUOTE_EXPIRED', 'This quote expired after 30 seconds; get a fresh one', { quoteId: b.quoteId, expiredAt: held.quote.expiresAt });
     }
     const q = held.quote;
     const purse = (await this.d.accounts.purses(partyId)).find((p) => p.currency === q.from.currency)!;
     if (purse.available.minor < q.from.minor) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the purse to convert', { available: purse.available.minor.toString(), currency: q.from.currency });
+    // Spend the quote under this key before anything moves; a conversion under another key that got there
+    // first (on this instance or another) wins it.
+    const claimed = await this.d.db.query(`update ops.fx_quote set spent_key = $2, spent_at = coalesce(spent_at, $3) where id = $1 and (spent_key is null or spent_key = $2)`, [q.quoteId, key, now]);
+    if (claimed.rowCount === 0) throw new DomainError('QUOTE_EXPIRED', 'This quote is no longer available; get a fresh one', { quoteId: q.quoteId });
 
     let t: Transfer = existing ?? (await this.d.transfers.create({ idempotencyKey: key, kind: 'fx', fromPartyId: partyId, toPartyId: partyId, amount: q.from }, now));
     if (t.state === 'created') t = await this.d.transfers.apply(t.id, 'submit', now);
@@ -152,17 +167,13 @@ export class FxService {
       // A reject is final: the quote is void and the conversion fails with no journal (SEQ-08). An outage
       // (or anything we cannot classify) leaves it submitted: the same key retries the vendor call.
       if (e instanceof FxError && e.code !== 'PROVIDER_UNAVAILABLE') {
-        this.quotes.delete(q.quoteId);
         await this.void(t, e.code, `vendor rejected: ${e.message}`.slice(0, 200), now);
       }
       throw mapFxError(e);
     }
     const journal = await this.post(partyId, q, held, conversion.conversionId, conversion.rateScaled, conversion.total, t.id, key, now);
-    t = await this.d.transfers.apply(t.id, 'settle', now, { journalId: journal.id });
-    this.quotes.delete(q.quoteId);
-    const out: FxConversionView = { conversionId: conversion.conversionId, quoteId: q.quoteId, from: toWire(q.from), total: toWire(q.total), status: 'settled' };
-    this.conversionsByTransfer.set(t.id, out);
-    return out;
+    await this.d.transfers.apply(t.id, 'settle', now, { journalId: journal.id });
+    return { conversionId: conversion.conversionId, quoteId: q.quoteId, from: toWire(q.from), total: toWire(q.total), status: 'settled' };
   }
 
   /**
@@ -234,14 +245,36 @@ export class FxService {
     });
   }
 
-  private viewFromTransfer(t: Transfer, quoteId: string): FxConversionView {
-    return { conversionId: t.id, quoteId, from: toWire(t.amount), total: toWire(t.amount), status: 'settled' };
+  /** A replay of a settled conversion, on any instance, answers from its journal. */
+  private async settledView(t: Transfer): Promise<FxConversionView> {
+    const r = await this.d.db.query<{ metadata: { conversionId: string; quoteId: string; from: ReturnType<typeof toWire>; total: ReturnType<typeof toWire> } }>('select metadata from ledger.journal where idempotency_key = $1', [settleKey(t.idempotencyKey)]);
+    const m = r.rows[0]?.metadata;
+    if (!m) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This conversion settled without its journal', { transferId: t.id });
+    return { conversionId: m.conversionId, quoteId: m.quoteId, from: m.from, total: m.total, status: 'settled' };
   }
 
-  /** Forgets quotes well past their lock, so the map never grows unbounded. */
-  private sweep(now: Date): void {
-    for (const [id, h] of this.quotes) if (Date.parse(h.quote.expiresAt) + 10 * QUOTE_TTL_MS < now.getTime()) this.quotes.delete(id);
+  private async quoteById(quoteId: string): Promise<HeldQuote | undefined> {
+    return toHeld((await this.d.db.query<QuoteRow>('select * from ops.fx_quote where id = $1', [quoteId])).rows[0]);
   }
+
+  private async quoteByKey(partyId: string, key: string): Promise<HeldQuote | undefined> {
+    return toHeld((await this.d.db.query<QuoteRow>('select * from ops.fx_quote where party_id = $1 and idempotency_key = $2', [partyId, key])).rows[0]);
+  }
+}
+
+function toHeld(r: QuoteRow | undefined): HeldQuote | undefined {
+  if (!r) return undefined;
+  const quote: FxQuote = {
+    quoteId: r.id,
+    from: money(BigInt(r.from_minor), r.from_currency),
+    to: r.to_currency,
+    rateScaled: BigInt(r.rate_scaled),
+    markupBps: BigInt(r.markup_bps),
+    total: money(BigInt(r.total_minor), r.to_currency),
+    markup: money(BigInt(r.markup_minor), r.to_currency),
+    expiresAt: new Date(r.expires_at).toISOString(),
+  };
+  return { partyId: r.party_id, quote, rateId: r.rate_id, rateVersion: r.rate_version, ...(r.spent_key ? { spentKey: r.spent_key } : {}) };
 }
 
 function parse(body: unknown): { from: Money; to: Currency } {

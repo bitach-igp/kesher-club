@@ -1,4 +1,4 @@
-h1:Z3E74CKsIs3iR7nuyBuSZha9JnAZZHZ56BjQB+44A88=
+h1:uZ1YkqwPaHbZT4IsGpiSwktxhdZTH66LKwHj1Sj+K38=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
@@ -15,3 +15,4 @@ h1:Z3E74CKsIs3iR7nuyBuSZha9JnAZZHZ56BjQB+44A88=
 0014_transfer_fx.sql h1:9EaZNqso5WjLNNLJJ2DNJGB9PbNz/IziDwhrL3+47i0=
 0015_job_run.sql h1:mn0BL4t/HN85/7Y80U6MaCQq9zSBNbmFc1IyOvpaCtg=
 0016_row_market.sql h1:plr5sKt0wghu/y5mRbNh4Key59rx3vTuORsmLlRvyqQ=
+0017_fx_quote.sql h1:2UP+TTw5B45hyrumnXqpubsKCBzVHcEAT+0pl926c7g=
