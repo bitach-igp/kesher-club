@@ -4,7 +4,8 @@
 // fx_markup_bps=75 on the journal, and fx_position and fee_income post, balanced per currency.
 // TST-FX-003/004 (T-0513): quotes are priced from the club's published rate and carry its version, the
 // journal too; a port rate past its 15 minutes refuses the quote with PROVIDER_UNAVAILABLE until the
-// next one is published; a manual rate holds.
+// next one is published; a manual rate holds. T-0522: a quote is a row, so one API instance converts
+// what another issued, and a quote is spent once.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { fixedClock, FxError, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type FxPort } from '@kesher/ports';
@@ -256,5 +257,44 @@ describe('T-0520: a failed vendor leg closes the conversion (SEQ-08)', () => {
     expect(await app.services.transfers.get(id)).toMatchObject({ state: 'failed', failureCode: 'QUOTE_EXPIRED' });
     expect((await svc.voidStale(new Date(t0.getTime() + STALE_CONVERSION_MS + 60_000))).map((t) => t.id)).not.toContain(id);
     expect(await journals('fx-t0520-stale')).toBe(0);
+  });
+});
+
+describe('T-0522: quotes are rows, so any API instance converts them (TST-FX-001, ADR-014 decision 8)', () => {
+  /** Another API process on the same database: nothing shared but Postgres. */
+  const instance = () => {
+    const s = app.services;
+    return new FxService({ db, port: host.simulators.fx, rates: s.rates, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, plans: s.plans, flags: s.flags });
+  };
+  const usd10 = { from: { minor: '1000', currency: 'USD' }, to: 'ILS' };
+  // Three days on, under the manual 3.70 rate an earlier test left active.
+  const t0 = new Date(NOW.getTime() + 3 * 86_400_000);
+  const at = (ms: number) => new Date(t0.getTime() + ms);
+
+  it('a quote issued by one instance converts on another; the same key is the same quote and the same conversion on either', async () => {
+    const [a, b] = [instance(), instance()];
+    const q = await a.quote(member, usd10, 'fx-t0522-q', t0);
+    expect(await b.quote(member, usd10, 'fx-t0522-q', at(1_000))).toEqual(q);
+    const c = await b.convert(member, { quoteId: q.quoteId }, 'fx-t0522-c', at(5_000));
+    expect(c).toEqual({ conversionId: expect.any(String), quoteId: q.quoteId, from: q.from, total: q.total, status: 'settled' });
+    expect(await a.convert(member, { quoteId: q.quoteId }, 'fx-t0522-c', at(60_000))).toEqual(c);
+  });
+
+  it('an expired quote is refused QUOTE_EXPIRED on the other instance and creates nothing', async () => {
+    const q = await instance().quote(member, usd10, 'fx-t0522-old-q', t0);
+    await expect(instance().convert(member, { quoteId: q.quoteId }, 'fx-t0522-old', at(30_001))).rejects.toMatchObject({ code: 'QUOTE_EXPIRED' });
+    expect(await app.services.transfers.byKey('fx-t0522-old')).toBeUndefined();
+  });
+
+  it('a quote is spent once: a conversion under another key, on either instance, is refused and moves nothing', async () => {
+    const [a, b] = [instance(), instance()];
+    const q = await a.quote(member, usd10, 'fx-t0522-once-q', t0);
+    await a.convert(member, { quoteId: q.quoteId }, 'fx-t0522-once', at(1_000));
+    const usd = await purse('USD');
+    await expect(b.convert(member, { quoteId: q.quoteId }, 'fx-t0522-twice', at(2_000))).rejects.toMatchObject({ code: 'QUOTE_EXPIRED' });
+    await expect(a.convert(member, { quoteId: q.quoteId }, 'fx-t0522-thrice', at(2_000))).rejects.toMatchObject({ code: 'QUOTE_EXPIRED' });
+    expect(await app.services.transfers.byKey('fx-t0522-twice')).toBeUndefined();
+    expect(await purse('USD')).toBe(usd);
+    expect((await db.query(`select spent_key from ops.fx_quote where id = $1`, [q.quoteId])).rows).toEqual([{ spent_key: 'fx-t0522-once' }]);
   });
 });
