@@ -967,7 +967,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Approve an agent's pending intent with a passkey step-up
-         * @description REQ-AGT-006. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent.
+         * @description REQ-AGT-006. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent: the money runs under the key `intent:{id}`, the same path as POST /transfers or POST /loads, so a refusal leaves the intent pending and a second approval replays the first. A load intent names no funding method, so its approval carries one (T-1009); a second approval reuses the first approval's choice.
          */
         readonly post: operations["approveIntent"];
         readonly delete?: never;
@@ -1591,6 +1591,10 @@ export interface components {
             readonly status: "pending" | "awaiting_second_approval" | "approved" | "rejected" | "expired";
             readonly subject: string;
         };
+        readonly ApprovedIntent: components["schemas"]["PendingIntent"] & {
+            /** @description The load the approval started; load intents only */
+            readonly load?: components["schemas"]["Load"];
+        };
         readonly AuditEntry: {
             readonly action: string;
             readonly actorId: string;
@@ -1853,6 +1857,17 @@ export interface components {
                 /** Format: uuid */
                 readonly partyId: string;
             }[];
+        };
+        /** @description How an approved load intent is paid; required for load intents, ignored for the others. */
+        readonly IntentApprovalRequest: {
+            /** @enum {string} */
+            readonly method?: "card" | "apple_pay" | "google_pay" | "ach";
+            readonly paymentMethodId?: string;
+            /**
+             * @description The purse credited; the amount's currency when absent. A different currency converts at the club rate
+             * @enum {string}
+             */
+            readonly purseCurrency?: "USD" | "ILS";
         };
         readonly KycSession: {
             /** Format: date-time */
@@ -3619,15 +3634,19 @@ export interface operations {
             };
             readonly cookie?: never;
         };
-        readonly requestBody?: never;
+        readonly requestBody?: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["IntentApprovalRequest"];
+            };
+        };
         readonly responses: {
-            /** @description Intent */
+            /** @description Intent, with the load it started when it is a load intent */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
                 content: {
-                    readonly "application/json": components["schemas"]["PendingIntent"];
+                    readonly "application/json": components["schemas"]["ApprovedIntent"];
                 };
             };
             readonly default: components["responses"]["Problem"];
