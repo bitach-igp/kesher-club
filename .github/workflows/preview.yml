@@ -1,5 +1,5 @@
-# Preview environment per PR (T-0010, Tab 3 §9). On open/synchronize: build the api and worker
-# images, apply infra/preview with -var pr_number, post the URL on the PR, then run the
+# Preview environment per PR (T-0010, Tab 3 §9). On open/synchronize: build the api, worker and
+# admin images, apply infra/preview with -var pr_number, post the URL on the PR, then run the
 # Schemathesis contract job against it, then the OWASP ZAP baseline scan (T-0014), which fails on any
 # High alert. On close: destroy. Credentials come from GitHub OIDC
 # through aws-actions/configure-aws-credentials; there are no static keys anywhere.
@@ -74,6 +74,18 @@ jobs:
           tags: ${{ steps.ecr.outputs.registry }}/kesher/worker:${{ env.IMAGE_TAG }}
           cache-from: type=gha,scope=worker
           cache-to: type=gha,scope=worker,mode=max
+          provenance: false
+
+      # The console's image (T-0917). The preview stack does not run it; staging and prod deploy this tag.
+      - name: Build and push admin image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/admin/Dockerfile
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/kesher/admin:${{ env.IMAGE_TAG }}
+          cache-from: type=gha,scope=admin
+          cache-to: type=gha,scope=admin,mode=max
           provenance: false
 
       - uses: hashicorp/setup-terraform@v3

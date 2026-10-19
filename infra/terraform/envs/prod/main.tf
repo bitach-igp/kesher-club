@@ -430,7 +430,7 @@ module "admin" {
     alb_security_group_id = module.admin_alb.security_group_id
     host_headers          = [local.hosts.admin]
     priority              = 10
-    health_check_path     = "/api/healthz"
+    health_check_path     = "/healthz"
   }
 }
 
