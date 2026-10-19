@@ -13,11 +13,14 @@
     "@kesher/ports": "workspace:*",
     "@kesher/simulators": "workspace:*",
     "jose": "6.2.12",
+    "pg": "8.16.3",
     "zod": "^4.6.7"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.10",
-    "@kesher/adapters": "workspace:*"
+    "@electric-sql/pglite-socket": "0.2.13",
+    "@kesher/adapters": "workspace:*",
+    "@types/pg": "8.15.5"
   },
   "exports": {
     ".": "./src/index.ts",
