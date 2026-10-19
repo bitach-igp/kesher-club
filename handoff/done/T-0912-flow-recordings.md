@@ -1,5 +1,5 @@
 Task: T-0912 · Branch: claude/practical-babbage-80xevv · Needs: other
-Why: The bank-review package (docs/bank-review/money-flows.md) names one screen recording per money flow, REC-01 to REC-18, and the cloud session has no screen to record. Nothing in the repo can yet be driven as a running product: the API and worker entry points export nothing (apps/api/src/index.ts:1-2, apps/worker/src/index.ts:1-2), the documented simulator start (`pnpm --filter @kesher/simulators start`) stops on Node 22 with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX (a parameter property in packages/domain/src/errors.ts:26 under strip-only mode), the mobile app has no Expo project config or dev build (apps/mobile/README.md:30-35), and the admin console needs Identity Center SSO secrets. So each recording is the terminal running the flow's own tests against the in-process simulators and an in-memory Postgres (PGlite): no real payment, no vendor sandbox, no network call, no password and no production system. Each step writes a text log of the run and, only if ffmpeg is already installed, a video of the terminal window alone (window title kesher-rec), so nothing else on the screen is captured. Every file goes under handoff/done/recordings/.
+Why: The bank-review package (docs/bank-review/money-flows.md) names one screen recording per money flow, REC-01 to REC-18, and the cloud session has no screen to record. Nothing in the repo can yet be driven as a running product: the API and worker entry points export nothing (apps/api/src/index.ts:1-2, apps/worker/src/index.ts:1-2), the documented simulator start (`pnpm --filter @kesher/simulators start`) stops on Node 22 with ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX (a parameter property in packages/domain/src/errors.ts:26 under strip-only mode), the mobile app has no Expo project config or dev build (apps/mobile/README.md:30-35), and the admin console needs Identity Center SSO secrets. So each recording is the terminal running the flow's own tests against the in-process simulators and an in-memory Postgres (PGlite): no real payment, no vendor sandbox, no network call, no password and no production system. Each step writes a text log of the run and, only if ffmpeg is already installed, a video of the terminal window alone (window title kesher-rec), so nothing else on the screen is captured. Every file goes under handoff/done/recordings/. Re-filed after T-0015: the first run was blocked because file paths built from `new URL(import.meta.url).pathname` broke on Windows (`C:\C:\...`); they now use `fileURLToPath`.
 Steps (from repo root, PowerShell on Windows unless stated):
 1. git rev-parse --short HEAD
 2. pnpm install
@@ -44,7 +44,35 @@ Steps (from repo root, PowerShell on Windows unless stated):
 Expected: step 1 prints the commit the recordings were made at. Step 2 finishes without errors. Step 4 prints the path of ffmpeg, or nothing if it is not installed (then no .mp4 files are made and the .log files are the record; do not install anything). Each of steps 5 to 22 writes REC-NN-<name>.log, and REC-NN-<name>.mp4 when ffmpeg is present, and every vitest run in it ends with "Test Files ... passed" and no "failed". Test counts per run, in command order: step 5: 16, 5. Step 6: 16, 3. Step 7: 16. Step 8: 4, 3. Step 9: 18, 3, 16. Step 10: 11, 1. Step 11: 10, 3, 16. Step 12: 5, 1, 16. Step 13: 5. Step 14: 6, 4. Step 15: 6, 3. Step 16: 18. Step 17: 8, 2. Step 18: 4, 6. Step 19: 5. Step 20: 7. Step 21: 6. Step 22: 12, 9. Step 23 lists 18 .log files (and 18 .mp4 files with ffmpeg).
 Report back: commit the files under handoff/done/recordings/ (the 18 .log files and any .mp4 files), and in the Result section give the step 1 commit, the step 4 output, and the "Tests" line of every vitest run in steps 5 to 22 with any failure in full.
 
-## Blocked
+## Result
+Date: 2026-10-19 04:22 Asia/Jerusalem (desktop checker), runner worktree on claude/export-test-utc.
+- Step 1: f364fc2 (main 681faaf + one test fix, below). Step 2: `pnpm install` OK (pnpm 10.28.0 via corepack). Step 3 OK.
+- Step 4: `C:\Users\Zvi\AppData\Local\Microsoft\WinGet\Packages\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\ffmpeg-9.0.2-full_build\bin\ffmpeg.exe` (Zvi had ffmpeg 9.0.2 installed for this, via winget).
+- Videos: not committed. The checker's shell has no interactive desktop: gdigrab either fails (`Failed to capture image (error 5)` on a visible console) or records a static blank frame, so every .mp4 was byte-identical with zero scene changes. Real REC-NN.mp4 files need these steps run from a terminal Zvi opens himself. The 18 .log files are the record (converted from UTF-16 to UTF-8).
+- Every vitest run passed; no failures. "Tests" lines in command order:
+  - REC-01: 17 passed (17); 5 passed (5)
+  - REC-02: 17 passed (17); 3 passed (3)
+  - REC-03: 17 passed (17)
+  - REC-04: 4 passed (4); 3 passed (3)
+  - REC-05: 18 passed (18); 3 passed (3); 16 passed (16)
+  - REC-06: 11 passed (11); 1 passed (1)
+  - REC-07: 10 passed (10); 3 passed (3); 16 passed (16)
+  - REC-08: 5 passed (5); 1 passed (1); 16 passed (16)
+  - REC-09: 5 passed (5)
+  - REC-10: 9 passed (9); 4 passed (4)
+  - REC-11: 6 passed (6); 3 passed (3)
+  - REC-12: 18 passed (18)
+  - REC-13: 8 passed (8); 2 passed (2)
+  - REC-14: 4 passed (4); 6 passed (6)
+  - REC-15: 5 passed (5)
+  - REC-16: 7 passed (7)
+  - REC-17: 8 passed (8)
+  - REC-18: 12 passed (12); 9 passed (9)
+- Counts above the request: loads.test.ts 17 vs 16 (T-0519 added a test), fx/service.test.ts 9 vs 6 (T-0520), wallet/closure.test.ts 8 vs 6 (T-0521). These cards merged after the request was written.
+- Step 23: 18 .log files.
+- Desktop-only failure found and fixed in f364fc2: TST-INS-006 (src/institutions/export.test.ts) failed on the PC with `expected 47700n to be -30000n`. The test's ledger cross-check compared effective_at with bare '2026-11-01'/'2026-12-01', which PGlite reads in the machine time zone (Asia/Jerusalem), so the window caught the 2026-10-31T23:59:59Z journal. The literals are now pinned to UTC; the export code was already correct. The full api (323) and worker (70) suites pass under TZ=Asia/Jerusalem.
+
+## Earlier run (blocked)
 Date: 2026-10-19 02:20 Asia/Jerusalem (desktop checker), runner worktree at e7efdea.
 - Step 1: e7efdea. Step 2: `pnpm install` OK (pnpm 10.28.0 via corepack; pnpm is not on the PC's PATH). Step 3 OK.
 - Step 4: empty, ffmpeg is not installed, so no .mp4 files would be made (nothing installed).
