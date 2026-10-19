@@ -40,11 +40,13 @@ export interface InsurancePort {
 export type InsuranceErrorCode = 'UNKNOWN_PRODUCT' | 'UNKNOWN_QUOTE' | 'UNKNOWN_POLICY' | 'QUOTE_EXPIRED' | 'INVALID_STATE' | 'PROVIDER_UNAVAILABLE';
 
 export class InsuranceError extends Error {
+  readonly code: InsuranceErrorCode;
   constructor(
-    readonly code: InsuranceErrorCode,
+    code: InsuranceErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'InsuranceError';
   }
 }

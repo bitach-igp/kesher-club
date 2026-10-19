@@ -65,11 +65,13 @@ export interface CardIssuingPort {
 export type CardIssuingErrorCode = 'UNKNOWN_CARD' | 'UNKNOWN_CARDHOLDER' | 'INVALID_STATE' | 'BAD_SIGNATURE' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class CardIssuingError extends Error {
+  readonly code: CardIssuingErrorCode;
   constructor(
-    readonly code: CardIssuingErrorCode,
+    code: CardIssuingErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'CardIssuingError';
   }
 }

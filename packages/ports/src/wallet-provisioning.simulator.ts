@@ -11,10 +11,15 @@ export class WalletProvisioningSimulator implements WalletProvisioningPort {
   private readonly ids = new Sequence('tok');
   private readonly evIds = new Sequence('evt');
 
+  readonly clock: Clock;
+  private readonly knownCards: (cardId: string) => boolean;
   constructor(
-    readonly clock: Clock = fixedClock(),
-    private readonly knownCards: (cardId: string) => boolean = () => true,
-  ) {}
+    clock: Clock = fixedClock(),
+    knownCards: (cardId: string) => boolean = () => true,
+  ) {
+    this.clock = clock;
+    this.knownCards = knownCards;
+  }
 
   async pushProvision(input: { cardId: string; wallet: WalletKind; deviceId: string; clientData: Record<string, string> }, key: string): Promise<ProvisioningPayload> {
     if (input.deviceId === 'dev_outage') throw new WalletProvisioningError('PROVIDER_UNAVAILABLE', 'Simulated processor outage');

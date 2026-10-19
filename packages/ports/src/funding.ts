@@ -43,11 +43,13 @@ export interface FundingPort {
 export type FundingErrorCode = 'UNSUPPORTED_METHOD' | 'UNKNOWN_LOAD' | 'UNKNOWN_REFUND' | 'DECLINED' | 'BAD_SIGNATURE' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class FundingError extends Error {
+  readonly code: FundingErrorCode;
   constructor(
-    readonly code: FundingErrorCode,
+    code: FundingErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'FundingError';
   }
 }

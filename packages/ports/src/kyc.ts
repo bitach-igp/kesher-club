@@ -32,11 +32,13 @@ export interface KycPort {
 export type KycErrorCode = 'UNKNOWN_SESSION' | 'BAD_SIGNATURE' | 'PROVIDER_UNAVAILABLE';
 
 export class KycError extends Error {
+  readonly code: KycErrorCode;
   constructor(
-    readonly code: KycErrorCode,
+    code: KycErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'KycError';
   }
 }

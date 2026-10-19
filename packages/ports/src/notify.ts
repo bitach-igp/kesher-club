@@ -33,11 +33,13 @@ export interface NotifyPort {
 export type NotifyErrorCode = 'UNKNOWN_MESSAGE' | 'UNSUPPORTED_CHANNEL' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class NotifyError extends Error {
+  readonly code: NotifyErrorCode;
   constructor(
-    readonly code: NotifyErrorCode,
+    code: NotifyErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'NotifyError';
   }
 }
