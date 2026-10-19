@@ -88,6 +88,10 @@
 | [T-0521](T-0521.md) | WAL | Closure refunds a converted load pro rata at the load's rate | REQ-WAL-005 | 9 |
 | [T-0522](T-0522.md) | FX | Durable FX quotes before a second API instance | REQ-FX-001 | scale-out |
 | [T-0523](T-0523.md) | WAL | Closure keeps the conversion markup | REQ-WAL-005 | 9 |
+| [T-0524](T-0524.md) | WAL | P07 Add money, one-time: card, Apple Pay, Google Pay or ACH into either purse | REQ-WAL-002, REQ-WAL-003, REQ-WAL-006 | 11 |
+| [T-0525](T-0525.md) | WAL | P07 Auto-reload: top up to a target below a threshold | REQ-WAL-004 | 11 |
+| [T-0526](T-0526.md) | WAL | M34 Close account: the balance is refunded before close | REQ-WAL-005 | 11 |
+| [T-0527](T-0527.md) | PO | Payouts reach HTTP: list, and a finance approver decides | REQ-PO-001, REQ-PO-002, REQ-INS-004 | 11 |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
@@ -95,6 +99,11 @@
 | [T-0605](T-0605.md) | INS | Two-person approval service | REQ-INS-004, REQ-ADM-002 | 8 |
 | [T-0606](T-0606.md) | INS | Collections receipts + monthly reconciliation export | REQ-INS-006 | 8 |
 | [T-0607](T-0607.md) | INS | Allowance runs: endpoint, a transfer per payment, the money flag | REQ-INS-003 | 9 |
+| [T-0608](T-0608.md) | INS | The institution console starts: finance staff sign in | REQ-INS-004 | 11 |
+| [T-0609](T-0609.md) | INS | Allowance schedules and run history reach HTTP | REQ-INS-003, REQ-INS-004 | 11 |
+| [T-0610](T-0610.md) | INS | I07 Allowances: preview, run, second approver | REQ-INS-003, REQ-INS-004 | 11 |
+| [T-0611](T-0611.md) | INS | I08 Collections: who owes, receipts, monthly export | REQ-INS-006 | 11 |
+| [T-0612](T-0612.md) | INS | I09 Payouts: request, cool-off, second approver | REQ-PO-001, REQ-PO-002, REQ-INS-004 | 11 |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
@@ -137,4 +146,6 @@
 | [T-1008](T-1008.md) | AGT | An approved agent send runs the member's own send path | REQ-AGT-006 | 10 |
 | [T-1009](T-1009.md) | AGT | Approving a load intent runs the member's load | REQ-AGT-006 | 10 |
 | [T-1010](T-1010.md) | AGT | Intent expiry sweep in the worker, never past a started send | REQ-AGT-006 | 10 |
+| [T-1011](T-1011.md) | AGT | A member can read the proposals waiting for them | REQ-AGT-006 | 11 |
+| [T-1012](T-1012.md) | AGT | Approve or decline an assistant's proposal in the app | REQ-AGT-006 | 11 |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
