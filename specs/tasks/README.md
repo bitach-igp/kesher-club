@@ -28,6 +28,8 @@
 | [T-0026](T-0026.md) | SETUP | One API, worker and JIT service per market | — | 9 |
 | [T-0027](T-0027.md) | SETUP | Rows record the market whose API created them | — | 9 |
 | [T-0028](T-0028.md) | SETUP | Each market's worker sweeps only its own market's rows | — | 9 |
+| [T-0029](T-0029.md) | SETUP | CI runs on pull requests only | — | 9 |
+| [T-0030](T-0030.md) | SETUP | Images reach ECR: a release workflow builds api, worker and admin and pushes immutable tags | — | 10 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
