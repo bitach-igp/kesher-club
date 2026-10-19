@@ -3,9 +3,11 @@
 import { z } from 'zod';
 
 export class ConfigError extends Error {
+  readonly missing: readonly string[];
+  readonly invalid: readonly string[];
   constructor(
-    readonly missing: readonly string[],
-    readonly invalid: readonly string[],
+    missing: readonly string[],
+    invalid: readonly string[],
   ) {
     super(
       [
@@ -15,6 +17,8 @@ export class ConfigError extends Error {
         .filter(Boolean)
         .join('. '),
     );
+    this.missing = missing;
+    this.invalid = invalid;
     this.name = 'ConfigError';
   }
 }

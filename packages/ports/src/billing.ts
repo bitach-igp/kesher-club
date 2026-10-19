@@ -51,11 +51,13 @@ export type BillingEvent =
 export type BillingErrorCode = 'UNKNOWN_CUSTOMER' | 'UNKNOWN_SUBSCRIPTION' | 'UNKNOWN_PLAN' | 'CARD_DECLINED' | 'BAD_SIGNATURE' | 'INVALID_STATE' | 'PROVIDER_UNAVAILABLE';
 
 export class BillingError extends Error {
+  readonly code: BillingErrorCode;
   constructor(
-    readonly code: BillingErrorCode,
+    code: BillingErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'BillingError';
   }
 }

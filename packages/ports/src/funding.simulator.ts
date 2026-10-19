@@ -34,7 +34,10 @@ export class FundingSimulator implements FundingPort {
   /** The payment method behind each load, for the refund fixtures. */
   private readonly sources = new Map<string, string>();
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string }, idempotencyKey: string): Promise<Load> {
     if (input.paymentMethodId === 'pm_outage') throw new FundingError('PROVIDER_UNAVAILABLE', 'Simulated funding outage');

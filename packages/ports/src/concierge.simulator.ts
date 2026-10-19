@@ -11,7 +11,10 @@ export class ConciergeSimulator implements ConciergePort {
   private readonly ids = new Sequence('case');
   private readonly msgIds = new Sequence('msg');
 
-  constructor(readonly clock: Clock = fixedClock()) {}
+  readonly clock: Clock;
+  constructor(clock: Clock = fixedClock()) {
+    this.clock = clock;
+  }
 
   async openCase(input: { kind: CaseKind; memberId: string; summary: string; locale: 'en' | 'he'; phone?: string }, key: string): Promise<ConciergeCase> {
     if (input.summary.startsWith('OUTAGE')) throw new ConciergeError('PROVIDER_UNAVAILABLE', 'Simulated partner outage');

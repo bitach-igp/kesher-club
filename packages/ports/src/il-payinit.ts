@@ -23,11 +23,13 @@ export interface IlPayInitPort {
 export type IlPayInitErrorCode = 'UNKNOWN_PAYMENT' | 'BAD_SIGNATURE' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class IlPayInitError extends Error {
+  readonly code: IlPayInitErrorCode;
   constructor(
-    readonly code: IlPayInitErrorCode,
+    code: IlPayInitErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'IlPayInitError';
   }
 }

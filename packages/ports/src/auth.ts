@@ -79,11 +79,13 @@ export interface AuthPort {
 export type AuthErrorCode = 'OTP_EXPIRED' | 'OTP_ATTEMPTS_EXHAUSTED' | 'OTP_UNKNOWN' | 'CHALLENGE_MISMATCH' | 'BAD_SIGNATURE' | 'UNSUPPORTED_ALGORITHM' | 'PROVIDER_UNAVAILABLE';
 
 export class AuthError extends Error {
+  readonly code: AuthErrorCode;
   constructor(
-    readonly code: AuthErrorCode,
+    code: AuthErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'AuthError';
   }
 }

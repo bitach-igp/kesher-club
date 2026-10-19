@@ -40,11 +40,13 @@ export interface OrgIdPPort {
 export type OrgIdPErrorCode = 'UNKNOWN_ORG' | 'INVALID_CODE' | 'STATE_MISMATCH' | 'SCIM_UNAUTHORIZED' | 'SCIM_MALFORMED' | 'PROVIDER_UNAVAILABLE';
 
 export class OrgIdPError extends Error {
+  readonly code: OrgIdPErrorCode;
   constructor(
-    readonly code: OrgIdPErrorCode,
+    code: OrgIdPErrorCode,
     message: string,
   ) {
     super(message);
+    this.code = code;
     this.name = 'OrgIdPError';
   }
 }
