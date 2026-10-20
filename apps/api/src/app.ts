@@ -29,6 +29,7 @@ import { KycService } from './kyc/service.ts';
 import { CustomerReadModel } from './admin/customers.ts';
 import { ComplaintService } from './admin/complaints.ts';
 import { AlertService } from './admin/alerts.ts';
+import { InstitutionAdmin, institutionAdminHandlers } from './admin/institutions.ts';
 import { StaffTokenVerifier, staffBearerMiddleware } from './admin/staff-token.ts';
 import type { JWK } from 'jose';
 import { OtpService } from './auth/otp.ts';
@@ -201,6 +202,7 @@ export function createApp(o: AppOptions): App {
     ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
     ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.clock.now), flags: s.flags, staffInstitution }),
     ...fxAdminHandlers(s.rates),
+    ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
     ...preferenceHandlers(s.preferences),
     exportCollections: exportHandler(o.db, staffInstitution),
     // The member's own view of what their assistants proposed (T-1011): member tokens only; never an MCP tool.

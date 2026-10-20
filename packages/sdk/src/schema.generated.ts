@@ -416,6 +416,94 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/institutions": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Institutions, with how many active staff each has
+         * @description REQ-ADM-004. Staff token only.
+         */
+        readonly get: operations["listAdminInstitutions"];
+        readonly put?: never;
+        /**
+         * Onboard an institution
+         * @description REQ-ADM-004. Admin staff only; audited. Idempotent by key.
+         */
+        readonly post: operations["createAdminInstitution"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/institutions/{id}/staff": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * An institution's staff, and the role grants waiting for a second admin
+         * @description REQ-ADM-004. Staff token only.
+         */
+        readonly get: operations["listAdminInstitutionStaff"];
+        readonly put?: never;
+        /**
+         * Make a signed-up member one of the institution's staff
+         * @description REQ-ADM-004. Admin staff only; audited. The staff role applies at once. The finance and admin roles open a staff_grant approval with the proposer as the first approver, and apply when a different admin approves it through approveAdminStaffGrant. A role reaches the member's token at their next sign-in. A member can be staff of one institution at a time.
+         */
+        readonly post: operations["assignAdminInstitutionStaff"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/institutions/{id}/staff/{partyId}/remove": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Remove a member from an institution's staff
+         * @description REQ-ADM-004. Admin staff only; audited. Their institution actions stop at once; the role leaves their token at the next sign-in.
+         */
+        readonly post: operations["removeAdminInstitutionStaff"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/staff-grants/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second approval of an institution finance or admin role
+         * @description REQ-ADM-004. Must come from a different admin than the proposer; the role applies then and is audited. Staff token only.
+         */
+        readonly post: operations["approveAdminStaffGrant"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/agent-grants": {
         readonly parameters: {
             readonly query?: never;
@@ -1607,6 +1695,16 @@ export interface components {
             readonly pendingFlip?: components["schemas"]["ApprovalRequest"];
             readonly value: boolean;
         };
+        readonly AdminInstitution: {
+            readonly activeStaff: number;
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** @enum {string} */
+            readonly market: "US" | "IL";
+            readonly name: string;
+        };
         readonly AgentGrant: {
             /** Format: uri */
             readonly clientId: string;
@@ -1642,7 +1740,7 @@ export interface components {
             /** Format: uuid */
             readonly id: string;
             /** @enum {string} */
-            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction" | "fx_rate";
+            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction" | "fx_rate" | "staff_grant";
             readonly payload: {
                 readonly [key: string]: unknown;
             };
@@ -1919,6 +2017,19 @@ export interface components {
                 /** Format: uuid */
                 readonly partyId: string;
             }[];
+        };
+        readonly InstitutionStaffMember: {
+            readonly active: boolean;
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** Format: uuid */
+            readonly institutionId: string;
+            /** Format: uuid */
+            readonly partyId: string;
+            /** @description The last four digits of their phone */
+            readonly phoneMasked?: string;
+            /** @enum {string} */
+            readonly role: "staff" | "finance" | "admin";
         };
         /** @description How an approved load intent is paid; required for load intents, ignored for the others. */
         readonly IntentApprovalRequest: {
@@ -2287,6 +2398,10 @@ export interface components {
             /** @description The other members; the requester may be listed and is skipped */
             readonly participants: readonly string[];
             readonly total: components["schemas"]["Money"];
+        };
+        readonly StaffAssignment: {
+            readonly grant?: components["schemas"]["ApprovalRequest"];
+            readonly staff?: components["schemas"]["InstitutionStaffMember"];
         };
         readonly StepUpRequest: {
             /** @description The authenticator's assertion; omit to receive options */
@@ -2992,6 +3107,177 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["FxRate"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminInstitutions: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Institutions */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["AdminInstitution"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createAdminInstitution: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @enum {string} */
+                    readonly market: "US" | "IL";
+                    readonly name: string;
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The institution */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AdminInstitution"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminInstitutionStaff: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Staff and pending grants */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["InstitutionStaffMember"][];
+                        readonly pendingGrants: readonly components["schemas"]["ApprovalRequest"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly assignAdminInstitutionStaff: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** Format: uuid */
+                    readonly partyId: string;
+                    readonly reason: string;
+                    /** @enum {string} */
+                    readonly role: "staff" | "finance" | "admin";
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The staff member when the role applied, or the grant waiting for a second admin */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["StaffAssignment"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly removeAdminInstitutionStaff: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+                readonly partyId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The staff member, now inactive */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionStaffMember"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveAdminStaffGrant: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The grant after the decision, with the staff member once it applied */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["StaffAssignment"];
                 };
             };
             readonly default: components["responses"]["Problem"];

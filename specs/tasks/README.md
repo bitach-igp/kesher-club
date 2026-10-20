@@ -139,6 +139,7 @@
 | [T-0921](T-0921.md) | CMP | Recorded walkthroughs of REC-06 to REC-09 | — | 10 |
 | [T-0922](T-0922.md) | CMP | Recorded walkthroughs of REC-10 to REC-14 | — | 10 |
 | [T-0923](T-0923.md) | CMP | Recorded walkthroughs of REC-15 to REC-18; the package links all eighteen | — | 10 |
+| [T-0924](T-0924.md) | ADM | Admins onboard institutions and staff; finance and admin roles take a second admin | REQ-ADM-004 | 11 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |

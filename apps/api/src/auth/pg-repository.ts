@@ -66,6 +66,10 @@ export class PostgresIdentityRepository implements IdentityRepository {
     await this.db.query(`update identity.user_account set status = $2 where party_id = $1`, [partyId, status]);
   }
 
+  async setUserRoles(partyId: string, roles: readonly string[]): Promise<void> {
+    await this.db.query(`update identity.user_account set roles = $2 where party_id = $1`, [partyId, [...roles]]);
+  }
+
   // ---- OTP ----
 
   async recordOtpStart(record: OtpRecord): Promise<void> {

@@ -22,6 +22,11 @@ export function identityRepositoryContract(name: string, make: () => Promise<Ide
       expect(await repo.findUserByPhone(phone())).toBeUndefined();
       await repo.setUserStatus(user.partyId, 'restricted');
       expect((await repo.findUser(user.partyId))?.status).toBe('restricted');
+      // T-0924: an admin grant or removal of an institution role replaces the account's roles.
+      await repo.setUserRoles(user.partyId, ['member', 'org_finance']);
+      expect((await repo.findUser(user.partyId))?.roles).toEqual(['member', 'org_finance']);
+      await repo.setUserRoles(user.partyId, ['member']);
+      expect((await repo.findUser(user.partyId))?.roles).toEqual(['member']);
     });
 
     it('counts OTP starts per phone from a point in time', async () => {
