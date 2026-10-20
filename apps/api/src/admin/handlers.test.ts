@@ -36,7 +36,7 @@ describe('/admin/* access', () => {
     const r = await call('GET', '/v1/admin/bindings', undefined, await staffToken('zvi'));
     expect(r.status).toBe(200);
     const items = (r.body as { items: { capability: string; provider?: string; mode?: string; market: string }[] }).items;
-    expect(items).toHaveLength(18);
+    expect(items).toHaveLength(19);
     expect(items.find((b) => b.capability === 'billing')).toMatchObject({ provider: 'simulator', mode: 'sim', market: 'IL' });
   });
 

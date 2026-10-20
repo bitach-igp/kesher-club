@@ -6,6 +6,7 @@ import type { Approver } from '../approvals/service.ts';
 import { approvalBody } from '../admin/handlers.ts';
 import { requireStaff, staffActor } from '../admin/staff-token.ts';
 import { created, ok, requireIdempotencyKey, route, type Handler, type HttpRequest } from '../http.ts';
+import type { KybChecks } from './kyb-checks.ts';
 import type { CheckKind, CheckResult, InstitutionKyb } from './kyb.ts';
 
 const KINDS: readonly CheckKind[] = ['registry', 'identifier', 'exempt_status', 'sanctions', 'pep'];
@@ -13,7 +14,7 @@ const RESULTS: readonly CheckResult[] = ['clear', 'hit', 'missing', 'excepted'];
 
 const compliance = (req: HttpRequest): Approver => ({ ...staffActor(requireStaff(req, 'compliance')), role: 'compliance' });
 
-export function kybHandlers(kyb: InstitutionKyb): Record<'getAdminInstitutionKyb' | 'addAdminKybPerson' | 'recordAdminKybCheck' | 'disposeAdminKybCheck' | 'decideAdminKyb' | 'approveAdminKybDecision', Handler> {
+export function kybHandlers(kyb: InstitutionKyb, checks: KybChecks): Record<'getAdminInstitutionKyb' | 'addAdminKybPerson' | 'recordAdminKybCheck' | 'runAdminKybChecks' | 'disposeAdminKybCheck' | 'decideAdminKyb' | 'approveAdminKybDecision', Handler> {
   return {
     getAdminInstitutionKyb: route(async (req) => {
       requireStaff(req);
@@ -41,6 +42,13 @@ export function kybHandlers(kyb: InstitutionKyb): Record<'getAdminInstitutionKyb
         req.now,
       );
       return created(check);
+    }),
+
+    runAdminKybChecks: route(async (req) => {
+      const by = compliance(req);
+      const b = (req.body ?? {}) as { identifier?: unknown; legalName?: unknown };
+      const r = await checks.run(req.params['id'] ?? '', { identifier: b.identifier, legalName: b.legalName }, by.partyId, req.now);
+      return ok({ ...r, ...(r.pendingApproval ? { pendingApproval: approvalBody(r.pendingApproval) } : {}) });
     }),
 
     disposeAdminKybCheck: route(async (req) => {

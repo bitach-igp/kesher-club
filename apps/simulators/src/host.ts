@@ -13,6 +13,7 @@ import {
   FxSimulator,
   IlPayInitSimulator,
   InsuranceSimulator,
+  KybSimulator,
   KycSimulator,
   NotifySimulator,
   OrgIdPSimulator,
@@ -47,6 +48,7 @@ export interface Simulators {
   'federated-idp': FederatedIdPSimulator;
   'org-idp': OrgIdPSimulator;
   kyc: KycSimulator;
+  kyb: KybSimulator;
   billing: BillingSimulator;
   funding: FundingSimulator;
   'card-issuing': CardIssuingSimulator;
@@ -77,6 +79,7 @@ export class SimulatorHost {
       'federated-idp': new FederatedIdPSimulator(),
       'org-idp': new OrgIdPSimulator(c),
       kyc: new KycSimulator(c),
+      kyb: new KybSimulator(c),
       billing: new BillingSimulator(c),
       funding: new FundingSimulator(c),
       'card-issuing': new CardIssuingSimulator(c),
@@ -169,6 +172,10 @@ const FIXTURES: Partial<Record<keyof Simulators, Fixture[]>> = {
   ],
   kyc: [
     { trigger: 'partyId ending -reject / -review / -outage', effect: 'rejected / review / PROVIDER_UNAVAILABLE' },
+  ],
+  kyb: [
+    { trigger: 'identifier ending 000 / 111 / 222 / 444 / 999', effect: 'struck off / another registered name / no exempt record / revoked / PROVIDER_UNAVAILABLE' },
+    { trigger: 'name containing Sanctioned / Exposed', effect: 'OFAC SDN match / PEP match' },
   ],
   billing: [
     { trigger: 'email @declined.example', effect: 'CARD_DECLINED on subscribe' },

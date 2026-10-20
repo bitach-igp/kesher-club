@@ -18,6 +18,7 @@ export const PORTS: readonly PortDescriptor[] = [
   { capability: 'federated-idp', port: 'FederatedIdPPort', direction: 'out', simulator: true, contract: 'federated-idp.contract.ts', flags: ['auth.social.enabled'], vendors: ['apple', 'google'] },
   { capability: 'org-idp', port: 'OrgIdPPort', direction: 'out', simulator: true, contract: 'org-idp.contract.ts', flags: ['auth.orgSso'], vendors: ['workos', 'clerk'] },
   { capability: 'kyc', port: 'KycPort', direction: 'out', simulator: true, contract: 'kyc.contract.ts', flags: ['kyc.mdl'], vendors: ['issuer-kyc'] },
+  { capability: 'kyb', port: 'KybPort', direction: 'out', simulator: true, contract: 'kyb.contract.ts', flags: ['institutions.kyb.checks'], vendors: ['data-gov-il', 'middesk', 'persona', 'candid'] },
   { capability: 'billing', port: 'BillingPort', direction: 'out', simulator: true, contract: 'billing.contract.ts', flags: ['billing.stripe', 'billing.applePay', 'billing.googlePay'], vendors: ['stripe'] },
   { capability: 'funding', port: 'FundingPort', direction: 'out', simulator: true, contract: 'funding.contract.ts', flags: ['wallet.enabled', 'funding.ach', 'funding.rtp'], vendors: ['stripe', 'plaid'] },
   { capability: 'card-issuing', port: 'CardIssuingPort', direction: 'out+in', simulator: true, contract: 'card-issuing.contract.ts', flags: ['card.virtual', 'card.physical', 'card.agentic', 'card.paymentPasskey'], vendors: ['marqeta', 'galileo', 'i2c'] },

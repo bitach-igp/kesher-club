@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PORTS } from '@kesher/ports';
 import { memoryAdminData } from '../data/memory.ts';
 import { AdminDataError } from '../data/types.ts';
 import { providerRows } from './bindings.ts';
@@ -46,7 +47,9 @@ describe('release gates (T-0902)', () => {
   it('provider rows show the binding, gate progress and a status per port in each market (T-0913)', async () => {
     const data = memoryAdminData();
     const rows = providerRows(await data.listBindings(), await data.listFlags());
-    expect(rows).toHaveLength(36);
+    // One row per port in each market; the count follows the catalogue (19 ports since KybPort, T-0622).
+    expect(rows).toHaveLength(PORTS.length * 2);
+    expect(rows.filter((r) => r.capability === 'kyb').map((r) => r.market).sort()).toEqual(['IL', 'US']);
     const billing = rows.find((r) => r.capability === 'billing' && r.market === 'IL')!;
     expect(billing).toMatchObject({ binding: 'stripe', status: 'live', contractGreenNights: 9 });
     // Flags are club-wide, so both markets' rows show billing.stripe on; the US still binds the simulator, so

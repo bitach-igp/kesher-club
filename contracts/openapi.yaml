@@ -1721,6 +1721,35 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/KybCheck" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions/{id}/kyb/run:
+    post:
+      operationId: runAdminKybChecks
+      tags: [admin]
+      summary: Run the automated KYB checks through the provider and record what it says
+      description: >-
+        REQ-INS-011 (T-0622). Compliance. Registry, identifier match, exempt status, and sanctions and PEP screening
+        of the institution and every person in its record; one check per answer, with the provider's reference as
+        evidence. Behind `institutions.kyb.checks` (FEATURE_OFF until a vendor is bound); a provider outage
+        answers PROVIDER_UNAVAILABLE and records nothing.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, legalName]
+              properties:
+                identifier: { type: string, maxLength: 20, description: The amuta or company number (IL) or the EIN (US) }
+                legalName: { type: string, minLength: 1, maxLength: 200 }
+      responses:
+        "200":
+          description: The record after the checks
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KybRecord" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/kyb/checks/{id}/dispose:
     post:
       operationId: disposeAdminKybCheck
