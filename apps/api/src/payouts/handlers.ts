@@ -10,6 +10,7 @@ import type { IdentityRepository } from '../auth/repository.ts';
 import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import type { Database } from '../db.ts';
 import { created, ok, requireIdempotencyKey, requirePrincipal, requireRole, route, type Handler, type HttpRequest, type Principal } from '../http.ts';
+import type { PayoutAccounts } from '../institutions/payout-account.ts';
 import { staffNames } from '../institutions/staff-names.ts';
 import type { InstitutionPayoutRow, PayoutService } from './service.ts';
 
@@ -18,6 +19,8 @@ export interface InstitutionPayoutDeps {
   identity: Pick<IdentityRepository, 'findUser'>;
   /** The institution a member is active staff of, and their role there. */
   staffOf(partyId: string): Promise<{ institutionId: string; role: 'staff' | 'finance' | 'admin' } | undefined>;
+  /** Institution payouts are withdrawals to the own verified account (T-0623, T-0625). */
+  accounts: Pick<PayoutAccounts, 'active' | 'summary'>;
 }
 
 const PAGE = 20;
@@ -80,12 +83,23 @@ export function payoutHandlers(payouts: PayoutService, stepUp: StepUpService, d:
       return ok({ items: await bodies(d, page.items), ...(page.next ? { nextCursor: encodeCursor(page.next) } : {}), available: toWire(page.available) });
     }),
 
+    getInstitutionPayoutAccount: route(async (req) => {
+      const { institutionId } = await financeOf(d, req, req.params['id']);
+      return ok(await d.accounts.summary(institutionId));
+    }),
+
     createInstitutionPayout: route(async (req) => {
       const { p, institutionId } = await financeOf(d, req, req.params['id']);
       requireStepUp(stepUp, req);
       assertNotRestricted(p, 'payout', req.now);
       const key = requireIdempotencyKey(req);
-      const { newPayee, id } = await payouts.request(institutionId, req.body, key, req.now, { kind: 'institution', requestedBy: p.partyId, requesterRole: 'finance' });
+      // A withdrawal to the institution's own verified account (T-0625): the payee is never the client's to name.
+      const b = (req.body ?? {}) as { payee?: unknown; amount?: unknown; reference?: unknown };
+      if (b.payee !== undefined) throw new DomainError('VALIDATION_FAILED', 'Institution payouts go to the institution\'s own verified account; send no payee', { reason: 'payee_not_accepted' });
+      const own = await d.accounts.active(institutionId);
+      if (!own) throw new DomainError('VALIDATION_FAILED', 'The institution has no verified payout account yet', { reason: 'no_verified_account' });
+      const body = { payee: { iban: own.iban, name: own.holderName }, amount: b.amount, reference: b.reference };
+      const { newPayee, id } = await payouts.request(institutionId, body, key, req.now, { kind: 'institution', requestedBy: p.partyId, requesterRole: 'finance' });
       if (newPayee) assertNotRestricted(p, 'new_payee', req.now);
       return created(await one(institutionId, id, p.partyId));
     }),

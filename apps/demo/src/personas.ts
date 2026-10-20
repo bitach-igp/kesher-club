@@ -52,9 +52,16 @@ export const INSTITUTION = {
   market: 'IL' as Market,
   /** Simulator identity-provider subjects (apps/simulators/src/oidc.ts): Ada proposes, Abe approves. */
   admins: ['staff-admin-1', 'staff-admin-2'] as const,
-  /** Cleo Compliance decides the yeshiva's KYB (T-0621), with Rivka (T2) as its control person and signatory. */
+  /**
+   * Cleo Compliance runs the yeshiva's automated KYB checks and decides it (T-0621, T-0622), with Rivka (T2)
+   * as its control person and signatory; she records its own bank account and Carl approves it (T-0623).
+   */
   compliance: 'staff-compliance-1',
+  secondCompliance: 'staff-compliance-2',
   kybControl: 'rivka',
+  /** The simulator's clean amuta number (a `456` ending), and a fictional IBAN with a valid checksum. */
+  identifier: '580123456',
+  payoutIban: 'IL620108000000099999999',
   roster: {
     csv: ['name,funder_email,programme', 'Student One Example,funder.one@example.test,Shiur Alef', 'Student Two Example,funder.two@example.test,Shiur Alef', 'Student Three Example,funder.three@example.test,Shiur Bet'].join('\n'),
     mapping: { memberName: 'name', funderEmail: 'funder_email', programme: 'programme' },

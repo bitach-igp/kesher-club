@@ -2,7 +2,8 @@
 // a second run against the same database writes no transfer and no journal, prints the same table, and
 // every persona can still sign in with its seeded passkey. T-0034: with the console's staff key it also
 // onboards the yeshiva through /admin/*, grants both finance personas with two admins, and imports the
-// roster; a rerun makes no second institution, grant or import.
+// roster; a rerun makes no second institution, grant or import. T-0625: its KYB checks run against the
+// KybPort simulator, and its own bank account is recorded by one compliance member and approved by another.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, type JWK } from 'jose';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
@@ -91,12 +92,17 @@ describe('demo yeshiva (T-0034)', () => {
     expect(byKey(personas, 'rivka').kyc).toBe('T2');
     expect(await dev.app.services.institutionKyb.current(institution!.id)).toMatchObject({ status: 'approved', risk: 'low' });
     expect((await dev.app.services.institutionKyb.record(institution!.id)).people).toEqual([expect.objectContaining({ partyId: rivka, roles: ['control', 'signatory'] })]);
+    // Its checks came from the KybPort simulator, and its own bank account is active (T-0625), so it can withdraw.
+    expect((await dev.app.services.institutionKyb.record(institution!.id)).checks.find((c) => c.kind === 'identifier')).toMatchObject({ provider: 'simulator', result: 'clear', detail: { registeredName: INSTITUTION.name } });
+    expect(await dev.app.services.payoutAccounts.active(institution!.id)).toEqual({ iban: INSTITUTION.payoutIban, holderName: INSTITUTION.name });
 
     await seed(target);
     expect(await count('org.institution')).toBe(1);
     expect(await count('org.roster_import')).toBe(1);
     expect(await count("ops.approval_request where kind = 'staff_grant'")).toBe(2);
     expect(await count('org.kyb_decision')).toBe(1);
+    expect(await count('org.payout_account')).toBe(1);
+    expect(await count('org.kyb_check')).toBe(7);
     expect(formatTable(await seed(target))).toContain(`Institution: ${INSTITUTION.name} (IL) ${institution!.id}`);
   }, 120_000);
 

@@ -52,7 +52,8 @@ export function institutionApi(baseUrl: string, accessToken: string, stepUpToken
     collections: (id: string, month: string) => c.get('/institutions/{id}/collections', { path: { id }, query: { month } }),
     exportCollections: (id: string, month: string, format: 'csv' | 'xlsx') => c.get('/institutions/{id}/collections/export', { path: { id }, query: { month, format } }),
     payouts: (id: string, cursor?: string) => c.get('/institutions/{id}/payouts', { path: { id }, query: cursor ? { cursor } : {} }),
-    createPayout: (id: string, body: Schemas['PayoutRequest'], idempotencyKey: string) => c.post('/institutions/{id}/payouts', { path: { id }, body, idempotencyKey }),
+    payoutAccount: (id: string) => c.get('/institutions/{id}/payout-account', { path: { id } }),
+    createPayout: (id: string, body: Schemas['InstitutionPayoutRequest'], idempotencyKey: string) => c.post('/institutions/{id}/payouts', { path: { id }, body, idempotencyKey }),
     approvePayout: (id: string, idempotencyKey: string) => c.post('/payouts/{id}/approve', { path: { id }, idempotencyKey }),
     rejectPayout: (id: string, reason: string, idempotencyKey: string) => c.post('/payouts/{id}/reject', { path: { id }, body: { reason }, idempotencyKey }),
   };

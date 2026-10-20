@@ -30,7 +30,7 @@ type Item = { id: string; state: string; amount: { minor: string }; payee: { nam
 
 const call = (who: { access: string; stepUp?: string }, method: string, url: string, body?: unknown, key?: string) =>
   dispatch(app, { method, url, headers: { authorization: `Bearer ${who.access}`, ...(who.stepUp !== undefined ? { 'x-step-up': who.stepUp } : {}), ...(key ? { 'idempotency-key': key } : {}) }, rawBody: body === undefined ? '' : JSON.stringify(body), now: NOW });
-const pay = (who: { access: string; stepUp: string }, minor: string, key: string, inst = INST) => call(who, 'POST', `/v1/institutions/${inst}/payouts`, { payee: { iban: IBAN, name: 'Building Supplies Ltd' }, amount: { minor, currency: 'ILS' }, reference: 'roof repair' }, key);
+const pay = (who: { access: string; stepUp: string }, minor: string, key: string, inst = INST) => call(who, 'POST', `/v1/institutions/${inst}/payouts`, { amount: { minor, currency: 'ILS' }, reference: 'roof repair' }, key);
 const list = async (who: { access: string }, query = '') => (await call(who, 'GET', `/v1/institutions/${INST}/payouts${query}`)).body as { items: Item[]; nextCursor?: string; available: { minor: string } };
 const sim = () => host.simulators.payout as PayoutSimulator;
 const hook = (w: { headers: Record<string, string>; rawBody: string }) => dispatch(app, { method: 'POST', url: '/v1/hooks/payout', headers: w.headers, rawBody: w.rawBody, now: NOW });
@@ -59,7 +59,7 @@ beforeAll(async () => {
   await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Example', 'IL'), ($2, 'Other', 'IL')`, [INST, OTHER]);
   for (const i of [INST, OTHER]) {
     await decideKyb(db, i);
-    await verifiedPayoutAccount(db, i, IBAN);
+    await verifiedPayoutAccount(db, i, IBAN, 'Yeshivat Example');
   }
   staff.one = await person('+972501240001', ['org_finance']);
   staff.two = await person('+972501240002', ['org_finance']);
@@ -82,17 +82,17 @@ describe('institution payouts (T-0527)', () => {
     expect((await call({ access: memberAccess }, 'GET', `/v1/institutions/${INST}/payouts`)).status).toBe(403);
   });
 
-  it('₪2,000 to a new payee pays out of the institution account at once, and the export reads it', async () => {
+  it('₪2,000 withdrawn to the institution\'s own account pays out at once, and the export reads it', async () => {
     const r = await pay(staff.one, '200000', 'inst-po-1');
     expect(r.status).toBe(201);
-    expect(r.body).toMatchObject({ state: 'processing', amount: { minor: '200000' }, payee: { name: 'Building Supplies Ltd', ibanLast4: '9999' }, reference: 'roof repair', requiredApprovals: 1, approvedBy: [{ displayName: 'Finance •••• 0001' }], requestedBy: { displayName: 'Finance •••• 0001' }, requestedByMe: true });
+    expect(r.body).toMatchObject({ state: 'processing', amount: { minor: '200000' }, payee: { name: 'Yeshivat Example', ibanLast4: '9999' }, reference: 'roof repair', requiredApprovals: 1, approvedBy: [{ displayName: 'Finance •••• 0001' }], requestedBy: { displayName: 'Finance •••• 0001' }, requestedByMe: true });
     expect(await balance()).toBe(1_800_000n);
     const po = (await vendorPayoutOf((r.body as Item).id))!;
     expect((await hook(sim().nextWebhook(po))).status).toBe(200);
     expect((await hook(sim().nextWebhook(po))).status).toBe(200);
     expect((await list(staff.two)).items[0]).toMatchObject({ state: 'settled', requestedByMe: false });
     const e = await monthlyExport(db, INST, '2026-11', 'ILS');
-    expect(e.rows.find((x) => x.kind === 'payout')).toMatchObject({ amount: money(-200_000n, 'ILS'), description: 'Payout to Building Supplies Ltd •••• 9999: roof repair' });
+    expect(e.rows.find((x) => x.kind === 'payout')).toMatchObject({ amount: money(-200_000n, 'ILS'), description: 'Payout to Yeshivat Example •••• 9999: roof repair' });
     expect(e.totals.payoutsOut).toEqual(money(-200_000n, 'ILS'));
   });
 
@@ -141,5 +141,19 @@ describe('institution payouts (T-0527)', () => {
     expect(second.nextCursor).toBeUndefined();
     expect([...first.items, ...second.items].map((i) => i.id).sort()).toEqual([...all].sort());
     expect((await call(staff.one, 'GET', `/v1/institutions/${INST}/payouts?cursor=nope`)).status).toBe(422);
+  });
+
+  it('a withdrawal goes to the own verified account (T-0625): a body naming a payee is refused; the account reads masked; with no verified account, nothing goes', async () => {
+    const named = await call(staff.one, 'POST', `/v1/institutions/${INST}/payouts`, { payee: { iban: 'IL070108000000012345678', name: 'Building Supplies Ltd' }, amount: { minor: '1000', currency: 'ILS' }, reference: 'supplier' }, 'po-named');
+    expect(named).toMatchObject({ status: 422, body: { code: 'VALIDATION_FAILED', reason: 'payee_not_accepted' } });
+    const mine = await call(staff.one, 'GET', `/v1/institutions/${INST}/payout-account`);
+    expect(mine.body).toEqual({ account: { ibanMasked: expect.stringMatching(/9999$/), holderName: 'Yeshivat Example' }, changePending: false });
+    expect(JSON.stringify(mine.body)).not.toContain(IBAN);
+    const none = uuidv7();
+    await db.query(`insert into org.institution (id, name, market) values ($1, 'No Account Yet', 'IL')`, [none]);
+    await decideKyb(db, none);
+    await db.query('update org.staff set institution_id = $1 where party_id = $2', [none, staff.other.partyId]);
+    expect((await call(staff.other, 'GET', `/v1/institutions/${none}/payout-account`)).body).toEqual({ changePending: false });
+    expect((await pay(staff.other, '1000', 'po-none-1', none)).body).toMatchObject({ code: 'VALIDATION_FAILED', reason: 'no_verified_account' });
   });
 });

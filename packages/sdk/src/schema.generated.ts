@@ -1340,6 +1340,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/payout-account": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Where the institution's withdrawals go, the institution's own verified account, masked
+         * @description REQ-INS-012 (T-0625). Org finance of this institution. Absent while Kesher compliance has not verified one; `changePending` while a change waits for a second compliance approval (payouts wait with it).
+         */
+        readonly get: operations["getInstitutionPayoutAccount"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/payouts": {
         readonly parameters: {
             readonly query?: never;
@@ -1354,8 +1374,8 @@ export interface paths {
         readonly get: operations["listInstitutionPayouts"];
         readonly put?: never;
         /**
-         * Pay out ILS from the institution's account to a validated payee
-         * @description REQ-PO-001/002, REQ-INS-004 (T-0527). Org finance of this institution. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Never takes the institution's account below zero (INSUFFICIENT_FUNDS). A new payee over ₪2,000 cools off 24 h; over ₪5,000 a second finance member approves (approvePayout). Idempotent.
+         * Withdraw ILS from the institution's account to its own verified bank account
+         * @description REQ-PO-001/002, REQ-INS-004, REQ-INS-012 (T-0527, T-0625). Org finance of this institution. The payee is the institution's own verified account (T-0623), filled by the API: a body naming a payee answers 422 `payee_not_accepted`, and without a verified account 422 `no_verified_account`. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Never takes the institution's account below zero (INSUFFICIENT_FUNDS). A new payee over ₪2,000 cools off 24 h; over ₪5,000 a second finance member approves (approvePayout). Idempotent.
          */
         readonly post: operations["createInstitutionPayout"];
         readonly delete?: never;
@@ -2550,6 +2570,20 @@ export interface components {
             readonly requiredApprovals: number;
             /** @enum {string} */
             readonly state: "cooling_off" | "awaiting_second_approval" | "submitted" | "processing" | "settled" | "failed" | "reversed" | "rejected";
+        };
+        /** @description Where the institution's withdrawals go (T-0625). No `account` until Kesher compliance verifies one. */
+        readonly InstitutionPayoutAccount: {
+            readonly account?: {
+                readonly holderName: string;
+                /** @example IL62 •••• •••• 9999 */
+                readonly ibanMasked: string;
+            };
+            readonly changePending: boolean;
+        };
+        /** @description A withdrawal to the institution's own verified account (T-0625, decided 2026-10-20 until the bank answers): the API fills the payee; a body naming one answers 422 `payee_not_accepted`. */
+        readonly InstitutionPayoutRequest: {
+            readonly amount: components["schemas"]["Money"];
+            readonly reference: string;
         };
         readonly InstitutionStaffMember: {
             readonly active: boolean;
@@ -5197,6 +5231,29 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly getInstitutionPayoutAccount: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The account */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionPayoutAccount"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly listInstitutionPayouts: {
         readonly parameters: {
             readonly query?: {
@@ -5243,7 +5300,7 @@ export interface operations {
         };
         readonly requestBody: {
             readonly content: {
-                readonly "application/json": components["schemas"]["PayoutRequest"];
+                readonly "application/json": components["schemas"]["InstitutionPayoutRequest"];
             };
         };
         readonly responses: {
