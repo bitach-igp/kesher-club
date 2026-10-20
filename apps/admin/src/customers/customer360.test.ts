@@ -18,7 +18,7 @@ describe('Customer 360 (T-0901)', () => {
     expect(maskEmail(undefined)).toBeUndefined();
   });
 
-  it('summarises balances as spendable money, lists only open cases and active grants, and raises flags', async () => {
+  it('summarises balances as the member sees them (available) and with holds added (total), lists only open cases and active grants, and raises flags', async () => {
     const data = memoryAdminData();
     const [noa] = await data.searchCustomers('+97250');
     const c = (await data.getCustomer(noa!.partyId))!;
@@ -27,8 +27,8 @@ describe('Customer 360 (T-0901)', () => {
     c.grants.push({ id: 'g-old', clientName: 'Old Bot', scopes: ['balances:read'], revokedAt: '2026-10-01T00:00:00Z' });
     const v = customer360(c, now);
     expect(v.balances).toEqual([
-      { id: 'acc-usd', currency: 'USD', available: '$125.50', holds: '$0.00', spendable: '$125.50' },
-      { id: 'acc-ils', currency: 'ILS', available: '₪340.00', holds: '₪25.00', spendable: '₪315.00' },
+      { id: 'acc-usd', currency: 'USD', available: '$125.50', holds: '$0.00', total: '$125.50' },
+      { id: 'acc-ils', currency: 'ILS', available: '₪340.00', holds: '₪25.00', total: '₪365.00' },
     ]);
     expect(v.flags).toEqual(['recovery_hold', 'card_frozen', 'open_case']);
     expect(v.openCases.map((k) => k.id)).toEqual(['case-1']);

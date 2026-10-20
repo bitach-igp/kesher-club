@@ -35,7 +35,7 @@ export default async function CustomerPage({ params }: { params: Promise<{ id: s
             <dd>{v.memberSince}</dd>
             <dt>KYC</dt>
             <dd>
-              {v.kyc.status} {v.kyc.provider ? `· ${v.kyc.provider}` : ''} {v.kyc.checkedAt ? `· ${v.kyc.checkedAt.slice(0, 10)}` : ''}
+              {v.kyc.status} {v.kyc.tier ? `· ${v.kyc.tier}` : ''} {v.kyc.provider ? `· ${v.kyc.provider}` : ''} {v.kyc.checkedAt ? `· ${v.kyc.checkedAt.slice(0, 10)}` : ''}
             </dd>
             <dt>Party id</dt>
             <dd>
@@ -51,7 +51,7 @@ export default async function CustomerPage({ params }: { params: Promise<{ id: s
                 <th>Account</th>
                 <th>Available</th>
                 <th>Holds</th>
-                <th>Spendable</th>
+                <th>Total</th>
               </tr>
             </thead>
             <tbody>
@@ -60,7 +60,7 @@ export default async function CustomerPage({ params }: { params: Promise<{ id: s
                   <td>{b.currency}</td>
                   <td>{b.available}</td>
                   <td>{b.holds}</td>
-                  <td>{b.spendable}</td>
+                  <td>{b.total}</td>
                 </tr>
               ))}
             </tbody>

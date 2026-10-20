@@ -24,11 +24,14 @@ export interface CustomerSummary {
 
 export interface Customer360 extends CustomerSummary {
   restrictedUntil?: string;
-  /** No KYC decision is stored before the card programme (E04); until then every customer is 'none'. */
-  kyc: { status: 'none' | 'pending' | 'verified' | 'rejected'; provider?: string; checkedAt?: string };
+  /**
+   * From identity.kyc_session (T-0925): verified at the highest approved tier, else the latest session's
+   * state (review reads as pending); `none` before any session. Never a document or an image: none is stored.
+   */
+  kyc: { status: 'none' | 'pending' | 'verified' | 'rejected'; tier?: 'T1' | 'T2'; provider?: string; checkedAt?: string };
   memberships: { id: string; planCode: string; status: 'incomplete' | 'active' | 'past_due' | 'paused' | 'cancelled'; role: 'member' | 'funder'; counterpartyId: string; institutionName?: string; currentPeriodEnd?: string }[];
   purses: { id: string; currency: Currency; available: { minor: string; currency: Currency }; holds: { minor: string; currency: Currency } }[];
-  /** Empty until the card programme lands (E04). Never more than the last four digits. */
+  /** From cards.card (T-0925), newest first; `tokens` counts active wallet tokens. Never more than the last four digits. */
   cards: { id: string; last4: string; type: 'virtual' | 'physical'; status: 'inactive' | 'active' | 'frozen' | 'closed'; tokens: number }[];
   openCases: { id: string; kind: string; severity: 'low' | 'medium' | 'high' | 'critical'; status: 'open' | 'investigating'; openedAt: string }[];
   consents: { document: string; version: number; hash: string; acceptedAt: string }[];
@@ -81,11 +84,13 @@ export class CustomerReadModel {
   async get(partyId: string): Promise<Customer360 | undefined> {
     const user = await this.d.identity.findUser(partyId);
     if (!user) return undefined;
-    const [summary, restriction, memberships, purses, openCases, consents, grants, audit] = await Promise.all([
+    const [summary, restriction, memberships, purses, kyc, cards, openCases, consents, grants, audit] = await Promise.all([
       this.summary(user),
       this.d.identity.getRestriction(partyId),
       this.memberships(partyId),
       this.purses(partyId),
+      this.kyc(partyId),
+      this.cards(partyId),
       this.openCases(partyId),
       this.consents(partyId),
       this.grants(partyId),
@@ -94,10 +99,10 @@ export class CustomerReadModel {
     return {
       ...summary,
       ...(restriction ? { restrictedUntil: restriction.until } : {}),
-      kyc: { status: 'none' },
+      kyc,
       memberships,
       purses,
-      cards: [],
+      cards,
       openCases,
       consents,
       grants,
@@ -165,6 +170,28 @@ export class CustomerReadModel {
       out.push({ id: wallet.id, currency: wallet.currency, available: toWire({ minor: available, currency: wallet.currency }), holds: toWire({ minor: holds, currency: wallet.currency }) });
     }
     return out;
+  }
+
+  /** The same reading as KycService.status: the highest approved tier wins over a later session's state. */
+  private async kyc(partyId: string): Promise<Customer360['kyc']> {
+    const r = await this.d.db.query<{ tier: 'T1' | 'T2'; status: 'pending' | 'approved' | 'rejected' | 'review'; provider: string; decided_at: string | Date | null; started_at: string | Date }>(
+      `select tier, status, provider, decided_at, started_at from identity.kyc_session where party_id = $1 order by started_at desc, (decided_at is null) desc, session_id desc`,
+      [partyId],
+    );
+    const approved = r.rows.filter((x) => x.status === 'approved').sort((a, b) => (a.tier === b.tier ? 0 : a.tier === 'T2' ? -1 : 1))[0];
+    if (approved) return { status: 'verified', tier: approved.tier, provider: approved.provider, checkedAt: iso(approved.decided_at ?? approved.started_at) };
+    const latest = r.rows[0];
+    if (!latest) return { status: 'none' };
+    return { status: latest.status === 'rejected' ? 'rejected' : 'pending', provider: latest.provider, checkedAt: iso(latest.decided_at ?? latest.started_at) };
+  }
+
+  private async cards(partyId: string): Promise<Customer360['cards']> {
+    const r = await this.d.db.query<{ id: string; last4: string; type: 'virtual' | 'physical'; status: 'inactive' | 'active' | 'frozen' | 'closed'; tokens: number }>(
+      `select c.id, c.last4, c.type, c.status, (select count(*)::int from cards.card_token t where t.card_id = c.id and t.status = 'active') as tokens
+         from cards.card c where c.party_id = $1 order by c.issued_at desc, c.id desc`,
+      [partyId],
+    );
+    return r.rows.map((c) => ({ id: c.id, last4: c.last4, type: c.type, status: c.status, tokens: c.tokens }));
   }
 
   /** Cases whose payload names one of the party's ledger accounts (balance breaks, suspense). */

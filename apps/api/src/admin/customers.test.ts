@@ -110,6 +110,33 @@ describe('GET /admin/customers (search)', () => {
 });
 
 describe('GET /admin/customers/{id} (Customer 360)', () => {
+  it('reads KYC and cards from where they live (T-0925): the highest approved tier wins, a later pending session does not hide it; cards newest first with active tokens counted, last four only', async () => {
+    const party = uuidv7(T0);
+    await identity.createUser({ partyId: party, phone: '+12125550188', status: 'active', roles: ['member'], createdAt: T0.toISOString() });
+    const session = (id: string, tier: string, status: string, started: string, decided: string | null) =>
+      db.query(`insert into identity.kyc_session (session_id, party_id, tier, market, provider, status, started_at, expires_at, decided_at) values ($1, $2, $3, 'US', 'simulator', $4, $5, $5::timestamptz + interval '1 day', $6)`, [id, party, tier, status, started, decided]);
+    const kycOf = async () => ((await call(`/v1/admin/customers/${party}`, await staffToken('ops-1'))).body as Customer360).kyc;
+    expect(await kycOf()).toEqual({ status: 'none' });
+    await session('kyc-1', 'T1', 'rejected', '2026-10-02T09:00:00Z', '2026-10-02T10:00:00Z');
+    expect(await kycOf()).toEqual({ status: 'rejected', provider: 'simulator', checkedAt: '2026-10-02T10:00:00.000Z' });
+    await session('kyc-2', 'T1', 'approved', '2026-10-03T09:00:00Z', '2026-10-03T10:00:00Z');
+    await session('kyc-3', 'T2', 'review', '2026-10-05T09:00:00Z', null);
+    expect(await kycOf()).toEqual({ status: 'verified', tier: 'T1', provider: 'simulator', checkedAt: '2026-10-03T10:00:00.000Z' });
+
+    const card = (id: string, last4: string, status: string, issued: string) =>
+      db.query(`insert into cards.card (id, party_id, processor, processor_card_id, cardholder_id, type, status, last4, currency, workflow_id, issued_at) values ($1, $2, 'simulator', $3, 'ch-1', 'virtual', $4, $5, 'USD', $6, $7)`, [id, party, `pc-${id}`, status, last4, `wf-${id}`, issued]);
+    const [old, current] = [uuidv7(T0), uuidv7(T0)];
+    await card(old, '1111', 'closed', '2026-10-04T09:00:00Z');
+    await card(current, '4242', 'active', '2026-10-06T09:00:00Z');
+    await db.query(`insert into cards.card_token (token_id, card_id, wallet, device_id, status) values ('tok-1', $1, 'apple', 'dev-1', 'active'), ('tok-2', $1, 'google', 'dev-2', 'deleted')`, [current]);
+    const c = (await call(`/v1/admin/customers/${party}`, await staffToken('ops-1'))).body as Customer360;
+    expect(c.cards).toEqual([
+      { id: current, last4: '4242', type: 'virtual', status: 'active', tokens: 1 },
+      { id: old, last4: '1111', type: 'virtual', status: 'closed', tokens: 0 },
+    ]);
+    expect(JSON.stringify(c)).not.toContain('pc-');
+  });
+
   it('assembles memberships, purses, open cases, consents, grants, the recovery hold and the audit tail', async () => {
     const r = await call(`/v1/admin/customers/${noa}`, await staffToken('ops-1'));
     expect(r.status).toBe(200);

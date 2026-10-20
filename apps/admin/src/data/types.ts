@@ -16,8 +16,9 @@ export interface CustomerSummary {
 }
 
 export interface CustomerRecord extends CustomerSummary {
-  kyc: { status: 'none' | 'pending' | 'verified' | 'rejected'; provider?: string | undefined; checkedAt?: string | undefined };
+  kyc: { status: 'none' | 'pending' | 'verified' | 'rejected'; tier?: 'T1' | 'T2' | undefined; provider?: string | undefined; checkedAt?: string | undefined };
   memberships: { id: string; planCode: string; status: 'incomplete' | 'active' | 'past_due' | 'paused' | 'cancelled'; funderName?: string | undefined; institutionName?: string | undefined; currentPeriodEnd?: string | undefined }[];
+  /** `available` is what the member can spend now, as their Home shows it; `holds` are not in it (ACH, P2P holds). */
   accounts: { id: string; currency: 'USD' | 'ILS'; available: Money; holds: Money }[];
   cards: { id: string; last4: string; type: 'virtual' | 'physical'; status: 'inactive' | 'active' | 'frozen' | 'closed'; tokens: number }[];
   cases: { id: string; kind: string; severity: 'low' | 'medium' | 'high' | 'critical'; status: 'open' | 'investigating' | 'resolved' | 'dismissed'; openedAt: string }[];

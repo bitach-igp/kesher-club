@@ -14,7 +14,8 @@ export interface Customer360 {
   flags: string[];
   kyc: CustomerRecord['kyc'];
   memberships: CustomerRecord['memberships'];
-  balances: { id: string; currency: 'USD' | 'ILS'; available: string; holds: string; spendable: string }[];
+  /** Available is spendable now (the member's Home shows the same); total adds what is held. */
+  balances: { id: string; currency: 'USD' | 'ILS'; available: string; holds: string; total: string }[];
   cards: CustomerRecord['cards'];
   openCases: CustomerRecord['cases'];
   consents: CustomerRecord['consents'];
@@ -60,7 +61,7 @@ export function customer360(c: CustomerRecord, now: Date): Customer360 {
     flags,
     kyc: c.kyc,
     memberships: c.memberships,
-    balances: c.accounts.map((a) => ({ id: a.id, currency: a.currency, available: fmt(a.available), holds: fmt(a.holds), spendable: fmt({ minor: a.available.minor - a.holds.minor, currency: a.currency }) })),
+    balances: c.accounts.map((a) => ({ id: a.id, currency: a.currency, available: fmt(a.available), holds: fmt(a.holds), total: fmt({ minor: a.available.minor + a.holds.minor, currency: a.currency }) })),
     cards: c.cards,
     openCases: c.cases.filter((k) => k.status === 'open' || k.status === 'investigating'),
     consents: c.consents,
