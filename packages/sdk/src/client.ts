@@ -93,6 +93,7 @@ const HEADER_OPS: Record<string, { idempotency: boolean; stepUp: boolean }> = {
   'post /admin/institutions/{id}/credit-limits': { idempotency: true, stepUp: false },
   'post /admin/institutions/{id}/kyb/people': { idempotency: true, stepUp: false },
   'post /admin/institutions/{id}/kyb/decisions': { idempotency: true, stepUp: false },
+  'post /admin/institutions/{id}/payout-accounts': { idempotency: true, stepUp: false },
   'post /payouts': { idempotency: true, stepUp: true },
   'post /institutions/{id}/payouts': { idempotency: true, stepUp: true },
   'post /payouts/{id}/approve': { idempotency: true, stepUp: true },

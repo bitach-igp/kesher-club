@@ -648,6 +648,30 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/institutions/{id}/payout-accounts": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution's payout accounts, newest first, with which is active and which waits for approval
+         * @description REQ-INS-012 (T-0623). Staff token. The IBAN is masked.
+         */
+        readonly get: operations["listAdminPayoutAccounts"];
+        readonly put?: never;
+        /**
+         * Record the institution's own bank account for payouts
+         * @description REQ-INS-012 (T-0623). Compliance. The holder name is as the bank's ownership letter states it and must match the registered name the KYB identifier check found; the account takes effect when a different compliance member approves it, and a replacement stops payouts until it is approved. Institution payouts go only here.
+         */
+        readonly post: operations["recordAdminPayoutAccount"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/institutions/{id}/staff": {
         readonly parameters: {
             readonly query?: never;
@@ -726,6 +750,26 @@ export interface paths {
          * @description REQ-INS-011 (T-0620). A different compliance reviewer from the proposer; the record is checked again first.
          */
         readonly post: operations["approveAdminKybDecision"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/payout-accounts/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second compliance approval of an institution's payout account
+         * @description REQ-INS-012 (T-0623). A different compliance member from the one who recorded it.
+         */
+        readonly post: operations["approveAdminPayoutAccount"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -2823,6 +2867,23 @@ export interface components {
             /** @enum {string} */
             readonly state: "cooling_off" | "awaiting_second_approval" | "submitted" | "processing" | "settled" | "failed" | "reversed";
         };
+        readonly PayoutAccount: {
+            /** Format: date-time */
+            readonly approvedAt?: string;
+            readonly approvedBy?: string;
+            /** @enum {string} */
+            readonly currency: "USD" | "ILS";
+            readonly evidenceRef: string;
+            readonly holderName: string;
+            readonly ibanMasked: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** Format: date-time */
+            readonly recordedAt: string;
+            readonly recordedBy: string;
+            /** @enum {string} */
+            readonly status: "active" | "pending" | "superseded";
+        };
         readonly PayoutRequest: {
             readonly amount: components["schemas"]["Money"];
             readonly payee: {
@@ -4115,6 +4176,66 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly listAdminPayoutAccounts: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Accounts */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["PayoutAccount"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly recordAdminPayoutAccount: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @description Where the bank's ownership letter is kept */
+                    readonly evidenceRef: string;
+                    readonly holderName: string;
+                    readonly iban: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The account, pending a second approval */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PayoutAccount"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly listAdminInstitutionStaff: {
         readonly parameters: {
             readonly query?: never;
@@ -4259,6 +4380,29 @@ export interface operations {
                         readonly approval: components["schemas"]["ApprovalRequest"];
                         readonly decision?: components["schemas"]["KybDecision"];
                     };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveAdminPayoutAccount: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The account */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PayoutAccount"];
                 };
             };
             readonly default: components["responses"]["Problem"];

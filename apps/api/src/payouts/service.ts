@@ -22,6 +22,7 @@ import type { InboundEvent } from '../webhooks/store.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
 import { checkPayee, type PayeeCheck } from './iban.ts';
 import type { KybGate } from '../institutions/kyb-gate.ts';
+import type { PayoutAccounts } from '../institutions/payout-account.ts';
 
 export const PAYOUT_FLAG = 'payouts.nium';
 export const PAYOUT_PROVIDER = 'payout';
@@ -130,6 +131,8 @@ interface Deps {
   provider: string;
   /** An institution's payout waits on its KYB decision (T-0621); a member's does not. */
   kyb: Pick<KybGate, 'require'>;
+  /** An institution pays out only to its own verified account (T-0623, REQ-INS-012). */
+  payoutAccounts: Pick<PayoutAccounts, 'requirePayee'>;
 }
 
 interface PayeeRow {
@@ -161,6 +164,7 @@ export class PayoutService implements PayoutActivities {
     const b = (body ?? {}) as { payee?: { iban?: unknown; name?: unknown }; amount?: unknown; reference?: unknown };
     const check = checkPayee({ iban: b.payee?.iban, name: b.payee?.name });
     if (!check.ok) throw new DomainError('VALIDATION_FAILED', 'The payee could not be validated', { problems: check.problems });
+    if (source.kind === 'institution') await this.d.payoutAccounts.requirePayee(partyId, check.iban, key, now);
     let amount: Money;
     try {
       amount = fromWire(b.amount as { minor: string; currency: string });

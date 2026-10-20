@@ -1830,6 +1830,70 @@ paths:
                   approval: { $ref: "#/components/schemas/ApprovalRequest" }
                   decision: { $ref: "#/components/schemas/KybDecision" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions/{id}/payout-accounts:
+    get:
+      operationId: listAdminPayoutAccounts
+      tags: [admin]
+      summary: The institution's payout accounts, newest first, with which is active and which waits for approval
+      description: REQ-INS-012 (T-0623). Staff token. The IBAN is masked.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Accounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/PayoutAccount" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: recordAdminPayoutAccount
+      tags: [admin]
+      summary: Record the institution's own bank account for payouts
+      description: >-
+        REQ-INS-012 (T-0623). Compliance. The holder name is as the bank's ownership letter states it and must match the
+        registered name the KYB identifier check found; the account takes effect when a different compliance member
+        approves it, and a replacement stops payouts until it is approved. Institution payouts go only here.
+      security: [{ staff: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [iban, holderName, evidenceRef]
+              properties:
+                iban: { type: string, maxLength: 40 }
+                holderName: { type: string, minLength: 1, maxLength: 70 }
+                evidenceRef: { type: string, minLength: 1, maxLength: 500, description: Where the bank's ownership letter is kept }
+      responses:
+        "201":
+          description: The account, pending a second approval
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayoutAccount" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/payout-accounts/{id}/approve:
+    post:
+      operationId: approveAdminPayoutAccount
+      tags: [admin]
+      summary: Second compliance approval of an institution's payout account
+      description: REQ-INS-012 (T-0623). A different compliance member from the one who recorded it.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The account
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PayoutAccount" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/bindings:
     get:
       operationId: listAdminBindings
@@ -2135,6 +2199,20 @@ components:
         requestedBy: { type: string }
         expiresAt: { type: string, format: date-time }
         payload: { type: object, additionalProperties: true }
+    PayoutAccount:
+      type: object
+      required: [id, currency, ibanMasked, holderName, evidenceRef, status, recordedBy, recordedAt]
+      properties:
+        id: { type: string, format: uuid }
+        currency: { type: string, enum: [USD, ILS] }
+        ibanMasked: { type: string }
+        holderName: { type: string }
+        evidenceRef: { type: string }
+        status: { type: string, enum: [active, pending, superseded] }
+        recordedBy: { type: string }
+        recordedAt: { type: string, format: date-time }
+        approvedBy: { type: string }
+        approvedAt: { type: string, format: date-time }
     KybPerson:
       type: object
       required: [id, fullName, roles]
