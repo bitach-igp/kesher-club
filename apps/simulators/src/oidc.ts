@@ -18,11 +18,12 @@ export interface StaffPersona {
   roles: readonly string[];
 }
 
-/** Fictional staff: one per console role, and a second admin for two-person flips. */
+/** Fictional staff: one per console role, a second admin for two-person flips, and a second finance member for deposits (T-0615). */
 export const STAFF_PERSONAS: readonly StaffPersona[] = [
   { sub: 'staff-support-1', name: 'Sam Support', email: 'sam.support@example.test', roles: ['support'] },
   { sub: 'staff-compliance-1', name: 'Cleo Compliance', email: 'cleo.compliance@example.test', roles: ['compliance'] },
   { sub: 'staff-finance-1', name: 'Finn Finance', email: 'finn.finance@example.test', roles: ['finance'] },
+  { sub: 'staff-finance-2', name: 'Fern Finance', email: 'fern.finance@example.test', roles: ['finance'] },
   { sub: 'staff-admin-1', name: 'Ada Admin', email: 'ada.admin@example.test', roles: ['admin'] },
   { sub: 'staff-admin-2', name: 'Abe Admin', email: 'abe.admin@example.test', roles: ['admin'] },
 ];

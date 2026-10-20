@@ -9,7 +9,7 @@ import { ApiError, createClient, type Client, type Schemas } from '@kesher/sdk';
 import type { StaffSigner } from '../auth/staff-token.ts';
 import type { Market } from '@kesher/ports';
 import { gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type FlagState, type ProviderBinding } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type Deposit, type FlagState, type InstitutionDetail, type InstitutionRow, type ProviderBinding } from './types.ts';
 
 export const MARKETS: readonly Market[] = ['IL', 'US'];
 /** Club-wide reads and writes go here; any market's API serves them from the shared database, so the choice is fixed. */
@@ -81,12 +81,30 @@ export const alert = (a: Schemas['AdminAlert']): Alert => ({
   note: a.note,
 });
 
+export const institutionRow = (i: Schemas['AdminInstitution']): InstitutionRow => ({ id: i.id, name: i.name, market: i.market, activeStaff: i.activeStaff, createdAt: i.createdAt });
+
+export const deposit = (d: Schemas['InstitutionDeposit']): Deposit => ({
+  id: d.id,
+  amount: fromWire(d.amount),
+  rail: d.rail,
+  bankReference: d.bankReference,
+  valueDate: d.valueDate,
+  note: d.note,
+  status: d.status,
+  approvals: d.approvals,
+  recordedByMe: d.recordedByMe,
+  createdAt: d.createdAt,
+  decidedAt: d.decidedAt,
+});
+
 const mapError = (e: unknown): never => {
   if (e instanceof ApiError) {
     const code = e.problem.code;
     if (code === 'NOT_FOUND') throw new AdminDataError('NOT_FOUND', e.message);
     if (code === 'IDEMPOTENCY_CONFLICT') throw new AdminDataError('CONFLICT', e.message);
     if (code === 'FORBIDDEN' || code === 'UNAUTHENTICATED') throw new AdminDataError('FORBIDDEN', e.message);
+    if (code === 'VALIDATION_FAILED') throw new AdminDataError('INVALID', e.message);
+    if (code === 'FEATURE_OFF' || code === 'PROVIDER_UNAVAILABLE') throw new AdminDataError('UNAVAILABLE', e.message);
     throw new AdminDataError('CONFLICT', e.message);
   }
   throw e;
@@ -108,6 +126,8 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData & { apiFor(mar
       return mapError(e);
     }
   };
+
+  const listDeposits = (id: string) => client.get('/admin/institutions/{id}/deposits', { path: { id } });
 
   const data: AdminData = {
     async searchCustomers(query) {
@@ -171,6 +191,40 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData & { apiFor(mar
       // The API's kill path is the same two-person flip to false (REQ-ADM-002); one admin proposes.
       return data.proposeFlip(key, false, by, now);
     },
+    async listInstitutions() {
+      return (await run(() => client.get('/admin/institutions'))).items.map(institutionRow);
+    },
+    async getInstitution(id) {
+      const row = (await data.listInstitutions()).find((i) => i.id === id);
+      if (!row) return undefined;
+      const staff = await run(() => client.get('/admin/institutions/{id}/staff', { path: { id } }));
+      let deposits: Awaited<ReturnType<typeof listDeposits>> | undefined;
+      try {
+        deposits = await listDeposits(id);
+      } catch (e) {
+        // Deposits off: the rest of the page still serves.
+        if (!(e instanceof ApiError && e.problem.code === 'FEATURE_OFF')) mapError(e);
+      }
+      const detail: InstitutionDetail = {
+        ...row,
+        paymentReference: deposits?.paymentReference,
+        balances: (deposits?.balances ?? []).map((b) => fromWire(b)),
+        deposits: (deposits?.items ?? []).map(deposit),
+        depositsOff: deposits === undefined,
+        staff: staff.items.map((m) => ({ partyId: m.partyId, role: m.role, active: m.active, phoneMasked: m.phoneMasked })),
+        pendingGrants: staff.pendingGrants.length,
+      };
+      return detail;
+    },
+    async recordDeposit(institutionId, input) {
+      const body = { amount: { minor: input.amount.minor.toString(), currency: input.amount.currency }, rail: input.rail, bankReference: input.bankReference, valueDate: input.valueDate, ...(input.note ? { note: input.note } : {}) };
+      return deposit(await run(() => client.post('/admin/institutions/{id}/deposits', { path: { id: institutionId }, body, idempotencyKey: input.key })));
+    },
+    async decideDeposit(id, decision, _by, reason) {
+      if (decision === 'approve') return deposit(await run(() => client.post('/admin/deposits/{id}/approve', { path: { id } })));
+      return deposit(await run(() => client.post('/admin/deposits/{id}/reject', { path: { id }, body: { reason: reason ?? '' } })));
+    },
+
     async auditLog() {
       // The API audits per subject; the console's log is the union over the flags that changed.
       const flags = await data.listFlags();

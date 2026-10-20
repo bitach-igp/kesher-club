@@ -119,6 +119,7 @@ Identity Center would require.
 | Sam Support | `support` |
 | Cleo Compliance | `compliance` |
 | Finn Finance | `finance` |
+| Fern Finance | `finance` (the second approver for institution deposits) |
 | Ada Admin | `admin` |
 | Abe Admin | `admin` (the second approver for two-person flag flips) |
 
