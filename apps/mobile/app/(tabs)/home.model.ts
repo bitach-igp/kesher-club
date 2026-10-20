@@ -6,7 +6,7 @@
 // status names each money capability ok, degraded or off; a degraded one shows the incident banner (plain
 // text, never a link) and its quick action is hidden, as are actions for anything not ok.
 import { format, fromWire, money, type Currency, type Money } from '@kesher/domain';
-import { errorIs, type Account, type Card, type CardsApi, type KycApi, type KycStatus, type ServiceStatus, type StatusApi, type Transaction, type WalletApi } from '../../src/api.ts';
+import { errorIs, type Account, type Card, type CardsApi, type KycApi, type KycStatus, type ProposalsApi, type ServiceStatus, type StatusApi, type Transaction, type WalletApi } from '../../src/api.ts';
 import { intlLocale, type CopyKey, type Locale } from '../../src/i18n.ts';
 import { createStore, type Store } from '../../src/model.ts';
 import type { Router } from '../../src/navigation.ts';
@@ -50,6 +50,8 @@ export interface HomeState {
   error?: CopyKey | undefined;
   /** GET /status; undefined while unknown, and then no quick action shows (the server gates anyway). */
   service?: ServiceStatus | undefined;
+  /** Assistant proposals waiting for this member (T-1012); 0 when none or unknown. */
+  proposalsWaiting: number;
 }
 
 export interface HomeDeps {
@@ -57,12 +59,14 @@ export interface HomeDeps {
   kyc: KycApi;
   cards: CardsApi;
   status?: StatusApi;
+  proposals?: Pick<ProposalsApi, 'list'>;
   router: Router;
   now: () => Date;
   locale?: Locale;
   kycHref?: string;
   cardHref?: string;
   walletHref?: string;
+  proposalsHref?: string;
 }
 
 // ---- pure views -------------------------------------------------------------------------------
@@ -191,11 +195,12 @@ export interface HomeModel {
   goVerify(): void;
   goCard(): void;
   goWallet(accountId: string): void;
+  goProposals(): void;
 }
 
 export function createHomeModel(deps: HomeDeps): HomeModel {
   const locale = deps.locale ?? 'en';
-  const store = createStore<HomeState>({ mode: 'loading', accounts: [], cards: [], transactions: {}, cursors: {}, activityUnavailable: false, filter: 'all', query: '', busy: false });
+  const store = createStore<HomeState>({ mode: 'loading', accounts: [], cards: [], transactions: {}, cursors: {}, activityUnavailable: false, filter: 'all', query: '', busy: false, proposalsWaiting: 0 });
   const page = async (accountId: string, cursor?: string): Promise<void> => {
     try {
       const p = await deps.wallet.listTransactions(accountId, cursor);
@@ -216,9 +221,11 @@ export function createHomeModel(deps: HomeDeps): HomeModel {
           deps.cards.listCards().catch(() => ({ items: [] as readonly Card[] })),
         ]);
         const service = deps.status ? await deps.status.get().catch(() => undefined) : undefined;
+        // An outage of the proposals endpoint must not cost the member their balances: none waiting, as far as home knows.
+        const waiting = deps.proposals ? await deps.proposals.list('pending').then((r) => r.items.length).catch(() => 0) : 0;
         const rows = purseRows(accounts.items);
         const selected = store.get().selectedAccountId ?? rows[0]?.accountId;
-        store.patch({ mode: 'ready', accounts: [...accounts.items], kyc, cards: [...cards.items], selectedAccountId: selected, service });
+        store.patch({ mode: 'ready', accounts: [...accounts.items], kyc, cards: [...cards.items], selectedAccountId: selected, service, proposalsWaiting: waiting });
         if (selected) await page(selected);
       } catch (e) {
         store.patch({ mode: 'error', error: errorIs(e, { status: 503 }) ? 'common.error.unavailable' : 'common.error.generic' });
@@ -287,6 +294,9 @@ export function createHomeModel(deps: HomeDeps): HomeModel {
     },
     goCard() {
       deps.router.push(deps.cardHref ?? '/card');
+    },
+    goProposals() {
+      deps.router.push(deps.proposalsHref ?? '/settings/assistants/proposal');
     },
     goWallet(accountId) {
       deps.router.push(`${deps.walletHref ?? '/wallet'}?account=${encodeURIComponent(accountId)}`);

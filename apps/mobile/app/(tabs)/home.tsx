@@ -16,7 +16,7 @@ export function useHomeModel(): HomeModel {
   const router = useRouter();
   const now = useNow();
   const locale = useLocale();
-  return useMemo(() => createHomeModel({ wallet: api.wallet, kyc: api.kyc, cards: api.cards, status: api.status, router, now, locale }), [api, router, now, locale]);
+  return useMemo(() => createHomeModel({ wallet: api.wallet, kyc: api.kyc, cards: api.cards, status: api.status, proposals: api.proposals, router, now, locale }), [api, router, now, locale]);
 }
 
 export default function HomeScreen() {
@@ -53,6 +53,7 @@ export function HomeView({ model }: { model: HomeModel }) {
       {incident ? <Banner tone="warning" title={incident.title} body={incident.body} testID="home-incident" /> : null}
       {identity ? <Banner tone={identity.tone} title={t('home.kyc.title', locale)} body={t(identity.body, locale)} {...(identity.action ? { action: { label: t('home.kyc.action', locale), onPress: model.goVerify } } : {})} testID="home-kyc" /> : null}
       {frozen ? <Banner tone="danger" body={t('home.card.frozen', locale)} action={{ label: t('home.card.action', locale), onPress: model.goCard }} testID="home-frozen" /> : null}
+      {s.proposalsWaiting > 0 ? <Banner tone="info" body={t(s.proposalsWaiting === 1 ? 'home.proposals' : 'home.proposalsMany', locale, { count: s.proposalsWaiting })} action={{ label: t('home.proposals.open', locale), onPress: model.goProposals }} testID="home-proposals" /> : null}
       {purseRows(s.accounts).map((p) => (
         <Card key={p.accountId} testID={`home-purse-${p.currency}`}>
           <Txt variant="caption" tone="secondary">

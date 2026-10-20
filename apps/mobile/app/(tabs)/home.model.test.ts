@@ -205,3 +205,24 @@ describe('service status (T-0911)', () => {
     expect(down.store.get().service).toBeUndefined();
   });
 });
+
+// T-1012: home says how many assistant proposals wait, and opens them; an outage of that endpoint costs nothing else.
+describe('proposals waiting (T-1012)', () => {
+  const waiting = (n: number) => ({ list: async () => ({ items: Array.from({ length: n }, (_, i) => ({ id: `i${i}` })) as never }) });
+
+  it('counts the pending proposals and opens M35', async () => {
+    const router = memoryRouter('/home');
+    const m = createHomeModel({ ...fakes(), proposals: waiting(1), router, now: () => NOW });
+    await m.load();
+    expect(m.store.get()).toMatchObject({ mode: 'ready', proposalsWaiting: 1 });
+    m.goProposals();
+    expect(router.current()).toBe('/settings/assistants/proposal');
+  });
+
+  it('an outage of the proposals endpoint leaves home ready with none waiting', async () => {
+    const m = createHomeModel({ ...fakes(), proposals: { list: async () => Promise.reject(Object.assign(new Error('503'), { status: 503 })) }, router: memoryRouter(), now: () => NOW });
+    await m.load();
+    expect(m.store.get()).toMatchObject({ mode: 'ready', proposalsWaiting: 0 });
+  });
+});
+
