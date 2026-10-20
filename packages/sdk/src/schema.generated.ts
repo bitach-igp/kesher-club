@@ -548,6 +548,86 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/institutions/{id}/kyb": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * An institution's KYB record, its decision, and what an approval would be refused for today
+         * @description REQ-INS-011 (T-0620). Staff token. `blocking` lists stable reason codes (for example `sanctions_hit_undisposed:<check>`); empty means the record supports an approval. No document or identity number is ever held here; evidence is a reference.
+         */
+        readonly get: operations["getAdminInstitutionKyb"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/institutions/{id}/kyb/checks": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Record a check compliance made by hand, or an exception with its reason
+         * @description REQ-INS-011 (T-0620). Compliance. The provider is `compliance`. An `excepted` result needs a reason, and an excepted sanctions or PEP check still blocks an approval: screening is never excepted.
+         */
+        readonly post: operations["recordAdminKybCheck"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/institutions/{id}/kyb/decisions": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Decide an institution's KYB
+         * @description REQ-INS-010, REQ-INS-011 (T-0620). Compliance. `needs_more_info` and `rejected` apply at once and need reasons. An approval names its risk and is refused with VALIDATION_FAILED and a `blocking` list while the record does not support it; a high-risk approval answers the approval request a second compliance reviewer approves.
+         */
+        readonly post: operations["decideAdminKyb"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/institutions/{id}/kyb/people": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Add a board member, control person or signatory to an institution's KYB record
+         * @description REQ-INS-011 (T-0620). Compliance. A retry with the same key answers the same person.
+         */
+        readonly post: operations["addAdminKybPerson"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/institutions/{id}/staff": {
         readonly parameters: {
             readonly query?: never;
@@ -586,6 +666,46 @@ export interface paths {
          * @description REQ-ADM-004. Admin staff only; audited. Their institution actions stop at once; the role leaves their token at the next sign-in.
          */
         readonly post: operations["removeAdminInstitutionStaff"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/kyb/checks/{id}/dispose": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Dispose of a screening hit as a false positive or a true match
+         * @description REQ-INS-011 (T-0620). Compliance, with a note; a hit is disposed of once.
+         */
+        readonly post: operations["disposeAdminKybCheck"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/kyb/decisions/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second compliance approval of a high-risk KYB approval
+         * @description REQ-INS-011 (T-0620). A different compliance reviewer from the proposer; the record is checked again first.
+         */
+        readonly post: operations["approveAdminKybDecision"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -2009,7 +2129,7 @@ export interface components {
             /** Format: uuid */
             readonly id: string;
             /** @enum {string} */
-            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction" | "fx_rate" | "staff_grant" | "institution_deposit" | "credit_limit";
+            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction" | "fx_rate" | "staff_grant" | "institution_deposit" | "credit_limit" | "kyb_decision";
             readonly payload: {
                 readonly [key: string]: unknown;
             };
@@ -2390,6 +2510,64 @@ export interface components {
              * @enum {string}
              */
             readonly purseCurrency?: "USD" | "ILS";
+        };
+        readonly KybCheck: {
+            /** Format: date-time */
+            readonly checkedAt: string;
+            readonly detail: {
+                readonly [key: string]: unknown;
+            };
+            readonly disposition?: {
+                /** Format: date-time */
+                readonly decidedAt: string;
+                readonly decidedBy: string;
+                readonly note: string;
+                /** @enum {string} */
+                readonly outcome: "false_positive" | "true_match";
+            };
+            readonly evidenceRef?: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** @enum {string} */
+            readonly kind: "registry" | "identifier" | "exempt_status" | "sanctions" | "pep";
+            /**
+             * Format: uuid
+             * @description Absent for a check on the institution itself
+             */
+            readonly personId?: string;
+            readonly provider: string;
+            /** @enum {string} */
+            readonly result: "clear" | "hit" | "missing" | "excepted";
+        };
+        readonly KybDecision: {
+            /** Format: date-time */
+            readonly decidedAt?: string;
+            readonly decidedBy?: string;
+            readonly reasons: readonly string[];
+            /** @enum {string} */
+            readonly risk?: "low" | "medium" | "high";
+            /** @enum {string} */
+            readonly status: "needs_more_info" | "approved_with_limits" | "approved" | "rejected";
+        };
+        readonly KybPerson: {
+            /** @description Staff-entered text */
+            readonly fullName: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** Format: uuid */
+            readonly partyId?: string;
+            readonly roles: readonly ("board" | "control" | "signatory")[];
+        };
+        readonly KybRecord: {
+            /** @description What an approval would be refused for today; empty when it is supported */
+            readonly blocking: readonly string[];
+            /** @description The latest check of each kind for the institution and each person */
+            readonly checks: readonly components["schemas"]["KybCheck"][];
+            readonly decision: components["schemas"]["KybDecision"];
+            /** Format: uuid */
+            readonly institutionId: string;
+            readonly pendingApproval?: components["schemas"]["ApprovalRequest"];
+            readonly people: readonly components["schemas"]["KybPerson"][];
         };
         readonly KycSession: {
             /** Format: date-time */
@@ -3748,6 +3926,144 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly getAdminInstitutionKyb: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The record */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["KybRecord"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly recordAdminKybCheck: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @description Where the evidence is kept; never the document itself */
+                    readonly evidenceRef?: string;
+                    /** @enum {string} */
+                    readonly kind: "registry" | "identifier" | "exempt_status" | "sanctions" | "pep";
+                    /** Format: uuid */
+                    readonly personId?: string;
+                    readonly reason?: string;
+                    /** @enum {string} */
+                    readonly result: "clear" | "hit" | "missing" | "excepted";
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The check */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["KybCheck"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly decideAdminKyb: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly reasons?: readonly string[];
+                    /** @enum {string} */
+                    readonly risk?: "low" | "medium" | "high";
+                    /** @enum {string} */
+                    readonly status: "needs_more_info" | "approved_with_limits" | "approved" | "rejected";
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The decision, or the approval request waiting for a second reviewer */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly approval?: components["schemas"]["ApprovalRequest"];
+                        readonly decision?: components["schemas"]["KybDecision"];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly addAdminKybPerson: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @description Staff-entered text */
+                    readonly fullName: string;
+                    /**
+                     * Format: uuid
+                     * @description The member
+                     */
+                    readonly partyId?: string;
+                    readonly roles: readonly ("board" | "control" | "signatory")[];
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The person */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["KybPerson"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly listAdminInstitutionStaff: {
         readonly parameters: {
             readonly query?: never;
@@ -3835,6 +4151,63 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["InstitutionStaffMember"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly disposeAdminKybCheck: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly note: string;
+                    /** @enum {string} */
+                    readonly outcome: "false_positive" | "true_match";
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The check with its disposition */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["KybCheck"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveAdminKybDecision: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The approval request, and the decision once it applied */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly approval: components["schemas"]["ApprovalRequest"];
+                        readonly decision?: components["schemas"]["KybDecision"];
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];

@@ -1645,6 +1645,162 @@ paths:
                   request: { $ref: "#/components/schemas/ApprovalRequest" }
                   limit: { $ref: "#/components/schemas/CreditLimit" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions/{id}/kyb:
+    get:
+      operationId: getAdminInstitutionKyb
+      tags: [admin]
+      summary: An institution's KYB record, its decision, and what an approval would be refused for today
+      description: >-
+        REQ-INS-011 (T-0620). Staff token. `blocking` lists stable reason codes (for example
+        `sanctions_hit_undisposed:<check>`); empty means the record supports an approval. No document or identity
+        number is ever held here; evidence is a reference.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The record
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KybRecord" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions/{id}/kyb/people:
+    post:
+      operationId: addAdminKybPerson
+      tags: [admin]
+      summary: Add a board member, control person or signatory to an institution's KYB record
+      description: REQ-INS-011 (T-0620). Compliance. A retry with the same key answers the same person.
+      security: [{ staff: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fullName, roles]
+              properties:
+                fullName: { type: string, minLength: 1, maxLength: 200, description: Staff-entered text }
+                roles: { type: array, minItems: 1, items: { type: string, enum: [board, control, signatory] } }
+                partyId: { type: string, format: uuid, description: The member, once they have signed up }
+      responses:
+        "201":
+          description: The person
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KybPerson" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions/{id}/kyb/checks:
+    post:
+      operationId: recordAdminKybCheck
+      tags: [admin]
+      summary: Record a check compliance made by hand, or an exception with its reason
+      description: >-
+        REQ-INS-011 (T-0620). Compliance. The provider is `compliance`. An `excepted` result needs a reason, and an
+        excepted sanctions or PEP check still blocks an approval: screening is never excepted.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, result]
+              properties:
+                kind: { type: string, enum: [registry, identifier, exempt_status, sanctions, pep] }
+                personId: { type: string, format: uuid }
+                result: { type: string, enum: [clear, hit, missing, excepted] }
+                evidenceRef: { type: string, maxLength: 500, description: Where the evidence is kept; never the document itself }
+                reason: { type: string, maxLength: 1000 }
+      responses:
+        "201":
+          description: The check
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KybCheck" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/kyb/checks/{id}/dispose:
+    post:
+      operationId: disposeAdminKybCheck
+      tags: [admin]
+      summary: Dispose of a screening hit as a false positive or a true match
+      description: REQ-INS-011 (T-0620). Compliance, with a note; a hit is disposed of once.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [outcome, note]
+              properties:
+                outcome: { type: string, enum: [false_positive, true_match] }
+                note: { type: string, minLength: 1, maxLength: 1000 }
+      responses:
+        "200":
+          description: The check with its disposition
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/KybCheck" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions/{id}/kyb/decisions:
+    post:
+      operationId: decideAdminKyb
+      tags: [admin]
+      summary: Decide an institution's KYB
+      description: >-
+        REQ-INS-010, REQ-INS-011 (T-0620). Compliance. `needs_more_info` and `rejected` apply at once and need reasons.
+        An approval names its risk and is refused with VALIDATION_FAILED and a `blocking` list while the record does
+        not support it; a high-risk approval answers the approval request a second compliance reviewer approves.
+      security: [{ staff: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [needs_more_info, approved_with_limits, approved, rejected] }
+                risk: { type: string, enum: [low, medium, high] }
+                reasons: { type: array, items: { type: string, maxLength: 500 } }
+      responses:
+        "201":
+          description: The decision, or the approval request waiting for a second reviewer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  decision: { $ref: "#/components/schemas/KybDecision" }
+                  approval: { $ref: "#/components/schemas/ApprovalRequest" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/kyb/decisions/{id}/approve:
+    post:
+      operationId: approveAdminKybDecision
+      tags: [admin]
+      summary: Second compliance approval of a high-risk KYB approval
+      description: REQ-INS-011 (T-0620). A different compliance reviewer from the proposer; the record is checked again first.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The approval request, and the decision once it applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approval]
+                properties:
+                  approval: { $ref: "#/components/schemas/ApprovalRequest" }
+                  decision: { $ref: "#/components/schemas/KybDecision" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/bindings:
     get:
       operationId: listAdminBindings
@@ -1943,13 +2099,60 @@ components:
       required: [id, kind, subject, status, approvals, requestedBy, expiresAt, payload]
       properties:
         id: { type: string, format: uuid }
-        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction, fx_rate, staff_grant, institution_deposit, credit_limit] }
+        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction, fx_rate, staff_grant, institution_deposit, credit_limit, kyb_decision] }
         subject: { type: string }
         status: { type: string, enum: [pending, awaiting_second_approval, approved, rejected, expired] }
         approvals: { type: integer, minimum: 0 }
         requestedBy: { type: string }
         expiresAt: { type: string, format: date-time }
         payload: { type: object, additionalProperties: true }
+    KybPerson:
+      type: object
+      required: [id, fullName, roles]
+      properties:
+        id: { type: string, format: uuid }
+        fullName: { type: string, description: Staff-entered text }
+        roles: { type: array, items: { type: string, enum: [board, control, signatory] } }
+        partyId: { type: string, format: uuid }
+    KybCheck:
+      type: object
+      required: [id, kind, result, provider, detail, checkedAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [registry, identifier, exempt_status, sanctions, pep] }
+        personId: { type: string, format: uuid, description: Absent for a check on the institution itself }
+        result: { type: string, enum: [clear, hit, missing, excepted] }
+        provider: { type: string }
+        evidenceRef: { type: string }
+        detail: { type: object, additionalProperties: true }
+        checkedAt: { type: string, format: date-time }
+        disposition:
+          type: object
+          required: [outcome, note, decidedBy, decidedAt]
+          properties:
+            outcome: { type: string, enum: [false_positive, true_match] }
+            note: { type: string }
+            decidedBy: { type: string }
+            decidedAt: { type: string, format: date-time }
+    KybDecision:
+      type: object
+      required: [status, reasons]
+      properties:
+        status: { type: string, enum: [needs_more_info, approved_with_limits, approved, rejected] }
+        risk: { type: string, enum: [low, medium, high] }
+        reasons: { type: array, items: { type: string } }
+        decidedBy: { type: string }
+        decidedAt: { type: string, format: date-time }
+    KybRecord:
+      type: object
+      required: [institutionId, decision, people, checks, blocking]
+      properties:
+        institutionId: { type: string, format: uuid }
+        decision: { $ref: "#/components/schemas/KybDecision" }
+        people: { type: array, items: { $ref: "#/components/schemas/KybPerson" } }
+        checks: { type: array, items: { $ref: "#/components/schemas/KybCheck" }, description: The latest check of each kind for the institution and each person }
+        blocking: { type: array, items: { type: string }, description: What an approval would be refused for today; empty when it is supported }
+        pendingApproval: { $ref: "#/components/schemas/ApprovalRequest" }
     CreditLimit:
       type: object
       required: [currency, limit]
