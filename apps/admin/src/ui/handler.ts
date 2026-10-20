@@ -2,7 +2,7 @@
 import { AdminDataError, type AdminActor } from '../data/types.ts';
 import { currentActor, problem } from './actor.ts';
 
-const STATUS: Record<AdminDataError['code'], number> = { NOT_FOUND: 404, CONFLICT: 409, FORBIDDEN: 403, GATES_INCOMPLETE: 422, SAME_APPROVER: 422, UNAVAILABLE: 503 };
+const STATUS: Record<AdminDataError['code'], number> = { NOT_FOUND: 404, CONFLICT: 409, FORBIDDEN: 403, GATES_INCOMPLETE: 422, SAME_APPROVER: 422, UNAVAILABLE: 503, INVALID: 422 };
 
 export async function adminAction(redirectTo: string, run: (by: AdminActor, now: Date) => Promise<unknown>): Promise<Response> {
   const by = await currentActor();

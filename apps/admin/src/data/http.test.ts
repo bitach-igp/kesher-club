@@ -12,6 +12,9 @@ const NOA = '01932e5a-0000-7000-8000-000000000001';
 const cmp1 = { id: '01932e5a-0000-7000-8000-00000000c001', partyId: NOA, channel: 'phone', category: 'card_decline', summary: 'Card declined at pharmacy twice', status: 'open', openedAt: '2026-10-28T10:00:00Z', loggedBy: 'ops-1', escalatedToBank: false };
 const cmp2 = { id: '01932e5a-0000-7000-8000-00000000c002', partyId: NOA, channel: 'bank', category: 'disclosure', summary: 'Terms as PDF', status: 'resolved', openedAt: '2026-09-20T10:00:00Z', loggedBy: 'ops-1', acknowledgedAt: '2026-09-22T09:00:00Z', acknowledgedBy: 'cmp-1', resolvedAt: '2026-10-05T12:00:00Z', resolvedBy: 'cmp-1', owner: 'cmp-1', escalatedToBank: true };
 const alert1 = { id: '01932e5a-0000-7000-8000-00000000a001', kind: 'structuring', severity: 'high', status: 'open', partyId: NOA, summary: '10 sends of ₪490 within one hour', openedAt: '2026-10-31T11:00:00Z' };
+const YESHIVA = '01932e5a-0000-7000-8000-0000000000f1';
+const dep1 = { id: '01932e5a-0000-7000-8000-00000000d001', institutionId: YESHIVA, amount: { minor: '9007199254740993', currency: 'ILS' }, rail: 'masav', bankReference: 'FT2611-ABC', valueDate: '2026-11-09', status: 'pending', approvals: 1, recordedByMe: true, createdAt: '2026-11-10T09:00:00Z' };
+const problemOf = (status: number, code: string, detail: string) => Response.json({ type: 'about:blank', title: code, status, code, detail }, { status, headers: { 'content-type': 'application/problem+json' } });
 const noaSummary = { partyId: NOA, displayName: 'Noa Example', phoneMasked: '•••• 4567', status: 'active', locale: 'he', mode: 'member', createdAt: '2026-10-01T09:00:00Z' };
 const noa360 = {
   ...noaSummary,
@@ -34,6 +37,7 @@ async function setup() {
     { key: 'esim.airalo', value: false, default: false, owner: 'Kathleen', gates: 'eSIM purchase', money: false },
     { key: 'billing.stripe', value: true, default: true, owner: 'Ezra', gates: 'Subscriptions', money: false, changedAt: '2026-11-01T09:00:00Z', pendingFlip: { id: 'req-1', kind: 'flag_flip', subject: 'billing.stripe:false:2026-11-01', status: 'awaiting_second_approval', approvals: 1, requestedBy: 'p-ops-1', expiresAt: '2026-11-02T09:00:00Z', payload: { to: false } } },
   ];
+  let depositsOn = true;
   const fetchImpl: typeof globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     url.pathname = url.pathname.replace(/^\/v1/, '');
@@ -54,11 +58,17 @@ async function setup() {
     if (url.pathname === `/admin/complaints/${cmp2.id}/resolve`) return Response.json({ type: 'about:blank', title: 'Conflict', status: 409, code: 'IDEMPOTENCY_CONFLICT', detail: 'Complaint already closed' }, { status: 409, headers: { 'content-type': 'application/problem+json' } });
     if (url.pathname === '/admin/alerts') return Response.json({ items: [alert1] });
     if (url.pathname === `/admin/alerts/${alert1.id}/decisions`) return Response.json({ ...alert1, status: 'cleared', decidedBy: 'zvi', decidedAt: '2026-11-02T09:00:00Z', note: 'tuition' });
+    if (url.pathname === '/admin/institutions') return Response.json({ items: [{ id: YESHIVA, name: 'Yeshivat Example', market: 'IL', activeStaff: 2, createdAt: '2026-11-01T09:00:00Z' }] });
+    if (url.pathname === `/admin/institutions/${YESHIVA}/staff`) return Response.json({ items: [{ partyId: NOA, institutionId: YESHIVA, role: 'finance', active: true, createdAt: '2026-11-01T09:00:00Z', phoneMasked: '•••• 4567' }], pendingGrants: [] });
+    if (url.pathname === `/admin/institutions/${YESHIVA}/deposits` && init?.method === 'POST') return headers.get('idempotency-key') === 'form-key-1' ? Response.json(dep1, { status: 201 }) : problemOf(409, 'IDEMPOTENCY_CONFLICT', 'That bank reference is already recorded on this rail');
+    if (url.pathname === `/admin/institutions/${YESHIVA}/deposits`) return depositsOn ? Response.json({ paymentReference: 'KC-7M4QX2HD', balances: [{ minor: '2000000', currency: 'ILS' }], items: [dep1] }) : problemOf(404, 'FEATURE_OFF', 'institutions.deposits is off');
+    if (url.pathname === `/admin/deposits/${dep1.id}/approve`) return problemOf(409, 'IDEMPOTENCY_CONFLICT', 'The recorder cannot approve');
+    if (url.pathname === `/admin/deposits/${dep1.id}/reject`) return Response.json({ ...dep1, status: 'rejected', recordedByMe: false, decidedAt: '2026-11-10T10:00:00Z' });
     if (url.pathname === '/admin/audit') return Response.json({ items: [{ seq: 1, id: 'e1', at: '2026-11-01T09:00:00Z', actorId: 'p-ops-2', actorRole: 'admin', action: 'flag.flip', subject: url.searchParams.get('subject'), reason: 'go live', payload: {}, hash: 'h', prevHash: 'genesis' }] });
     return new Response('nope', { status: 500 });
   };
   const data = httpAdminData({ apis: { IL: 'https://api-il.kesher.example/v1', US: 'https://api-us.kesher.example/v1' }, signer, actor: async () => ({ subject: 'zvi', roles: ['ops'] }), fetch: fetchImpl });
-  return { data, calls, publicKey };
+  return { data, calls, publicKey, depositsOff: () => void (depositsOn = false) };
 }
 
 describe('httpAdminData', () => {
@@ -157,5 +167,26 @@ describe('httpAdminData', () => {
     calls.length = 0;
     await data.apiFor('US').get('/admin/bindings');
     expect(calls).toEqual([expect.objectContaining({ host: 'api-us.kesher.example', url: '/admin/bindings' })]);
+  });
+
+  it('reads an institution with its deposits in bigint, sends the form key as the Idempotency-Key, and serves the page with deposits off (T-0615)', async () => {
+    const { data, calls, depositsOff } = await setup();
+    const zvi = { subject: 'zvi', roles: ['finance'] };
+    const detail = (await data.getInstitution(YESHIVA, zvi))!;
+    expect(detail).toMatchObject({ name: 'Yeshivat Example', paymentReference: 'KC-7M4QX2HD', balances: [money(2_000_000n, 'ILS')], depositsOff: false, staff: [{ partyId: NOA, role: 'finance', active: true }], pendingGrants: 0 });
+    expect(detail.deposits[0]).toMatchObject({ amount: money(9_007_199_254_740_993n, 'ILS'), status: 'pending', recordedByMe: true });
+    expect(await data.getInstitution('nope', zvi)).toBeUndefined();
+
+    calls.length = 0;
+    const input = { amount: money(2_000_000n, 'ILS'), rail: 'masav' as const, bankReference: 'FT2611-ABC', valueDate: '2026-11-09', key: 'form-key-1' };
+    await data.recordDeposit(YESHIVA, input, zvi, new Date());
+    expect(calls[0]).toMatchObject({ method: 'POST', body: { amount: { minor: '2000000', currency: 'ILS' }, rail: 'masav', bankReference: 'FT2611-ABC', valueDate: '2026-11-09' } });
+    await expect(data.recordDeposit(YESHIVA, { ...input, key: 'form-key-2' }, zvi, new Date())).rejects.toMatchObject({ code: 'CONFLICT' });
+    await expect(data.decideDeposit(dep1.id, 'approve', zvi, undefined, new Date())).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(await data.decideDeposit(dep1.id, 'reject', zvi, 'Wrong amount', new Date())).toMatchObject({ status: 'rejected' });
+    expect(calls.at(-1)).toMatchObject({ body: { reason: 'Wrong amount' } });
+
+    depositsOff();
+    expect(await data.getInstitution(YESHIVA, zvi)).toMatchObject({ depositsOff: true, deposits: [], balances: [], staff: [{ partyId: NOA }] });
   });
 });

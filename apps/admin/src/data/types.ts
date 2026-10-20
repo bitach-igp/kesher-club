@@ -80,6 +80,56 @@ export interface FlagState {
   lastChangedBy?: string | undefined;
 }
 
+export type DepositRail = 'masav' | 'wire' | 'ach';
+
+/** An institution as the console lists it (T-0924, T-0615). */
+export interface InstitutionRow {
+  id: string;
+  name: string;
+  market: Market;
+  activeStaff: number;
+  createdAt: string;
+}
+
+/** A recorded bank transfer in (T-0614): pending until a second finance member approves it. */
+export interface Deposit {
+  id: string;
+  amount: Money;
+  rail: DepositRail;
+  bankReference: string;
+  valueDate: string;
+  /** Staff text. */
+  note?: string | undefined;
+  status: 'pending' | 'posted' | 'rejected';
+  approvals: number;
+  /** True for the finance member who recorded it: they cannot be its second approver. */
+  recordedByMe: boolean;
+  createdAt: string;
+  decidedAt?: string | undefined;
+}
+
+export interface InstitutionDetail extends InstitutionRow {
+  /** What the institution quotes on its transfers; absent while deposits are switched off. */
+  paymentReference?: string | undefined;
+  balances: Money[];
+  deposits: Deposit[];
+  /** `institutions.deposits` is off: there is nothing to record yet. */
+  depositsOff: boolean;
+  staff: { partyId: string; role: 'staff' | 'finance' | 'admin'; active: boolean; phoneMasked?: string | undefined }[];
+  /** Finance or admin grants waiting for a second admin (T-0924). */
+  pendingGrants: number;
+}
+
+export interface DepositInput {
+  amount: Money;
+  rail: DepositRail;
+  bankReference: string;
+  valueDate: string;
+  note?: string | undefined;
+  /** The form's attempt key: a double submit records once. */
+  key: string;
+}
+
 export interface AdminActor {
   subject: string;
   roles: readonly string[];
@@ -106,13 +156,21 @@ export interface AdminData {
   /** Kill switch: off now, one person, audited. Turning on always goes through the approval path. */
   killSwitch(key: string, by: AdminActor, now: Date): Promise<FlagState>;
 
+  listInstitutions(): Promise<InstitutionRow[]>;
+  /** `by` decides `recordedByMe` on each deposit. */
+  getInstitution(id: string, by: AdminActor): Promise<InstitutionDetail | undefined>;
+  /** Kesher finance records a statement line; it is the first of two approvals (REQ-INS-007). */
+  recordDeposit(institutionId: string, input: DepositInput, by: AdminActor, now: Date): Promise<Deposit>;
+  /** A different finance member approves (it posts) or rejects (with a reason). */
+  decideDeposit(id: string, decision: 'approve' | 'reject', by: AdminActor, reason: string | undefined, now: Date): Promise<Deposit>;
+
   auditLog(): Promise<{ at: string; actor: string; action: string; subject: string; detail?: string | undefined }[]>;
 }
 
 export class AdminDataError extends Error {
-  readonly code: 'NOT_FOUND' | 'CONFLICT' | 'FORBIDDEN' | 'GATES_INCOMPLETE' | 'SAME_APPROVER' | 'UNAVAILABLE';
+  readonly code: 'NOT_FOUND' | 'CONFLICT' | 'FORBIDDEN' | 'GATES_INCOMPLETE' | 'SAME_APPROVER' | 'UNAVAILABLE' | 'INVALID';
   constructor(
-    code: 'NOT_FOUND' | 'CONFLICT' | 'FORBIDDEN' | 'GATES_INCOMPLETE' | 'SAME_APPROVER' | 'UNAVAILABLE',
+    code: 'NOT_FOUND' | 'CONFLICT' | 'FORBIDDEN' | 'GATES_INCOMPLETE' | 'SAME_APPROVER' | 'UNAVAILABLE' | 'INVALID',
     message: string,
   ) {
     super(message);

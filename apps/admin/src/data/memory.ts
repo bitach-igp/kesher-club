@@ -3,7 +3,7 @@ import { money } from '@kesher/domain';
 import { PORTS } from '@kesher/ports';
 import flagsRegistry from '../../../../config/flags.json' with { type: 'json' };
 import { evaluateFlip, gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type FlagState, type ProviderBinding } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type Deposit, type FlagState, type InstitutionDetail, type ProviderBinding } from './types.ts';
 
 type AuditRow = { at: string; actor: string; action: string; subject: string; detail?: string | undefined };
 
@@ -93,6 +93,10 @@ export function memoryAdminData(): AdminData {
     if (!f) throw new AdminDataError('NOT_FOUND', `Unknown flag ${key}`);
     return f;
   };
+  // One seeded yeshiva (T-0615); its deposits follow the API's two-person rule so the screens behave alike.
+  const yeshiva: InstitutionDetail = { id: '01932e5a-0000-7000-8000-0000000000f1', name: 'Yeshivat Example', market: 'IL', activeStaff: 2, createdAt: T0, paymentReference: 'KC-7M4QX2HD', balances: [money(0n, 'ILS'), money(0n, 'USD')], deposits: [], depositsOff: false, staff: [], pendingGrants: 0 };
+  const recorders = new Map<string, string>();
+  const depositView = (d: Deposit, by: AdminActor): Deposit => ({ ...d, recordedByMe: recorders.get(d.id) === by.subject });
   const complaint = (id: string) => {
     const c = complaints.find((x) => x.id === id);
     if (!c) throw new AdminDataError('NOT_FOUND', `Unknown complaint ${id}`);
@@ -182,6 +186,41 @@ export function memoryAdminData(): AdminData {
       log(by, 'flag.kill_switch', key, now);
       return structuredClone(f);
     },
+    async listInstitutions() {
+      const { id, name, market, activeStaff, createdAt } = yeshiva;
+      return [{ id, name, market, activeStaff, createdAt }];
+    },
+    async getInstitution(id, by) {
+      return id === yeshiva.id ? { ...yeshiva, deposits: yeshiva.deposits.map((d) => depositView(d, by)) } : undefined;
+    },
+    async recordDeposit(institutionId, input, by, now) {
+      if (institutionId !== yeshiva.id) throw new AdminDataError('NOT_FOUND', 'Institution not found');
+      if (!by.roles.includes('finance')) throw new AdminDataError('FORBIDDEN', 'Only Kesher finance records deposits');
+      const same = yeshiva.deposits.find((d) => d.rail === input.rail && d.bankReference === input.bankReference && d.status !== 'rejected');
+      if (same) throw new AdminDataError('CONFLICT', 'This bank reference is already recorded on this rail');
+      const d: Deposit = { id: `dep-${yeshiva.deposits.length + 1}`, amount: input.amount, rail: input.rail, bankReference: input.bankReference, valueDate: input.valueDate, ...(input.note ? { note: input.note } : {}), status: 'pending', approvals: 1, recordedByMe: true, createdAt: now.toISOString() };
+      recorders.set(d.id, by.subject);
+      yeshiva.deposits.unshift(d);
+      log(by, 'institution.deposit.record', institutionId, now, `${input.rail} ${input.bankReference}`);
+      return depositView(d, by);
+    },
+    async decideDeposit(id, decision, by, reason, now) {
+      const d = yeshiva.deposits.find((x) => x.id === id);
+      if (!d) throw new AdminDataError('NOT_FOUND', 'Deposit not found');
+      if (!by.roles.includes('finance')) throw new AdminDataError('FORBIDDEN', 'Only Kesher finance decides deposits');
+      if (d.status !== 'pending') throw new AdminDataError('CONFLICT', `This deposit is already ${d.status}`);
+      if (recorders.get(id) === by.subject) throw new AdminDataError('SAME_APPROVER', 'The recorder cannot approve or reject their own deposit');
+      if (decision === 'reject') {
+        if (!reason?.trim()) throw new AdminDataError('INVALID', 'A reason is required');
+        Object.assign(d, { status: 'rejected', decidedAt: now.toISOString() });
+      } else {
+        Object.assign(d, { status: 'posted', approvals: 2, decidedAt: now.toISOString() });
+        yeshiva.balances = yeshiva.balances.map((b) => (b.currency === d.amount.currency ? money(b.minor + d.amount.minor, b.currency) : b));
+      }
+      log(by, `institution.deposit.${decision}`, yeshiva.id, now, reason);
+      return depositView(d, by);
+    },
+
     async auditLog() {
       return [...audit].reverse();
     },
