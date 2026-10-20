@@ -15,16 +15,9 @@ export interface PanelResponse {
 }
 
 /** What the socket binding adds: the OIDC issuer (T-0919) and the request's headers. */
-/** The jobs of the process hosting the panel (the demo, T-0031), so a recording can run one now (T-0920). */
-export interface PanelJobs {
-  names: readonly string[];
-  run(name: string): Promise<unknown>;
-}
-
 export interface PanelContext {
   oidc?: OidcIssuer | undefined;
   headers?: Readonly<Record<string, string | string[] | undefined>>;
-  jobs?: PanelJobs | undefined;
 }
 
 const json = (status: number, body: Json): PanelResponse => ({ status, body });
@@ -64,11 +57,6 @@ export async function handle(host: SimulatorHost, method: string, url: string, r
       }
     }
   }
-  // A job the hosting process runs on a timer, run now: the clock moves days in a click, the timers do not.
-  if (method === 'POST' && parts[0] === 'jobs' && parts[1] && parts[2] === 'run' && ctx.jobs) {
-    if (!ctx.jobs.names.includes(parts[1])) return json(404, { error: 'unknown_job', job: parts[1] });
-    return json(200, { ok: true, job: parts[1], result: serialisable(await ctx.jobs.run(parts[1])) });
-  }
   if (method === 'POST' && parts[0] === 'clock' && parts[1] === 'advance') {
     try {
       return json(200, { now: host.advanceClock(Number(body['ms'])) });
@@ -79,7 +67,7 @@ export async function handle(host: SimulatorHost, method: string, url: string, r
   return json(404, { error: 'not_found' });
 }
 
-export function createServer(host: SimulatorHost, opts: { jobs?: PanelJobs } = {}): http.Server {
+export function createServer(host: SimulatorHost): http.Server {
   const oidc = OidcIssuer.create();
   return http.createServer(async (req, res) => {
     let raw = '';
@@ -87,7 +75,7 @@ export function createServer(host: SimulatorHost, opts: { jobs?: PanelJobs } = {
     for await (const chunk of req) raw += chunk;
     let out: PanelResponse;
     try {
-      out = await handle(host, req.method ?? 'GET', req.url ?? '/', raw, { oidc: await oidc, headers: req.headers, jobs: opts.jobs });
+      out = await handle(host, req.method ?? 'GET', req.url ?? '/', raw, { oidc: await oidc, headers: req.headers });
     } catch (e) {
       out = json(400, { error: 'bad_request', detail: (e as Error).message });
     }

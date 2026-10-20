@@ -153,14 +153,8 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
     const jobs: Job[] = buildJobs({ app, db, registry, market: config.MARKET, clock: now, runs: pgRunLog(db), catalogue: loadCatalogueConfig() });
     const scheduler = new Scheduler(jobs, noLock, (event, fields) => log(event, fields));
 
-    const runJob = (name: string): Promise<unknown> => {
-      const job = jobs.find((j) => j.name === name);
-      if (!job) throw new Error(`No job named ${name}`);
-      return job.run();
-    };
-
     const api = withLoopbackCors(createServer(app), demo.DEMO_WEB_ORIGINS);
-    const panel = createPanel(simulators, { jobs: { names: jobs.map((j) => j.name), run: runJob } });
+    const panel = createPanel(simulators);
     const apiPort = await listen(api, opts.ports?.api ?? config.PORT);
     const panelPort = await listen(panel, opts.ports?.panel ?? demo.SIMULATOR_PORT);
     if (opts.schedule !== false) scheduler.start();
@@ -174,7 +168,11 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
       simulators,
       clock,
       jobs: jobs.map((j) => j.name),
-      runJob,
+      runJob: (name) => {
+        const job = jobs.find((j) => j.name === name);
+        if (!job) throw new Error(`No job named ${name}`);
+        return job.run();
+      },
       shutdown: () =>
         (closing ??= (async () => {
           await scheduler.stop();
