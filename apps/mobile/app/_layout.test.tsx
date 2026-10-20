@@ -87,6 +87,28 @@ describe('the authenticator follows the build, never the API', () => {
   });
 });
 
+describe('money calls carry a fresh passkey step-up (T-0524)', () => {
+  it('asks /auth/step-up for a challenge, signs it with this build\'s authenticator, and sends the token with the load', async () => {
+    const { createRootDeps } = await layoutFor('preview');
+    const calls: { path: string; body: unknown; stepUp: string | null }[] = [];
+    const fetch = (async (url: URL, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : undefined;
+      calls.push({ path, body, stepUp: new Headers(init?.headers).get('x-step-up') });
+      const reply = path === '/v1/auth/step-up' ? (body?.['response'] ? { stepUpToken: 'su_1', expiresAt: '2026-11-01T09:05:00Z' } : { options: { challenge: 'c1' } }) : { id: 'l1', amount: { minor: '5000', currency: 'USD' }, state: 'settled' };
+      return new Response(JSON.stringify(reply), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof globalThis.fetch;
+    const get = vi.fn(async () => ({ toJSON: () => ({ signed: 'c1' }) }));
+    vi.stubGlobal('PublicKeyCredential', { parseRequestOptionsFromJSON: (o: unknown) => o, parseCreationOptionsFromJSON: (o: unknown) => o });
+    const deps = createRootDeps({ apiUrl: 'http://localhost:3000/v1', appEnv: 'preview' }, { fetch, credentials: { get, create: vi.fn() } as unknown as CredentialsContainer });
+    await deps.api.fund.createLoad({ memberPartyId: 'p1', amount: { minor: '5000', currency: 'USD' }, method: 'card', purseCurrency: 'USD' }, 'attempt-1');
+    expect(calls.map((c) => c.path)).toEqual(['/v1/auth/step-up', '/v1/auth/step-up', '/v1/loads']);
+    expect(calls[1]!.body).toEqual({ response: { signed: 'c1' } });
+    expect(calls[2]!.stepUp).toBe('su_1');
+    expect(get).toHaveBeenCalledOnce();
+  });
+});
+
 describe('build config', () => {
   it('refuses plain http unless the host is localhost, and names the key, never the value', async () => {
     const { parseMobileConfig } = await import('../src/config.ts');

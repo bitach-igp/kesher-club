@@ -24,7 +24,7 @@ export function OtpInput({ value, onChange, label, error, disabled = false, test
       <Txt variant="caption" tone="secondary">
         {label}
       </Txt>
-      <View style={[styles.boxes, { gap: th.space[2] }]} accessible={false} importantForAccessibility="no-hide-descendants">
+      <View style={[styles.boxes, LTR, { gap: th.space[2] }]} accessible={false} importantForAccessibility="no-hide-descendants">
         {digits.map((d, i) => (
           <View
             key={i}
@@ -68,8 +68,12 @@ export function OtpInput({ value, onChange, label, error, disabled = false, test
   );
 }
 
+// Digits read left to right in Hebrew too. Kept out of StyleSheet.create: React Native Web applies
+// `direction` but its dev-mode validator rejects it there, and the error toast covers the screen.
+const LTR = { direction: 'ltr' } as const;
+
 const styles = StyleSheet.create({
-  boxes: { flexDirection: 'row', direction: 'ltr' },
+  boxes: { flexDirection: 'row' },
   // Kept on-screen (not display:none) so autofill and the keyboard still target it.
   hiddenInput: { opacity: 0.01, minHeight: 1 },
 });

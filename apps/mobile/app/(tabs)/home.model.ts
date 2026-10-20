@@ -94,8 +94,9 @@ export function kycCard(status: KycStatus | undefined): { body: CopyKey; action:
 
 export const frozenCard = (cards: readonly Card[]): Card | undefined => cards.find((c) => c.status === 'frozen');
 
-export type QuickAction = 'send' | 'convert' | 'card';
+export type QuickAction = 'add' | 'send' | 'convert' | 'card';
 export const QUICK_ACTIONS: readonly { action: QuickAction; capability: keyof ServiceStatus['capabilities']; label: CopyKey; href: string }[] = [
+  { action: 'add', capability: 'wallet', label: 'home.quick.add', href: '/fund/add-money' },
   { action: 'send', capability: 'p2p', label: 'home.quick.send', href: '/pay/recipient' },
   { action: 'convert', capability: 'fx', label: 'home.quick.convert', href: '/convert' },
   { action: 'card', capability: 'card', label: 'home.quick.card', href: '/card' },
