@@ -59,7 +59,9 @@ export class PostgresAllowanceActivities implements AllowanceActivities {
       `insert into org.allowance_run (workflow_id, schedule_id, run_date, status, member_count, total_minor, currency, failures, started_at, completed_at)
        values ($1, $2, $3, $4, $5, $6, $7, coalesce($8, 0), case when $4 = 'running' then $9::timestamptz else null end, case when $4 in ('completed','failed') then $9::timestamptz else null end)
        on conflict (workflow_id) do update set status = excluded.status, member_count = excluded.member_count, total_minor = excluded.total_minor,
-         failures = coalesce($8, org.allowance_run.failures), started_at = coalesce(org.allowance_run.started_at, excluded.started_at), completed_at = excluded.completed_at`,
+         failures = coalesce($8, org.allowance_run.failures), started_at = coalesce(org.allowance_run.started_at, excluded.started_at), completed_at = excluded.completed_at
+         -- A preview of a date that already ran (or waits for approval) reads; it never turns that run back into a preview.
+         where excluded.status <> 'preview' or org.allowance_run.status = 'preview'`,
       [p.workflowId, p.scheduleId, p.runDate, status, p.memberCount, p.total.minor.toString(), p.total.currency, extra.failures ?? null, now],
     );
   }

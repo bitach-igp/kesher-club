@@ -8,6 +8,7 @@
 // display name only. Both answer 404 to anyone but the institution's own staff.
 import { DomainError, toWire, type Currency } from '@kesher/domain';
 import type { IdentityRepository } from '../auth/repository.ts';
+import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { ok, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
@@ -42,6 +43,8 @@ export interface AllowanceRunDeps {
   staffInstitution(partyId: string): Promise<string | undefined>;
   db: Database;
   identity: Pick<IdentityRepository, 'findUser'>;
+  /** A run that moves money takes a passkey step-up younger than 5 minutes (REQ-AUTH-006); a preview does not. */
+  stepUp: StepUpService;
 }
 
 type Cadence = 'weekly' | 'monthly' | 'once';
@@ -67,12 +70,12 @@ export function nextRunDate(cadence: Cadence, lastRun: string | undefined, today
 }
 
 /** The staff member's own institution, else 404: another institution's existence is not ours to confirm. */
-async function ownInstitution(d: AllowanceRunDeps, req: HttpRequest): Promise<string> {
+async function ownInstitution(d: AllowanceRunDeps, req: HttpRequest): Promise<{ institutionId: string; partyId: string }> {
   const p = requireRole(req, 'org_staff', 'org_admin', 'org_finance');
   const institutionId = req.params['id'] ?? '';
   if ((await d.staffInstitution(p.partyId)) !== institutionId) throw new DomainError('NOT_FOUND', 'Institution not found');
   if (!(await d.flags.isOn(INSTITUTIONS_MONEY_FLAG))) throw new DomainError('FEATURE_OFF', 'Institution money is not enabled yet');
-  return institutionId;
+  return { institutionId, partyId: p.partyId };
 }
 
 /** "Finance •••• 0109": the role at the institution and the phone's last four digits, never the party id. */
@@ -85,7 +88,7 @@ async function staffName(d: AllowanceRunDeps, partyId: string, role: string | un
 export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance' | 'listAllowanceSchedules' | 'listAllowanceRuns', Handler> {
   return {
     listAllowanceSchedules: route(async (req) => {
-      const institutionId = await ownInstitution(d, req);
+      const { institutionId } = await ownInstitution(d, req);
       const r = await d.db.query<{ id: string; name: string; amount_minor: string; currency: Currency; cadence: Cadence; member_filter: string[]; member_count: number; last_run: string | Date | null }>(
         `select s.id, s.name, s.amount_minor::text, s.currency, s.cadence, s.member_filter,
                 (select count(*)::int from org.member m where m.institution_id = s.institution_id and m.status = 'active' and m.member_party_id is not null
@@ -104,7 +107,7 @@ export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance'
     }),
 
     listAllowanceRuns: route(async (req) => {
-      const institutionId = await ownInstitution(d, req);
+      const { institutionId, partyId: me } = await ownInstitution(d, req);
       const r = await d.db.query<{ workflow_id: string; schedule_id: string; name: string; run_date: string | Date; status: RunStatus; member_count: number; total_minor: string; currency: Currency; started_at: string | Date | null; completed_at: string | Date | null; paid: number; failed: number; paid_minor: string; requested_by: string | null; approvers: string[] | null }>(
         `select r.workflow_id, r.schedule_id, s.name, r.run_date, r.status, r.member_count, r.total_minor::text, r.currency, r.started_at, r.completed_at,
                 (select count(*)::int from org.allowance_payment ap where ap.workflow_id = r.workflow_id and ap.status = 'paid') as paid,
@@ -137,6 +140,8 @@ export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance'
           paid: x.paid,
           failed: x.failed,
           ...(x.requested_by ? { requestedBy: names.get(x.requested_by)! } : {}),
+          // The console offers Approve only to someone other than the requester (REQ-INS-004).
+          requestedByMe: x.requested_by === me,
           approvedBy: (x.approvers ?? []).map((id) => names.get(id)!),
           ...(x.started_at ? { startedAt: new Date(x.started_at).toISOString() } : {}),
           ...(x.completed_at ? { completedAt: new Date(x.completed_at).toISOString() } : {}),
@@ -155,9 +160,16 @@ export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance'
       const schedule = await d.activities.loadSchedule(b.scheduleId);
       if (schedule.institutionId !== institutionId) throw new DomainError('NOT_FOUND', 'Schedule not found');
 
+      if (!b.dryRun) requireStepUp(d.stepUp, req);
+
       const planned = await preview(d.activities, b.scheduleId, b.date);
       const view = { workflowId: planned.workflowId, memberCount: planned.memberCount, total: toWire(planned.total) };
-      if (b.dryRun) return ok({ ...view, status: 'preview' });
+      if (b.dryRun) {
+        // One row per member the run would pay, by roster name (staff-entered, untrusted text).
+        const names = await d.db.query<{ member_party_id: string; member_name: string }>('select member_party_id, member_name from org.member where institution_id = $1 and member_party_id = any($2::uuid[])', [institutionId, planned.members.map((m) => m.memberPartyId)]);
+        const byParty = new Map(names.rows.map((x) => [x.member_party_id, x.member_name]));
+        return ok({ ...view, status: 'preview', rows: planned.members.map((m) => ({ memberName: byParty.get(m.memberPartyId) ?? '', amount: toWire(schedule.amount) })) });
+      }
       try {
         const done = await run(d.activities, b.scheduleId, b.date, p.partyId);
         return ok({ ...view, status: done.status, total: toWire(done.total), failures: done.failures });

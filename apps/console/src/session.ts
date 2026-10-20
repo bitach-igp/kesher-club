@@ -14,6 +14,14 @@ export const REFRESH_COOKIE = 'kesher_console_refresh';
 export const DEVICE_COOKIE = 'kesher_console_device';
 /** The landing the proxy resolved, passed to the pages on a request header only the proxy writes. */
 export const LANDING_HEADER = 'x-kesher-console-landing';
+/**
+ * The access token the proxy resolved (refreshed when it had to), for the pages and server actions of the
+ * same request: a cookie the proxy just rotated is not yet on the request. Server side only; the proxy
+ * overwrites whatever a client sent.
+ */
+export const ACCESS_HEADER = 'x-kesher-console-access';
+/** A step-up token (5 minutes, REQ-AUTH-006) for the next money action; httpOnly like the pair. */
+export const STEP_UP_COOKIE = 'kesher_console_stepup';
 
 export interface SessionCookies {
   access?: string | undefined;
@@ -27,6 +35,8 @@ export interface Resolved {
   landing: Landing;
   /** Cookies to write: the rotated pair after a refresh, or 'clear' when the session ended. */
   write?: TokenPair | 'clear';
+  /** The access token that resolved the landing, for the rest of this request. */
+  access?: string;
 }
 
 const signedOut: Resolved = { landing: { kind: 'signed_out' }, write: 'clear' };
@@ -36,7 +46,7 @@ export async function resolveSession(api: ConsoleApi, cookies: SessionCookies, r
   const land = (m: MyInstitution): Landing => (requestedInstitutionId && requestedInstitutionId !== m.institution.id ? { kind: 'no_access' } : { kind: 'dashboard', ...m });
 
   const first = cookies.access ? await attempt(api, cookies.access) : 401;
-  if (typeof first === 'object') return { landing: land(first) };
+  if (typeof first === 'object') return { landing: land(first), access: cookies.access! };
   if (first === 403) return { landing: { kind: 'no_access' } };
   if (first !== 401 || !cookies.refresh || !cookies.device) return signedOut;
 
@@ -48,7 +58,7 @@ export async function resolveSession(api: ConsoleApi, cookies: SessionCookies, r
     return signedOut;
   }
   const second = await attempt(api, pair.accessToken);
-  if (typeof second === 'object') return { landing: land(second), write: pair };
+  if (typeof second === 'object') return { landing: land(second), write: pair, access: pair.accessToken };
   if (second === 403) return { landing: { kind: 'no_access' }, write: pair };
   return signedOut;
 }

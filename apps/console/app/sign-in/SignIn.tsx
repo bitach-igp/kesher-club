@@ -3,20 +3,11 @@
 // server actions do the rest. A local development build adds the seeded demo staff; a production build
 // drops that branch (NODE_ENV is replaced at build), so the personas never ship.
 import { useEffect, useState } from 'react';
+import { loadPersonas, personaAssert, rememberPersona, webAuthnAssert } from '../../src/passkey.ts';
 import { beginSignIn, finishSignIn } from './actions.ts';
 
 type Persona = { key: string; name: string };
 type Assert = (options: unknown) => Promise<unknown>;
-
-const webAuthn: Assert = async (options) => {
-  if (typeof PublicKeyCredential === 'undefined' || !navigator.credentials) throw new Error('This browser has no passkeys');
-  const credential = await navigator.credentials.get({ publicKey: PublicKeyCredential.parseRequestOptionsFromJSON(options as PublicKeyCredentialRequestOptionsJSON) });
-  if (!credential) throw new Error('cancelled');
-  return (credential as PublicKeyCredential).toJSON();
-};
-
-/** The seeded personas, in a development build only: on the literal, so a production build drops the import. */
-const loadPersonas = process.env.NODE_ENV !== 'production' ? () => import('@kesher/demo/personas') : undefined;
 
 const MESSAGES = { rejected: 'That passkey was not accepted.', unavailable: 'Kesher Club is not reachable right now. Try again shortly.', cancelled: 'Sign-in was cancelled.' } as const;
 
@@ -52,16 +43,18 @@ export function SignIn({ demo }: { demo: boolean }) {
   };
 
   const asPersona = (key: string): Assert => async (options) => {
-    const m = await loadPersonas?.();
-    const p = m?.PERSONAS.find((x) => x.key === key);
-    if (!m || !p) throw new Error('unknown persona');
-    return (await m.passkeyOf(p)).authenticate(options as never);
+    const response = await personaAssert(key, options);
+    rememberPersona(key);
+    return response;
   };
 
   return (
     <>
       <div className="row">
-        <button className="primary" type="button" disabled={busy} onClick={() => void run(webAuthn)} data-testid="sign-in-passkey">
+        <button className="primary" type="button" disabled={busy} onClick={() => {
+            rememberPersona(undefined);
+            void run(webAuthnAssert);
+          }} data-testid="sign-in-passkey">
           Sign in with a passkey
         </button>
       </div>

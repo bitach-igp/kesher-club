@@ -29,3 +29,25 @@ export function consoleApi(baseUrl: string, fetchImpl?: typeof fetch): ConsoleAp
 }
 
 export const statusOf = (e: unknown): number | undefined => (e instanceof ApiError ? e.status : undefined);
+
+/** The API as the signed-in staff member, for pages and server actions; the step-up token comes from its httpOnly cookie. */
+export function institutionApi(baseUrl: string, accessToken: string, stepUpToken?: string) {
+  const c = createClient({
+    baseUrl,
+    getAccessToken: () => accessToken,
+    // A preview sends an empty header and the API ignores it; a run without a fresh token answers STEP_UP_REQUIRED.
+    getStepUpToken: () => stepUpToken ?? '',
+    newIdempotencyKey: () => {
+      throw new Error('Every console call that takes an idempotency key names it');
+    },
+  });
+  return {
+    schedules: (id: string) => c.get('/institutions/{id}/allowance-schedules', { path: { id } }),
+    runs: (id: string) => c.get('/institutions/{id}/allowance-runs', { path: { id } }),
+    runAllowance: (id: string, body: Schemas['AllowanceRunRequest'], idempotencyKey: string) => c.post('/institutions/{id}/allowance-runs', { path: { id }, body, idempotencyKey }),
+    stepUp: (response?: unknown) => c.post('/auth/step-up', { body: response ? { response: response as Record<string, never> } : {} }),
+  };
+}
+
+/** The API's error code, for a server action to hand back; undefined for anything that is not an API answer. */
+export const codeOf = (e: unknown): string | undefined => (e instanceof ApiError ? String(e.code ?? e.status) : undefined);

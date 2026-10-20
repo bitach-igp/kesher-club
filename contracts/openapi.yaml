@@ -872,10 +872,14 @@ paths:
     post:
       operationId: runAllowance
       summary: Dry-run or execute an allowance schedule for a date
-      description: REQ-INS-003/004. Org finance; over ₪5,000 needs a second approver. Idempotent; workflow id allowance:{schedule}:{date}.
+      description: >-
+        REQ-INS-003/004. Org finance; over ₪5,000 needs a second approver, who posts the same run. Idempotent; workflow id
+        allowance:{schedule}:{date}. A run that moves money (`dryRun: false`) needs a step-up token younger than 5 minutes
+        (REQ-AUTH-006); a preview does not, and lists the members it would pay by roster name.
       parameters:
         - { $ref: "#/components/parameters/Id" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
       requestBody:
         required: true
         content:
@@ -2454,6 +2458,15 @@ components:
         memberCount: { type: integer }
         total: { $ref: "#/components/schemas/Money" }
         failures: { type: integer }
+        rows:
+          type: array
+          description: On a preview only, one row per member the run would pay. The name is roster text, untrusted.
+          items:
+            type: object
+            required: [memberName, amount]
+            properties:
+              memberName: { type: string }
+              amount: { $ref: "#/components/schemas/Money" }
     AllowanceSchedule:
       type: object
       required: [id, name, amount, cadence, cohort]
@@ -2476,7 +2489,7 @@ components:
         displayName: { type: string, description: "Role and the last four digits of the phone, e.g. Finance •••• 0109" }
     AllowanceRunSummary:
       type: object
-      required: [workflowId, scheduleId, scheduleName, runDate, status, memberCount, total, paidTotal, paid, failed, approvedBy]
+      required: [workflowId, scheduleId, scheduleName, runDate, status, memberCount, total, paidTotal, paid, failed, approvedBy, requestedByMe]
       properties:
         workflowId: { type: string }
         scheduleId: { type: string, format: uuid }
@@ -2490,6 +2503,7 @@ components:
         failed: { type: integer, minimum: 0 }
         requestedBy: { $ref: "#/components/schemas/StaffName" }
         approvedBy: { type: array, items: { $ref: "#/components/schemas/StaffName" } }
+        requestedByMe: { type: boolean, description: True when the signed-in staff member asked for this run; they cannot be its second approver }
         startedAt: { type: string, format: date-time }
         completedAt: { type: string, format: date-time }
     Receipt:

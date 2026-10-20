@@ -1,15 +1,21 @@
 // Institution console shell (T-0608): environment banner and the tokens' palette. Screens I01-I14 arrive
 // card by card; this card lands staff on their institution.
 import type { ReactNode } from 'react';
+import { headers } from 'next/headers';
 import { theme } from '@kesher/tokens';
 import { getConfig } from '../src/config.ts';
+import { dirOf, localeFrom, t } from '../src/i18n.ts';
+import { decodeLanding, LANDING_HEADER } from '../src/session.ts';
 
 export const metadata = { title: 'Kesher Club institution console' };
 // Pages render per request and read config then, never at build.
 export const dynamic = 'force-dynamic';
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default async function RootLayout({ children }: { children: ReactNode }) {
   const cfg = getConfig();
+  const h = await headers();
+  const locale = localeFrom(h.get('accept-language'));
+  const signedIn = decodeLanding(h.get(LANDING_HEADER)).kind === 'dashboard';
   const th = theme.light;
   const css = `
     :root { --bg: ${th.color.bg.canvas}; --surface: ${th.color.bg.surface}; --sunken: ${th.color.bg.sunken}; --text: ${th.color.text.primary}; --muted: ${th.color.text.secondary};
@@ -22,10 +28,11 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     .muted { color: var(--muted); } .error { color: var(--danger); }
     button { padding: 8px 14px; border-radius: var(--radius); border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; font: inherit; }
     button.primary { background: var(--primary); color: var(--on-primary); border-color: var(--primary); } button:disabled { opacity: .6; cursor: default; }
+    nav { display: flex; gap: 16px; padding: 8px 32px; border-bottom: 1px solid var(--border); background: var(--surface); } table { border-collapse: collapse; width: 100%; } td { padding: 4px 8px; border-bottom: 1px solid var(--border); } h2 { font-size: 16px; margin: 24px 0 8px; }
     .row { display: flex; gap: 8px; flex-wrap: wrap; } dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; } dt { color: var(--muted); }
   `;
   return (
-    <html lang="en">
+    <html lang={locale} dir={dirOf(locale)}>
       <head>
         <style>{css}</style>
       </head>
@@ -33,6 +40,12 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <div className={`banner ${cfg.CONSOLE_ENVIRONMENT}`} role="status">
           {cfg.CONSOLE_ENVIRONMENT.toUpperCase()} · Kesher Club institution console
         </div>
+        {signedIn ? (
+          <nav aria-label="Console">
+            <a href="/">{t('nav.home', locale)}</a>
+            <a href="/allowances">{t('nav.allowances', locale)}</a>
+          </nav>
+        ) : null}
         <main>{children}</main>
       </body>
     </html>

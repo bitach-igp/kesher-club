@@ -979,7 +979,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Dry-run or execute an allowance schedule for a date
-         * @description REQ-INS-003/004. Org finance; over ₪5,000 needs a second approver. Idempotent; workflow id allowance:{schedule}:{date}.
+         * @description REQ-INS-003/004. Org finance; over ₪5,000 needs a second approver, who posts the same run. Idempotent; workflow id allowance:{schedule}:{date}. A run that moves money (`dryRun: false`) needs a step-up token younger than 5 minutes (REQ-AUTH-006); a preview does not, and lists the members it would pay by roster name.
          */
         readonly post: operations["runAllowance"];
         readonly delete?: never;
@@ -1764,6 +1764,11 @@ export interface components {
         readonly AllowanceRun: {
             readonly failures?: number;
             readonly memberCount: number;
+            /** @description On a preview only, one row per member the run would pay. The name is roster text, untrusted. */
+            readonly rows?: readonly {
+                readonly amount: components["schemas"]["Money"];
+                readonly memberName: string;
+            }[];
             /** @enum {string} */
             readonly status: "preview" | "awaiting_second_approval" | "running" | "completed" | "failed";
             readonly total: components["schemas"]["Money"];
@@ -1786,6 +1791,8 @@ export interface components {
             readonly paid: number;
             readonly paidTotal: components["schemas"]["Money"];
             readonly requestedBy?: components["schemas"]["StaffName"];
+            /** @description True when the signed-in staff member asked for this run; they cannot be its second approver */
+            readonly requestedByMe: boolean;
             /** Format: date */
             readonly runDate: string;
             /** Format: uuid */
@@ -4046,6 +4053,8 @@ export interface operations {
             readonly header: {
                 /** @description Client-generated key; replays return the original response for 24 h. */
                 readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
             };
             readonly path: {
                 readonly id: components["parameters"]["Id"];
