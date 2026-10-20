@@ -26,7 +26,7 @@ export interface AdminDeps {
 /** Staff identity for the complaint and alert services: SSO subject for stamps, party id and role for the audit chain. */
 const staffSubject = (p: ReturnType<typeof requireStaff>) => ({ subject: p.subject ?? p.partyId, partyId: p.partyId, role: 'admin' });
 
-const approvalBody = (a: ApprovalRequest) => ({ id: a.id, kind: a.kind, subject: a.subject, status: a.status, approvals: a.approvals, requestedBy: a.requestedBy, expiresAt: new Date(a.expiresAt).toISOString(), payload: a.payload });
+export const approvalBody = (a: ApprovalRequest) => ({ id: a.id, kind: a.kind, subject: a.subject, status: a.status, approvals: a.approvals, requestedBy: a.requestedBy, expiresAt: new Date(a.expiresAt).toISOString(), payload: a.payload });
 
 export function adminHandlers(d: AdminDeps): Record<string, Handler> {
   return {

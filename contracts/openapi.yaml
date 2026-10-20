@@ -1198,6 +1198,144 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ApprovalRequest" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions:
+    get:
+      operationId: listAdminInstitutions
+      tags: [admin]
+      summary: Institutions, with how many active staff each has
+      description: REQ-ADM-004. Staff token only.
+      security: [{ staff: [] }]
+      responses:
+        "200":
+          description: Institutions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AdminInstitution" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createAdminInstitution
+      tags: [admin]
+      summary: Onboard an institution
+      description: REQ-ADM-004. Admin staff only; audited. Idempotent by key.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, market, reason]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 120 }
+                market: { type: string, enum: [US, IL] }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201":
+          description: The institution
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminInstitution" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions/{id}/staff:
+    get:
+      operationId: listAdminInstitutionStaff
+      tags: [admin]
+      summary: An institution's staff, and the role grants waiting for a second admin
+      description: REQ-ADM-004. Staff token only.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Staff and pending grants
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pendingGrants]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/InstitutionStaffMember" } }
+                  pendingGrants: { type: array, items: { $ref: "#/components/schemas/ApprovalRequest" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: assignAdminInstitutionStaff
+      tags: [admin]
+      summary: Make a signed-up member one of the institution's staff
+      description: >-
+        REQ-ADM-004. Admin staff only; audited. The staff role applies at once. The finance and admin roles
+        open a staff_grant approval with the proposer as the first approver, and apply when a different
+        admin approves it through approveAdminStaffGrant. A role reaches the member's token at their next
+        sign-in. A member can be staff of one institution at a time.
+      security: [{ staff: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [partyId, role, reason]
+              properties:
+                partyId: { type: string, format: uuid }
+                role: { type: string, enum: [staff, finance, admin] }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201":
+          description: The staff member when the role applied, or the grant waiting for a second admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffAssignment" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions/{id}/staff/{partyId}/remove:
+    post:
+      operationId: removeAdminInstitutionStaff
+      tags: [admin]
+      summary: Remove a member from an institution's staff
+      description: REQ-ADM-004. Admin staff only; audited. Their institution actions stop at once; the role leaves their token at the next sign-in.
+      security: [{ staff: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - name: partyId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: The staff member, now inactive
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionStaffMember" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/staff-grants/{id}/approve:
+    post:
+      operationId: approveAdminStaffGrant
+      tags: [admin]
+      summary: Second approval of an institution finance or admin role
+      description: REQ-ADM-004. Must come from a different admin than the proposer; the role applies then and is audited. Staff token only.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The grant after the decision, with the staff member once it applied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffAssignment" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/bindings:
     get:
       operationId: listAdminBindings
@@ -1496,13 +1634,37 @@ components:
       required: [id, kind, subject, status, approvals, requestedBy, expiresAt, payload]
       properties:
         id: { type: string, format: uuid }
-        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction, fx_rate] }
+        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction, fx_rate, staff_grant] }
         subject: { type: string }
         status: { type: string, enum: [pending, awaiting_second_approval, approved, rejected, expired] }
         approvals: { type: integer, minimum: 0 }
         requestedBy: { type: string }
         expiresAt: { type: string, format: date-time }
         payload: { type: object, additionalProperties: true }
+    AdminInstitution:
+      type: object
+      required: [id, name, market, createdAt, activeStaff]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        market: { type: string, enum: [US, IL] }
+        createdAt: { type: string, format: date-time }
+        activeStaff: { type: integer, minimum: 0 }
+    InstitutionStaffMember:
+      type: object
+      required: [partyId, institutionId, role, active, createdAt]
+      properties:
+        partyId: { type: string, format: uuid }
+        institutionId: { type: string, format: uuid }
+        role: { type: string, enum: [staff, finance, admin] }
+        active: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        phoneMasked: { type: string, description: The last four digits of their phone }
+    StaffAssignment:
+      type: object
+      properties:
+        staff: { $ref: "#/components/schemas/InstitutionStaffMember" }
+        grant: { $ref: "#/components/schemas/ApprovalRequest" }
     ProviderBinding:
       type: object
       required: [capability, port, direction, vendors, flags, market]

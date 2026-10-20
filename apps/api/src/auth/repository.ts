@@ -75,6 +75,8 @@ export interface IdentityRepository {
   findUser(partyId: string): Promise<UserAccount | undefined>;
   createUser(user: UserAccount): Promise<UserAccount>;
   setUserStatus(partyId: string, status: UserStatus): Promise<void>;
+  /** Replaces the account's roles; sessions keep the roles they were issued with until the next sign-in (T-0924). */
+  setUserRoles(partyId: string, roles: readonly string[]): Promise<void>;
 
   recordOtpStart(record: OtpRecord): Promise<void>;
   countOtpStarts(phone: string, since: string): Promise<number>;
@@ -123,6 +125,11 @@ export class InMemoryIdentityRepository implements IdentityRepository {
   async setUserStatus(partyId: string, status: UserStatus) {
     const u = this.users.get(partyId);
     if (u) this.users.set(partyId, { ...u, status });
+  }
+
+  async setUserRoles(partyId: string, roles: readonly string[]) {
+    const u = this.users.get(partyId);
+    if (u) this.users.set(partyId, { ...u, roles: [...roles] });
   }
 
   async recordOtpStart(record: OtpRecord) {

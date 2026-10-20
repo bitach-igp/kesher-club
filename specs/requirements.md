@@ -71,5 +71,6 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-ADM-001 | P1 | Hash-chained admin audit |
 | REQ-ADM-002 | P1 | Two-person money flag flips |
 | REQ-ADM-003 | P2 | Finance publishes club rates through the admin API; manual rates need two finance approvers and an audit entry |
+| REQ-ADM-004 | P2 | Admins onboard institutions and their staff; institution finance and admin roles need a second admin and an audit entry |
 | REQ-CMP-001 | P2 | Monitoring alerts with dispositions |
 | REQ-CMP-002 | P1 | Complaint SLA timers and export |
