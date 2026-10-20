@@ -4,13 +4,13 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { consoleApi } from './src/api.ts';
 import { getConfig } from './src/config.ts';
-import { ACCESS_COOKIE, cookieWrites, DEVICE_COOKIE, encodeLanding, LANDING_HEADER, REFRESH_COOKIE, resolveSession } from './src/session.ts';
+import { ACCESS_COOKIE, ACCESS_HEADER, cookieWrites, DEVICE_COOKIE, encodeLanding, LANDING_HEADER, REFRESH_COOKIE, resolveSession } from './src/session.ts';
 
 const cfg = getConfig();
 const api = consoleApi(cfg.CONSOLE_API_URL);
 
 export default async function proxy(request: NextRequest): Promise<NextResponse> {
-  const { landing, write } = await resolveSession(api, {
+  const { landing, write, access } = await resolveSession(api, {
     access: request.cookies.get(ACCESS_COOKIE)?.value,
     refresh: request.cookies.get(REFRESH_COOKIE)?.value,
     device: request.cookies.get(DEVICE_COOKIE)?.value,
@@ -21,6 +21,8 @@ export default async function proxy(request: NextRequest): Promise<NextResponse>
   } else {
     const headers = new Headers(request.headers);
     headers.set(LANDING_HEADER, encodeLanding(landing));
+    headers.delete(ACCESS_HEADER);
+    if (access) headers.set(ACCESS_HEADER, access);
     res = NextResponse.next({ request: { headers } });
   }
   for (const c of cookieWrites(write, cfg.CONSOLE_ENVIRONMENT, new Date())) res.cookies.set(c.name, c.value, c.options);

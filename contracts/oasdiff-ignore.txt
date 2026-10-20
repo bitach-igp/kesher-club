@@ -17,3 +17,6 @@ POST /auth/passkeys/authenticate the request property 'deviceId' became required
 POST /auth/passkeys/authenticate the 'deviceId' request property's minLength was increased from '0' to '1'
 POST /auth/passkeys/register added the new required request property 'deviceId'
 POST /auth/token/refresh the 'deviceId' request property's minLength was increased from '0' to '1'
+
+# T-0610 (REQ-AUTH-006, REQ-INS-004): an allowance run moves institution money, so a run that pays (dryRun false) now needs a step-up like every other money action; a preview ignores the header. The institution console, the only client, sends it in the same change.
+POST /institutions/{id}/allowance-runs added the new required 'header' request parameter 'X-Step-Up'

@@ -46,7 +46,7 @@ describe('console session (T-0608, TST-INS-004)', () => {
 
   it('an org_finance token reaches the dashboard of its own institution only', async () => {
     const { api } = fakeApi({ 'finance-access': mine });
-    expect(await resolveSession(api, { access: 'finance-access' })).toEqual({ landing: { kind: 'dashboard', ...mine } });
+    expect(await resolveSession(api, { access: 'finance-access' })).toEqual({ landing: { kind: 'dashboard', ...mine }, access: 'finance-access' });
     expect((await resolveSession(api, { access: 'finance-access' }, YESHIVA)).landing.kind).toBe('dashboard');
     expect((await resolveSession(api, { access: 'finance-access' }, OTHER)).landing).toEqual({ kind: 'no_access' });
   });
@@ -54,7 +54,7 @@ describe('console session (T-0608, TST-INS-004)', () => {
   it('an expired token refreshes once, writes the rotated pair, and lands', async () => {
     const { api, calls } = fakeApi({ 'access-2': mine }, [pair(2)]);
     const r = await resolveSession(api, { access: 'expired', refresh: 'refresh-1', device: 'console-1' });
-    expect(r).toEqual({ landing: { kind: 'dashboard', ...mine }, write: pair(2) });
+    expect(r).toEqual({ landing: { kind: 'dashboard', ...mine }, write: pair(2), access: 'access-2' });
     expect(calls.refresh).toEqual([['refresh-1', 'console-1']]);
     expect(calls.me).toEqual(['expired', 'access-2']);
   });

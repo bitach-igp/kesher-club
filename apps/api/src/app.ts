@@ -208,7 +208,7 @@ export function createApp(o: AppOptions): App {
     }),
     importRoster: importRosterHandler({ roster: s.roster, staffInstitution }),
     ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
-    ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.clock.now), flags: s.flags, staffInstitution, db: o.db, identity: s.identity }),
+    ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.clock.now), flags: s.flags, staffInstitution, db: o.db, identity: s.identity, stepUp: s.stepUp }),
     ...fxAdminHandlers(s.rates),
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
     ...preferenceHandlers(s.preferences),
