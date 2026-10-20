@@ -14,3 +14,14 @@ Steps (from repo root, PowerShell on Windows unless stated):
 11. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with ledger at 20 migrations. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`. Step 7 fails with a check constraint violation (a negative limit). Step 8 fails with `permission denied for table institution_credit_limit` (limits are never updated, only superseded). Step 9 prints `INSERT 0 1`. Step 10 prints one row with an empty `pg_advisory_xact_lock` and `COMMIT`.
 Report back: the console output of steps 4, 5, 6, 7, 8, 9 and 10.
+
+## Result
+PASS, 2026-10-20 15:12 Asia/Jerusalem, desktop runner worktree at db71494 (Docker 29.8.2, postgres:16).
+- Step 4: `Migrating to version 0020 (20 migrations in total)` for ledger; `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent. (The first attempt was cut off by the desktop tool's timeout after five schemas; re-running the same command finished the rest and printed `ok` for all nine. atlas_ledger revisions: 20, max 0020.)
+- Step 5: `No migration files to execute` for all nine schemas, then `ok` for each.
+- Step 6: `INSERT 0 1`.
+- Step 7: `ERROR: new row for relation "institution_credit_limit" violates check constraint "institution_credit_limit_limit_minor_check"`.
+- Step 8: `ERROR: permission denied for table institution_credit_limit`.
+- Step 9: `INSERT 0 1`.
+- Step 10: `BEGIN`, one row with an empty `pg_advisory_xact_lock`, `COMMIT`.
+- Step 11: container removed.

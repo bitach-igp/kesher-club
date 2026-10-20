@@ -47,6 +47,18 @@ describe('routing on the session', () => {
   });
 });
 
+describe('the device reaches every screen (T-0528)', () => {
+  it('a screen that reads the device renders under the root layout instead of throwing "DeviceProvider is missing"', async () => {
+    const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+    const { useDevice } = await import('../src/device.ts');
+    const deps = createRootDeps(config, { navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X)' } });
+    deps.session.signIn({ accessToken: 'at', refreshToken: 'rt', accessExpiresAt: '2026-11-01T09:10:00Z' });
+    const Probe = () => <span data-testid="probe">{`${useDevice().info.platform}:${useDevice().info.osVersion}`}</span>;
+    render(<RootLayoutView deps={deps} router={memoryRouter('/pay')} segments={['pay']}><Probe /></RootLayoutView>);
+    expect(screen.getByTestId('probe').textContent).toBe('ios:17.4');
+  });
+});
+
 describe('the authenticator follows the build, never the API', () => {
   const simOptions: PasskeyAuthenticationOptions = { challenge: 'c-from-the-simulator', rpId: 'kesher.example', timeoutMs: 60_000, userVerification: 'required', allowCredentials: [] };
 
