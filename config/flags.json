@@ -147,6 +147,13 @@
     "turnOnTrigger": "wallet.enabled + institution agreement"
   },
   {
+    "key": "institutions.kyb.checks",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "Automated institution KYB checks through a vendor: registry, exempt status and sanctions screening (the simulator answers until on)",
+    "turnOnTrigger": "The bank's answers to the questions in docs/bank-review/institution-kyb.md + a signed KYB and screening vendor"
+  },
+  {
     "key": "institutions.deposits",
     "defaultProd": false,
     "owner": "Ezra",

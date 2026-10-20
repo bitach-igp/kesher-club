@@ -32,9 +32,10 @@ State described: commit `fb4c6de` on branch `claude/practical-babbage-80xevv`, 1
 | [monitoring-rules.md](monitoring-rules.md) | The four transaction monitoring rules with their exact thresholds, the flag that enables them, and the alert disposition path |
 | [complaint-process.md](complaint-process.md) | The acknowledge and resolve clocks, escalation, and the CSV export the bank receives |
 | [disclosures.md](disclosures.md) | The legal document types, how consent is recorded and re-asked, and the disclosures shown before payment |
+| [institution-kyb.md](institution-kyb.md) | What Kesher checks about an institution (a school) before its deposits, allowances, credit or payouts run, which capability each KYB outcome unlocks, and the questions the bank is asked to answer |
 
 Suggested order: this page, then money-flows.md ("How every flow is booked" first), then the other
-three in any order.
+four in any order.
 
 ## How evidence is cited
 
