@@ -24,6 +24,8 @@ export interface Persona {
   /** The recordings (docs/bank-review/README.md) that start from this persona. */
   recs: readonly string[];
   role: string;
+  /** Institution staff role the seed grants at the demo yeshiva through the admin API (T-0034). */
+  staff?: 'finance';
 }
 
 export const PERSONAS: readonly Persona[] = [
@@ -35,13 +37,31 @@ export const PERSONAS: readonly Persona[] = [
   { key: 'tamar', name: 'Tamar Example', phone: '+15555550106', market: 'US', kyc: 'T2', loads: [{ currency: 'USD', minor: 20_000n }], recs: ['REC-12'], role: 'member with an open virtual card' },
   { key: 'ruth', name: 'Ruth Example', phone: '+15555550107', market: 'US', kyc: 'T1', loads: [{ currency: 'USD', minor: 3_000n }], recs: ['REC-17'], role: 'ready to close: card-loaded money only, no holds' },
   { key: 'ben', name: 'Ben Example', phone: '+15555550108', market: 'US', kyc: 'T1', loads: [], recs: ['REC-01'], role: 'funder; the link to a member is missing (see docs/setup/demo.md)' },
+  { key: 'rivka', name: 'Rivka Example', phone: '+15555550109', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-14', 'REC-15'], role: 'yeshiva finance: imports the roster, requests runs and payouts', staff: 'finance' },
+  { key: 'shimon', name: 'Shimon Example', phone: '+15555550110', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-14'], role: 'yeshiva finance: the second approver', staff: 'finance' },
 ];
+
+/**
+ * The demo yeshiva (T-0034): onboarded by one staff admin, its finance staff granted by that admin and
+ * approved by a second (REQ-ADM-004), and its roster imported by its first finance persona. The roster's
+ * names and funder addresses are fictional; `example.test` never resolves.
+ */
+export const INSTITUTION = {
+  key: 'yeshiva',
+  name: 'Yeshivat Kesher (demo)',
+  market: 'IL' as Market,
+  /** Simulator identity-provider subjects (apps/simulators/src/oidc.ts): Ada proposes, Abe approves. */
+  admins: ['staff-admin-1', 'staff-admin-2'] as const,
+  roster: {
+    csv: ['name,funder_email,programme', 'Student One Example,funder.one@example.test,Shiur Alef', 'Student Two Example,funder.two@example.test,Shiur Alef', 'Student Three Example,funder.three@example.test,Shiur Bet'].join('\n'),
+    mapping: { memberName: 'name', funderEmail: 'funder_email', programme: 'programme' },
+  },
+} as const;
 
 /** Personas the contract cannot make yet. Listed, never created through SQL. */
 export const MISSING: readonly { who: string; recs: readonly string[]; why: string }[] = [
   { who: 'Funder linked to a member (Ben to Dana)', recs: ['REC-01', 'REC-04'], why: 'POST /memberships needs a plan in billing.plan_version, and no endpoint or migration creates one' },
-  { who: 'Institution with a roster', recs: ['REC-14', 'REC-15'], why: 'no endpoint creates org.institution; a roster import only makes invited members, and nothing over HTTP activates them' },
-  { who: 'Finance requester and second approver', recs: ['REC-14'], why: 'no endpoint creates org.staff or grants the org_finance role; sign-up always gives the member role' },
+  { who: 'Active roster members', recs: ['REC-14', 'REC-15'], why: 'a roster import makes invited members, and nothing over HTTP activates them' },
   { who: 'Allowance schedule', recs: ['REC-14'], why: 'no endpoint creates org.allowance_schedule' },
 ];
 

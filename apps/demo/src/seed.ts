@@ -5,20 +5,41 @@
 // gets one derived from the persona, and a persona that already exists is signed in instead of made
 // again, so a second run creates nothing and prints the same table.
 //
+// With a staff signing key (ADMIN_API_SIGNING_KEY, the console's key from .env.local-staff) it also onboards
+// the demo yeshiva through /admin/* as two staff admins, grants its finance personas (one admin proposes,
+// the other approves), and imports its roster as the first finance persona (T-0034).
+//
 //   pnpm --filter @kesher/demo seed     (DEMO_API_URL and DEMO_PANEL_URL default to the dev ports)
 import { pathToFileURL } from 'node:url';
+import { importJWK, SignJWT, type JWK } from 'jose';
 import { loadConfig } from '@kesher/domain';
 import { SIM_OTP_CODE, type PasskeyAuthenticationOptions, type PasskeyRegistrationOptions } from '@kesher/ports';
 import { ApiError, createClient, type Schemas } from '@kesher/sdk';
 import { z } from 'zod';
 import { DEFAULT_PORT, DEFAULT_SIMULATOR_PORT } from './dev.ts';
-import { deviceIdOf, MISSING, passkeyOf, PERSONAS, type Persona } from './personas.ts';
+import { deviceIdOf, INSTITUTION, MISSING, passkeyOf, PERSONAS, type Persona } from './personas.ts';
 
 export interface SeedTarget {
   /** The API's base URL, with or without /v1. */
   apiUrl: string;
   /** The simulator control panel's base URL. */
   panelUrl: string;
+  /** The console's private staff-token key and its kid; without it the yeshiva is not seeded. */
+  staffKey?: { jwk: JWK; kid: string } | undefined;
+}
+
+export interface SeededInstitution {
+  id: string;
+  name: string;
+  /** Persona keys of its active finance staff. */
+  finance: string[];
+  rosterStatus: string;
+  rosterRows: number;
+}
+
+export interface SeedResult {
+  personas: SeededPersona[];
+  institution?: SeededInstitution | undefined;
 }
 
 export interface SeededPersona {
@@ -39,10 +60,56 @@ const wire = (response: object): Record<string, never> => response as Record<str
 /** The access token's subject is the party id; the seed only reads it, the API verifies it. */
 const partyOf = (accessToken: string): string => (JSON.parse(Buffer.from(accessToken.split('.')[1] ?? '', 'base64url').toString('utf8')) as { sub: string }).sub;
 
-export async function seed(target: SeedTarget): Promise<SeededPersona[]> {
-  const out: SeededPersona[] = [];
-  for (const persona of PERSONAS) out.push(await seedPersona(target, persona));
-  return out;
+export async function seed(target: SeedTarget): Promise<SeedResult> {
+  const personas: SeededPersona[] = [];
+  for (const persona of PERSONAS) personas.push(await seedPersona(target, persona));
+  return { personas, ...(target.staffKey ? { institution: await seedInstitution(target, target.staffKey, personas) } : {}) };
+}
+
+/**
+ * The yeshiva through the admin API: created once (keyed), each finance persona proposed by the first admin
+ * and approved by the second, then the roster imported by the first finance persona, signed in again so
+ * its token carries org_finance. A rerun finds the institution, the active staff and the keyed import.
+ */
+async function seedInstitution(target: SeedTarget, key: { jwk: JWK; kid: string }, personas: readonly SeededPersona[]): Promise<SeededInstitution> {
+  const [proposer, approver] = await Promise.all(INSTITUTION.admins.map((sub) => staffClient(target, key, sub)));
+  const yeshiva = await proposer!.post('/admin/institutions', { body: { name: INSTITUTION.name, market: INSTITUTION.market, reason: 'Demo seed: the pilot yeshiva' }, idempotencyKey: `seed-${INSTITUTION.key}-create` });
+  const finance = personas.filter((r) => r.persona.staff === 'finance');
+  for (const f of finance) {
+    const { items } = await proposer!.get('/admin/institutions/{id}/staff', { path: { id: yeshiva.id } });
+    if (items.some((s) => s.partyId === f.partyId && s.active && s.role === 'finance')) continue;
+    const { grant } = await proposer!.post('/admin/institutions/{id}/staff', { path: { id: yeshiva.id }, body: { partyId: f.partyId, role: 'finance', reason: `Demo seed: ${f.persona.role}` }, idempotencyKey: `seed-${INSTITUTION.key}-finance-${f.persona.key}` });
+    if (!grant) throw new Error(`The finance grant for ${f.persona.key} opened no approval`);
+    const done = await approver!.post('/admin/staff-grants/{id}/approve', { path: { id: grant.id } });
+    if (done.staff?.role !== 'finance') throw new Error(`The finance grant for ${f.persona.key} is ${done.grant?.status ?? 'missing'} after the second approval`);
+  }
+  const importer = finance[0];
+  if (!importer) throw new Error('No finance persona to import the roster');
+  const tokens = await signIn(target, importer.persona);
+  if (!tokens) throw new Error(`${importer.persona.key} cannot sign in to import the roster`);
+  const roster = await memberClient(target, importer.persona, tokens.accessToken).post('/institutions/{id}/rosters', { path: { id: yeshiva.id }, body: { csv: INSTITUTION.roster.csv, mapping: { ...INSTITUTION.roster.mapping }, commit: true }, idempotencyKey: `seed-${INSTITUTION.key}-roster-1` });
+  if (roster.status !== 'committed') throw new Error(`The roster import is ${roster.status}: ${JSON.stringify(roster.errors)}`);
+  const { items } = await proposer!.get('/admin/institutions/{id}/staff', { path: { id: yeshiva.id } });
+  const active = new Set(items.filter((s) => s.active && s.role === 'finance').map((s) => s.partyId));
+  return { id: yeshiva.id, name: yeshiva.name, finance: finance.filter((f) => active.has(f.partyId)).map((f) => f.persona.key), rosterStatus: roster.status, rosterRows: roster.rowCount };
+}
+
+/**
+ * A staff client signing the console's 5-minute staff token (ADR-013) for a simulator identity-provider
+ * subject. Development only: the key is the local pair from .env.local-staff, never a deployed console's.
+ */
+async function staffClient(target: SeedTarget, key: { jwk: JWK; kid: string }, subject: string): Promise<Client> {
+  const signer = await importJWK(key.jwk, 'ES256');
+  return createClient({
+    baseUrl: apiBase(target),
+    getAccessToken: async () => {
+      const now = Math.floor(Date.now() / 1000);
+      return new SignJWT({ roles: ['admin'], sid: `seed:${subject}` }).setProtectedHeader({ alg: 'ES256', kid: key.kid }).setIssuer('kesher-admin').setAudience('kesher-api:admin').setSubject(subject).setIssuedAt(now).setExpirationTime(now + 300).sign(signer);
+    },
+    newIdempotencyKey: () => {
+      throw new Error('Every seed call names its idempotency key, so a rerun replays it');
+    },
+  });
 }
 
 async function seedPersona(target: SeedTarget, p: Persona): Promise<SeededPersona> {
@@ -145,25 +212,34 @@ const major = (minor: bigint): string => {
 };
 
 /** The table the seed prints: the same on every run against the same database. */
-export function formatTable(rows: readonly SeededPersona[]): string {
+export function formatTable(result: SeedResult): string {
+  const rows = result.personas;
   const head = ['persona', 'name', 'market', 'phone', 'party', 'kyc', 'USD', 'ILS', 'card', 'recordings'];
   const body = rows.map((r) => [r.persona.key, r.persona.name, r.persona.market, r.persona.phone, r.partyId, r.kyc, major(r.usd), major(r.ils), r.card, r.persona.recs.join(' ')]);
   const widths = head.map((h, i) => Math.max(h.length, ...body.map((row) => row[i]!.length)));
   const line = (cells: readonly string[]): string => cells.map((c, i) => c.padEnd(widths[i]!)).join('  ').trimEnd();
+  const i = result.institution;
+  const institution = i
+    ? ['', `Institution: ${i.name} (${INSTITUTION.market}) ${i.id}`, `- finance staff: ${i.finance.join(', ') || 'none'}`, `- roster: ${i.rosterStatus}, ${i.rosterRows} invited members`]
+    : ['', 'Institution: not seeded; set ADMIN_API_SIGNING_KEY and ADMIN_API_SIGNING_KID from .env.local-staff (docs/setup/demo.md)'];
   const missing = MISSING.map((m) => `- ${m.who} (${m.recs.join(', ')}): ${m.why}`);
-  return [line(head), ...body.map(line), '', 'Not seeded (the contract cannot make them yet):', ...missing].join('\n');
+  return [line(head), ...body.map(line), ...institution, '', 'Not seeded (the contract cannot make them yet):', ...missing].join('\n');
 }
 
 const seedConfigSchema = z.object({
   DEMO_API_URL: z.url().default(`http://localhost:${DEFAULT_PORT}`),
   DEMO_PANEL_URL: z.url().default(`http://localhost:${DEFAULT_SIMULATOR_PORT}`),
+  /** The console's private staff key (a JWK as JSON) and kid, from .env.local-staff; optional. */
+  ADMIN_API_SIGNING_KEY: z.string().optional(),
+  ADMIN_API_SIGNING_KID: z.string().default('local-staff-1'),
 });
 
 const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   try {
     const config = loadConfig(seedConfigSchema, process.env);
-    process.stdout.write(`${formatTable(await seed({ apiUrl: config.DEMO_API_URL, panelUrl: config.DEMO_PANEL_URL }))}\n`);
+    const staffKey = config.ADMIN_API_SIGNING_KEY ? { jwk: JSON.parse(config.ADMIN_API_SIGNING_KEY) as JWK, kid: config.ADMIN_API_SIGNING_KID } : undefined;
+    process.stdout.write(`${formatTable(await seed({ apiUrl: config.DEMO_API_URL, panelUrl: config.DEMO_PANEL_URL, staffKey }))}\n`);
   } catch (e) {
     process.stderr.write(`seed failed: ${e instanceof Error ? e.message : String(e)}\n`);
     process.exit(1);
