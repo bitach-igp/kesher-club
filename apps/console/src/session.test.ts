@@ -8,7 +8,7 @@ import { cookieOptions, cookieWrites, decodeLanding, encodeLanding, resolveSessi
 
 const YESHIVA = '0190a0a0-0000-7000-8000-0000000000f1';
 const OTHER = '0190a0a0-0000-7000-8000-0000000000f2';
-const mine: MyInstitution = { institution: { id: YESHIVA, name: 'Yeshivat Kesher (demo)', market: 'IL' }, role: 'finance' };
+const mine: MyInstitution = { institution: { id: YESHIVA, name: 'Yeshivat Kesher (demo)', market: 'IL' }, role: 'finance', paymentReference: 'KC-7M4QX2HD' };
 const pair = (n: number): TokenPair => ({ accessToken: `access-${n}`, refreshToken: `refresh-${n}`, accessExpiresAt: '2026-11-01T09:10:00Z' });
 const problem = (status: number, code: string) => new ApiError(status, { type: 'about:blank', title: code, status, code } as never);
 

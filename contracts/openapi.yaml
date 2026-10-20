@@ -1388,6 +1388,94 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AdminInstitution" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions/{id}/deposits:
+    get:
+      operationId: listAdminInstitutionDeposits
+      summary: An institution's recorded deposits, its payment reference and what its account holds
+      description: REQ-INS-007 (T-0614). Staff token only. Behind `institutions.deposits`.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Deposits
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [paymentReference, balances, items]
+                properties:
+                  paymentReference: { type: string, description: What the institution quotes on its transfers, e.g. KC-7M4QX2HD }
+                  balances: { type: array, items: { $ref: "#/components/schemas/Money" } }
+                  items: { type: array, items: { $ref: "#/components/schemas/InstitutionDeposit" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: recordAdminInstitutionDeposit
+      summary: Record a bank transfer in against the institution; a second finance member approves it before it posts
+      description: >-
+        REQ-INS-007 (T-0614). Kesher finance (staff role `finance`). The recorder's own approval is the first of two.
+        Masav carries ILS, ACH USD, a wire either. A rail and bank reference already recorded (and not rejected) answers 409.
+        The value date cannot be in the future. Idempotent. Behind `institutions.deposits`.
+      security: [{ staff: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, rail, bankReference, valueDate]
+              properties:
+                amount: { $ref: "#/components/schemas/Money" }
+                rail: { type: string, enum: [masav, wire, ach] }
+                bankReference: { type: string, minLength: 1, maxLength: 64, description: The statement line's reference; compared without spaces, upper case }
+                valueDate: { type: string, format: date }
+                note: { type: string, maxLength: 500 }
+      responses:
+        "201":
+          description: The deposit, waiting for its second approver
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionDeposit" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/deposits/{id}/approve:
+    post:
+      operationId: approveAdminDeposit
+      summary: Second finance approval of a deposit; it then posts to the institution's account
+      description: REQ-INS-007 (T-0614). A finance member other than the recorder (409 for the recorder). Behind `institutions.deposits`.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The deposit after the decision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionDeposit" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/deposits/{id}/reject:
+    post:
+      operationId: rejectAdminDeposit
+      summary: Reject a recorded deposit before it posts; its bank reference can then be recorded again
+      description: REQ-INS-007 (T-0614). Kesher finance, with a reason. Behind `institutions.deposits`.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: The deposit, rejected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionDeposit" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/institutions/{id}/staff:
     get:
       operationId: listAdminInstitutionStaff
@@ -1781,13 +1869,30 @@ components:
       required: [id, kind, subject, status, approvals, requestedBy, expiresAt, payload]
       properties:
         id: { type: string, format: uuid }
-        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction, fx_rate, staff_grant] }
+        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction, fx_rate, staff_grant, institution_deposit] }
         subject: { type: string }
         status: { type: string, enum: [pending, awaiting_second_approval, approved, rejected, expired] }
         approvals: { type: integer, minimum: 0 }
         requestedBy: { type: string }
         expiresAt: { type: string, format: date-time }
         payload: { type: object, additionalProperties: true }
+    InstitutionDeposit:
+      type: object
+      required: [id, institutionId, amount, rail, bankReference, valueDate, status, approvals, recordedByMe, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        institutionId: { type: string, format: uuid }
+        amount: { $ref: "#/components/schemas/Money" }
+        rail: { type: string, enum: [masav, wire, ach] }
+        bankReference: { type: string }
+        valueDate: { type: string, format: date }
+        note: { type: string, description: Staff-entered text }
+        status: { type: string, enum: [pending, posted, rejected] }
+        approvals: { type: integer, minimum: 0 }
+        recordedByMe: { type: boolean, description: True for the recorder, who cannot approve it }
+        createdAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+        journalId: { type: string, format: uuid }
     AdminInstitution:
       type: object
       required: [id, name, market, createdAt, activeStaff]
@@ -2083,7 +2188,7 @@ components:
         restrictedUntil: { type: string, format: date-time, description: Set during the 24 h recovery hold (REQ-AUTH-003) }
     MyInstitution:
       type: object
-      required: [institution, role]
+      required: [institution, role, paymentReference]
       properties:
         institution:
           type: object
@@ -2093,6 +2198,7 @@ components:
             name: { type: string }
             market: { type: string, enum: [US, IL] }
         role: { type: string, enum: [staff, finance, admin] }
+        paymentReference: { type: string, description: What the institution quotes on a transfer into Kesher's account (T-0614) }
     Capabilities:
       type: object
       required: [features, entitlements]
@@ -2659,10 +2765,11 @@ components:
         rows: { type: integer }
         totals:
           type: object
-          required: [allowancesOut, feesIn, payoutsOut, net]
+          required: [allowancesOut, feesIn, payoutsOut, depositsIn, net]
           properties:
             allowancesOut: { $ref: "#/components/schemas/Money" }
             feesIn: { $ref: "#/components/schemas/Money" }
+            depositsIn: { $ref: "#/components/schemas/Money", description: Recorded bank transfers in and their reversals (T-0614) }
             payoutsOut: { $ref: "#/components/schemas/Money", description: The institution's payouts and their reversals (T-0527) }
             net: { $ref: "#/components/schemas/Money" }
     PayoutRequest:

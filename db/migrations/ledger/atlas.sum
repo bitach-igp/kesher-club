@@ -1,4 +1,4 @@
-h1:19UCyQZ012/LmbPJYJh/THJ5VBz7IX54ImVQsJAvR7g=
+h1:Dwp0KefiQH4hbbQlhRv3GwpLihhGMFy8RsNrJUyaUR8=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
@@ -17,3 +17,4 @@ h1:19UCyQZ012/LmbPJYJh/THJ5VBz7IX54ImVQsJAvR7g=
 0016_row_market.sql h1:plr5sKt0wghu/y5mRbNh4Key59rx3vTuORsmLlRvyqQ=
 0017_fx_quote.sql h1:2UP+TTw5B45hyrumnXqpubsKCBzVHcEAT+0pl926c7g=
 0018_staff_grant.sql h1:w8QA1TF/ftInA6ZDNHT/WK3KlJEn5LlTROj3PPYbgg0=
+0019_institution_deposit.sql h1:UKYR5TpxA7am519V8re8EJ2XNA3FOMEw90nMQKR/sbY=
