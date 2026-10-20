@@ -14,12 +14,14 @@ import { createClient } from '@kesher/sdk';
 import { ApiProvider, sdkApi, type Api, type SavedPaymentMethod } from '../src/api.ts';
 import { Txt } from '../src/components/index.ts';
 import { buildEnv, parseMobileConfig, type MobileConfig } from '../src/config.ts';
+import { DeviceProvider, type Device } from '../src/device.ts';
 import { LocaleProvider, t, useLocale, type Locale } from '../src/i18n.ts';
 import { OpenerProvider, type Opener } from '../src/linking.ts';
 import { ParamsProvider, RouterProvider, type Router } from '../src/navigation.ts';
 import { AuthenticatorProvider, seededAuthenticator, webAuthnAuthenticator, type Authenticator, type SeededDevice } from '../src/passkeys.ts';
 import { installId, memorySession, SessionProvider, type Session } from '../src/session.ts';
 import { useTheme } from '../src/theme.ts';
+import { webDevice, type BrowserNavigator } from '../src/web-device.ts';
 
 export const SIGN_IN_HREF = '/(auth)/sign-in';
 export const HOME_HREF = '/(tabs)/home';
@@ -43,6 +45,7 @@ export interface RootDeps {
   authenticator: Authenticator;
   opener: Opener;
   locale: Locale;
+  device: Device;
   personas?: PersonaPicker | undefined;
 }
 
@@ -66,12 +69,14 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
         <SessionProvider value={deps.session}>
           <AuthenticatorProvider value={deps.authenticator}>
             <OpenerProvider value={deps.opener}>
-              <RouterProvider value={router}>
-                <ParamsProvider value={params}>
-                  {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
-                  {children}
-                </ParamsProvider>
-              </RouterProvider>
+              <DeviceProvider value={deps.device}>
+                <RouterProvider value={router}>
+                  <ParamsProvider value={params}>
+                    {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
+                    {children}
+                  </ParamsProvider>
+                </RouterProvider>
+              </DeviceProvider>
             </OpenerProvider>
           </AuthenticatorProvider>
         </SessionProvider>
@@ -146,6 +151,8 @@ export interface Platform {
   /** `?persona=` on web: a recording opens the app already signed-in-ready as someone. */
   persona?: string | undefined;
   language?: string | undefined;
+  /** The browser's navigator, for the device binding (T-0528). */
+  navigator?: BrowserNavigator | undefined;
 }
 
 export function createRootDeps(config: MobileConfig, platform: Platform = {}): RootDeps {
@@ -175,6 +182,7 @@ export function createRootDeps(config: MobileConfig, platform: Platform = {}): R
     authenticator,
     opener,
     locale: platform.language?.startsWith('he') ? 'he' : 'en',
+    device: webDevice(platform.navigator),
     ...(loadPersonas ? { personas: { load: loadPersonas, current: () => persona, choose: (key: string) => void (persona = key) } } : {}),
   };
 }
@@ -194,6 +202,7 @@ export default function RootLayout() {
     storage: typeof localStorage === 'undefined' ? undefined : localStorage,
     persona: params['persona'],
     language: globalThis.navigator?.language,
+    navigator: globalThis.navigator,
   });
   return (
     <RootLayoutView deps={deps.current} router={router} segments={segments} params={params} ready={ready}>

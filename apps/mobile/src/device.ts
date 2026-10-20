@@ -1,9 +1,11 @@
 // Device facts and OS permissions the screens need, behind a context so tests inject them.
-// The real app binds expo-device / expo-location / expo-clipboard here.
+// The root layout binds the browser's APIs on web (src/web-device.ts, T-0528); the native build binds
+// expo-location / expo-clipboard when those modules are added.
 import { createContext, useContext } from 'react';
 
 export interface DeviceInfo {
-  platform: 'ios' | 'android';
+  /** `web` is a desktop browser: no eSIM, no one-tap install. */
+  platform: 'ios' | 'android' | 'web';
   /** "17.4" style; compared numerically by major.minor. */
   osVersion: string;
   esimCapable: boolean;

@@ -94,6 +94,7 @@
 | [T-0525](T-0525.md) | WAL | P07 Auto-reload: top up to a target below a threshold | REQ-WAL-004 | 11 |
 | [T-0526](T-0526.md) | WAL | M34 Close account: the balance is refunded before close | REQ-WAL-005 | 11 |
 | [T-0527](T-0527.md) | PO | Institution payouts reach HTTP: request, list, second approver decides | REQ-PO-001, REQ-PO-002, REQ-INS-004 | 11 |
+| [T-0528](T-0528.md) | PAY | Member app binds the device: Pay, Card, eSIM and Emergency open | REQ-PAY-001, REQ-ESIM-001 | 11 |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
