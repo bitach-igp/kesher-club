@@ -17,3 +17,17 @@ Steps (from repo root, PowerShell on Windows unless stated):
 14. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with ledger at 19 migrations. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`. Step 7 fails with a unique violation on `institution_deposit_reference` (the same line recorded twice). Step 8 prints `UPDATE 1`. Step 9 prints `INSERT 0 1` (a rejected line frees its reference). Step 10 fails with a check constraint violation (Masav in dollars). Step 11 prints `INSERT 0 1`. Step 12 prints `INSERT 0 1`. Step 13 fails with `permission denied for table institution_deposit`.
 Report back: the console output of steps 4, 5, 6, 7, 9, 10, 11, 12 and 13.
+
+## Result
+PASS, 2026-10-20 12:06 Asia/Jerusalem, desktop runner at 75638b0 (Docker 29.8.2, postgres:16).
+- Step 4: "Migrating to version 0019 (19 migrations in total)" for ledger; `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent.
+- Step 5: "No migration files to execute" for every schema; `ok` for all nine.
+- Step 6: `INSERT 0 1`.
+- Step 7: `ERROR: duplicate key value violates unique constraint "institution_deposit_reference"` / `DETAIL: Key (rail, bank_reference)=(masav, FT2611-ABC) already exists.`
+- Step 8: `UPDATE 1`.
+- Step 9: `INSERT 0 1` (a rejected line frees its reference).
+- Step 10: `ERROR: new row for relation "institution_deposit" violates check constraint "institution_deposit_check"` (Masav in USD).
+- Step 11: `INSERT 0 1`.
+- Step 12: `INSERT 0 1`.
+- Step 13: `ERROR: permission denied for table institution_deposit`.
+- Step 14: container `kesher-pg` removed.
