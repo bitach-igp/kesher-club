@@ -197,7 +197,9 @@ The plan follows the repo's rule that ports come before vendors:
    how must they be verified?
 8. Which risk-rating method and refresh periods does the bank require? Does it sign off on high-risk
    institutions?
-9. Must payouts go only to own-name accounts, and what proof of ownership does the bank accept?
+9. Must payouts go only to own-name accounts, and what proof of ownership does the bank accept? *Until the bank answers,
+   Kesher pays institutions out only to their own verified account, which takes two compliance members to set or change
+   (T-0623). Suppliers are paid by the institution, not through Kesher.*
 10. What is the escalation path and timing for suspicious-activity reports, and who decides closure and the
     return of funds?
 11. How long must records be kept, and does the bank need audit access to the KYB file and vendor evidence?

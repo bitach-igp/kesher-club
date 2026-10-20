@@ -13,7 +13,7 @@ import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { decideKyb } from '../test-institution.ts';
+import { decideKyb, verifiedPayoutAccount } from '../test-institution.ts';
 import { PostgresAllowanceActivities } from './allowance/activities.ts';
 import { run, workflowId } from './allowance/workflow.ts';
 
@@ -140,6 +140,7 @@ describe('institution credit limits (T-0616, TST-INS-008)', () => {
   it('payouts never use the credit line: with ₪5,000 of credit and ₪0 held, a ₪1 payout is refused', async () => {
     const inst = await institution(0n);
     await setLimit(inst, 500_000n);
+    await verifiedPayoutAccount(db, inst);
     const e = await refusal(app.services.payouts.request(inst, { payee: { iban: 'IL620108000000099999999', name: 'Building Supplies Ltd' }, amount: { minor: '100', currency: 'ILS' }, reference: 'roof' }, `payout-${inst}`, NOW, { kind: 'institution', requestedBy: FINANCE, requesterRole: 'finance' }));
     expect(e.code).toBe('INSUFFICIENT_FUNDS');
   });

@@ -61,6 +61,7 @@ import { kybHandlers } from './institutions/kyb-handlers.ts';
 import { InstitutionKyb } from './institutions/kyb.ts';
 import { KybGate } from './institutions/kyb-gate.ts';
 import { KybChecks } from './institutions/kyb-checks.ts';
+import { PayoutAccounts, payoutAccountHandlers } from './institutions/payout-account.ts';
 import { exportHandler } from './institutions/export.ts';
 import { RosterService, importRosterHandler } from './institutions/roster.ts';
 import { ApprovalService } from './approvals/service.ts';
@@ -130,6 +131,7 @@ function buildServices(o: AppOptions) {
   // Every institution money capability waits on its KYB decision (T-0621, ADR-017).
   const kybGate = new KybGate(institutionKyb);
   const institutionCredit = new InstitutionCredit(o.db, approvals, audit, kybGate);
+  const payoutAccounts = new PayoutAccounts(o.db, audit);
   const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
   const provisioning = new ProvisioningService(o.db, cards, detailsTokenProvisioning(cardIssuing), flags);
   const physical = new PhysicalCardService(o.db, cardIssuing, kyc, cards, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
@@ -165,12 +167,12 @@ function buildServices(o: AppOptions) {
   const requests = new PaymentRequestService(o.db, p2p, identity);
   // Payouts (REQ-PO-001/002): the rail's status webhooks land on /hooks/payout; settled and failed are applied once (SEQ-09).
   const collections = new CollectionsService(o.db, ledger, accounts, transfers, flags);
-  const payouts = new PayoutService({ db: o.db, port: o.registry.resolve<PayoutPort>('payout', o.market), ledger, accounts, transfers, approvals, identity, notify: notifyPort, flags, provider: o.registry.bindingFor('payout', o.market)?.provider ?? 'simulator', kyb: kybGate });
+  const payouts = new PayoutService({ db: o.db, port: o.registry.resolve<PayoutPort>('payout', o.market), ledger, accounts, transfers, approvals, identity, notify: notifyPort, flags, provider: o.registry.bindingFor('payout', o.market)?.provider ?? 'simulator', kyb: kybGate, payoutAccounts });
   webhooks.bind(PAYOUT_PROVIDER, { verifier: payouts.webhookVerifier(), process: (e) => payouts.applyWebhook(e, clock.now()).then(() => undefined) });
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, institutionCredit, institutionKyb, kybGate };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, institutionCredit, institutionKyb, kybGate, payoutAccounts };
 }
 
 export function createApp(o: AppOptions): App {
@@ -224,6 +226,7 @@ export function createApp(o: AppOptions): App {
     ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
     ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.institutionCredit, s.clock.now), credit: s.institutionCredit, flags: s.flags, staffInstitution, db: o.db, identity: s.identity, stepUp: s.stepUp }),
     ...creditHandlers(s.institutionCredit),
+    ...payoutAccountHandlers(s.payoutAccounts),
     ...kybHandlers(s.institutionKyb, new KybChecks({ db: o.db, kyb: s.institutionKyb, flags: s.flags, port: (m) => o.registry.resolve<KybPort>('kyb', m), provider: (m) => o.registry.bindingFor('kyb', m)?.provider ?? 'simulator' })),
     ...fxAdminHandlers(s.rates),
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),

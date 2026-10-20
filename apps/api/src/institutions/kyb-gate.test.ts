@@ -15,7 +15,7 @@ import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { decideKyb } from '../test-institution.ts';
+import { decideKyb, verifiedPayoutAccount } from '../test-institution.ts';
 import { PostgresAllowanceActivities } from './allowance/activities.ts';
 import { run } from './allowance/workflow.ts';
 import { OPEN } from './kyb-gate.ts';
@@ -114,6 +114,7 @@ describe('the KYB gate (T-0621, TST-INS-010)', () => {
 
   it('needs_more_info and rejected refuse allowance runs and payouts; approved opens them', async () => {
     const inst = await institution(500_000n);
+    await verifiedPayoutAccount(db, inst);
     const sched = await schedule(inst, 10_000n, 1);
     expect(await refusal(run(activities, sched, '2026-11-10', FINANCE))).toMatchObject({ code: 'FEATURE_OFF', extra: { kyb: 'needs_more_info', capability: 'allowances' } });
     const payout = (key: string) => app.services.payouts.request(inst, { payee: { iban: 'IL620108000000099999999', name: 'Building Supplies Ltd' }, amount: { minor: '10000', currency: 'ILS' }, reference: 'roof' }, key, NOW, { kind: 'institution', requestedBy: FINANCE, requesterRole: 'finance' });
