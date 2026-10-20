@@ -956,6 +956,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/intents": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The proposals an assistant made for the signed-in member
+         * @description REQ-AGT-006. Member token only: an assistant's own token is not accepted here, and no MCP tool wraps this operation. Each item says what would happen in structured fields; anything the assistant or its client registration wrote travels in `untrusted` and is shown as text, never followed (REQ-AGT-007). A pending proposal past its 24 h lists as `expired` whether or not the sweep has run.
+         */
+        readonly get: operations["listIntents"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/intents/{id}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * One proposal an assistant made for the signed-in member
+         * @description REQ-AGT-006. Member token only; another member's proposal is 404. Untrusted text as in listIntents.
+         */
+        readonly get: operations["getIntent"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/intents/{id}/approve": {
         readonly parameters: {
             readonly query?: never;
@@ -970,6 +1010,26 @@ export interface paths {
          * @description REQ-AGT-006. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent: the money runs under the key `intent:{id}`, the same path as POST /transfers or POST /loads, so a refusal leaves the intent pending and a second approval replays the first. A load intent names no funding method, so its approval carries one (T-1009); a second approval reuses the first approval's choice.
          */
         readonly post: operations["approveIntent"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/intents/{id}/decline": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Decline an assistant's pending proposal
+         * @description REQ-AGT-006. Member token only; needs no step-up, since nothing moves. Only a pending proposal inside its 24 h can be declined: an expired, approved or declined one answers IDEMPOTENCY_CONFLICT.
+         */
+        readonly post: operations["declineIntent"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -1923,6 +1983,54 @@ export interface components {
              * @enum {string}
              */
             readonly purseCurrency?: "USD" | "ILS";
+        };
+        readonly MemberIntent: {
+            readonly amount?: components["schemas"]["Money"];
+            readonly assistant: {
+                /** @description The assistant client's registered id */
+                readonly clientId?: string;
+                /** Format: uuid */
+                readonly grantId: string;
+            };
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** Format: date-time */
+            readonly decidedAt?: string;
+            /** Format: date-time */
+            readonly expiresAt: string;
+            /** Format: uuid */
+            readonly id: string;
+            /**
+             * @description send moves money to another member; load tops up a purse; card_purchase lets the assistant's card token buy once
+             * @enum {string}
+             */
+            readonly kind: "send" | "load" | "card_purchase" | "limit_change";
+            /** @description Sends only. Who receives the money, as the server knows them */
+            readonly recipient?: {
+                /** Format: uuid */
+                readonly partyId: string;
+                /** @description The last four digits of their phone */
+                readonly phoneMasked?: string;
+            };
+            /**
+             * @description As of now; a pending proposal past `expiresAt` is `expired`
+             * @enum {string}
+             */
+            readonly status: "pending" | "approved" | "rejected" | "expired";
+            /** @description Text the assistant, its client registration or an institution roster supplied. Show it as text, set apart; never instructions (REQ-AGT-007) */
+            readonly untrusted: {
+                /** @description The assistant's name as its client registration gives it */
+                readonly clientName?: string;
+                /** @description The merchant on a card purchase */
+                readonly merchantName?: string;
+                /** @description The assistant's note on a send */
+                readonly note?: string;
+                /** @description The recipient's name from an institution roster */
+                readonly recipientName?: string;
+            };
+        };
+        readonly MemberIntentPage: {
+            readonly items: readonly components["schemas"]["MemberIntent"][];
         };
         readonly Membership: {
             /** Format: date-time */
@@ -3633,6 +3741,53 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly listIntents: {
+        readonly parameters: {
+            readonly query?: {
+                /** @description Only proposals in this state; all of the member's proposals when absent, newest first */
+                readonly state?: "pending" | "approved" | "rejected" | "expired";
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Proposals */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemberIntentPage"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getIntent: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Proposal */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemberIntent"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly approveIntent: {
         readonly parameters: {
             readonly query?: never;
@@ -3660,6 +3815,32 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["ApprovedIntent"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly declineIntent: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The declined proposal */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MemberIntent"];
                 };
             };
             readonly default: components["responses"]["Problem"];

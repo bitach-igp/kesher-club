@@ -62,7 +62,10 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/payouts', operationId: 'createPayout' },
   { method: 'GET', path: '/agent-grants', operationId: 'listAgentGrants' },
   { method: 'DELETE', path: '/agent-grants/{id}', operationId: 'revokeAgentGrant' },
+  { method: 'GET', path: '/intents', operationId: 'listIntents' },
+  { method: 'GET', path: '/intents/{id}', operationId: 'getIntent' },
   { method: 'POST', path: '/intents/{id}/approve', operationId: 'approveIntent' },
+  { method: 'POST', path: '/intents/{id}/decline', operationId: 'declineIntent' },
   { method: 'POST', path: '/hooks/{provider}', operationId: 'providerWebhook', public: true },
   { method: 'POST', path: '/jit/card-authorizations', operationId: 'cardAuthorization', public: true },
   // Admin console (ADR-013): staff token only; the handlers refuse member and agent principals.
