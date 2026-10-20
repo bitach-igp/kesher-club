@@ -46,6 +46,17 @@ beforeAll(async () => {
 afterAll(async () => db.close());
 
 describe('TST-INS-006: the monthly export', () => {
+  it('reads the institution\'s own account (T-0613); a journal tagged with it that posted to another institution\'s account stays out', async () => {
+    const own = await accounts.institutionAccount(INST, 'ILS');
+    const other = await accounts.institutionAccount(OTHER, 'ILS');
+    const wallet = await accounts.memberAccount(noa, 'wallet', 'ILS');
+    await ledger.post({ idempotencyKey: 'x-own-fee', kind: 'fee', effectiveAt: new Date('2027-01-05T08:00:00Z'), postings: [{ accountId: wallet, currency: 'ILS', amountMinor: 4_500n }, { accountId: own, currency: 'ILS', amountMinor: -4_500n }], metadata: { institutionId: INST, memberPartyId: noa, feeItemId: uuidv7(), description: 'Lab fee' } });
+    await ledger.post({ idempotencyKey: 'x-mistagged', kind: 'fee', effectiveAt: new Date('2027-01-06T08:00:00Z'), postings: [{ accountId: wallet, currency: 'ILS', amountMinor: 1_000n }, { accountId: other, currency: 'ILS', amountMinor: -1_000n }], metadata: { institutionId: INST, memberPartyId: noa, feeItemId: uuidv7() } });
+    const e = await monthlyExport(db, INST, '2027-01', 'ILS');
+    expect(e.rows.map((r) => [r.kind, r.description, r.amount.minor])).toEqual([['fee', 'Lab fee', 4_500n]]);
+    expect(e.totals.feesIn).toEqual(money(4_500n, 'ILS'));
+  });
+
   it('reads the institution\'s month from the ledger and its totals equal the postings, reversals included; members come from the wallet paid; other institutions and other months stay out', async () => {
     const e = await monthlyExport(db, INST, '2026-11', 'ILS');
     expect(e.rows.map((r) => [r.date, r.kind, r.memberName, r.memberPartyId, r.amount.minor])).toEqual([

@@ -34,7 +34,7 @@ export interface AllowanceActivities {
   listMembers(institutionId: string, filter: readonly string[]): Promise<readonly AllowanceMember[]>;
   recordRun(preview: Preview, status: 'preview' | 'awaiting_second_approval' | 'running' | 'completed' | 'failed', extra?: { failures?: number }): Promise<void>;
   isApproved(workflowId: string, total: Money, requestedBy: string): Promise<boolean>;
-  /** Posts institution_master → member wallet with `transferKey` as the idempotency key. Throws on failure. */
+  /** Posts the institution's account → member wallet with `transferKey` as the idempotency key. Throws on failure. */
   payMember(workflowId: string, transferKey: string, memberPartyId: string, amount: Money): Promise<{ journalId: string }>;
   recordPayment(workflowId: string, memberPartyId: string, transferKey: string, status: 'paid' | 'failed', attempts: number, journalId?: string, error?: string): Promise<void>;
   emitSummary(summary: RunSummary): Promise<void>;

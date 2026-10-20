@@ -106,6 +106,7 @@
 | [T-0610](T-0610.md) | INS | I07 Allowances: preview, run, second approver | REQ-INS-003, REQ-INS-004 | 11 |
 | [T-0611](T-0611.md) | INS | I08 Collections: who owes, receipts, monthly export | REQ-INS-006 | 11 |
 | [T-0612](T-0612.md) | INS | I09 Payouts: request, cool-off, second approver | REQ-PO-001, REQ-PO-002, REQ-INS-004 | 11 |
+| [T-0613](T-0613.md) | INS | Each institution has its own ledger account | REQ-INS-003, REQ-INS-006 | 11 |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |

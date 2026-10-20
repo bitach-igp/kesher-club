@@ -7,6 +7,7 @@
 import { format, money, toWire, type Currency, type Money } from '@kesher/domain';
 import { DomainError } from '@kesher/domain';
 import type { Database } from '../db.ts';
+import { SYSTEM_OWNER } from '../ledger/accounts.ts';
 import { ok, requireRole, route, type Handler } from '../http.ts';
 
 export type ExportKind = 'allowance' | 'fee' | 'reversal';
@@ -57,7 +58,8 @@ interface ExportQueryRow {
 }
 
 /**
- * Reads the institution's postings for the month: the institution_master side of every allowance and
+ * Reads the institution's postings for the month: the institution's own account's side (T-0613; the
+ * shared institution_master for journals from before it) of every allowance and
  * fee journal tagged with the institution, and of every reversal of one (a reversal carries no
  * metadata of its own; it is found through the journal it reverses). The member is the owner of the
  * wallet the same journal touched, so allowances, which tag only the institution, still name them.
@@ -71,7 +73,8 @@ export async function monthlyExport(db: Database, institutionId: string, month: 
        from ledger.journal j
        left join ledger.journal o on o.id = j.reverses_id
        join ledger.posting p on p.journal_id = j.id
-       join ledger.account a on a.id = p.account_id and a.type = 'institution_master' and a.currency = $4
+       -- The institution's own account (T-0613), or the shared one journals posted to before it existed.
+       join ledger.account a on a.id = p.account_id and a.type = 'institution_master' and a.currency = $4 and (a.owner_party_id = $1::uuid or a.owner_party_id = $5::uuid)
        left join lateral (
          select a2.owner_party_id from ledger.posting p2 join ledger.account a2 on a2.id = p2.account_id
           where p2.journal_id = j.id and a2.type in ('wallet', 'pending') and a2.owner_party_id is not null
@@ -80,7 +83,7 @@ export async function monthlyExport(db: Database, institutionId: string, month: 
       where (j.metadata->>'institutionId' = $1::text or (j.kind = 'reversal' and o.metadata->>'institutionId' = $1::text))
         and j.effective_at >= $2 and j.effective_at < $3
       order by j.effective_at, j.id`,
-    [institutionId, start, end, currency],
+    [institutionId, start, end, currency, SYSTEM_OWNER],
   );
   const rows: ExportRow[] = r.rows.map((x) => {
     // institution_master is credit-normal: a debit (+) is money leaving the institution, a credit (−) money arriving.
