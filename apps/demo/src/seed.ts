@@ -83,6 +83,7 @@ async function seedInstitution(target: SeedTarget, key: { jwk: JWK; kid: string 
     const done = await approver!.post('/admin/staff-grants/{id}/approve', { path: { id: grant.id } });
     if (done.staff?.role !== 'finance') throw new Error(`The finance grant for ${f.persona.key} is ${done.grant?.status ?? 'missing'} after the second approval`);
   }
+  await seedKyb(target, key, yeshiva.id, personas);
   const importer = finance[0];
   if (!importer) throw new Error('No finance persona to import the roster');
   const tokens = await signIn(target, importer.persona);
@@ -95,16 +96,36 @@ async function seedInstitution(target: SeedTarget, key: { jwk: JWK; kid: string 
 }
 
 /**
- * A staff client signing the console's 5-minute staff token (ADR-013) for a simulator identity-provider
- * subject. Development only: the key is the local pair from .env.local-staff, never a deployed console's.
+ * The yeshiva's KYB (T-0621, ADR-017): until it is approved, its deposits, allowances and payouts stay shut.
+ * Compliance checks it by hand in the demo, names Rivka (T2) its control person and signatory, screens both
+ * the yeshiva and her clear, and approves it at low risk. A rerun finds it approved and writes nothing.
  */
-async function staffClient(target: SeedTarget, key: { jwk: JWK; kid: string }, subject: string): Promise<Client> {
+async function seedKyb(target: SeedTarget, key: { jwk: JWK; kid: string }, institutionId: string, personas: readonly SeededPersona[]): Promise<void> {
+  const compliance = await staffClient(target, key, INSTITUTION.compliance, ['compliance']);
+  const path = { id: institutionId };
+  if ((await compliance.get('/admin/institutions/{id}/kyb', { path })).decision.status === 'approved') return;
+  const control = personas.find((r) => r.persona.key === INSTITUTION.kybControl);
+  if (!control) throw new Error(`No ${INSTITUTION.kybControl} persona to name as the yeshiva's control person`);
+  const evidenceRef = 'demo-seed: checked by hand';
+  for (const kind of ['registry', 'identifier', 'exempt_status', 'sanctions', 'pep'] as const) await compliance.post('/admin/institutions/{id}/kyb/checks', { path, body: { kind, result: 'clear', evidenceRef } });
+  const person = await compliance.post('/admin/institutions/{id}/kyb/people', { path, body: { fullName: control.persona.name, roles: ['control', 'signatory'], partyId: control.partyId }, idempotencyKey: `seed-${INSTITUTION.key}-kyb-${control.persona.key}` });
+  for (const kind of ['sanctions', 'pep'] as const) await compliance.post('/admin/institutions/{id}/kyb/checks', { path, body: { kind, personId: person.id, result: 'clear', evidenceRef } });
+  const { decision } = await compliance.post('/admin/institutions/{id}/kyb/decisions', { path, body: { status: 'approved', risk: 'low', reasons: ['Demo seed: checked by hand'] }, idempotencyKey: `seed-${INSTITUTION.key}-kyb-decision` });
+  if (decision?.status !== 'approved') throw new Error(`The yeshiva's KYB is ${decision?.status ?? 'undecided'} after the seed's decision`);
+}
+
+/**
+ * A staff client signing the console's 5-minute staff token (ADR-013) for a simulator identity-provider
+ * subject, with that subject's roles. Development only: the key is the local pair from .env.local-staff,
+ * never a deployed console's.
+ */
+async function staffClient(target: SeedTarget, key: { jwk: JWK; kid: string }, subject: string, roles: readonly string[] = ['admin']): Promise<Client> {
   const signer = await importJWK(key.jwk, 'ES256');
   return createClient({
     baseUrl: apiBase(target),
     getAccessToken: async () => {
       const now = Math.floor(Date.now() / 1000);
-      return new SignJWT({ roles: ['admin'], sid: `seed:${subject}` }).setProtectedHeader({ alg: 'ES256', kid: key.kid }).setIssuer('kesher-admin').setAudience('kesher-api:admin').setSubject(subject).setIssuedAt(now).setExpirationTime(now + 300).sign(signer);
+      return new SignJWT({ roles: [...roles], sid: `seed:${subject}` }).setProtectedHeader({ alg: 'ES256', kid: key.kid }).setIssuer('kesher-admin').setAudience('kesher-api:admin').setSubject(subject).setIssuedAt(now).setExpirationTime(now + 300).sign(signer);
     },
     newIdempotencyKey: () => {
       throw new Error('Every seed call names its idempotency key, so a rerun replays it');

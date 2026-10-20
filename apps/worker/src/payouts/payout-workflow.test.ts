@@ -4,6 +4,9 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
 import { fixedClock, NotifySimulator, PayoutSimulator, type AdvanceableClock } from '@kesher/ports';
 import { ApprovalService } from '@kesher/api/approvals/service';
+import { AuditService } from '@kesher/api/audit/service';
+import { InstitutionKyb } from '@kesher/api/institutions/kyb';
+import { KybGate } from '@kesher/api/institutions/kyb-gate';
 import { InMemoryIdentityRepository } from '@kesher/api/auth/repository';
 import { StaticFlags } from '@kesher/api/billing/capabilities';
 import { AccountService } from '@kesher/api/ledger/accounts';
@@ -42,7 +45,7 @@ beforeAll(async () => {
   accounts = new AccountService(db, ledger);
   transfers = new TransferService(db);
   approvals = new ApprovalService(db);
-  payouts = new PayoutService({ db, port: new PayoutSimulator(clock), ledger, accounts, transfers, approvals, identity, notify: new NotifySimulator(), flags: new StaticFlags(undefined, { 'payouts.nium': true }), provider: 'simulator' });
+  payouts = new PayoutService({ db, port: new PayoutSimulator(clock), ledger, accounts, transfers, approvals, identity, notify: new NotifySimulator(), flags: new StaticFlags(undefined, { 'payouts.nium': true }), provider: 'simulator', kyb: new KybGate(new InstitutionKyb(db, approvals, new AuditService(db))) });
   wf = new PayoutWorkflow(payouts, () => clock.now());
 }, 60_000);
 afterAll(async () => db.close());

@@ -68,7 +68,7 @@ prints the same table. The table holds no token.
 | `tamar` | Tamar Example | US | +1 555 555 0106 | T2, virtual card open | $200.00 | REC-12 |
 | `ruth` | Ruth Example | US | +1 555 555 0107 | T1 | $30.00 by card | REC-17 (ready to close: no holds, every dollar refundable) |
 | `ben` | Ben Example | US | +1 555 555 0108 | T1 | nothing | REC-01 funder mode, once the link below exists |
-| `rivka` | Rivka Example | IL | +1 555 555 0109 | T1 | nothing | REC-14, REC-15: yeshiva finance, imports the roster |
+| `rivka` | Rivka Example | IL | +1 555 555 0109 | T2 | nothing | REC-14, REC-15: yeshiva finance, imports the roster; the yeshiva's KYB control person (T-0621) |
 | `shimon` | Shimon Example | IL | +1 555 555 0110 | T1 | nothing | REC-14: yeshiva finance, the second approver |
 
 Market is the market whose walkthroughs use the persona. The party itself has no market, since every
@@ -84,7 +84,12 @@ would (REQ-ADM-004):
 
 1. Ada Admin (`staff-admin-1`) onboards "Yeshivat Kesher (demo)", market IL.
 2. Ada proposes `rivka` and `shimon` as finance, and Abe Admin (`staff-admin-2`) approves each grant.
-3. `rivka` signs in again, so her token carries `org_finance`, and imports a three-row roster of
+3. Cleo Compliance (`staff-compliance-1`) approves the yeshiva's KYB at low risk (T-0621, ADR-017):
+   - she records the registry, identifier, exempt-status and screening checks by hand;
+   - she names `rivka` (T2) its control person and signatory.
+
+   Until then its deposits, allowances and payouts stay shut.
+4. `rivka` signs in again, so her token carries `org_finance`, and imports a three-row roster of
    fictional students (`example.test` funder addresses). They become invited members.
 
 ```sh

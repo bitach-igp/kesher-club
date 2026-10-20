@@ -14,6 +14,7 @@ import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import { decideKyb } from '../test-institution.ts';
 import { paymentReference, type InstitutionDeposit } from './deposits.ts';
 import { monthlyExport } from './export.ts';
 
@@ -44,6 +45,7 @@ beforeAll(async () => {
   app = createApp({ ...opts, flags: new StaticFlags(undefined, { 'institutions.deposits': true }) });
   off = createApp({ ...opts, identity: app.services.identity, flags: new StaticFlags() });
   await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Example', 'IL'), ($2, 'Day School', 'US')`, [INST, OTHER]);
+  for (const i of [INST, OTHER]) await decideKyb(db, i);
 }, 60_000);
 afterAll(async () => db.close());
 

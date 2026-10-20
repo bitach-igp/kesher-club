@@ -37,7 +37,7 @@ export const PERSONAS: readonly Persona[] = [
   { key: 'tamar', name: 'Tamar Example', phone: '+15555550106', market: 'US', kyc: 'T2', loads: [{ currency: 'USD', minor: 20_000n }], recs: ['REC-12'], role: 'member with an open virtual card' },
   { key: 'ruth', name: 'Ruth Example', phone: '+15555550107', market: 'US', kyc: 'T1', loads: [{ currency: 'USD', minor: 3_000n }], recs: ['REC-17'], role: 'ready to close: card-loaded money only, no holds' },
   { key: 'ben', name: 'Ben Example', phone: '+15555550108', market: 'US', kyc: 'T1', loads: [], recs: ['REC-01'], role: 'funder; the link to a member is missing (see docs/setup/demo.md)' },
-  { key: 'rivka', name: 'Rivka Example', phone: '+15555550109', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-14', 'REC-15'], role: 'yeshiva finance: imports the roster, requests runs and payouts', staff: 'finance' },
+  { key: 'rivka', name: 'Rivka Example', phone: '+15555550109', market: 'IL', kyc: 'T2', loads: [], recs: ['REC-14', 'REC-15'], role: 'yeshiva finance: imports the roster, requests runs and payouts; the yeshiva\'s KYB control person', staff: 'finance' },
   { key: 'shimon', name: 'Shimon Example', phone: '+15555550110', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-14'], role: 'yeshiva finance: the second approver', staff: 'finance' },
 ];
 
@@ -52,6 +52,9 @@ export const INSTITUTION = {
   market: 'IL' as Market,
   /** Simulator identity-provider subjects (apps/simulators/src/oidc.ts): Ada proposes, Abe approves. */
   admins: ['staff-admin-1', 'staff-admin-2'] as const,
+  /** Cleo Compliance decides the yeshiva's KYB (T-0621), with Rivka (T2) as its control person and signatory. */
+  compliance: 'staff-compliance-1',
+  kybControl: 'rivka',
   roster: {
     csv: ['name,funder_email,programme', 'Student One Example,funder.one@example.test,Shiur Alef', 'Student Two Example,funder.two@example.test,Shiur Alef', 'Student Three Example,funder.three@example.test,Shiur Bet'].join('\n'),
     mapping: { memberName: 'name', funderEmail: 'funder_email', programme: 'programme' },
