@@ -74,7 +74,10 @@ describe('one process, one registry, one clock (T-0031)', () => {
     const advanced = (await (await panel('/clock/advance', { ms: 7 * DAY_MS })).json()) as { now: string };
     expect(Math.abs(dev.clock.now().getTime() - Date.parse(advanced.now))).toBeLessThan(5_000); // the panel's clock is the jobs' clock
     expect(Date.parse(advanced.now)).toBeGreaterThan(Date.parse(transfer.holdReleasesAt!));
-    await dev.runJob('ach-release-holds');
+    // The panel runs the job now (T-0920): a recording cannot wait out the job's 5-minute timer.
+    const ran = await panel('/jobs/ach-release-holds/run', {});
+    expect([ran.status, ((await ran.json()) as { ok: boolean }).ok]).toEqual([200, true]);
+    expect((await panel('/jobs/no-such-job/run', {})).status).toBe(404);
     expect((await dev.app.services.transfers.get(transfer.id))!.state).toBe('settled');
     // Seven days on, the API's clock has expired the 10-minute access token too: refresh it, as the app would.
     expect((await api('GET', '/accounts')).status).toBe(401);
