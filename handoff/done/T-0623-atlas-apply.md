@@ -15,3 +15,16 @@ Steps (from repo root, PowerShell on Windows unless stated):
 12. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with org at 5 migrations. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`. Step 7 prints one row with a `seq`. Step 8 fails with a check constraint violation (not an IBAN). Step 9 prints `INSERT 0 1`. Step 10 fails with a duplicate key on `payout_account_approval_pkey` (one approval per account). Step 11 fails with `permission denied for table payout_account`.
 Report back: the console output of steps 4, 5, 7, 8, 9, 10 and 11.
+
+## Result
+PASS, 2026-10-20 23:10 (Asia/Jerusalem). Desktop checker, runner worktree at 3afed51, Docker 29.8.2, postgres:16.
+
+- Step 4: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent. Revisions: ledger 21, org 5 (0005 creates org.payout_account).
+- Step 5: `No migration files to execute` for every schema, then `ok` for all 9.
+- Step 6: `INSERT 0 1`.
+- Step 7: `seq` = 1, `INSERT 0 1`.
+- Step 8: `ERROR: new row for relation "payout_account" violates check constraint "payout_account_iban_check"`.
+- Step 9: `INSERT 0 1`.
+- Step 10: `ERROR: duplicate key value violates unique constraint "payout_account_approval_pkey"` — `Key (account_id)=(00000000-0000-7000-8000-000000062301) already exists.`
+- Step 11: `ERROR: permission denied for table payout_account`.
+- Step 12: container removed. (The tool swallowed the first pass's step 6-11 output, so steps 1-11 were rerun from a fresh container; the results above are from that second pass.)
