@@ -139,9 +139,7 @@ test('REC-04 auto-reload', async ({ browser }) => {
   await rec.finish();
 });
 
-// The pay screens (M13–M15) need a DeviceProvider the root layout does not supply on web
-// (apps/mobile/src/device.ts:59 throws "DeviceProvider is missing"): fixme until the product mounts one.
-test.fixme('REC-05 P2P send', async ({ browser }) => {
+test('REC-05 P2P send', async ({ browser }) => {
   const rec = await openRecording(browser, { id: 'REC-05', name: 'p2p-send', title: 'P2P send, same currency (money-flows §5)', persona: 'dana' });
   const [dana, avi] = [await partyByPhone(phone('dana')), await partyByPhone(phone('avi'))];
   await rec.caption('Dana signs in to pay Avi $25.00: under the $150.00 new-counterparty hold, within a new member\'s $300.00 monthly limit.');

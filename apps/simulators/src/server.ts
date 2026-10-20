@@ -14,13 +14,13 @@ export interface PanelResponse {
   headers?: Record<string, string>;
 }
 
-/** What the socket binding adds: the OIDC issuer (T-0919) and the request's headers. */
 /** The jobs of the process hosting the panel (the demo, T-0031), so a recording can run one now (T-0920). */
 export interface PanelJobs {
   names: readonly string[];
   run(name: string): Promise<unknown>;
 }
 
+/** What the socket binding adds: the OIDC issuer (T-0919), the request's headers, and the host's jobs (T-0920). */
 export interface PanelContext {
   oidc?: OidcIssuer | undefined;
   headers?: Readonly<Record<string, string | string[] | undefined>>;

@@ -156,3 +156,24 @@ The console's flag page shows the database's flags, not the demo's in-memory "al
 changes the stored flag, which the demo process does not read.
 
 The member app in a browser (T-0033) builds on this stack too: see `apps/mobile/README.md`.
+
+## Record the walkthroughs (T-0920)
+
+The bank-review walkthroughs are recorded from the running product, by the browser itself. Nothing outside
+the page is captured. One command starts its own stack, the member app's web build and the console, seeds
+the personas, and records:
+
+```sh
+pnpm --filter @kesher/demo record --grep "REC-0[1-5]"
+```
+
+Each recording is one page with three panes: the member app, the simulator panel (the vendor's side and the
+clock), and the console's Customer 360. Every spec asserts that the amounts on screen and in Customer 360
+equal the worked example in `docs/bank-review/money-flows.md`, in minor units, so a recording cannot pass while
+showing a wrong number. The videos land in `apps/demo/out/REC-NN-<name>.webm`, which git ignores.
+
+- Ports 3000, 3100, 4010, 4099 and 8081 must be free: the run starts its own servers and never reuses one.
+- The run makes its own staff key pair; nothing from `.env.local-staff` is read.
+- A step with no member screen is shown as an API caption ("API: POST …"), never as a screen.
+- The panel's `POST /jobs/{name}/run` runs one of the stack's jobs now, at the panel clock, so a recording
+  shows a release or an auto-reload without waiting for the job's timer.
