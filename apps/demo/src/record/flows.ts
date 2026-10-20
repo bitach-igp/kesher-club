@@ -5,6 +5,8 @@
 // capture of the real console page, taken by a second, unrecorded browser signed in as staff.
 // Steps with no member screen are API calls shown as captions ("API: POST …"), never as screens.
 import { rename } from 'node:fs/promises';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, type Browser, type BrowserContext, type FrameLocator, type Page } from '@playwright/test';
@@ -18,8 +20,6 @@ export const URLS = {
   panel: 'http://localhost:4010',
   member: 'http://localhost:8081',
   console: 'http://localhost:3100',
-  /** Served by the recorder itself (page.route), on localhost so the framed apps are same-site. */
-  harness: 'http://localhost:4999/rec',
 } as const;
 
 const SIZE = { width: 1600, height: 900 };
@@ -74,9 +74,13 @@ async function staffConsole(browser: Browser): Promise<{ context: BrowserContext
 
 export async function openRecording(browser: Browser, rec: { id: string; name: string; title: string; persona: string }): Promise<Recording> {
   const context = await browser.newContext({ viewport: SIZE, recordVideo: { dir: path.join(OUT, 'raw'), size: SIZE }, locale: 'en-US', timezoneId: 'Asia/Jerusalem' });
-  await context.route(URLS.harness, (route) => route.fulfill({ contentType: 'text/html; charset=utf-8', body: harnessHtml(`${rec.id} ${rec.title}`, rec.persona) }));
+  // A real local server, not page.route: Chromium counts an intercepted page as public, and its Private
+  // Network Access checks then refuse to frame the apps on localhost.
+  const html = harnessHtml(`${rec.id} ${rec.title}`, rec.persona);
+  const harness = createServer((_req, res) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(html));
+  await new Promise<void>((resolve) => harness.listen(0, 'localhost', resolve));
   const page = await context.newPage();
-  await page.goto(URLS.harness);
+  await page.goto(`http://localhost:${(harness.address() as AddressInfo).port}/rec`);
   const staff = await staffConsole(browser);
   const setPane = (html: string, note: string) => page.evaluate(([h, n]) => {
     document.getElementById('c360')!.innerHTML = h!;
@@ -113,6 +117,7 @@ export async function openRecording(browser: Browser, rec: { id: string; name: s
       await page.waitForTimeout(1500);
       await context.close();
       await staff.context.close();
+      await new Promise((resolve) => harness.close(resolve));
       if (!video) throw new Error('No video was recorded');
       const target = path.join(OUT, `${rec.id}-${rec.name}.webm`);
       await rename(await video.path(), target);
