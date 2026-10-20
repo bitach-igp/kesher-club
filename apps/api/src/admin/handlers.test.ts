@@ -5,6 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
+import { loadRegistry, StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
@@ -43,6 +44,20 @@ describe('/admin/* access', () => {
     const me = await call('GET', '/v1/accounts', undefined, await staffToken('zvi'));
     expect(me.status).toBe(403);
     expect((me.body as { code: string }).code).toBe('FORBIDDEN');
+  });
+});
+
+describe('stored flags beside injected evaluation flags (T-0919)', () => {
+  it('lists the stored flags, not the in-memory ones, when the app evaluates with StaticFlags (the demo process)', async () => {
+    const allOn = new StaticFlags(undefined, Object.fromEntries(loadRegistry().map((f) => [f.key, true])));
+    const pair = await generateKeyPair('ES256');
+    const jwk = { ...(await exportJWK(pair.publicKey)), kid: 'admin-2', alg: 'ES256', use: 'sig' };
+    const demo = createApp({ db, registry: new SimulatorHost().registry, market: 'US', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', staffJwks: [jwk], clock: () => NOW, flags: allOn });
+    const token = await new SignJWT({ roles: ['admin'] }).setProtectedHeader({ alg: 'ES256', kid: 'admin-2' }).setIssuer(STAFF_ISSUER).setAudience(STAFF_AUDIENCE).setSubject('ada').setIssuedAt(Math.floor(NOW.getTime() / 1000)).setExpirationTime(Math.floor(NOW.getTime() / 1000) + 300).sign(pair.privateKey);
+    const r = await dispatch(demo, { method: 'GET', url: '/v1/admin/flags', headers: { authorization: `Bearer ${token}` }, rawBody: '', now: NOW });
+    expect(r.status).toBe(200);
+    expect((r.body as { items: { key: string; value: boolean }[] }).items.find((f) => f.key === 'wallet.enabled')).toMatchObject({ value: false });
+    expect(await demo.services.flags.isOn('wallet.enabled')).toBe(true);
   });
 });
 

@@ -83,4 +83,52 @@ console session (T-0919), not a member.
 | Finance requester and second approver | REC-14 | No endpoint creates `org.staff` or grants `org_finance`; sign-up always gives the member role |
 | Allowance schedule | REC-14 | No endpoint creates `org.allowance_schedule` |
 
-The member app in a browser (T-0033) and staff sign-in to the console (T-0919) build on this.
+## Sign in to the console as staff (T-0919)
+
+The console keeps its full Identity Center sign-in: discovery, authorization code, token, JWKS. Locally,
+the simulator panel answers it with a standards-shaped issuer at <http://localhost:4010/oidc>. Its
+`/authorize` shows a list of staff to pick from where a password form would be. The signing key is
+generated when the panel starts, and every ID token records a hardware key (`amr: ["hwk"]`), as
+Identity Center would require.
+
+| Staff | Roles |
+|---|---|
+| Sam Support | `support` |
+| Cleo Compliance | `compliance` |
+| Finn Finance | `finance` |
+| Ada Admin | `admin` |
+| Abe Admin | `admin` (the second approver for two-person flag flips) |
+
+The console signs 5-minute staff tokens for the API with its own key. The API trusts that key's public
+half through `STAFF_JWKS`. Make a local pair once. It lands in `.env.local-staff`, which git ignores:
+
+```sh
+cd apps/demo && node --input-type=module -e "import {generateKeyPair,exportJWK} from 'jose'; const k = await generateKeyPair('ES256', {extractable: true}); console.log(\"STAFF_JWKS='\" + JSON.stringify({keys: [{...await exportJWK(k.publicKey), kid: 'local-staff-1', alg: 'ES256', use: 'sig'}]}) + \"'\"); console.log(\"ADMIN_API_SIGNING_KEY='\" + JSON.stringify(await exportJWK(k.privateKey)) + \"'\");" > ../../.env.local-staff && cd ../..
+```
+
+Start the demo stack with `STAFF_JWKS` from that file, then the console against it:
+
+```sh
+set -a; . ./.env.local-staff; set +a
+APP_ENV=development DATABASE_URL="postgres://postgres:postgres@localhost:5433/club" pnpm --filter @kesher/demo dev
+# in a second terminal, after `set -a; . ./.env.local-staff; set +a`
+NODE_ENV=development ADMIN_ENVIRONMENT=local ADMIN_BASE_URL=http://localhost:3100 ADMIN_VPN_CIDRS=127.0.0.0/8,::1/128 \
+ADMIN_OIDC_ISSUER=http://localhost:4010/oidc ADMIN_OIDC_JWKS_URL=http://localhost:4010/oidc/jwks \
+ADMIN_OIDC_CLIENT_ID=kesher-admin-local ADMIN_OIDC_AUDIENCE=kesher-admin-local ADMIN_OIDC_CLIENT_SECRET=local-simulator-client \
+ADMIN_DATA=api ADMIN_API_URL_IL=http://localhost:3000/v1 ADMIN_API_URL_US=http://localhost:3000/v1 ADMIN_API_SIGNING_KID=local-staff-1 \
+pnpm --filter @kesher/admin exec next dev -p 3100
+```
+
+Open <http://localhost:3100>, choose "Sign in with Identity Center", and pick the staff member.
+`kesher-admin-local` / `local-simulator-client` is the simulator issuer's client. It is not a secret: the
+issuer answers only to a request addressed to this machine (`localhost`, `127.0.0.0/8` or `::1`) and
+redirects only back to it.
+
+The console's config allows this issuer for `ADMIN_ENVIRONMENT=local` only. Outside `local`,
+`ADMIN_OIDC_ISSUER` and `ADMIN_OIDC_JWKS_URL` must be `https` and must not name this machine. In `local`,
+plain `http` is allowed only for this machine.
+
+The console's flag page shows the database's flags, not the demo's in-memory "all on". Flipping one there
+changes the stored flag, which the demo process does not read.
+
+The member app in a browser (T-0033) builds on this stack too: see `apps/mobile/README.md`.

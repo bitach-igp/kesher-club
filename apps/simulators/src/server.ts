@@ -3,6 +3,7 @@
 import http from 'node:http';
 import type { SimulatorHost} from './host.ts';
 import { type Simulators } from './host.ts';
+import { OidcIssuer } from './oidc.ts';
 
 type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
 
@@ -10,14 +11,27 @@ export interface PanelResponse {
   status: number;
   body: Json;
   contentType?: string;
+  headers?: Record<string, string>;
+}
+
+/** What the socket binding adds: the OIDC issuer (T-0919) and the request's headers. */
+export interface PanelContext {
+  oidc?: OidcIssuer | undefined;
+  headers?: Readonly<Record<string, string | string[] | undefined>>;
 }
 
 const json = (status: number, body: Json): PanelResponse => ({ status, body });
 
 /** Pure request handler so tests can drive it without sockets. */
-export async function handle(host: SimulatorHost, method: string, url: string, rawBody = ''): Promise<PanelResponse> {
+export async function handle(host: SimulatorHost, method: string, url: string, rawBody = '', ctx: PanelContext = {}): Promise<PanelResponse> {
   const u = new URL(url, 'http://sim.local');
   const parts = u.pathname.split('/').filter(Boolean);
+  // The staff identity provider for the local console (T-0919); its token endpoint takes a form body.
+  if (parts[0] === 'oidc' && ctx.oidc) {
+    const hostHeader = ctx.headers?.['host'];
+    const r = await ctx.oidc.handle(method, u.pathname.slice('/oidc'.length), u.searchParams, rawBody, typeof hostHeader === 'string' ? hostHeader : undefined);
+    return { status: r.status, body: r.body, contentType: r.contentType, ...(r.headers ? { headers: r.headers } : {}) };
+  }
   const body = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
 
   if (method === 'GET' && parts.length === 0) return { status: 200, body: panelHtml(host), contentType: 'text/html; charset=utf-8' };
@@ -54,17 +68,18 @@ export async function handle(host: SimulatorHost, method: string, url: string, r
 }
 
 export function createServer(host: SimulatorHost): http.Server {
+  const oidc = OidcIssuer.create();
   return http.createServer(async (req, res) => {
     let raw = '';
     req.setEncoding('utf8');
     for await (const chunk of req) raw += chunk;
     let out: PanelResponse;
     try {
-      out = await handle(host, req.method ?? 'GET', req.url ?? '/', raw);
+      out = await handle(host, req.method ?? 'GET', req.url ?? '/', raw, { oidc: await oidc, headers: req.headers });
     } catch (e) {
       out = json(400, { error: 'bad_request', detail: (e as Error).message });
     }
-    res.writeHead(out.status, { 'content-type': out.contentType ?? 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.writeHead(out.status, { 'content-type': out.contentType ?? 'application/json; charset=utf-8', 'cache-control': 'no-store', ...out.headers });
     res.end(out.contentType ? String(out.body) : JSON.stringify(out.body));
   });
 }

@@ -19,6 +19,30 @@ const cidrList = z
     return out;
   });
 
+/** The identity provider's endpoints (T-0919): checked against the environment the console runs in. */
+export const OIDC_URL_KEYS = ['ADMIN_OIDC_ISSUER', 'ADMIN_OIDC_JWKS_URL'] as const;
+
+/** localhost, 127.0.0.0/8 and ::1: this machine. */
+const isLoopback = (hostname: string): boolean => hostname === 'localhost' || hostname === '[::1]' || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+
+/**
+ * Outside `local` the identity provider is Identity Center: https, and never this machine, so the
+ * simulator issuer can never sign anyone into a deployed console. In `local`, plain http is allowed for
+ * this machine only, so the simulator issuer cannot be pointed anywhere else either.
+ */
+export function oidcUrlProblem(environment: string, raw: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return undefined; // the schema's url() check reports it
+  }
+  const loopback = isLoopback(url.hostname);
+  if (environment !== 'local') return url.protocol === 'https:' && !loopback ? undefined : 'must be https and not a loopback host outside ADMIN_ENVIRONMENT=local';
+  if (url.protocol === 'https:') return undefined;
+  return url.protocol === 'http:' && loopback ? undefined : 'http is allowed only for localhost, 127.0.0.0/8 or ::1';
+}
+
 /** Keys optional in the schema but required when ADMIN_DATA=api; Terraform's contract test reads this list (T-0914). */
 export const API_MODE_KEYS = ['ADMIN_API_URL_IL', 'ADMIN_API_URL_US', 'ADMIN_API_SIGNING_KEY', 'ADMIN_API_SIGNING_KID'] as const;
 
@@ -59,6 +83,10 @@ export const adminConfigSchema = z.object({
 }).superRefine((c, ctx) => {
   if (c.ADMIN_DATA === 'memory' && c.ADMIN_ENVIRONMENT !== 'local' && c.ADMIN_ENVIRONMENT !== 'preview') ctx.addIssue({ code: 'custom', path: ['ADMIN_DATA'], message: 'memory data is allowed in local and preview only' });
   if (c.ADMIN_DATA === 'api') for (const k of API_MODE_KEYS) if (c[k] === undefined) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required when ADMIN_DATA=api` });
+  for (const k of OIDC_URL_KEYS) {
+    const problem = oidcUrlProblem(c.ADMIN_ENVIRONMENT, c[k]);
+    if (problem) ctx.addIssue({ code: 'custom', path: [k], message: problem });
+  }
 });
 
 type ParsedAdminConfig = z.infer<typeof adminConfigSchema>;

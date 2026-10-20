@@ -164,6 +164,9 @@ function buildServices(o: AppOptions) {
 
 export function createApp(o: AppOptions): App {
   const s = buildServices(o);
+  // The console lists and flips the stored flags (two-person approved) even when a test or the demo
+  // process injects in-memory evaluation flags; those decide what members see, not what the console shows.
+  const flagStore = s.flags instanceof FlagService ? s.flags : new FlagService(o.db, s.approvals, s.audit);
   const staffInstitution = async (partyId: string) => (await o.db.query<{ institution_id: string }>('select institution_id from org.staff where party_id = $1 and active', [partyId])).rows[0]?.institution_id;
   const handlers: HandlerTable = {
     ...authHandlers({ otp: s.otp, passkeys: s.passkeys, recovery: s.recovery, tokens: s.tokens, stepUp: s.stepUp }),
@@ -217,7 +220,7 @@ export function createApp(o: AppOptions): App {
       return { status: 204 };
     }),
     providerWebhook: s.webhooks.handler() as Handler,
-    ...adminHandlers({ flags: s.flags as FlagService, approvals: s.approvals, audit: s.audit, registry: o.registry, market: o.market, customers: new CustomerReadModel({ db: o.db, identity: s.identity, ledger: s.ledger, audit: s.audit }), complaints: new ComplaintService(o.db, s.audit), alerts: new AlertService(o.db, s.audit) }),
+    ...adminHandlers({ flags: flagStore, approvals: s.approvals, audit: s.audit, registry: o.registry, market: o.market, customers: new CustomerReadModel({ db: o.db, identity: s.identity, ledger: s.ledger, audit: s.audit }), complaints: new ComplaintService(o.db, s.audit), alerts: new AlertService(o.db, s.audit) }),
   };
   for (const r of ROUTES) if (!handlers[r.operationId]) handlers[r.operationId] = notYet(r.operationId);
   const staff = staffBearerMiddleware(o.staffJwks && o.staffJwks.length ? new StaffTokenVerifier({ jwks: o.staffJwks, clock: s.clock }) : undefined);
