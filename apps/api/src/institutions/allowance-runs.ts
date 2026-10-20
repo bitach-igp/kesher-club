@@ -3,9 +3,14 @@
 // date, workflow id allowance:{schedule}:{date}); over ₪5,000 it waits until a second finance member asks
 // for the same run. Every payment is an allowance transfer, so the monitoring job and the member's history
 // see it, and a rerun pays nobody twice. Institution money is behind `institutions.money`.
-import { DomainError, toWire } from '@kesher/domain';
+// GET /institutions/{id}/allowance-schedules and /allowance-runs (T-0609) are what I07 reads: the active
+// schedules with their cohort and next date, and the run history with who asked and who approved, by
+// display name only. Both answer 404 to anyone but the institution's own staff.
+import { DomainError, toWire, type Currency } from '@kesher/domain';
+import type { IdentityRepository } from '../auth/repository.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
-import { ok, requireIdempotencyKey, requireRole, route, type Handler } from '../http.ts';
+import type { Database } from '../db.ts';
+import { ok, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
 import { preview, run, type AllowanceActivities } from './allowance/workflow.ts';
 
 export const INSTITUTIONS_MONEY_FLAG = 'institutions.money';
@@ -35,10 +40,110 @@ export interface AllowanceRunDeps {
   flags: FeatureFlags;
   /** The institution a staff member belongs to, if any. */
   staffInstitution(partyId: string): Promise<string | undefined>;
+  db: Database;
+  identity: Pick<IdentityRepository, 'findUser'>;
 }
 
-export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance', Handler> {
+type Cadence = 'weekly' | 'monthly' | 'once';
+type RunStatus = 'preview' | 'awaiting_second_approval' | 'running' | 'completed' | 'failed';
+const ROLE_NAME: Record<string, string> = { staff: 'Staff', finance: 'Finance', admin: 'Institution admin', org_admin: 'Institution admin' };
+const HISTORY_LIMIT = 100;
+
+const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
+const addDays = (date: string, days: number): string => isoDate(new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000));
+/** One calendar month on, clamped to the month's last day (31 Jan → 28 or 29 Feb). */
+function addMonth(date: string): string {
+  const [y, m, d] = date.split('-').map(Number) as [number, number, number];
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return isoDate(new Date(Date.UTC(y, m, Math.min(d, last))));
+}
+
+/** Today for a schedule that never ran; a week or a month after its last run, never before today; none for a one-off that ran. */
+export function nextRunDate(cadence: Cadence, lastRun: string | undefined, today: string): string | undefined {
+  if (!lastRun) return today;
+  if (cadence === 'once') return undefined;
+  const next = cadence === 'weekly' ? addDays(lastRun, 7) : addMonth(lastRun);
+  return next < today ? today : next;
+}
+
+/** The staff member's own institution, else 404: another institution's existence is not ours to confirm. */
+async function ownInstitution(d: AllowanceRunDeps, req: HttpRequest): Promise<string> {
+  const p = requireRole(req, 'org_staff', 'org_admin', 'org_finance');
+  const institutionId = req.params['id'] ?? '';
+  if ((await d.staffInstitution(p.partyId)) !== institutionId) throw new DomainError('NOT_FOUND', 'Institution not found');
+  if (!(await d.flags.isOn(INSTITUTIONS_MONEY_FLAG))) throw new DomainError('FEATURE_OFF', 'Institution money is not enabled yet');
+  return institutionId;
+}
+
+/** "Finance •••• 0109": the role at the institution and the phone's last four digits, never the party id. */
+async function staffName(d: AllowanceRunDeps, partyId: string, role: string | undefined): Promise<{ displayName: string }> {
+  const user = await d.identity.findUser(partyId);
+  const label = ROLE_NAME[role ?? ''] ?? 'Former staff';
+  return { displayName: user ? `${label} •••• ${user.phone.slice(-4)}` : label };
+}
+
+export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance' | 'listAllowanceSchedules' | 'listAllowanceRuns', Handler> {
   return {
+    listAllowanceSchedules: route(async (req) => {
+      const institutionId = await ownInstitution(d, req);
+      const r = await d.db.query<{ id: string; name: string; amount_minor: string; currency: Currency; cadence: Cadence; member_filter: string[]; member_count: number; last_run: string | Date | null }>(
+        `select s.id, s.name, s.amount_minor::text, s.currency, s.cadence, s.member_filter,
+                (select count(*)::int from org.member m where m.institution_id = s.institution_id and m.status = 'active' and m.member_party_id is not null
+                   and (jsonb_array_length(s.member_filter) = 0 or s.member_filter ? m.member_party_id::text)) as member_count,
+                (select max(run_date) from org.allowance_run r where r.schedule_id = s.id and r.status <> 'preview') as last_run
+           from org.allowance_schedule s where s.institution_id = $1 and s.active order by s.created_at, s.id`,
+        [institutionId],
+      );
+      const today = isoDate(req.now);
+      return ok({
+        items: r.rows.map((x) => {
+          const next = nextRunDate(x.cadence, x.last_run ? isoDate(new Date(x.last_run)) : undefined, today);
+          return { id: x.id, name: x.name, amount: { minor: x.amount_minor, currency: x.currency }, cadence: x.cadence, cohort: { kind: x.member_filter.length === 0 ? 'all' : 'listed', memberCount: x.member_count }, ...(next ? { nextDate: next } : {}) };
+        }),
+      });
+    }),
+
+    listAllowanceRuns: route(async (req) => {
+      const institutionId = await ownInstitution(d, req);
+      const r = await d.db.query<{ workflow_id: string; schedule_id: string; name: string; run_date: string | Date; status: RunStatus; member_count: number; total_minor: string; currency: Currency; started_at: string | Date | null; completed_at: string | Date | null; paid: number; failed: number; paid_minor: string; requested_by: string | null; approvers: string[] | null }>(
+        `select r.workflow_id, r.schedule_id, s.name, r.run_date, r.status, r.member_count, r.total_minor::text, r.currency, r.started_at, r.completed_at,
+                (select count(*)::int from org.allowance_payment ap where ap.workflow_id = r.workflow_id and ap.status = 'paid') as paid,
+                (select count(*)::int from org.allowance_payment ap where ap.workflow_id = r.workflow_id and ap.status = 'failed') as failed,
+                (select coalesce(sum(p.amount_minor), 0)::text from org.allowance_payment ap join ledger.posting p on p.journal_id = ap.journal_id
+                  where ap.workflow_id = r.workflow_id and ap.status = 'paid' and p.amount_minor > 0) as paid_minor,
+                a.requested_by,
+                (select array_agg(dd.decided_by order by dd.at) from ops.approval_decision dd where dd.request_id = a.id and dd.decision = 'approve') as approvers
+           from org.allowance_run r
+           join org.allowance_schedule s on s.id = r.schedule_id
+           left join ops.approval_request a on a.kind = 'allowance_run' and a.subject = r.workflow_id
+          where s.institution_id = $1
+          order by r.run_date desc, r.created_at desc limit ${HISTORY_LIMIT}`,
+        [institutionId],
+      );
+      // Roles as they stand now: a display label, not an audit record (the approvals table is that).
+      const people = [...new Set(r.rows.flatMap((x) => [x.requested_by, ...(x.approvers ?? [])]).filter((x): x is string => !!x))];
+      const roles = new Map((await d.db.query<{ party_id: string; role: string }>('select party_id, role from org.staff where party_id = any($1::uuid[])', [people])).rows.map((x) => [x.party_id, x.role]));
+      const names = new Map(await Promise.all(people.map(async (id) => [id, await staffName(d, id, roles.get(id))] as const)));
+      return ok({
+        items: r.rows.map((x) => ({
+          workflowId: x.workflow_id,
+          scheduleId: x.schedule_id,
+          scheduleName: x.name,
+          runDate: isoDate(new Date(x.run_date)),
+          status: x.status,
+          memberCount: x.member_count,
+          total: { minor: x.total_minor, currency: x.currency },
+          paidTotal: { minor: x.paid_minor, currency: x.currency },
+          paid: x.paid,
+          failed: x.failed,
+          ...(x.requested_by ? { requestedBy: names.get(x.requested_by)! } : {}),
+          approvedBy: (x.approvers ?? []).map((id) => names.get(id)!),
+          ...(x.started_at ? { startedAt: new Date(x.started_at).toISOString() } : {}),
+          ...(x.completed_at ? { completedAt: new Date(x.completed_at).toISOString() } : {}),
+        })),
+      });
+    }),
+
     runAllowance: route(async (req) => {
       const p = requireRole(req, 'org_finance');
       requireIdempotencyKey(req);

@@ -830,7 +830,45 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Receipt" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/allowance-schedules:
+    get:
+      operationId: listAllowanceSchedules
+      summary: The institution's active allowance schedules, with each one's cohort and next date
+      description: >-
+        REQ-INS-003 (T-0609). Org staff of this institution only; another institution answers 404. The next date is
+        today for a schedule that has not run, one week or one month after its last run otherwise (never before
+        today), and absent for a one-off that has run.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Schedules
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AllowanceSchedule" } }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/allowance-runs:
+    get:
+      operationId: listAllowanceRuns
+      summary: The institution's allowance runs, newest first, with who requested and approved each
+      description: >-
+        REQ-INS-003/004 (T-0609). Org staff of this institution only; another institution answers 404. `paidTotal` is
+        the sum of the run's settled journals; staff appear by display name only, never by party id or phone.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Runs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/AllowanceRunSummary" } }
+        default: { $ref: "#/components/responses/Problem" }
     post:
       operationId: runAllowance
       summary: Dry-run or execute an allowance schedule for a date
@@ -2416,6 +2454,44 @@ components:
         memberCount: { type: integer }
         total: { $ref: "#/components/schemas/Money" }
         failures: { type: integer }
+    AllowanceSchedule:
+      type: object
+      required: [id, name, amount, cadence, cohort]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, description: Staff-entered text }
+        amount: { $ref: "#/components/schemas/Money" }
+        cadence: { type: string, enum: [weekly, monthly, once] }
+        cohort:
+          type: object
+          required: [kind, memberCount]
+          properties:
+            kind: { type: string, enum: [all, listed], description: "all: every active member of the institution; listed: the members the schedule names" }
+            memberCount: { type: integer, minimum: 0, description: Active members a run would pay today }
+        nextDate: { type: string, format: date }
+    StaffName:
+      type: object
+      required: [displayName]
+      properties:
+        displayName: { type: string, description: "Role and the last four digits of the phone, e.g. Finance •••• 0109" }
+    AllowanceRunSummary:
+      type: object
+      required: [workflowId, scheduleId, scheduleName, runDate, status, memberCount, total, paidTotal, paid, failed, approvedBy]
+      properties:
+        workflowId: { type: string }
+        scheduleId: { type: string, format: uuid }
+        scheduleName: { type: string }
+        runDate: { type: string, format: date }
+        status: { type: string, enum: [preview, awaiting_second_approval, running, completed, failed] }
+        memberCount: { type: integer }
+        total: { $ref: "#/components/schemas/Money" }
+        paidTotal: { $ref: "#/components/schemas/Money" }
+        paid: { type: integer, minimum: 0 }
+        failed: { type: integer, minimum: 0 }
+        requestedBy: { $ref: "#/components/schemas/StaffName" }
+        approvedBy: { type: array, items: { $ref: "#/components/schemas/StaffName" } }
+        startedAt: { type: string, format: date-time }
+        completedAt: { type: string, format: date-time }
     Receipt:
       type: object
       required: [receiptNumber, feeItemId, institutionId, institutionName, memberPartyId, description, amount, paidAt, journalId]

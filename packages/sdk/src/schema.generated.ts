@@ -971,13 +971,37 @@ export interface paths {
             readonly path?: never;
             readonly cookie?: never;
         };
-        readonly get?: never;
+        /**
+         * The institution's allowance runs, newest first, with who requested and approved each
+         * @description REQ-INS-003/004 (T-0609). Org staff of this institution only; another institution answers 404. `paidTotal` is the sum of the run's settled journals; staff appear by display name only, never by party id or phone.
+         */
+        readonly get: operations["listAllowanceRuns"];
         readonly put?: never;
         /**
          * Dry-run or execute an allowance schedule for a date
          * @description REQ-INS-003/004. Org finance; over ₪5,000 needs a second approver. Idempotent; workflow id allowance:{schedule}:{date}.
          */
         readonly post: operations["runAllowance"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/allowance-schedules": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution's active allowance schedules, with each one's cohort and next date
+         * @description REQ-INS-003 (T-0609). Org staff of this institution only; another institution answers 404. The next date is today for a schedule that has not run, one week or one month after its last run otherwise (never before today), and absent for a one-off that has run.
+         */
+        readonly get: operations["listAllowanceSchedules"];
+        readonly put?: never;
+        readonly post?: never;
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -1753,6 +1777,47 @@ export interface components {
             /** Format: uuid */
             readonly scheduleId: string;
         };
+        readonly AllowanceRunSummary: {
+            readonly approvedBy: readonly components["schemas"]["StaffName"][];
+            /** Format: date-time */
+            readonly completedAt?: string;
+            readonly failed: number;
+            readonly memberCount: number;
+            readonly paid: number;
+            readonly paidTotal: components["schemas"]["Money"];
+            readonly requestedBy?: components["schemas"]["StaffName"];
+            /** Format: date */
+            readonly runDate: string;
+            /** Format: uuid */
+            readonly scheduleId: string;
+            readonly scheduleName: string;
+            /** Format: date-time */
+            readonly startedAt?: string;
+            /** @enum {string} */
+            readonly status: "preview" | "awaiting_second_approval" | "running" | "completed" | "failed";
+            readonly total: components["schemas"]["Money"];
+            readonly workflowId: string;
+        };
+        readonly AllowanceSchedule: {
+            readonly amount: components["schemas"]["Money"];
+            /** @enum {string} */
+            readonly cadence: "weekly" | "monthly" | "once";
+            readonly cohort: {
+                /**
+                 * @description all: every active member of the institution; listed: the members the schedule names
+                 * @enum {string}
+                 */
+                readonly kind: "all" | "listed";
+                /** @description Active members a run would pay today */
+                readonly memberCount: number;
+            };
+            /** Format: uuid */
+            readonly id: string;
+            /** @description Staff-entered text */
+            readonly name: string;
+            /** Format: date */
+            readonly nextDate?: string;
+        };
         readonly ApprovalRequest: {
             readonly approvals: number;
             /** Format: date-time */
@@ -2433,6 +2498,10 @@ export interface components {
         readonly StaffAssignment: {
             readonly grant?: components["schemas"]["ApprovalRequest"];
             readonly staff?: components["schemas"]["InstitutionStaffMember"];
+        };
+        readonly StaffName: {
+            /** @description Role and the last four digits of the phone, e.g. Finance •••• 0109 */
+            readonly displayName: string;
         };
         readonly StepUpRequest: {
             /** @description The authenticator's assertion; omit to receive options */
@@ -3946,6 +4015,31 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly listAllowanceRuns: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Runs */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["AllowanceRunSummary"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly runAllowance: {
         readonly parameters: {
             readonly query?: never;
@@ -3971,6 +4065,31 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["AllowanceRun"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAllowanceSchedules: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Schedules */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["AllowanceSchedule"][];
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];
