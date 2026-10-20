@@ -1,6 +1,6 @@
 // Allowance activities (T-0604, T-0607): the Postgres-backed side effects behind the workflow. Each
 // payment is an ops.transfer of kind 'allowance' keyed by the run and the member (so the monitoring job
-// and the member's history see it), settled by a ledger journal institution_master → member wallet keyed
+// and the member's history see it), settled by a ledger journal from the institution's own account (T-0613) → member wallet keyed
 // `{key}:settle`; a rerun on the same date finds both and pays nobody twice (REQ-INS-003). A run over
 // ₪5,000 needs a second finance approver (REQ-INS-004): the requester's call is the first approval, and the
 // same run requested by a different finance member is the second.
@@ -80,7 +80,9 @@ export class PostgresAllowanceActivities implements AllowanceActivities {
     let t = await this.transfers.create({ idempotencyKey: key, kind: 'allowance', toPartyId: memberPartyId, amount }, now);
     if (t.state === 'settled' && t.journalId) return { journalId: t.journalId };
     if (t.state === 'created') t = await this.transfers.apply(t.id, 'submit', now, { reason: 'allowance run' });
-    const master = await this.accounts.systemAccount('institution_master', amount.currency);
+    const institutionId = await this.institutionOf(wf);
+    if (!institutionId) throw new DomainError('NOT_FOUND', 'The run names no institution');
+    const master = await this.accounts.institutionAccount(institutionId, amount.currency);
     const wallet = await this.accounts.memberAccount(memberPartyId, 'wallet', amount.currency);
     const j = await this.ledger.post({
       idempotencyKey: `${key}:settle`,
@@ -91,7 +93,7 @@ export class PostgresAllowanceActivities implements AllowanceActivities {
         { accountId: master, currency: amount.currency, amountMinor: amount.minor },
         { accountId: wallet, currency: amount.currency, amountMinor: -amount.minor },
       ],
-      metadata: { institutionId: await this.institutionOf(wf), workflowId: wf },
+      metadata: { institutionId, workflowId: wf },
     });
     await this.transfers.apply(t.id, 'settle', now, { journalId: j.id });
     return { journalId: j.id };

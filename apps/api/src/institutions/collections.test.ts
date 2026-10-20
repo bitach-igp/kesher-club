@@ -93,6 +93,9 @@ describe('TST-INS-006', () => {
       { type: 'institution_master', amount_minor: '-12000' },
       { type: 'wallet', amount_minor: '12000' },
     ]);
+    // The fee lands in this institution's own account (T-0613), not a shared one, and the other institution holds nothing.
+    expect(await app.services.accounts.institutionBalance(INST, 'ILS')).toEqual(money(12_000n, 'ILS'));
+    expect(await app.services.accounts.institutionBalance(OTHER, 'ILS')).toEqual(money(0n, 'ILS'));
     // Again, with any key: the same receipt, nothing more moves.
     expect((await pay(feeId, 'pay-fee-2')).body).toEqual(receipt);
     expect(await available()).toBe(before - 12_000n);
@@ -110,7 +113,7 @@ describe('TST-INS-006', () => {
     // The crash: the fee journal posted (dated in October), then the process died before the row and the transfer were touched.
     const s = app.services;
     const wallet = await s.accounts.memberAccount(member, 'wallet', 'ILS');
-    const master = await s.accounts.systemAccount('institution_master', 'ILS');
+    const master = await s.accounts.institutionAccount(INST, 'ILS');
     const posted = await s.ledger.post({ idempotencyKey: feeKey(crashFeeId), kind: 'fee', effectiveAt: new Date('2026-10-20T10:00:00Z'), postings: [{ accountId: wallet, currency: 'ILS', amountMinor: 3_000n }, { accountId: master, currency: 'ILS', amountMinor: -3_000n }], metadata: { institutionId: INST, memberPartyId: member, feeItemId: crashFeeId, description: 'Trip' } });
     const before = await available();
     const list = (await call('GET', '/v1/fee-items')).body as { items: FeeItemView[] };

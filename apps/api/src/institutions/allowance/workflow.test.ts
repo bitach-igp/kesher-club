@@ -63,8 +63,11 @@ describe('allowance workflow (REQ-INS-003)', () => {
     const second = await run(activities, sched, '2026-11-02', finance1);
     expect(second.paid).toBe(3);
     expect((await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where kind = 'allowance'`)).rows[0]!.n).toBe(journalsBefore);
-    const master = await accounts.systemAccount('institution_master', 'ILS');
+    // The run paid out of this institution's own account (T-0613): ₪600 out, so it holds −₪600.
+    const master = await accounts.institutionAccount(institutionId, 'ILS');
     expect(await ledger.balance(master, 'ILS')).toBe(60_000n);
+    expect(await accounts.institutionBalance(institutionId, 'ILS')).toEqual(money(-60_000n, 'ILS'));
+    expect(await ledger.balance(await accounts.systemAccount('institution_master', 'ILS'), 'ILS')).toBe(0n);
     // Each payment is an ops.transfer of kind allowance keyed by the run and the member, settled by its journal.
     const wf = workflowId(sched, '2026-11-02');
     const transfers = await db.query<{ state: string; n: number }>(`select state, count(*)::int as n from ops.transfer where kind = 'allowance' and idempotency_key like $1 group by state`, [`${wf}:%`]);

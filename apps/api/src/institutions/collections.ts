@@ -1,7 +1,7 @@
 // Collections (T-0606, REQ-INS-006): a member pays an institution's fee item from their purse. The
 // payment is a transfer of kind 'fee' whose idempotency key is `fee:{feeItemId}`, so it shows in the
-// purse's activity and in monitoring like any other movement; its one journal, wallet →
-// institution_master, is keyed the same and tagged with the institution, the member and the fee item,
+// purse's activity and in monitoring like any other movement; its one journal, wallet → the
+// institution's own account (T-0613), is keyed the same and tagged with the institution, the member and the fee item,
 // so the monthly export reads it straight off the ledger. The journal is the fact: the fee item's
 // status and the transfer's state follow it, and a replay after a crash finishes whatever is left.
 // The receipt number is derived from the journal, so the same payment always has the same receipt.
@@ -140,7 +140,7 @@ export class CollectionsService {
     if (purse.available.minor < amount.minor) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the purse for this fee', { available: purse.available.minor.toString(), currency: amount.currency });
     const transfer = await this.transfer(row, amount, now);
     const wallet = await this.accounts.memberAccount(memberPartyId, 'wallet', amount.currency);
-    const master = await this.accounts.systemAccount('institution_master', amount.currency);
+    const master = await this.accounts.institutionAccount(row.institution_id, amount.currency);
     const journal = await this.ledger.post({
       idempotencyKey: feeKey(row.id),
       kind: FEE_JOURNAL_KIND,

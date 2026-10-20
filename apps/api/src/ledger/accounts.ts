@@ -61,6 +61,20 @@ export class AccountService {
     return (await this.ensure(SYSTEM_OWNER, type, currency)).id;
   }
 
+  /**
+   * The institution's own account (T-0613): `institution_master`, owned by the institution's id, one per
+   * currency. Fees credit it, allowances and payouts debit it, so its balance is the institution's money,
+   * kept by the ledger's own invariants rather than read off journal tags.
+   */
+  async institutionAccount(institutionId: string, currency: Currency): Promise<string> {
+    return (await this.ensure(institutionId, 'institution_master', currency)).id;
+  }
+
+  /** What the institution holds in a currency: credit-normal, so the ledger balance negated. Below zero, it owes. */
+  async institutionBalance(institutionId: string, currency: Currency): Promise<Money> {
+    return money(-(await this.ledger.balance(await this.institutionAccount(institutionId, currency), currency)), currency);
+  }
+
   async purses(partyId: string): Promise<Purse[]> {
     const out: Purse[] = [];
     for (const currency of CURRENCIES) {
