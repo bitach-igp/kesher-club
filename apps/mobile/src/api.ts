@@ -24,6 +24,7 @@ export type Account = Schemas['Account'];
 export type Transfer = Schemas['Transfer'];
 export type TransferPreview = Schemas['TransferPreview'];
 export type Preferences = Schemas['Preferences'];
+export type Closure = Schemas['Closure'];
 export type ServiceStatus = Schemas['ServiceStatus'];
 export type CapabilityState = Schemas['CapabilityState'];
 export type ReceiveCurrency = Preferences['receiveCurrency'];
@@ -159,6 +160,12 @@ export interface AutoReloadApi {
   paymentMethods(): Promise<readonly SavedPaymentMethod[]>;
 }
 
+/** M34 close account (T-0526): where closing stands, and the close itself (step-up, once per attempt key). */
+export interface ClosureApi {
+  get(): Promise<Closure>;
+  close(idempotencyKey: string): Promise<Closure>;
+}
+
 export interface EmergencyCase {
   caseId: string;
   callbackSlaMinutes: number;
@@ -200,6 +207,7 @@ export interface Api {
   fund: FundApi;
   reload: AutoReloadApi;
   proposals: ProposalsApi;
+  closure: ClosureApi;
   esim: EsimUsageApi;
   grants: GrantsApi;
   concierge: ConciergeApi;
@@ -301,6 +309,10 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
       get: (id) => client.get('/intents/{id}', { path: { id } }),
       approve: (id, idempotencyKey, funding) => client.post('/intents/{id}/approve', { path: { id }, idempotencyKey, ...(funding ? { body: funding } : {}) }),
       decline: (id, idempotencyKey) => client.post('/intents/{id}/decline', { path: { id }, idempotencyKey }),
+    },
+    closure: {
+      get: () => client.get('/me/closure'),
+      close: (idempotencyKey) => client.post('/me/closure', { idempotencyKey }),
     },
     esim: extras.esim,
     grants: {
