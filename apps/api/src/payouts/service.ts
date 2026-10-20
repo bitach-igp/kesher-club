@@ -29,10 +29,17 @@ export const COOL_OFF_MS = 24 * 60 * 60_000;
 /** A first payout to a payee above this cools off (REQ-PO-002: ₪2,000). */
 export const COOL_OFF_THRESHOLD_MINOR = 200_000n;
 export const FAILED_TEMPLATE = 'money.payout_failed';
-export type PayoutState = 'cooling_off' | 'awaiting_second_approval' | 'submitted' | 'processing' | 'settled' | 'failed' | 'reversed';
+export type PayoutState = 'cooling_off' | 'awaiting_second_approval' | 'submitted' | 'processing' | 'settled' | 'failed' | 'reversed' | 'rejected';
+/** A second finance member rejected the payout: the transfer fails with this code before anything moved. */
+export const REJECTED = 'REJECTED';
+
+/** Whose money it is (T-0527): a member's own purse, or an institution's account, asked for by its finance staff. */
+export type PayoutSource = { kind: 'member' } | { kind: 'institution'; requestedBy: string; requesterRole: 'finance' | 'org_admin' };
 
 export interface PayoutInput {
+  /** The member, or the institution, whose money pays out; the transfer's from party. */
   partyId: string;
+  source: PayoutSource;
   payeeId: string;
   payee: { iban: string; name: string };
   amount: Money;
@@ -45,6 +52,17 @@ export interface PayoutView {
   state: PayoutState;
   amount: ReturnType<typeof toWire>;
   scheduledFor?: string;
+}
+
+/** One institution payout as the list shows it; names come from the handler, which knows the staff. */
+export interface InstitutionPayoutRow {
+  view: PayoutView;
+  transfer: Transfer;
+  payee: { name: string; ibanLast4: string };
+  requestedBy: string | undefined;
+  approvers: string[];
+  required: number;
+  requestedByViewer: boolean;
 }
 
 export interface PayoutActivities {
@@ -127,7 +145,7 @@ export class PayoutService implements PayoutActivities {
   }
 
   /** POST /payouts: the flag, the payee (ours and the vendor's), the purse, then the workflow. */
-  async request(partyId: string, body: unknown, key: string, now: Date): Promise<PayoutView & { newPayee: boolean }> {
+  async request(partyId: string, body: unknown, key: string, now: Date, source: PayoutSource = { kind: 'member' }): Promise<PayoutView & { newPayee: boolean }> {
     if (!(await this.d.flags.isOn(PAYOUT_FLAG))) throw new DomainError('FEATURE_OFF', 'Payouts are not enabled yet');
     const existing = await this.d.transfers.byKey(key);
     if (existing) {
@@ -147,10 +165,11 @@ export class PayoutService implements PayoutActivities {
     if (amount.currency !== 'ILS') throw new DomainError('VALIDATION_FAILED', 'Payouts are in ILS');
     if (amount.minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'Amount must be positive');
     if (typeof b.reference !== 'string' || !b.reference.trim() || b.reference.length > 64) throw new DomainError('VALIDATION_FAILED', 'reference is required (up to 64 characters)');
-    const purse = (await this.d.accounts.purses(partyId)).find((p) => p.currency === 'ILS')!;
-    if (purse.available.minor < amount.minor) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the purse for this payout', { available: purse.available.minor.toString(), currency: 'ILS' });
+    // An institution pays out only what its own account holds (T-0613); never below zero.
+    const available = source.kind === 'institution' ? (await this.d.accounts.institutionBalance(partyId, 'ILS')).minor : (await this.d.accounts.purses(partyId)).find((p) => p.currency === 'ILS')!.available.minor;
+    if (available < amount.minor) throw new DomainError('INSUFFICIENT_FUNDS', source.kind === 'institution' ? 'Not enough in the institution account for this payout' : 'Not enough in the purse for this payout', { available: available.toString(), currency: 'ILS' });
     const { payee, isNew } = await this.ensurePayee(partyId, check, now);
-    const input: PayoutInput = { partyId, payeeId: payee.id, payee: { iban: payee.iban, name: payee.name }, amount, reference: b.reference.trim() };
+    const input: PayoutInput = { partyId, source, payeeId: payee.id, payee: { iban: payee.iban, name: payee.name }, amount, reference: b.reference.trim() };
     const run = await runPayout(this, input, key, now);
     return { ...(await this.view(run.transfer)), newPayee: isNew };
   }
@@ -200,13 +219,16 @@ export class PayoutService implements PayoutActivities {
   }
 
   async approved(transfer: Transfer, input: PayoutInput, now: Date): Promise<boolean> {
-    const req = await this.d.approvals.request({ kind: 'payout', subject: transfer.id, scope: 'platform', requestedBy: { partyId: input.partyId, role: 'member' }, amount: input.amount, payload: { payeeLast4: input.payee.iban.slice(-4), reference: input.reference } }, now);
+    const requestedBy = input.source.kind === 'institution' ? { partyId: input.source.requestedBy, role: input.source.requesterRole } : { partyId: input.partyId, role: 'member' };
+    const scope = input.source.kind === 'institution' ? input.partyId : 'platform';
+    const req = await this.d.approvals.request({ kind: 'payout', subject: transfer.id, scope, requestedBy, amount: input.amount, payload: { payeeLast4: input.payee.iban.slice(-4), reference: input.reference } }, now);
     return req.status === 'approved';
   }
 
   async submit(transfer: Transfer, input: PayoutInput, workflowId: string, now: Date): Promise<{ transfer: Transfer; payout: VendorPayout }> {
     let t = transfer;
-    const wallet = await this.d.accounts.memberAccount(input.partyId, 'wallet', 'ILS');
+    const institution = input.source.kind === 'institution';
+    const wallet = institution ? await this.d.accounts.institutionAccount(input.partyId, 'ILS') : await this.d.accounts.memberAccount(input.partyId, 'wallet', 'ILS');
     const partner = await this.d.accounts.systemAccount('partner_settlement', 'ILS');
     const journal = await this.d.ledger.post({
       idempotencyKey: settleKey(workflowId),
@@ -217,7 +239,8 @@ export class PayoutService implements PayoutActivities {
         { accountId: wallet, currency: 'ILS', amountMinor: input.amount.minor },
         { accountId: partner, currency: 'ILS', amountMinor: -input.amount.minor },
       ],
-      metadata: { workflowId, payeeId: input.payeeId, payeeLast4: input.payee.iban.slice(-4), reference: input.reference, provider: this.d.provider },
+      // An institution's payout carries its id, so the monthly export reads it (T-0527), and the payee's name for that row.
+      metadata: { workflowId, payeeId: input.payeeId, payeeLast4: input.payee.iban.slice(-4), reference: input.reference, provider: this.d.provider, ...(institution ? { institutionId: input.partyId, payeeName: input.payee.name } : {}) },
     });
     let payout: VendorPayout;
     try {
@@ -296,6 +319,66 @@ export class PayoutService implements PayoutActivities {
     return transfer;
   }
 
+  // ---- institution payouts (T-0527) ----
+
+  /**
+   * The second finance member's decision on an institution payout waiting for one. Approve resumes the
+   * workflow at once (journal, then the rail); reject fails the transfer with REJECTED before anything
+   * moved. The requester cannot decide their own payout (one decision per person); the same person
+   * approving again is a no-op that answers the payout as it stands.
+   */
+  async decide(transferId: string, institutionId: string, by: { partyId: string; role: 'finance' | 'org_admin' }, decision: 'approve' | 'reject', now: Date, reason?: string): Promise<Transfer> {
+    const t = /^[0-9a-f-]{36}$/i.test(transferId) ? await this.d.transfers.get(transferId) : undefined;
+    // Another institution's payout, or a member's, is not found: its existence is not this caller's to confirm.
+    if (!t || t.kind !== 'payout' || t.fromPartyId !== institutionId) throw new DomainError('NOT_FOUND', 'Payout not found');
+    const req = await this.d.approvals.find('payout', t.id);
+    if (!req) throw new DomainError('IDEMPOTENCY_CONFLICT', t.state === 'pending_hold' ? 'This payout is still cooling off' : 'This payout is not waiting for an approval');
+    const mine = await this.d.db.query<{ decision: string }>('select decision from ops.approval_decision where request_id = $1 and decided_by = $2', [req.id, by.partyId]);
+    if (mine.rows[0] && mine.rows[0].decision === decision && by.partyId !== req.requestedBy) return t;
+    if (req.status !== 'awaiting_second_approval') throw new DomainError('IDEMPOTENCY_CONFLICT', `This payout is already ${req.status === 'approved' ? 'approved' : req.status}`);
+    const after = await this.d.approvals.decide(req.id, by, decision, now, reason);
+    if (decision === 'reject') return this.d.transfers.apply(t.id, 'fail', now, { failureCode: REJECTED, reason: 'rejected by a second finance member' });
+    if (after.status !== 'approved') return t;
+    return (await runPayout(this, await this.inputFor(t), t.idempotencyKey, now)).transfer;
+  }
+
+  /** The institution's payouts, newest first, a page at a time, with the approvals so far and its available balance. */
+  async listForInstitution(institutionId: string, viewer: string, cursor: { at: string; id: string } | undefined, limit: number): Promise<{ items: InstitutionPayoutRow[]; next?: { at: string; id: string }; available: Money }> {
+    return this.institutionRows(institutionId, viewer, cursor, limit);
+  }
+
+  /** One of the institution's payouts; another institution's (or a member's) is not found. */
+  async institutionPayout(institutionId: string, id: string, viewer: string): Promise<InstitutionPayoutRow> {
+    const r = /^[0-9a-f-]{36}$/i.test(id) ? await this.institutionRows(institutionId, viewer, undefined, 1, id) : { items: [] };
+    if (!r.items[0]) throw new DomainError('NOT_FOUND', 'Payout not found');
+    return r.items[0];
+  }
+
+  private async institutionRows(institutionId: string, viewer: string, cursor: { at: string; id: string } | undefined, limit: number, only?: string): Promise<{ items: InstitutionPayoutRow[]; next?: { at: string; id: string }; available: Money }> {
+    const r = await this.d.db.query<{ id: string; created_at: string | Date; requested_by: string | null; required: number | null; approvers: string[] | null; name: string | null; iban_last4: string | null }>(
+      `select t.id, t.created_at, a.requested_by, a.required,
+              (select array_agg(dd.decided_by order by dd.at) from ops.approval_decision dd where dd.request_id = a.id and dd.decision = 'approve') as approvers,
+              p.name, p.iban_last4
+         from ops.transfer t
+         left join ops.approval_request a on a.kind = 'payout' and a.subject = t.id::text
+         left join ops.external_ref x on x.entity_type = 'payee' and x.provider = 'payee' and x.entity_id = t.id
+         left join ops.payee p on p.id::text = split_part(x.external_id, ':', 1)
+        where t.kind = 'payout' and t.from_party_id = $1
+          and ($2::timestamptz is null or (t.created_at, t.id) < ($2::timestamptz, $3::uuid))
+          and ($5::uuid is null or t.id = $5::uuid)
+        order by t.created_at desc, t.id desc limit $4`,
+      [institutionId, cursor?.at ?? null, cursor?.id ?? null, limit + 1, only ?? null],
+    );
+    const page = r.rows.slice(0, limit);
+    const items: InstitutionPayoutRow[] = [];
+    for (const x of page) {
+      const t = (await this.d.transfers.get(x.id))!;
+      items.push({ view: await this.view(t), transfer: t, payee: { name: x.name ?? '', ibanLast4: x.iban_last4 ?? '' }, requestedBy: x.requested_by ?? undefined, approvers: x.approvers ?? [], required: x.required ?? 0, requestedByViewer: x.requested_by === viewer });
+    }
+    const last = page.at(-1);
+    return { items, ...(r.rows.length > limit && last ? { next: { at: new Date(last.created_at).toISOString(), id: last.id } } : {}), available: await this.d.accounts.institutionBalance(institutionId, 'ILS') };
+  }
+
   // ---- lookups and views ----
 
   async view(t: Transfer): Promise<PayoutView> {
@@ -317,7 +400,7 @@ export class PayoutService implements PayoutActivities {
         state = 'settled';
         break;
       case 'failed':
-        state = t.reversalJournalId ? 'reversed' : 'failed';
+        state = t.failureCode === REJECTED ? 'rejected' : t.reversalJournalId ? 'reversed' : 'failed';
         break;
       default:
         state = 'failed';
@@ -330,7 +413,18 @@ export class PayoutService implements PayoutActivities {
     const payeeId = await this.payeeIdOf(t.id);
     const row = payeeId ? (await this.d.db.query<PayeeRow>('select id, iban, iban_last4, name, bank_code, first_settled_at from ops.payee where id = $1', [payeeId])).rows[0] : undefined;
     if (!row) throw new DomainError('NOT_FOUND', 'Payee not found for this payout');
-    return { partyId: t.fromPartyId!, payeeId: row.id, payee: { iban: row.iban, name: row.name }, amount: money(t.amount.minor, 'ILS'), reference: t.note ?? '' };
+    return { partyId: t.fromPartyId!, source: await this.sourceOf(t), payeeId: row.id, payee: { iban: row.iban, name: row.name }, amount: money(t.amount.minor, 'ILS'), reference: t.note ?? '' };
+  }
+
+  /** An institution's payout is the one whose from party is an institution; its requester is the approval's. */
+  private async sourceOf(t: Transfer): Promise<PayoutSource> {
+    const r = await this.d.db.query<{ requested_by: string | null }>(
+      `select (select a.requested_by from ops.approval_request a where a.kind = 'payout' and a.subject = $2) as requested_by from org.institution i where i.id = $1`,
+      [t.fromPartyId, t.id],
+    );
+    const row = r.rows[0];
+    if (!row) return { kind: 'member' };
+    return { kind: 'institution', requestedBy: row.requested_by ?? t.fromPartyId!, requesterRole: 'finance' };
   }
 
   /** Payouts waiting on a cooling-off that ended, or an approval that landed. */
@@ -361,6 +455,8 @@ export class PayoutService implements PayoutActivities {
   }
 
   private async tellPayer(t: Transfer, code: string, now: Date): Promise<void> {
+    // An institution has no devices; its finance staff see the reversal in the console's payout list (I09).
+    if ((await this.sourceOf(t)).kind === 'institution') return;
     const devices = await this.d.identity.listDevices(t.fromPartyId!);
     for (const d of devices) {
       if (!d.pushToken) continue;

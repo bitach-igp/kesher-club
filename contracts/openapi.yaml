@@ -892,6 +892,96 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AllowanceRun" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/payouts:
+    get:
+      operationId: listInstitutionPayouts
+      summary: The institution's payouts, newest first, with state, payee, cool-off end and the approvals so far
+      description: >-
+        REQ-PO-001/002, REQ-INS-004 (T-0527). Org finance of this institution only; another institution answers 404.
+        Cursor-paged. `available` is what the institution's own account holds (T-0613). Staff appear by display name only.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: cursor, in: query, required: false, schema: { type: string, maxLength: 200 } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        "200":
+          description: Payouts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, available]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/InstitutionPayout" } }
+                  nextCursor: { type: string }
+                  available: { $ref: "#/components/schemas/Money" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createInstitutionPayout
+      summary: Pay out ILS from the institution's account to a validated payee
+      description: >-
+        REQ-PO-001/002, REQ-INS-004 (T-0527). Org finance of this institution. Requires a step-up token younger than 5
+        minutes (REQ-AUTH-006). Never takes the institution's account below zero (INSUFFICIENT_FUNDS). A new payee over
+        ₪2,000 cools off 24 h; over ₪5,000 a second finance member approves (approvePayout). Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PayoutRequest" }
+      responses:
+        "201":
+          description: The payout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionPayout" }
+        default: { $ref: "#/components/responses/Problem" }
+  /payouts/{id}/approve:
+    post:
+      operationId: approvePayout
+      summary: Second finance approval of an institution payout; it then goes to the rail
+      description: >-
+        REQ-INS-004 (T-0527). A finance member of the payout's institution other than its requester (409 for the
+        requester). Approving again is a no-op. Requires a step-up token younger than 5 minutes. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      responses:
+        "200":
+          description: The payout after the decision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionPayout" }
+        default: { $ref: "#/components/responses/Problem" }
+  /payouts/{id}/reject:
+    post:
+      operationId: rejectPayout
+      summary: Reject an institution payout waiting for its second approver; nothing moves
+      description: REQ-INS-004 (T-0527). A finance member of the payout's institution, with a reason. Requires a step-up token younger than 5 minutes. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: The payout, rejected
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionPayout" }
+        default: { $ref: "#/components/responses/Problem" }
   /payouts:
     post:
       operationId: createPayout
@@ -2569,10 +2659,11 @@ components:
         rows: { type: integer }
         totals:
           type: object
-          required: [allowancesOut, feesIn, net]
+          required: [allowancesOut, feesIn, payoutsOut, net]
           properties:
             allowancesOut: { $ref: "#/components/schemas/Money" }
             feesIn: { $ref: "#/components/schemas/Money" }
+            payoutsOut: { $ref: "#/components/schemas/Money", description: The institution's payouts and their reversals (T-0527) }
             net: { $ref: "#/components/schemas/Money" }
     PayoutRequest:
       type: object
@@ -2594,6 +2685,27 @@ components:
         state: { type: string, enum: [cooling_off, awaiting_second_approval, submitted, processing, settled, failed, reversed] }
         amount: { $ref: "#/components/schemas/Money" }
         scheduledFor: { type: string, format: date-time }
+    InstitutionPayout:
+      type: object
+      required: [id, state, amount, payee, reference, createdAt, approvedBy, requiredApprovals, requestedByMe]
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string, enum: [cooling_off, awaiting_second_approval, submitted, processing, settled, failed, reversed, rejected] }
+        amount: { $ref: "#/components/schemas/Money" }
+        payee:
+          type: object
+          required: [name, ibanLast4]
+          properties:
+            name: { type: string, description: Staff-entered text }
+            ibanLast4: { type: string }
+        reference: { type: string, description: Staff-entered text }
+        createdAt: { type: string, format: date-time }
+        coolOffEndsAt: { type: string, format: date-time, description: Set while a new payee over ₪2,000 cools off }
+        requestedBy: { $ref: "#/components/schemas/StaffName" }
+        approvedBy: { type: array, items: { $ref: "#/components/schemas/StaffName" } }
+        requiredApprovals: { type: integer, minimum: 0, description: 0 until the payout asks for its approval (after any cool-off) }
+        requestedByMe: { type: boolean, description: True for the payout's requester, who cannot approve it }
+        failureCode: { type: string }
     AgentGrant:
       type: object
       required: [id, clientName, clientId, scopes, createdAt]

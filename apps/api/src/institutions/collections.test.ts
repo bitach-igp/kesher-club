@@ -152,7 +152,7 @@ describe('TST-INS-006', () => {
     const xlsx = (await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections/export?month=2026-11&format=xlsx`, headers: { authorization: `Bearer ${staffToken}` }, rawBody: '', now: NOW })).body as ExportFile;
     const sheet = sheetCells(unzipStored(new Uint8Array(Buffer.from(xlsx.base64, 'base64'))).get('xl/worksheets/sheet1.xml')!);
     expect(sheet[1]).toEqual(['2026-11-10', expect.any(String), 'fee', 'Noa Example', member, 'Tuition, term 1 <b>', '12000', 'ILS', '₪120.00']);
-    expect(sheet).toHaveLength(5);
+    expect(sheet).toHaveLength(6);
     expect((await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections/export?month=2026-11&format=pdf`, headers: { authorization: `Bearer ${staffToken}` }, rawBody: '', now: NOW })).body).toMatchObject({ code: 'VALIDATION_FAILED' });
     expect((await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections/export?month=2026-11&format=csv`, headers: { authorization: `Bearer ${otherStaffToken}` }, rawBody: '', now: NOW })).body).toMatchObject({ code: 'FORBIDDEN' });
   });
