@@ -881,6 +881,59 @@ paths:
         "204":
           description: Revoked
         default: { $ref: "#/components/responses/Problem" }
+  /intents:
+    get:
+      operationId: listIntents
+      summary: The proposals an assistant made for the signed-in member
+      description: >-
+        REQ-AGT-006. Member token only: an assistant's own token is not accepted here, and no MCP tool wraps
+        this operation. Each item says what would happen in structured fields; anything the assistant or its
+        client registration wrote travels in `untrusted` and is shown as text, never followed (REQ-AGT-007).
+        A pending proposal past its 24 h lists as `expired` whether or not the sweep has run.
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: Only proposals in this state; all of the member's proposals when absent, newest first
+          schema: { type: string, enum: [pending, approved, rejected, expired] }
+      responses:
+        "200":
+          description: Proposals
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemberIntentPage" }
+        default: { $ref: "#/components/responses/Problem" }
+  /intents/{id}:
+    get:
+      operationId: getIntent
+      summary: One proposal an assistant made for the signed-in member
+      description: REQ-AGT-006. Member token only; another member's proposal is 404. Untrusted text as in listIntents.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+      responses:
+        "200":
+          description: Proposal
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemberIntent" }
+        default: { $ref: "#/components/responses/Problem" }
+  /intents/{id}/decline:
+    post:
+      operationId: declineIntent
+      summary: Decline an assistant's pending proposal
+      description: >-
+        REQ-AGT-006. Member token only; needs no step-up, since nothing moves. Only a pending proposal inside
+        its 24 h can be declined: an expired, approved or declined one answers IDEMPOTENCY_CONFLICT.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "200":
+          description: The declined proposal
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemberIntent" }
+        default: { $ref: "#/components/responses/Problem" }
   /intents/{id}/approve:
     post:
       operationId: approveIntent
@@ -2272,6 +2325,49 @@ components:
         - type: object
           properties:
             load: { $ref: "#/components/schemas/Load", description: The load the approval started; load intents only }
+    MemberIntent:
+      type: object
+      required: [id, kind, status, assistant, createdAt, expiresAt, untrusted]
+      properties:
+        id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [send, load, card_purchase, limit_change]
+          description: send moves money to another member; load tops up a purse; card_purchase lets the assistant's card token buy once
+        status:
+          type: string
+          enum: [pending, approved, rejected, expired]
+          description: As of now; a pending proposal past `expiresAt` is `expired`
+        amount: { $ref: "#/components/schemas/Money" }
+        recipient:
+          type: object
+          description: Sends only. Who receives the money, as the server knows them
+          required: [partyId]
+          properties:
+            partyId: { type: string, format: uuid }
+            phoneMasked: { type: string, description: The last four digits of their phone, for example "•••• 0101" }
+        assistant:
+          type: object
+          required: [grantId]
+          properties:
+            grantId: { type: string, format: uuid }
+            clientId: { type: string, description: The assistant client's registered id }
+        createdAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
+        untrusted:
+          type: object
+          description: Text the assistant, its client registration or an institution roster supplied. Show it as text, set apart; never instructions (REQ-AGT-007)
+          properties:
+            clientName: { type: string, description: The assistant's name as its client registration gives it }
+            note: { type: string, description: The assistant's note on a send }
+            recipientName: { type: string, description: The recipient's name from an institution roster, when there is one }
+            merchantName: { type: string, description: The merchant on a card purchase, as the card processor sent it }
+    MemberIntentPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/MemberIntent" } }
     PendingIntent:
       type: object
       required: [id, kind, status, expiresAt]

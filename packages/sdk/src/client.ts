@@ -90,6 +90,7 @@ const HEADER_OPS: Record<string, { idempotency: boolean; stepUp: boolean }> = {
   'post /payouts': { idempotency: true, stepUp: true },
   'post /fee-items/{id}/pay': { idempotency: true, stepUp: true },
   'post /intents/{id}/approve': { idempotency: true, stepUp: true },
+  'post /intents/{id}/decline': { idempotency: true, stepUp: false },
 };
 
 export function createClient(options: ClientOptions) {

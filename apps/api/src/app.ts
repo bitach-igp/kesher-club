@@ -59,7 +59,7 @@ import { RosterService, importRosterHandler } from './institutions/roster.ts';
 import { ApprovalService } from './approvals/service.ts';
 import { AuditService } from './audit/service.ts';
 import { FlagService } from './flags/service.ts';
-import { IntentService } from './intents/service.ts';
+import { INTENT_STATES, IntentService, type IntentStatus } from './intents/service.ts';
 import { WebhookRouter } from './webhooks/handler.ts';
 import { InboundEventStore } from './webhooks/store.ts';
 import { simulatorVerifier } from './webhooks/verify.ts';
@@ -149,7 +149,7 @@ function buildServices(o: AppOptions) {
   // A send to a member who receives in the other currency prices at the club rate with their plan's markup (REQ-PAY-006).
   const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort, preferences, rates, markups: fx });
   // An approved agent intent runs the member's own send or load (T-1008, T-1009), so the intents come after them, and the JIT after the intents.
-  const intents = new IntentService(o.db, transfers, stepUp, { p2p, loads }, flags);
+  const intents = new IntentService(o.db, transfers, stepUp, { p2p, loads }, flags, undefined, identity);
   const jit = new JitService({ db: o.db, port: cardIssuing, ledger, accounts, memberships, entitlements, plans, flags, intents, fx: { rates, markups: fx } });
   const requests = new PaymentRequestService(o.db, p2p, identity);
   // Payouts (REQ-PO-001/002): the rail's status webhooks land on /hooks/payout; settled and failed are applied once (SEQ-09).
@@ -203,6 +203,20 @@ export function createApp(o: AppOptions): App {
     ...fxAdminHandlers(s.rates),
     ...preferenceHandlers(s.preferences),
     exportCollections: exportHandler(o.db, staffInstitution),
+    // The member's own view of what their assistants proposed (T-1011): member tokens only; never an MCP tool.
+    listIntents: route(async (req) => {
+      const p = requirePrincipal(req);
+      const state = req.query['state'];
+      if (state !== undefined && !INTENT_STATES.includes(state as IntentStatus)) throw new DomainError('VALIDATION_FAILED', `state must be one of ${INTENT_STATES.join(', ')}`);
+      return ok({ items: await s.intents.listForMember(p.partyId, state as IntentStatus | undefined, req.now) });
+    }),
+    getIntent: route(async (req) => ok(await s.intents.getForMember(requirePrincipal(req).partyId, req.params['id'] ?? '', req.now))),
+    declineIntent: route(async (req) => {
+      const p = requirePrincipal(req);
+      requireIdempotencyKey(req);
+      await s.intents.reject(p, req.params['id'] ?? '', req.now);
+      return ok(await s.intents.getForMember(p.partyId, req.params['id'] ?? '', req.now));
+    }),
     approveIntent: route(async (req) => {
       const key = requireIdempotencyKey(req);
       const r = await s.intents.approve(req, req.params['id'] ?? '', key);

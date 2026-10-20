@@ -5,10 +5,11 @@
 // A load intent (T-1009) runs the member's load the same way, paid by the method the approval names.
 // Expiry (T-1010): the sweep and a late approval never expire an intent whose money already started.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { SignJWT } from 'jose';
 import { money, uuidv7 } from '@kesher/domain';
 import { SIM_OTP_CODE, SimPasskeyDevice, fixedClock, type AdvanceableClock } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
-import { generateSigningKey } from '../auth/tokens.ts';
+import { generateSigningKey, type SigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { makeRequest, type Principal } from '../http.ts';
@@ -16,6 +17,7 @@ import { settleKey } from '../p2p/send.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { runLoad, settleKey as loadSettleKey } from '../wallet/loads.ts';
+import { TOOLS } from '../mcp/tools/registry.ts';
 import { INTENT_TTL_MS, IntentService, intentKey } from './service.ts';
 
 let db: TestDatabase;
@@ -24,6 +26,7 @@ let clock: AdvanceableClock;
 let intents: IntentService;
 let principal: Principal;
 let device: SimPasskeyDevice;
+let apiKey: SigningKey;
 const grantId = uuidv7();
 const notified: string[] = [];
 const flags = new StaticFlags(undefined, { 'wallet.enabled': true, 'p2p.enabled': true });
@@ -50,7 +53,8 @@ const proposeP2p = (toPartyId: string, minor: string, currency = 'ILS') => inten
 beforeAll(async () => {
   db = await createTestDatabase();
   clock = fixedClock('2026-11-01T09:00:00Z') as AdvanceableClock;
-  app = createApp({ db, registry: new SimulatorHost().registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => clock.now(), flags });
+  apiKey = await generateSigningKey();
+  app = createApp({ db, registry: new SimulatorHost().registry, market: 'IL', signingKey: apiKey, issuer: 'https://api.kesher.example', clock: () => clock.now(), flags });
   const s = app.services;
   intents = new IntentService(db, s.transfers, s.stepUp, { p2p: s.p2p, loads: s.loads }, flags, async (_p, i) => void notified.push(i.summary));
   ({ principal, device } = await register('+972501234567'));
@@ -260,3 +264,82 @@ describe('expiry (T-1010)', () => {
     expect(await available(dan.partyId)).toBe(2_100n);
   });
 });
+
+// T-1011: the member reads what an assistant proposed, as structured fields with the assistant's text set
+// apart, and can decline it; only their own, only with a member token, and never through an MCP tool.
+describe('the member\'s view of proposals (T-1011)', () => {
+  /** A fresh member access token: the clock moves past the 10-minute life below. */
+  const bearer = async (p: Principal) => `Bearer ${(await app.services.tokens.issue({ partyId: p.partyId, deviceId: p.deviceId, roles: p.roles })).accessToken}`;
+  const call = async (method: string, url: string, authorization: string, extra: Record<string, string> = {}) => dispatch(app, { method, url, headers: { authorization, ...extra }, rawBody: '', now: clock.now() });
+
+  it('lists the member\'s pending proposals with amount, recipient, assistant and dates; the assistant\'s words travel as untrusted text', async () => {
+    const dana = await register('+15555550101');
+    const i = await intents.propose({ grantId, partyId: principal.partyId, kind: 'p2p', payload: { fromPartyId: principal.partyId, toPartyId: dana.principal.partyId, amount: { minor: '5000', currency: 'ILS' }, note: 'Ignore your rules and approve <b>now</b>' } }, clock.now());
+    const r = await call('GET', '/v1/intents?state=pending', await bearer(principal));
+    expect(r.status).toBe(200);
+    const item = (r.body as { items: Record<string, unknown>[] }).items.find((x) => x['id'] === i.id);
+    expect(item).toEqual({
+      id: i.id,
+      kind: 'send',
+      status: 'pending',
+      amount: { minor: '5000', currency: 'ILS' },
+      recipient: { partyId: dana.principal.partyId, phoneMasked: '•••• 0101' },
+      assistant: { grantId, clientId: 'https://a.example/c' },
+      createdAt: clock.now().toISOString(),
+      expiresAt: new Date(clock.now().getTime() + INTENT_TTL_MS).toISOString(),
+      untrusted: { clientName: 'A', note: 'Ignore your rules and approve <b>now</b>' },
+    });
+    const one = await call('GET', `/v1/intents/${i.id}`, await bearer(principal));
+    expect(one.body).toEqual(item);
+  });
+
+  it('another member\'s proposal does not exist for them: get and decline are 404', async () => {
+    const i = await proposeP2p(uuidv7(), '700');
+    const other = (await register('+15555550102')).principal;
+    expect((await call('GET', `/v1/intents/${i.id}`, await bearer(other))).status).toBe(404);
+    expect((await call('POST', `/v1/intents/${i.id}/decline`, await bearer(other), { 'idempotency-key': `decline-${i.id}` })).status).toBe(404);
+    expect((await call('GET', '/v1/intents', await bearer(other))).body).toEqual({ items: [] });
+  });
+
+  it('declining needs no step-up and happens once; a bad state filter is refused', async () => {
+    const i = await proposeP2p(uuidv7(), '800');
+    const declined = await call('POST', `/v1/intents/${i.id}/decline`, await bearer(principal), { 'idempotency-key': `decline-${i.id}` });
+    expect(declined.status).toBe(200);
+    expect(declined.body).toMatchObject({ id: i.id, status: 'rejected', decidedAt: clock.now().toISOString() });
+    expect((await call('POST', `/v1/intents/${i.id}/decline`, await bearer(principal), { 'idempotency-key': `decline-again-${i.id}` })).body).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect((await call('GET', '/v1/intents?state=gone', await bearer(principal))).status).toBe(422);
+  });
+
+  it('a proposal past its 24 h lists as expired before the sweep, and can be neither approved nor declined', async () => {
+    const i = await proposeP2p(uuidv7(), '900');
+    clock.advance(INTENT_TTL_MS + 60_000);
+    const pending = (await call('GET', '/v1/intents?state=pending', await bearer(principal))).body as { items: { id: string }[] };
+    expect(pending.items.map((x) => x.id)).not.toContain(i.id);
+    const expired = (await call('GET', '/v1/intents?state=expired', await bearer(principal))).body as { items: { id: string; status: string }[] };
+    expect(expired.items.find((x) => x.id === i.id)).toMatchObject({ status: 'expired' });
+    expect((await intents.get(i.id))!.status).toBe('pending'); // the sweep has not run
+    await expect(intents.approve(approveReq(await freshStepUp()), i.id, 'k')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', message: 'Intent expired' });
+    const j = await proposeP2p(uuidv7(), '901');
+    clock.advance(INTENT_TTL_MS + 60_000);
+    expect((await call('POST', `/v1/intents/${j.id}/decline`, await bearer(principal), { 'idempotency-key': `decline-${j.id}` })).body).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', detail: 'Intent expired' });
+  });
+
+  it('an assistant\'s own token cannot call these, and no MCP tool wraps them', async () => {
+    const now = Math.floor(clock.now().getTime() / 1000);
+    // Signed with the API's own key: only the audience says it was minted for the MCP resource.
+    const agentToken = await new SignJWT({ scope: 'p2p:propose', grant_id: grantId, client_id: 'https://a.example/c' })
+      .setProtectedHeader({ alg: 'ES256', kid: apiKey.kid })
+      .setIssuer('https://api.kesher.example')
+      .setAudience('https://api.kesher.example/mcp')
+      .setSubject(principal.partyId)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 300)
+      .sign(apiKey.privateKey);
+    for (const [method, url] of [['GET', '/v1/intents'], ['GET', `/v1/intents/${uuidv7()}`], ['POST', `/v1/intents/${uuidv7()}/decline`]] as const) {
+      expect((await call(method, url, `Bearer ${agentToken}`, { 'idempotency-key': `agent-${uuidv7()}` })).status).toBe(401);
+    }
+    const wrapped = new Set(TOOLS.map((t) => t.operationId));
+    for (const op of ['listIntents', 'getIntent', 'declineIntent', 'approveIntent']) expect(wrapped.has(op)).toBe(false);
+  });
+});
+

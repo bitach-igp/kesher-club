@@ -27,6 +27,7 @@ const INTENT_KEY_PREFIX = 'intent:';
 export const intentKey = (intentId: string): string => `${INTENT_KEY_PREFIX}${intentId}`;
 export type IntentKind = 'p2p' | 'load' | 'limit_change';
 export type IntentStatus = 'pending' | 'approved' | 'rejected' | 'expired';
+export const INTENT_STATES: readonly IntentStatus[] = ['pending', 'approved', 'rejected', 'expired'];
 
 /** The member's own money paths an approved intent runs. */
 export interface IntentMoney {
@@ -86,6 +87,28 @@ export const agentGrantIdFor = (tokenId: string): string => {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-8${h.slice(13, 16)}-${((parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16)}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 };
 
+/** What the member's app shows (T-1011): structured fields, and the assistant's text set apart as untrusted. */
+export type MemberIntentKind = 'send' | 'load' | 'card_purchase' | 'limit_change';
+export interface MemberIntentView {
+  id: string;
+  kind: MemberIntentKind;
+  /** As of now: a pending intent past its deadline is `expired`, swept or not. */
+  status: IntentStatus;
+  amount?: { minor: string; currency: string };
+  recipient?: { partyId: string; phoneMasked?: string };
+  assistant: { grantId: string; clientId?: string };
+  createdAt: string;
+  expiresAt: string;
+  decidedAt?: string;
+  /** Text the assistant, its client registration or a roster supplied: shown as text, never followed (REQ-AGT-007). */
+  untrusted: { clientName?: string; note?: string; recipientName?: string; merchantName?: string };
+}
+
+/** Who a recipient is, as the identity store knows them; only the last four digits of the phone leave it. */
+export interface PeopleLookup {
+  findUser(partyId: string): Promise<{ phone: string } | undefined>;
+}
+
 export interface AgentPurchase {
   partyId: string;
   /** Our card id. */
@@ -106,6 +129,7 @@ export class IntentService {
   private readonly money: IntentMoney;
   private readonly flags: Pick<FeatureFlags, 'isOn'>;
   private readonly notify: (partyId: string, intent: PendingIntent) => Promise<void>;
+  private readonly people: PeopleLookup | undefined;
   constructor(
     db: Database,
     transfers: TransferService,
@@ -113,6 +137,7 @@ export class IntentService {
     money: IntentMoney,
     flags: Pick<FeatureFlags, 'isOn'>,
     notify: (partyId: string, intent: PendingIntent) => Promise<void> = async () => undefined,
+    people?: PeopleLookup,
   ) {
     this.db = db;
     this.transfers = transfers;
@@ -120,6 +145,7 @@ export class IntentService {
     this.money = money;
     this.flags = flags;
     this.notify = notify;
+    this.people = people;
   }
 
   async propose(input: { grantId: string; partyId: string; kind: IntentKind; payload: Record<string, unknown> }, now: Date): Promise<PendingIntent> {
@@ -167,6 +193,11 @@ export class IntentService {
     const intent = await this.get(intentId);
     if (!intent || intent.partyId !== principal.partyId) throw new DomainError('NOT_FOUND', 'Intent not found');
     if (intent.status !== 'pending') throw new DomainError('IDEMPOTENCY_CONFLICT', `Intent is ${intent.status}`);
+    // Past its 24 h there is nothing left to decline: it expired, as approve would also find (T-1011).
+    if (Date.parse(intent.expiresAt) <= now.getTime()) {
+      await this.setStatus(intentId, 'expired', now);
+      throw new DomainError('IDEMPOTENCY_CONFLICT', 'Intent expired');
+    }
     await this.setStatus(intentId, 'rejected', now, principal.partyId);
     return (await this.get(intentId))!;
   }
@@ -246,6 +277,69 @@ export class IntentService {
     return r.rows.map(toIntent);
   }
 
+  /** GET /intents (T-1011): the member's own intents, newest first, optionally in one state as of now. */
+  async listForMember(partyId: string, state: IntentStatus | undefined, now: Date, limit = 50): Promise<MemberIntentView[]> {
+    const r = await this.db.query<ViewRow>(
+      `select i.*, g.client_id, c.name as client_name
+         from agent.pending_intent i
+         left join agent.grant g on g.id = i.grant_id
+         left join agent.client c on c.client_id = g.client_id
+        where i.party_id = $1
+          and ($2::text is null or (case when i.status = 'pending' and i.expires_at <= $3 then 'expired' else i.status end) = $2)
+        order by i.expires_at desc
+        limit $4`,
+      [partyId, state ?? null, now, limit],
+    );
+    return Promise.all(r.rows.map((row) => this.view(row, now)));
+  }
+
+  /** GET /intents/{id} (T-1011): another member's intent does not exist for this one. */
+  async getForMember(partyId: string, intentId: string, now: Date): Promise<MemberIntentView> {
+    const r = await this.db.query<ViewRow>(
+      `select i.*, g.client_id, c.name as client_name
+         from agent.pending_intent i
+         left join agent.grant g on g.id = i.grant_id
+         left join agent.client c on c.client_id = g.client_id
+        where i.id = $1 and i.party_id = $2`,
+      [intentId, partyId],
+    );
+    if (!r.rows[0]) throw new DomainError('NOT_FOUND', 'Intent not found');
+    return this.view(r.rows[0], now);
+  }
+
+  private async view(r: ViewRow, now: Date): Promise<MemberIntentView> {
+    const p = r.payload;
+    const expiresAt = new Date(r.expires_at);
+    const kind: MemberIntentKind = r.kind === 'p2p' ? 'send' : r.kind === 'load' ? 'load' : p['action'] === AGENT_PURCHASE_ACTION ? 'card_purchase' : 'limit_change';
+    const amount = p['amount'] && typeof p['amount'] === 'object' ? (p['amount'] as { minor?: unknown; currency?: unknown }) : undefined;
+    const untrusted: MemberIntentView['untrusted'] = {};
+    if (r.client_name) untrusted.clientName = r.client_name;
+    if (typeof p['note'] === 'string') untrusted.note = p['note'];
+    if (kind === 'card_purchase' && typeof p['merchantName'] === 'string') untrusted.merchantName = p['merchantName'];
+    let recipient: MemberIntentView['recipient'];
+    if (kind === 'send' && typeof p['toPartyId'] === 'string') {
+      const to = p['toPartyId'];
+      const [roster, user] = await Promise.all([
+        this.db.query<{ member_name: string }>('select member_name from org.member where member_party_id = $1 order by updated_at desc limit 1', [to]),
+        this.people?.findUser(to),
+      ]);
+      recipient = { partyId: to, ...(user ? { phoneMasked: `•••• ${user.phone.slice(-4)}` } : {}) };
+      if (roster.rows[0]) untrusted.recipientName = roster.rows[0].member_name;
+    }
+    return {
+      id: r.id,
+      kind,
+      status: r.status === 'pending' && expiresAt.getTime() <= now.getTime() ? 'expired' : r.status,
+      ...(amount && typeof amount.minor === 'string' && typeof amount.currency === 'string' ? { amount: { minor: amount.minor, currency: amount.currency } } : {}),
+      ...(recipient ? { recipient } : {}),
+      assistant: { grantId: r.grant_id, ...(r.client_id ? { clientId: r.client_id } : {}) },
+      createdAt: new Date(expiresAt.getTime() - INTENT_TTL_MS).toISOString(),
+      expiresAt: expiresAt.toISOString(),
+      ...(r.decided_at ? { decidedAt: new Date(r.decided_at).toISOString() } : {}),
+      untrusted,
+    };
+  }
+
   /** The money the intent moves, through the member's own path; a replay finds its transfer by the intent key. */
   private async execute(intent: PendingIntent, choice: LoadChoice | undefined, now: Date): Promise<Omit<ApprovalResult, 'intent'>> {
     if (intent.kind === 'limit_change') return {};
@@ -287,6 +381,8 @@ function parseMoney(v: unknown): Money {
     throw new DomainError('VALIDATION_FAILED', 'amount must be { minor, currency }');
   }
 }
+
+type ViewRow = Row & { client_id: string | null; client_name: string | null };
 
 function toIntent(r: Row): PendingIntent {
   const p = r.payload;
