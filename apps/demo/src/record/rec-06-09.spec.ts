@@ -9,6 +9,8 @@ import { PERSONAS } from '../personas.ts';
 import { assistantPropose, backToHome, customerByApi, homeAvailable, minorOf, money, openPath, openRecording, panel, partyByPhone, reopenMember, sendFromHome, signInMember, switchMember } from './flows.ts';
 
 const phone = (key: string) => PERSONAS.find((p) => p.key === key)!.phone;
+/** 36822n → "36,822": minor units for a caption. */
+const units = (minor: bigint): string => minor.toLocaleString('en-US');
 
 test.describe.configure({ mode: 'serial' });
 
@@ -46,12 +48,12 @@ test('REC-07 P2P send across currencies', async ({ browser }) => {
   const gross = grossFor(10_000n, p.rate!, received);
   const markup = gross - received;
   expect(applyBps(m(gross, 'ILS'), 75n).minor).toBe(markup);
-  await rec.caption(`M15: Noa receives ${money(received, 'ILS')}. Club rate ${p.rate} (version ${p.rateVersion ?? '—'}): $100.00 is ${money(gross, 'ILS')} gross; Noa's 75 basis points keep ${markup} agorot.`);
+  await rec.caption(`M15: Noa receives ${money(received, 'ILS')}. Club rate ${p.rate} (version ${p.rateVersion ?? '—'}): $100.00 is ${money(gross, 'ILS')} gross; Noa's 75 basis points keep ${units(markup)} agorot.`);
 
   await rec.member.getByTestId('confirm-send').click();
   await rec.member.getByTestId('confirm-both').waitFor({ timeout: 60_000 });
   expect(BigInt(seen.sent!.received!.minor)).toBe(received);
-  await rec.caption(`Sent at the price fixed when it began: ${await rec.member.getByTestId('confirm-both').innerText().then((t) => t.replace(/\s+/g, ' '))}. Journal kind p2p: Dr Dana's wallet USD 10,000; fx_position both sides; Cr Noa's wallet ILS ${received}; Cr fee_income ILS ${markup}.`);
+  await rec.caption(`Sent at the price fixed when it began: ${await rec.member.getByTestId('confirm-both').innerText().then((t) => t.replace(/\s+/g, ' '))}. Journal kind p2p: Dr Dana's wallet USD 10,000; fx_position both sides; Cr Noa's wallet ILS ${units(received)}; Cr fee_income ILS ${units(markup)}.`);
 
   const danaAfter = (await customerByApi(dana)).balances;
   expect(danaBefore.USD.available - danaAfter.USD.available).toBe(10_000n);
@@ -60,20 +62,20 @@ test('REC-07 P2P send across currencies', async ({ browser }) => {
   expect(noaAfter.USD.available).toBe(noaBefore.USD.available);
   await backToHome(rec);
   await expect.poll(() => homeAvailable(rec, 'USD')).toBe(danaAfter.USD.available);
-  await rec.caption(`Booked: Dana's dollar purse is down 10,000 cents on her Home; Noa's shekel purse is up exactly ${received} agorot in Customer 360, her dollar purse unchanged.`);
+  await rec.caption(`Booked: Dana's dollar purse is down 10,000 cents on her Home; Noa's shekel purse is up exactly ${units(received)} agorot in Customer 360, her dollar purse unchanged.`);
   await rec.finish();
 });
 
 test('REC-08 payment requests and splits', async ({ browser }) => {
   const rec = await openRecording(browser, { id: 'REC-08', name: 'requests-splits', title: 'Payment requests and splits (money-flows §8)', persona: 'noa' });
   const [noa, maya, eli, avi] = [await partyByPhone(phone('noa')), await partyByPhone(phone('maya')), await partyByPhone(phone('eli')), await partyByPhone(phone('avi'))];
-  await rec.caption('Noa splits a ₪200.00 dinner four ways (M17) with Maya, Eli and Avi, by their member ids.');
+  await rec.caption('Noa splits a ₪200.00 dinner four ways (M17) with Maya, Eli and Avi, by their member ids. Home has no way into the pay home (M12) yet, so the recorder opens its address inside the app.');
   await signInMember(rec);
   const noaBefore = (await customerByApi(noa)).balances;
-  await rec.member.getByTestId('home-quick-send').click();
-  await rec.member.getByTestId('screen-pay').waitFor();
+  await openPath(rec, '/pay');
+  await rec.member.getByTestId('screen-pay').waitFor({ timeout: 30_000 });
   await rec.member.getByTestId('pay-split').click();
-  await rec.member.getByTestId('split-total').fill('200');
+  await rec.member.getByTestId('split-total').fill('200', { timeout: 30_000 });
   for (const id of [maya, eli, avi]) {
     await rec.member.getByTestId('split-add').fill(id);
     await rec.member.getByTestId('split-add').press('Enter');
@@ -85,11 +87,11 @@ test('REC-08 payment requests and splits', async ({ browser }) => {
   await rec.caption('Three requests of ₪50.00 (5,000 agorot) each; Noa keeps her own ₪50.00 share. Nothing posts until someone pays.');
   expect((await customerByApi(noa)).balances).toEqual(noaBefore);
 
-  await rec.caption('The member pane signs in as Maya. Her inbox (M18) shows what she owes Noa; she pays it.');
+  await rec.caption('The member pane signs in as Maya. Her request inbox (M18, from the pay home) shows what she owes Noa; she pays it.');
   await switchMember(rec, 'maya');
   const mayaBefore = await rec.console360(maya, 'Maya before');
-  await rec.member.getByTestId('home-quick-send').click();
-  await rec.member.getByTestId('pay-inbox').click();
+  await openPath(rec, '/pay');
+  await rec.member.getByTestId('pay-inbox').click({ timeout: 30_000 });
   const owed = rec.member.locator('[data-testid^="inbox-owed-"]').first();
   await owed.waitFor({ timeout: 30_000 });
   expect(minorOf(await owed.innerText())).toBe(5_000n);
@@ -108,7 +110,7 @@ test('REC-08 payment requests and splits', async ({ browser }) => {
 test('REC-09 send proposed by an assistant', async ({ browser }) => {
   const rec = await openRecording(browser, { id: 'REC-09', name: 'assistant-send', title: 'Send proposed by an AI assistant (money-flows §9)', persona: 'dana' });
   const [dana, avi] = [await partyByPhone(phone('dana')), await partyByPhone(phone('avi'))];
-  const before = { dana: (await customerByApi(dana)).balances, avi: (await customerByApi(avi)).balances };
+  const before = { dana: await rec.console360(dana, 'Dana before'), avi: (await customerByApi(avi)).balances };
   const proposed = await assistantPropose({ partyId: dana, toPartyId: avi, amount: { minor: '2000', currency: 'USD' }, note: 'Lunch money, as you asked' });
   await rec.caption(`Assistant: ${proposed.assistant}, connected to Dana's account, proposes paying Avi $20.00 (propose_p2p). It is a pending intent: no transfer and no journal until Dana approves. The MCP gateway is not mounted in the running API yet, so the recording stack makes the tool's call.`);
   expect((await customerByApi(dana)).balances).toEqual(before.dana);

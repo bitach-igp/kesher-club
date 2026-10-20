@@ -65,15 +65,26 @@ iframe,#c360{flex:1;border:0;border-radius:8px;background:#fff}#c360{overflow:au
 <section style="flex:1"><h2>Simulator panel: the vendor's side and the clock</h2><iframe id="panel" src="${URLS.panel}/"></iframe></section>
 <section style="width:560px"><h2>Console · Customer 360 (T-0919) <span id="note"></span></h2><div id="c360"><pre>Not read yet.</pre></div></section></main></body></html>`;
 
-/** A staff browser (not recorded) signed in to the console through the simulator identity provider. */
+/**
+ * A staff browser (not recorded) signed in to the console through the simulator identity provider. The
+ * console runs under `next dev`, which compiles each route on its first request; the very first sign-in of
+ * a run can bounce between /auth/sign-in and the proxy while that happens, so each attempt is bounded and
+ * the sign-in starts over, up to three times.
+ */
 async function staffConsole(browser: Browser): Promise<{ context: BrowserContext; page: Page }> {
   const context = await browser.newContext({ viewport: { width: 1200, height: 1400 }, locale: 'en-US' });
   const page = await context.newPage();
-  await page.goto(URLS.console);
-  await page.getByText('Sign in with Identity Center').click();
-  await page.getByText('Sam Support').click();
-  await page.waitForURL(`${URLS.console}/**`);
-  return { context, page };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await page.goto(URLS.console, { timeout: 90_000 });
+      await page.getByText('Sign in with Identity Center').click({ timeout: 60_000 });
+      await page.getByText('Sam Support').click({ timeout: 60_000 });
+      await page.waitForURL((u) => u.origin === URLS.console && !u.pathname.startsWith('/auth'), { timeout: 60_000 });
+      return { context, page };
+    } catch (e) {
+      if (attempt === 3) throw e;
+    }
+  }
 }
 
 export async function openRecording(browser: Browser, rec: { id: string; name: string; title: string; persona: string }): Promise<Recording> {
