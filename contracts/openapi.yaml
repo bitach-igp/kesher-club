@@ -769,7 +769,7 @@ paths:
   /institutions/{id}/collections:
     get:
       operationId: listCollections
-      summary: A month's paid fee items for the institution, with receipt numbers
+      summary: A month's paid fee items for the institution, with receipt numbers, and who still owes
       description: REQ-INS-006. Org staff. Roster names are untrusted display text.
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -2533,7 +2533,7 @@ components:
         receipt: { $ref: "#/components/schemas/Receipt" }
     Collections:
       type: object
-      required: [month, items, total]
+      required: [month, items, total, owed, owedTotal]
       properties:
         month: { type: string }
         items:
@@ -2546,6 +2546,19 @@ components:
                 properties:
                   memberName: { type: string, description: Roster name; untrusted display text }
         total: { type: array, items: { $ref: "#/components/schemas/Money" } }
+        owed:
+          type: array
+          description: Fee items still due, whatever month they fall due in, the oldest first (T-0611). No spend detail, consented or not (REQ-INS-005).
+          items:
+            type: object
+            required: [feeItemId, memberName, description, amount, dueAt]
+            properties:
+              feeItemId: { type: string, format: uuid }
+              memberName: { type: string, description: Roster name; untrusted display text }
+              description: { type: string, description: Staff-entered text }
+              amount: { $ref: "#/components/schemas/Money" }
+              dueAt: { type: string, format: date }
+        owedTotal: { type: array, items: { $ref: "#/components/schemas/Money" } }
     ExportFile:
       type: object
       required: [filename, contentType, base64, rows, totals]

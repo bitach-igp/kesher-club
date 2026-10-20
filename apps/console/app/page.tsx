@@ -35,9 +35,9 @@ export default async function Home() {
           <dd>{landing.institution.market}</dd>
         </dl>
         <p>
-          <a href="/allowances" data-testid="nav-allowances">Allowances</a>
+          <a href="/allowances" data-testid="nav-allowances">Allowances</a> · <a href="/collections" data-testid="nav-collections">Collections</a>
         </p>
-        <p className="muted">Collections and payouts arrive here next.</p>
+        <p className="muted">Payouts arrive here next.</p>
         {leave}
       </div>
     </>

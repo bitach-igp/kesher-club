@@ -3,6 +3,9 @@
 import { ApiError, createClient, type Schemas } from '@kesher/sdk';
 
 export type MyInstitution = Schemas['MyInstitution'];
+
+/** A server action's answer: the API's body, or its error code. Server actions do not throw across the wire. */
+export type Result<T> = { ok: true; value: T } | { ok: false; code: string };
 export type TokenPair = Schemas['TokenPair'];
 
 /** What the session needs from the API; tests pass a fake. */
@@ -46,6 +49,8 @@ export function institutionApi(baseUrl: string, accessToken: string, stepUpToken
     runs: (id: string) => c.get('/institutions/{id}/allowance-runs', { path: { id } }),
     runAllowance: (id: string, body: Schemas['AllowanceRunRequest'], idempotencyKey: string) => c.post('/institutions/{id}/allowance-runs', { path: { id }, body, idempotencyKey }),
     stepUp: (response?: unknown) => c.post('/auth/step-up', { body: response ? { response: response as Record<string, never> } : {} }),
+    collections: (id: string, month: string) => c.get('/institutions/{id}/collections', { path: { id }, query: { month } }),
+    exportCollections: (id: string, month: string, format: 'csv' | 'xlsx') => c.get('/institutions/{id}/collections/export', { path: { id }, query: { month, format } }),
   };
 }
 

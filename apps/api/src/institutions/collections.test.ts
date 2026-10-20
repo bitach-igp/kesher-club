@@ -125,9 +125,13 @@ describe('TST-INS-006', () => {
   });
 
   it('the institution\'s staff list the month with roster names as data and export it; the totals equal the ledger; other staff are refused', async () => {
+    const owedId = uuidv7(NOW);
+    await db.query(`insert into org.fee_item (id, institution_id, member_party_id, description, amount_minor, currency, status, due_at) values ($1, $2, $3, 'Lab fee', 4500, 'ILS', 'due', '2026-12-15')`, [owedId, INST, member]);
     const list = await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections?month=2026-11`, headers: { authorization: `Bearer ${staffToken}` }, rawBody: '', now: NOW });
     expect(list.status).toBe(200);
     expect(list.body).toMatchObject({ month: '2026-11', items: [{ feeItemId: feeId, memberName: 'Noa Example', amount: { minor: '12000', currency: 'ILS' } }], total: [{ minor: '12000', currency: 'ILS' }] });
+    // Who still owes (T-0611): the unpaid Lab fee, due next month, with its total in bigint text.
+    expect(list.body).toMatchObject({ owed: [{ feeItemId: owedId, memberName: 'Noa Example', description: 'Lab fee', amount: { minor: '4500', currency: 'ILS' }, dueAt: '2026-12-15' }], owedTotal: [{ minor: '4500', currency: 'ILS' }] });
     // October holds the Trip the crash test left on the ledger; September nothing.
     expect((await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections?month=2026-10`, headers: { authorization: `Bearer ${staffToken}` }, rawBody: '', now: NOW })).body).toMatchObject({ items: [{ feeItemId: crashFeeId, description: 'Trip', amount: { minor: '3000', currency: 'ILS' } }], total: [{ minor: '3000', currency: 'ILS' }] });
     expect((await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/collections?month=2026-09`, headers: { authorization: `Bearer ${staffToken}` }, rawBody: '', now: NOW })).body).toMatchObject({ items: [], total: [] });
