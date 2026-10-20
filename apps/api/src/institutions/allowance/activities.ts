@@ -3,14 +3,16 @@
 // and the member's history see it), settled by a ledger journal from the institution's own account (T-0613) → member wallet keyed
 // `{key}:settle`; a rerun on the same date finds both and pays nobody twice (REQ-INS-003). A run over
 // ₪5,000 needs a second finance approver (REQ-INS-004): the requester's call is the first approval, and the
-// same run requested by a different finance member is the second.
+// same run requested by a different finance member is the second. A run starts only when the institution's
+// balance and credit limit cover what it owes (T-0616, REQ-INS-008), checked under the institution's lock.
 import { DomainError, type Currency, type Money } from '@kesher/domain';
 import type { ApprovalService } from '../../approvals/service.ts';
-import type { Database } from '../../db.ts';
+import type { Database, SqlClient } from '../../db.ts';
 import type { AccountService } from '../../ledger/accounts.ts';
 import type { PostgresLedger } from '../../ledger/post.ts';
 import { enqueue } from '../../transfers/outbox.ts';
 import type { TransferService } from '../../transfers/service.ts';
+import { owedByRun, type InstitutionCredit } from '../credit.ts';
 import type { AllowanceActivities, Preview, RunSummary } from './workflow.ts';
 
 export const ALLOWANCE_JOURNAL_KIND = 'allowance';
@@ -21,6 +23,7 @@ export class PostgresAllowanceActivities implements AllowanceActivities {
   private readonly accounts: AccountService;
   private readonly approvals: ApprovalService;
   private readonly transfers: TransferService;
+  private readonly credit: InstitutionCredit;
   private readonly clock: () => Date;
   constructor(
     db: Database,
@@ -28,6 +31,7 @@ export class PostgresAllowanceActivities implements AllowanceActivities {
     accounts: AccountService,
     approvals: ApprovalService,
     transfers: TransferService,
+    credit: InstitutionCredit,
     clock: () => Date = () => new Date(),
   ) {
     this.db = db;
@@ -35,6 +39,7 @@ export class PostgresAllowanceActivities implements AllowanceActivities {
     this.accounts = accounts;
     this.approvals = approvals;
     this.transfers = transfers;
+    this.credit = credit;
     this.clock = clock;
   }
 
@@ -54,8 +59,22 @@ export class PostgresAllowanceActivities implements AllowanceActivities {
   }
 
   async recordRun(p: Preview, status: 'preview' | 'awaiting_second_approval' | 'running' | 'completed' | 'failed', extra: { failures?: number } = {}) {
+    await this.writeRun(this.db, p, status, extra);
+  }
+
+  async startRun(p: Preview) {
+    const institutionId = await this.institutionOf(p.workflowId);
+    if (!institutionId) throw new DomainError('NOT_FOUND', 'The run names no institution');
+    await this.credit.withLock(institutionId, async (tx) => {
+      // A rerun owes only the members it has not paid yet.
+      await this.credit.requireHeadroom(institutionId, await owedByRun(tx, p), p.workflowId, tx);
+      await this.writeRun(tx, p, 'running', {});
+    });
+  }
+
+  private async writeRun(client: SqlClient, p: Preview, status: 'preview' | 'awaiting_second_approval' | 'running' | 'completed' | 'failed', extra: { failures?: number }) {
     const now = this.clock();
-    await this.db.query(
+    await client.query(
       `insert into org.allowance_run (workflow_id, schedule_id, run_date, status, member_count, total_minor, currency, failures, started_at, completed_at)
        values ($1, $2, $3, $4, $5, $6, $7, coalesce($8, 0), case when $4 = 'running' then $9::timestamptz else null end, case when $4 in ('completed','failed') then $9::timestamptz else null end)
        on conflict (workflow_id) do update set status = excluded.status, member_count = excluded.member_count, total_minor = excluded.total_minor,
