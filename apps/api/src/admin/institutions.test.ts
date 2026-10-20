@@ -92,6 +92,10 @@ describe('admins onboard institutions and staff (T-0924, TST-ADM-004)', () => {
     expect(approved.status).toBe(200);
     expect(approved.body).toMatchObject({ grant: { status: 'approved', approvals: 2 }, staff: { partyId: MIRIAM, role: 'finance', active: true } });
     expect(await roles(MIRIAM)).toEqual(['member', 'org_finance']);
+    // The institution console's landing (T-0608): her institution and role, only once her token carries it.
+    expect((await call('GET', '/v1/me/institution', { token: before })).status).toBe(403);
+    const mine = await call('GET', '/v1/me/institution', { token: await signIn(MIRIAM) });
+    expect(mine.body).toEqual({ institution: { id: yeshiva, name: 'Yeshivat Har Kesher', market: 'IL' }, role: 'finance' });
     // The token from before the grant still carries only `member`; the next sign-in carries the role.
     expect((await call('GET', `/v1/institutions/${yeshiva}/collections?month=2026-11`, { token: before })).status).toBe(403);
     expect((await call('GET', `/v1/institutions/${yeshiva}/collections?month=2026-11`, { token: await signIn(MIRIAM) })).status).toBe(200);
@@ -116,6 +120,7 @@ describe('admins onboard institutions and staff (T-0924, TST-ADM-004)', () => {
     expect(r.status).toBe(200);
     expect(r.body).toMatchObject({ partyId: MIRIAM, active: false, role: 'finance' });
     expect((await call('GET', `/v1/institutions/${yeshiva}/collections?month=2026-11`, { token: held })).status).toBe(403);
+    expect((await call('GET', '/v1/me/institution', { token: held })).status).toBe(403);
     expect(await roles(MIRIAM)).toEqual(['member']);
     expect((await app.services.audit.list(MIRIAM, 10)).map((e) => e.action)).toContain('institution.staff.remove');
     const list = await call('GET', '/v1/admin/institutions', { token: a });

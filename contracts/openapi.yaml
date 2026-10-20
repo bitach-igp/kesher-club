@@ -157,6 +157,21 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Capabilities" }
         default: { $ref: "#/components/responses/Problem" }
+  /me/institution:
+    get:
+      operationId: getMyInstitution
+      summary: The institution the signed-in member is active staff of, and their role there
+      description: >-
+        REQ-INS-004 (T-0608). The institution console lands on this. A token without an org role, or a member
+        with no active staff row, answers 403 FORBIDDEN: the console shows "no institution access", never data.
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: The member's institution
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MyInstitution" }
+        default: { $ref: "#/components/responses/Problem" }
   /me/preferences:
     get:
       operationId: getPreferences
@@ -1934,6 +1949,18 @@ components:
         refreshToken: { type: string }
         accessExpiresAt: { type: string, format: date-time }
         restrictedUntil: { type: string, format: date-time, description: Set during the 24 h recovery hold (REQ-AUTH-003) }
+    MyInstitution:
+      type: object
+      required: [institution, role]
+      properties:
+        institution:
+          type: object
+          required: [id, name, market]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            market: { type: string, enum: [US, IL] }
+        role: { type: string, enum: [staff, finance, admin] }
     Capabilities:
       type: object
       required: [features, entitlements]

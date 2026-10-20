@@ -1248,6 +1248,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/me/institution": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution the signed-in member is active staff of, and their role there
+         * @description REQ-INS-004 (T-0608). The institution console lands on this. A token without an org role, or a member with no active staff row, answers 403 FORBIDDEN: the console shows "no institution access", never data.
+         */
+        readonly get: operations["getMyInstitution"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/me/preferences": {
         readonly parameters: {
             readonly query?: never;
@@ -2166,6 +2186,17 @@ export interface components {
             readonly currency: "USD" | "ILS";
             /** @description Minor units as a string (bigint-safe) */
             readonly minor: string;
+        };
+        readonly MyInstitution: {
+            readonly institution: {
+                /** Format: uuid */
+                readonly id: string;
+                /** @enum {string} */
+                readonly market: "US" | "IL";
+                readonly name: string;
+            };
+            /** @enum {string} */
+            readonly role: "staff" | "finance" | "admin";
         };
         readonly OtpStart: {
             readonly attemptsAllowed: number;
@@ -4302,6 +4333,27 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Closure"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getMyInstitution: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The member's institution */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MyInstitution"];
                 };
             };
             readonly default: components["responses"]["Problem"];

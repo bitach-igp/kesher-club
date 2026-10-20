@@ -116,6 +116,49 @@ importers:
         specifier: 8.15.5
         version: 8.15.5
 
+  apps/console:
+    dependencies:
+      '@kesher/demo':
+        specifier: workspace:*
+        version: link:../demo
+      '@kesher/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@kesher/ports':
+        specifier: workspace:*
+        version: link:../../packages/ports
+      '@kesher/sdk':
+        specifier: workspace:*
+        version: link:../../packages/sdk
+      '@kesher/tokens':
+        specifier: workspace:*
+        version: link:../../packages/tokens
+      next:
+        specifier: ^16.4.2
+        version: 16.4.2(@types/node@22.20.5)(babel-plugin-react-compiler@1.0.0)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      react:
+        specifier: 19.3.1
+        version: 19.3.1
+      react-dom:
+        specifier: 19.3.1
+        version: 19.3.1(react@19.3.1)
+      zod:
+        specifier: ^4.6.7
+        version: 4.6.7
+    devDependencies:
+      '@types/react':
+        specifier: ^19.3.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.3.0
+        version: 19.3.0(@types/react@19.3.0)
+      typescript:
+        specifier: 5.8.3
+        version: 5.8.3
+      vitest:
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@22.20.5)(jsdom@30.1.3)(vite@7.3.7(@types/node@22.20.5)(lightningcss@1.33.0)(terser@5.51.2))
+
   apps/demo:
     dependencies:
       '@kesher/api':
@@ -6401,9 +6444,7 @@ snapshots:
       metro-runtime: 0.87.1
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.74.89': {}
 
