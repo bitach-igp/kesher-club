@@ -96,22 +96,35 @@ async function seedInstitution(target: SeedTarget, key: { jwk: JWK; kid: string 
 }
 
 /**
- * The yeshiva's KYB (T-0621, ADR-017): until it is approved, its deposits, allowances and payouts stay shut.
- * Compliance checks it by hand in the demo, names Rivka (T2) its control person and signatory, screens both
- * the yeshiva and her clear, and approves it at low risk. A rerun finds it approved and writes nothing.
+ * The yeshiva's KYB (T-0621, T-0622, ADR-017): until it is approved, its deposits, allowances and payouts
+ * stay shut. Compliance names Rivka (T2) its control person and signatory, runs the automated checks against
+ * the KybPort simulator (the demo turns every flag on), and approves it at low risk. Then its own bank
+ * account (T-0623, T-0625): Cleo records it in the registered name the identifier check found, and Carl, a
+ * second compliance member, approves it, so the console can withdraw. A rerun finds each step done and
+ * writes nothing.
  */
 async function seedKyb(target: SeedTarget, key: { jwk: JWK; kid: string }, institutionId: string, personas: readonly SeededPersona[]): Promise<void> {
   const compliance = await staffClient(target, key, INSTITUTION.compliance, ['compliance']);
   const path = { id: institutionId };
-  if ((await compliance.get('/admin/institutions/{id}/kyb', { path })).decision.status === 'approved') return;
-  const control = personas.find((r) => r.persona.key === INSTITUTION.kybControl);
-  if (!control) throw new Error(`No ${INSTITUTION.kybControl} persona to name as the yeshiva's control person`);
-  const evidenceRef = 'demo-seed: checked by hand';
-  for (const kind of ['registry', 'identifier', 'exempt_status', 'sanctions', 'pep'] as const) await compliance.post('/admin/institutions/{id}/kyb/checks', { path, body: { kind, result: 'clear', evidenceRef } });
-  const person = await compliance.post('/admin/institutions/{id}/kyb/people', { path, body: { fullName: control.persona.name, roles: ['control', 'signatory'], partyId: control.partyId }, idempotencyKey: `seed-${INSTITUTION.key}-kyb-${control.persona.key}` });
-  for (const kind of ['sanctions', 'pep'] as const) await compliance.post('/admin/institutions/{id}/kyb/checks', { path, body: { kind, personId: person.id, result: 'clear', evidenceRef } });
-  const { decision } = await compliance.post('/admin/institutions/{id}/kyb/decisions', { path, body: { status: 'approved', risk: 'low', reasons: ['Demo seed: checked by hand'] }, idempotencyKey: `seed-${INSTITUTION.key}-kyb-decision` });
-  if (decision?.status !== 'approved') throw new Error(`The yeshiva's KYB is ${decision?.status ?? 'undecided'} after the seed's decision`);
+  const record = await compliance.get('/admin/institutions/{id}/kyb', { path });
+  // A yeshiva seeded before T-0625 was checked by hand, with no registered name to hold an account in.
+  if (!record.checks.some((c) => c.kind === 'identifier' && c.provider !== 'compliance')) {
+    const control = personas.find((r) => r.persona.key === INSTITUTION.kybControl);
+    if (!control) throw new Error(`No ${INSTITUTION.kybControl} persona to name as the yeshiva's control person`);
+    if (!record.people.some((p) => p.partyId === control.partyId)) await compliance.post('/admin/institutions/{id}/kyb/people', { path, body: { fullName: control.persona.name, roles: ['control', 'signatory'], partyId: control.partyId }, idempotencyKey: `seed-${INSTITUTION.key}-kyb-${control.persona.key}` });
+    const checked = await compliance.post('/admin/institutions/{id}/kyb/run', { path, body: { identifier: INSTITUTION.identifier, legalName: INSTITUTION.name } });
+    if (checked.blocking.length) throw new Error(`The yeshiva's KYB checks left ${checked.blocking.join(', ')}`);
+  }
+  if (record.decision.status !== 'approved') {
+    const { decision } = await compliance.post('/admin/institutions/{id}/kyb/decisions', { path, body: { status: 'approved', risk: 'low', reasons: ['Demo seed: automated checks clear'] }, idempotencyKey: `seed-${INSTITUTION.key}-kyb-decision` });
+    if (decision?.status !== 'approved') throw new Error(`The yeshiva's KYB is ${decision?.status ?? 'undecided'} after the seed's decision`);
+  }
+  const accounts = (await compliance.get('/admin/institutions/{id}/payout-accounts', { path })).items;
+  if (accounts[0]?.status === 'active') return;
+  const account = accounts[0] ?? (await compliance.post('/admin/institutions/{id}/payout-accounts', { path, body: { iban: INSTITUTION.payoutIban, holderName: INSTITUTION.name, evidenceRef: 'demo-seed: bank account confirmation letter' }, idempotencyKey: `seed-${INSTITUTION.key}-payout-account` }));
+  const approver = await staffClient(target, key, INSTITUTION.secondCompliance, ['compliance']);
+  const approved = await approver.post('/admin/payout-accounts/{id}/approve', { path: { id: account.id } });
+  if (approved.status !== 'active') throw new Error(`The yeshiva's own account is ${approved.status} after a second compliance approval`);
 }
 
 /**

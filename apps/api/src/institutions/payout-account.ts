@@ -114,6 +114,19 @@ export class PayoutAccounts {
     return (await this.list(r.institution_id)).find((a) => a.id === accountId)!;
   }
 
+  /** The account an institution withdraws to now, in full, for the payout itself; never sent to a client. */
+  async active(institutionId: string): Promise<{ iban: string; holderName: string } | undefined> {
+    const [latest] = await this.rows(institutionId, 'ILS');
+    return latest?.approved_by ? { iban: latest.iban, holderName: latest.holder_name } : undefined;
+  }
+
+  /** What the institution's own finance staff see (T-0625): the masked active account, and whether a change waits. */
+  async summary(institutionId: string): Promise<{ account?: { ibanMasked: string; holderName: string }; changePending: boolean }> {
+    const rows = await this.rows(institutionId, 'ILS');
+    const active = rows.find((r) => r.approved_by);
+    return { ...(active ? { account: { ibanMasked: maskIban(active.iban), holderName: active.holder_name } } : {}), changePending: !!rows[0] && !rows[0].approved_by };
+  }
+
   /**
    * The payout gate: the IBAN must be the institution's active account. Anything else is refused. A
    * different IBAN also opens a compliance case, keyed by the payout's key so a retry opens one.

@@ -194,6 +194,7 @@ export function createApp(o: AppOptions): App {
       db: o.db,
       identity: s.identity,
       staffOf: async (partyId) => (await o.db.query<{ institution_id: string; role: 'staff' | 'finance' | 'admin' }>('select institution_id, role from org.staff where party_id = $1 and active', [partyId])).rows.map((x) => ({ institutionId: x.institution_id, role: x.role }))[0],
+      accounts: s.payoutAccounts,
     }),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
     // The institution console's landing (T-0608): the same active staff row every institution handler checks.

@@ -84,12 +84,17 @@ would (REQ-ADM-004):
 
 1. Ada Admin (`staff-admin-1`) onboards "Yeshivat Kesher (demo)", market IL.
 2. Ada proposes `rivka` and `shimon` as finance, and Abe Admin (`staff-admin-2`) approves each grant.
-3. Cleo Compliance (`staff-compliance-1`) approves the yeshiva's KYB at low risk (T-0621, ADR-017):
-   - she records the registry, identifier, exempt-status and screening checks by hand;
-   - she names `rivka` (T2) its control person and signatory.
+3. Cleo Compliance (`staff-compliance-1`) approves the yeshiva's KYB at low risk (T-0621, T-0622, ADR-017):
+   - she names `rivka` (T2) its control person and signatory;
+   - she runs the automated checks against the KybPort simulator (amuta number `580123456`), which
+     come back clear on the registry, the identifier, exempt status and the screening of the yeshiva
+     and Rivka.
 
    Until then its deposits, allowances and payouts stay shut.
-4. `rivka` signs in again, so her token carries `org_finance`, and imports a three-row roster of
+4. Cleo records the yeshiva's own bank account (`IL62 0108 0000 0009 9999 999`, fictional) in the
+   registered name, and Carl Compliance (`staff-compliance-2`) approves it (T-0623). Every withdrawal
+   in the console goes to that account, shown as •••• 9999 (T-0625).
+5. `rivka` signs in again, so her token carries `org_finance`, and imports a three-row roster of
    fictional students (`example.test` funder addresses). They become invited members.
 
 ```sh
@@ -123,6 +128,7 @@ Identity Center would require.
 |---|---|
 | Sam Support | `support` |
 | Cleo Compliance | `compliance` |
+| Carl Compliance | `compliance` (the second approver for an institution's payout account) |
 | Finn Finance | `finance` |
 | Fern Finance | `finance` (the second approver for institution deposits) |
 | Ada Admin | `admin` |

@@ -10,8 +10,8 @@ export async function decideKyb(db: SqlClient, institutionId: string, status: Ky
 }
 
 /** An approved own-name payout account (T-0623), as two compliance members would leave it. */
-export async function verifiedPayoutAccount(db: SqlClient, institutionId: string, iban = 'IL620108000000099999999'): Promise<void> {
+export async function verifiedPayoutAccount(db: SqlClient, institutionId: string, iban = 'IL620108000000099999999', holderName = 'Test institution'): Promise<void> {
   const id = uuidv7();
-  await db.query(`insert into org.payout_account (id, institution_id, idempotency_key, currency, iban, holder_name, evidence_ref, recorded_by, recorded_at) values ($1, $2, $3, 'ILS', $4, 'Test institution', 'test fixture', $5, now())`, [id, institutionId, `fixture-${id}`, iban, uuidv7()]);
+  await db.query(`insert into org.payout_account (id, institution_id, idempotency_key, currency, iban, holder_name, evidence_ref, recorded_by, recorded_at) values ($1, $2, $3, 'ILS', $4, $5, 'test fixture', $6, now())`, [id, institutionId, `fixture-${id}`, iban, holderName, uuidv7()]);
   await db.query(`insert into org.payout_account_approval (account_id, approved_by, approved_at) values ($1, $2, now())`, [id, uuidv7()]);
 }

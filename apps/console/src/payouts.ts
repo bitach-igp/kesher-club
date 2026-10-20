@@ -1,28 +1,25 @@
-// I09 Payouts (T-0612, REQ-PO-001/002, REQ-INS-004): the institution pays out of its own account. The form
-// checks the payee before any call: an IBAN that fails its mod-97 checksum, or is not Israeli, never
-// reaches the API. A new payee over ₪2,000 cools off for 24 hours and says until when; over ₪5,000 a second
+// I09 Payouts (T-0612, REQ-PO-001/002, REQ-INS-004): the institution withdraws from its account to its own
+// verified bank account (T-0625, REQ-INS-012), so the form asks only for an amount and a reference; the API
+// fills the payee. A new account over ₪2,000 cools off for 24 hours and says until when; over ₪5,000 a second
 // finance member approves; the requester is never offered Approve; a reject needs a reason; a payout the
 // bank returned shows as reversed, with the money back in the account.
-import { ibanChecksumOk, isIsraeliIban } from '@kesher/ports/payout';
 import type { Schemas } from '@kesher/sdk';
 import type { Result } from './api.ts';
 import { withStepUp } from './step-up.ts';
 
 export type InstitutionPayout = Schemas['InstitutionPayout'];
-export type PayoutRequest = Schemas['PayoutRequest'];
+export type PayoutRequest = Schemas['InstitutionPayoutRequest'];
+export type OwnAccount = Schemas['InstitutionPayoutAccount'];
 export type Role = Schemas['MyInstitution']['role'];
 
 export interface Draft {
-  name: string;
-  iban: string;
   /** Shekels as typed: "1,250.50". */
   amountText: string;
   reference: string;
 }
 
-export type DraftProblem = 'iban' | 'name' | 'amount' | 'reference' | 'over_balance';
+export type DraftProblem = 'amount' | 'reference' | 'over_balance';
 
-const NAME_MAX = 70;
 const REFERENCE_MAX = 64;
 
 /** "1,250.50" → 125050 agorot; undefined when it is not an amount above zero. */
@@ -34,23 +31,22 @@ export function parseShekels(text: string): bigint | undefined {
   return minor > 0n ? minor : undefined;
 }
 
-export const normalizeIban = (iban: string): string => iban.replace(/[\s-]+/g, '').toUpperCase();
-
-/** Everything the console can know before the call: the IBAN's checksum and country, a name, an amount the account holds, a reference. */
+/** Everything the console can know before the call: an amount the account holds, a reference. */
 export function checkDraft(d: Draft, available: bigint): { ok: true; body: PayoutRequest } | { ok: false; problems: DraftProblem[] } {
   const problems: DraftProblem[] = [];
-  const iban = normalizeIban(d.iban);
-  if (!ibanChecksumOk(iban) || !isIsraeliIban(iban)) problems.push('iban');
-  const name = d.name.replace(/\s+/g, ' ').trim();
-  if (!name || name.length > NAME_MAX) problems.push('name');
   const minor = parseShekels(d.amountText);
   if (minor === undefined) problems.push('amount');
   else if (minor > available) problems.push('over_balance');
   const reference = d.reference.trim();
   if (!reference || reference.length > REFERENCE_MAX) problems.push('reference');
   if (problems.length || minor === undefined) return { ok: false, problems };
-  return { ok: true, body: { payee: { iban, name }, amount: { minor: minor.toString(), currency: 'ILS' }, reference } };
+  return { ok: true, body: { amount: { minor: minor.toString(), currency: 'ILS' }, reference } };
 }
+
+/** Where a withdrawal goes, or why none can: no verified account yet, or a change waiting for Kesher compliance. */
+export type Destination = { kind: 'own'; holderName: string; last4: string } | { kind: 'none' } | { kind: 'pending' };
+export const destination = (a: OwnAccount): Destination =>
+  a.changePending ? { kind: 'pending' } : a.account ? { kind: 'own', holderName: a.account.holderName, last4: a.account.ibanMasked.slice(-4) } : { kind: 'none' };
 
 /** Approve and reject are for a different finance member, on a payout waiting for one. */
 export const canDecide = (p: InstitutionPayout, role: Role): boolean => p.state === 'awaiting_second_approval' && !p.requestedByMe && role === 'finance';

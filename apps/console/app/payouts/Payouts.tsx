@@ -1,6 +1,6 @@
 'use client';
-// I09's interactive half (T-0612): the new-payout form and the second member's approve / reject. The
-// decisions (IBAN check, step-up retry, a reject's reason) live in src/payouts.ts; this renders them.
+// I09's interactive half (T-0612): the withdrawal form and the second member's approve / reject. The
+// decisions (amount check, step-up retry, a reject's reason) live in src/payouts.ts; this renders them.
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { t, type CopyKey, type Locale } from '../../src/i18n.ts';
@@ -21,7 +21,7 @@ function Problem({ outcome, locale }: { outcome: Outcome | undefined; locale: Lo
 
 export function NewPayout({ available, locale }: { available: string; locale: Locale }) {
   const router = useRouter();
-  const [draft, setDraft] = useState<Draft>({ name: '', iban: '', amountText: '', reference: '' });
+  const [draft, setDraft] = useState<Draft>({ amountText: '', reference: '' });
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<Outcome | undefined>();
   const field = (k: keyof Draft, label: CopyKey, extra: Record<string, string> = {}) => (
@@ -40,8 +40,6 @@ export function NewPayout({ available, locale }: { available: string; locale: Lo
   };
   return (
     <div className="card">
-      {field('name', 'payouts.form.name')}
-      {field('iban', 'payouts.form.iban', { dir: 'ltr', autoComplete: 'off' })}
       {field('amountText', 'payouts.form.amount', { inputMode: 'decimal', dir: 'ltr' })}
       {field('reference', 'payouts.form.reference')}
       <button className="primary" type="button" disabled={busy} onClick={() => void submit()} data-testid="payout-submit">{t('payouts.form.submit', locale)}</button>

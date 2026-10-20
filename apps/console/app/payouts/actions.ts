@@ -1,5 +1,5 @@
 'use server';
-// I09 server actions (T-0612): pay out of the institution's account, and the second finance member's
+// I09 server actions (T-0612): withdraw to the institution's own account (T-0625), and the second finance member's
 // approve or reject, as the signed-in staff member (the step-up relay is in app/step-up.ts).
 import type { Result } from '../../src/api.ts';
 import type { InstitutionPayout, PayoutRequest } from '../../src/payouts.ts';

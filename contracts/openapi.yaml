@@ -894,6 +894,21 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AllowanceRun" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/payout-account:
+    get:
+      operationId: getInstitutionPayoutAccount
+      summary: Where the institution's withdrawals go, the institution's own verified account, masked
+      description: >-
+        REQ-INS-012 (T-0625). Org finance of this institution. Absent while Kesher compliance has not verified one;
+        `changePending` while a change waits for a second compliance approval (payouts wait with it).
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The account
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionPayoutAccount" }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/payouts:
     get:
       operationId: listInstitutionPayouts
@@ -920,9 +935,11 @@ paths:
         default: { $ref: "#/components/responses/Problem" }
     post:
       operationId: createInstitutionPayout
-      summary: Pay out ILS from the institution's account to a validated payee
+      summary: Withdraw ILS from the institution's account to its own verified bank account
       description: >-
-        REQ-PO-001/002, REQ-INS-004 (T-0527). Org finance of this institution. Requires a step-up token younger than 5
+        REQ-PO-001/002, REQ-INS-004, REQ-INS-012 (T-0527, T-0625). Org finance of this institution. The payee is the
+        institution's own verified account (T-0623), filled by the API: a body naming a payee answers 422
+        `payee_not_accepted`, and without a verified account 422 `no_verified_account`. Requires a step-up token younger than 5
         minutes (REQ-AUTH-006). Never takes the institution's account below zero (INSUFFICIENT_FUNDS). A new payee over
         ₪2,000 cools off 24 h; over ₪5,000 a second finance member approves (approvePayout). Idempotent.
       parameters:
@@ -933,7 +950,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/PayoutRequest" }
+            schema: { $ref: "#/components/schemas/InstitutionPayoutRequest" }
       responses:
         "201":
           description: The payout
@@ -3168,6 +3185,27 @@ components:
             depositsIn: { $ref: "#/components/schemas/Money", description: Recorded bank transfers in and their reversals (T-0614) }
             payoutsOut: { $ref: "#/components/schemas/Money", description: The institution's payouts and their reversals (T-0527) }
             net: { $ref: "#/components/schemas/Money" }
+    InstitutionPayoutAccount:
+      type: object
+      description: Where the institution's withdrawals go (T-0625). No `account` until Kesher compliance verifies one.
+      required: [changePending]
+      properties:
+        account:
+          type: object
+          required: [ibanMasked, holderName]
+          properties:
+            ibanMasked: { type: string, example: "IL62 •••• •••• 9999" }
+            holderName: { type: string }
+        changePending: { type: boolean }
+    InstitutionPayoutRequest:
+      type: object
+      description: >-
+        A withdrawal to the institution's own verified account (T-0625, decided 2026-10-20 until the bank answers): the
+        API fills the payee; a body naming one answers 422 `payee_not_accepted`.
+      required: [amount, reference]
+      properties:
+        amount: { $ref: "#/components/schemas/Money" }
+        reference: { type: string, maxLength: 64 }
     PayoutRequest:
       type: object
       required: [payee, amount, reference]

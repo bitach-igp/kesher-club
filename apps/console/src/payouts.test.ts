@@ -1,12 +1,12 @@
-// T-0612 I09 Payouts (screen rows of TST-PO-001, TST-PO-002, TST-INS-004): a bad IBAN never reaches the
-// API; a new payee over ₪2,000 shows when its cooling-off ends; the requester cannot approve; a reject
-// needs a reason; a step-up keeps the attempt key; more than the account holds is caught before the call.
+// T-0612 I09 Payouts (screen rows of TST-PO-001, TST-PO-002, TST-INS-004, TST-INS-012): a withdrawal names no
+// payee, only an amount and a reference (T-0625); the screen says where it goes, or why nothing can; a new
+// account over ₪2,000 shows when its cooling-off ends; the requester cannot approve; a reject needs a reason;
+// a step-up keeps the attempt key; more than the account holds is caught before the call.
 import { describe, expect, it } from 'vitest';
 import type { Result } from './api.ts';
-import { approvePayout, canDecide, checkDraft, parseShekels, rejectPayout, submitPayout, type InstitutionPayout, type PayoutDeps, type PayoutRequest } from './payouts.ts';
+import { approvePayout, canDecide, checkDraft, destination, parseShekels, rejectPayout, submitPayout, type InstitutionPayout, type PayoutDeps, type PayoutRequest } from './payouts.ts';
 import { withStepUp } from './step-up.ts';
 
-const GOOD = 'IL62 0108 0000 0009 9999 999';
 const payout = (over: Partial<InstitutionPayout> = {}): InstitutionPayout => ({ id: 'p1', state: 'awaiting_second_approval', amount: { minor: '600000', currency: 'ILS' }, payee: { name: 'Building Supplies Ltd', ibanLast4: '9999' }, reference: 'roof', createdAt: '2026-11-10T09:00:00Z', approvedBy: [{ displayName: 'Finance •••• 0109' }], requiredApprovals: 2, requestedByMe: false, ...over });
 
 function fake(answers: Result<InstitutionPayout>[], stepUp = true) {
@@ -36,24 +36,24 @@ function fake(answers: Result<InstitutionPayout>[], stepUp = true) {
 }
 
 describe('I09 payouts (T-0612)', () => {
-  it('a bad IBAN never reaches the API: a wrong checksum, a foreign IBAN, garbage', async () => {
-    for (const iban of ['IL62 0108 0000 0009 9999 998', 'GB29 NWBK 6016 1331 9268 19', 'not an iban']) {
+  it('a withdrawal names no payee: the body is the amount and the reference; a bad draft never reaches the API', async () => {
+    for (const [draft, problems] of [[{ amountText: 'abc', reference: 'x' }, ['amount']], [{ amountText: '100', reference: '  ' }, ['reference']], [{ amountText: '0', reference: 'r'.repeat(65) }, ['amount', 'reference']]] as const) {
       const { deps, calls } = fake([]);
-      expect(await submitPayout(deps, { name: 'Supplier', iban, amountText: '100', reference: 'x' }, 10_000_000n)).toEqual({ kind: 'invalid', problems: ['iban'] });
+      expect(await submitPayout(deps, draft, 10_000_000n)).toEqual({ kind: 'invalid', problems });
       expect(calls.create).toEqual([]);
     }
   });
 
-  it('a good draft goes out normalised, in agorot as a string; over the account balance is caught first', () => {
-    expect(checkDraft({ name: '  Building   Supplies Ltd ', iban: GOOD, amountText: '6,000.50', reference: ' roof ' }, 1_000_000n)).toEqual({ ok: true, body: { payee: { iban: 'IL620108000000099999999', name: 'Building Supplies Ltd' }, amount: { minor: '600050', currency: 'ILS' }, reference: 'roof' } });
-    expect(checkDraft({ name: 'S', iban: GOOD, amountText: '10000.01', reference: 'r' }, 1_000_000n)).toEqual({ ok: false, problems: ['over_balance'] });
+  it('a good draft goes out trimmed, in agorot as a string; over the account balance is caught first', () => {
+    expect(checkDraft({ amountText: '6,000.50', reference: ' roof ' }, 1_000_000n)).toEqual({ ok: true, body: { amount: { minor: '600050', currency: 'ILS' }, reference: 'roof' } });
+    expect(checkDraft({ amountText: '10000.01', reference: 'r' }, 1_000_000n)).toEqual({ ok: false, problems: ['over_balance'] });
     expect([parseShekels('0'), parseShekels('1.234'), parseShekels('12.5')]).toEqual([undefined, undefined, 1_250n]);
   });
 
   it('a new payee over ₪2,000 comes back cooling off with its end time; the step-up keeps the attempt key', async () => {
     const cooling = payout({ state: 'cooling_off', amount: { minor: '300000', currency: 'ILS' }, coolOffEndsAt: '2026-11-11T09:00:00Z', requiredApprovals: 0, approvedBy: [], requestedByMe: true });
     const { deps, calls } = fake([{ ok: false, code: 'STEP_UP_REQUIRED' }, { ok: true, value: cooling }]);
-    expect(await submitPayout(deps, { name: 'New Supplier', iban: GOOD, amountText: '3000', reference: 'chairs' }, 10_000_000n)).toEqual({ kind: 'done', payout: cooling });
+    expect(await submitPayout(deps, { amountText: '3000', reference: 'chairs' }, 10_000_000n)).toEqual({ kind: 'done', payout: cooling });
     expect([calls.create.map((c) => c.key), calls.stepUp]).toEqual([['key-1', 'key-1'], 1]);
   });
 
@@ -73,6 +73,12 @@ describe('I09 payouts (T-0612)', () => {
     expect(calls.reject).toEqual([]);
     expect(await rejectPayout(deps, 'p1', ' Wrong supplier ')).toMatchObject({ kind: 'done', payout: { state: 'rejected' } });
     expect(calls.reject).toEqual([{ id: 'p1', reason: 'Wrong supplier' }]);
+  });
+
+  it('says where a withdrawal goes: the own account by its last four digits; nothing while none is verified or a change waits', () => {
+    expect(destination({ account: { ibanMasked: 'IL62 •••• •••• 9999', holderName: 'Yeshivat Example' }, changePending: false })).toEqual({ kind: 'own', holderName: 'Yeshivat Example', last4: '9999' });
+    expect(destination({ changePending: false })).toEqual({ kind: 'none' });
+    expect(destination({ account: { ibanMasked: 'IL62 •••• •••• 9999', holderName: 'Yeshivat Example' }, changePending: true })).toEqual({ kind: 'pending' });
   });
 
   it('withStepUp passes anything but STEP_UP_REQUIRED straight through', async () => {

@@ -121,6 +121,7 @@
 | [T-0622](T-0622.md) | INS | KybPort and simulator: registry, exempt status, screening as evidence | REQ-INS-011, REQ-INS-013 | 12 |
 | [T-0623](T-0623.md) | PO | Institution payouts only to the verified own-name account | REQ-INS-012 | 12 |
 | [T-0624](T-0624.md) | INS | Daily sanctions rescreen and the KYB refresh sweep | REQ-INS-013, REQ-INS-014 | 12 |
+| [T-0625](T-0625.md) | INS | Institution payouts are withdrawals to the own account: API fills the payee, console shows it | REQ-INS-012, REQ-PO-001 | 12 |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
