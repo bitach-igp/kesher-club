@@ -23,6 +23,8 @@ export const URLS = {
 } as const;
 
 const SIZE = { width: 1600, height: 900 };
+/** The recording stack's readiness port (playwright.config.ts PORTS.ready). */
+const STACK = 'http://127.0.0.1:4099';
 
 /** "$1,234.50", "₪367.22", "−$3.00" → minor units. The money on a screen, as the ledger would count it. */
 export function minorOf(text: string): bigint {
@@ -132,6 +134,42 @@ export async function signInMember(rec: Recording): Promise<void> {
   await rec.member.getByTestId('home-purse-USD').waitFor({ timeout: 60_000 });
 }
 
+/**
+ * Back to Home the way the member would, with the back button, never past the app's own first page: the
+ * frame shares its session history with the harness page, so one back too many leaves the harness itself.
+ */
+export async function backToHome(rec: Recording): Promise<void> {
+  const frame = rec.page.frameLocator('#member').locator('body');
+  const home = rec.member.getByTestId('home-purse-USD');
+  for (let i = 0; i < 4 && !(await home.isVisible()); i++) {
+    const at = await frame.evaluate(() => location.pathname);
+    if (at === '/' || at === '/home') break;
+    await frame.evaluate(() => history.back());
+    await rec.page.waitForTimeout(800);
+  }
+  try {
+    await home.waitFor({ timeout: 30_000 });
+  } catch {
+    throw new Error(`Home did not show; the member app reads: ${(await frame.innerText()).slice(0, 400)}`);
+  }
+}
+
+/**
+ * The member opens the app again, as days later: the pane reloads from its first address. Used after the
+ * clock moves, when the token the app holds was issued at the old clock and the app, judging expiry by
+ * the browser's real clock, would not know to refresh it. Signs in again if the app asks.
+ */
+export async function reopenMember(rec: Recording): Promise<void> {
+  await rec.page.evaluate(() => {
+    const f = document.getElementById('member') as HTMLIFrameElement;
+    f.src = f.getAttribute('src')!;
+  });
+  const signIn = rec.member.getByText('Sign in with passkey');
+  const home = rec.member.getByTestId('home-purse-USD');
+  await expect(signIn.or(home)).toBeVisible({ timeout: 60_000 });
+  if (await signIn.isVisible()) await signInMember(rec);
+}
+
 /** The purse's available balance on the member app's Home, in minor units. */
 export async function homeAvailable(rec: Recording, currency: 'USD' | 'ILS'): Promise<bigint> {
   const text = await rec.member.getByTestId(`home-purse-${currency}`).innerText();
@@ -156,6 +194,20 @@ export const panel = {
   /** The API's clock, read from the panel. */
   now: async () => new Date(((await (await fetch(`${URLS.panel}/health`)).json()) as { clock: string }).clock),
 };
+
+/**
+ * A tap at a till, from the vendor's side: the panel's card-issuing hook builds the processor's signed JIT
+ * request for the member's card, and it is delivered to the API as the processor would deliver it.
+ */
+export async function cardSpend(partyId: string, amountMinor: bigint): Promise<{ result: string; reason?: string }> {
+  const card = (await (await fetch(`${STACK}/?cardOf=${partyId}`)).json()) as { processorCardId?: string };
+  if (!card.processorCardId) throw new Error(`No active card for ${partyId}`);
+  const signed = (await panel.hook('card-issuing', 'authorize', { cardId: card.processorCardId, amountMinor: amountMinor.toString(), mcc: '5814' })).result as { headers: Record<string, string>; rawBody: string };
+  const res = await fetch(`${URLS.api}/jit/card-authorizations`, { method: 'POST', headers: { 'content-type': 'application/json', ...signed.headers }, body: signed.rawBody });
+  const decision = (await res.json()) as { result: string; reason?: string };
+  if (!res.ok) throw new Error(`JIT answered ${res.status}: ${JSON.stringify(decision)}`);
+  return decision;
+}
 
 // ---- the staff API, for steps with no screen and reads after the clock moved ----
 
