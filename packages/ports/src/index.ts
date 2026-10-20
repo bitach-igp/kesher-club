@@ -1,4 +1,4 @@
-// @kesher/ports: the 18 ports of Tab 3 §4, their simulators, contract suites and the registry.
+// @kesher/ports: the 19 ports of Tab 3 §4 (KybPort joined with ADR-017), their simulators, contract suites and the registry.
 export * from './base.ts';
 export * from './catalogue.ts';
 export * from './registry.ts';
@@ -12,6 +12,8 @@ export * from './org-idp.ts';
 export * from './org-idp.simulator.ts';
 export * from './kyc.ts';
 export * from './kyc.simulator.ts';
+export * from './kyb.ts';
+export * from './kyb.simulator.ts';
 export * from './billing.ts';
 export * from './billing.simulator.ts';
 export * from './funding.ts';

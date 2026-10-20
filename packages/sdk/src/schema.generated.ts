@@ -628,6 +628,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/institutions/{id}/kyb/run": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Run the automated KYB checks through the provider and record what it says
+         * @description REQ-INS-011 (T-0622). Compliance. Registry, identifier match, exempt status, and sanctions and PEP screening of the institution and every person in its record; one check per answer, with the provider's reference as evidence. Behind `institutions.kyb.checks` (FEATURE_OFF until a vendor is bound); a provider outage answers PROVIDER_UNAVAILABLE and records nothing.
+         */
+        readonly post: operations["runAdminKybChecks"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/institutions/{id}/staff": {
         readonly parameters: {
             readonly query?: never;
@@ -4059,6 +4079,37 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["KybPerson"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly runAdminKybChecks: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @description The amuta or company number (IL) or the EIN (US) */
+                    readonly identifier: string;
+                    readonly legalName: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The record after the checks */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["KybRecord"];
                 };
             };
             readonly default: components["responses"]["Problem"];

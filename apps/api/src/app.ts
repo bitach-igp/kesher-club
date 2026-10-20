@@ -2,7 +2,7 @@
 // in sim mode) and returns the handler table. The HTTP server (server.ts) and tests call this;
 // nothing here knows about sockets. Secrets arrive through the config loader (T-0004).
 import type { Database } from './db.ts';
-import type { AuthPort, BillingPort, CardIssuingPort, EventsPort, FundingPort, FxPort, PayoutPort, KycPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
+import type { AuthPort, BillingPort, CardIssuingPort, EventsPort, FundingPort, FxPort, PayoutPort, KycPort, KybPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
 import { ok, requireIdempotencyKey, requirePrincipal, requireRole, route, type Handler, type HttpRequest } from './http.ts';
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
@@ -60,6 +60,7 @@ import { creditHandlers, InstitutionCredit } from './institutions/credit.ts';
 import { kybHandlers } from './institutions/kyb-handlers.ts';
 import { InstitutionKyb } from './institutions/kyb.ts';
 import { KybGate } from './institutions/kyb-gate.ts';
+import { KybChecks } from './institutions/kyb-checks.ts';
 import { exportHandler } from './institutions/export.ts';
 import { RosterService, importRosterHandler } from './institutions/roster.ts';
 import { ApprovalService } from './approvals/service.ts';
@@ -223,7 +224,7 @@ export function createApp(o: AppOptions): App {
     ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
     ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.institutionCredit, s.clock.now), credit: s.institutionCredit, flags: s.flags, staffInstitution, db: o.db, identity: s.identity, stepUp: s.stepUp }),
     ...creditHandlers(s.institutionCredit),
-    ...kybHandlers(s.institutionKyb),
+    ...kybHandlers(s.institutionKyb, new KybChecks({ db: o.db, kyb: s.institutionKyb, flags: s.flags, port: (m) => o.registry.resolve<KybPort>('kyb', m), provider: (m) => o.registry.bindingFor('kyb', m)?.provider ?? 'simulator' })),
     ...fxAdminHandlers(s.rates),
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
     ...depositHandlers(new InstitutionDeposits({ db: o.db, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, approvals: s.approvals, audit: s.audit, flags: s.flags, kyb: s.kybGate })),

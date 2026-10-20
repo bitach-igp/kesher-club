@@ -97,6 +97,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/admin/institutions/{id}/kyb', operationId: 'getAdminInstitutionKyb' },
   { method: 'POST', path: '/admin/institutions/{id}/kyb/people', operationId: 'addAdminKybPerson' },
   { method: 'POST', path: '/admin/institutions/{id}/kyb/checks', operationId: 'recordAdminKybCheck' },
+  { method: 'POST', path: '/admin/institutions/{id}/kyb/run', operationId: 'runAdminKybChecks' },
   { method: 'POST', path: '/admin/kyb/checks/{id}/dispose', operationId: 'disposeAdminKybCheck' },
   { method: 'POST', path: '/admin/institutions/{id}/kyb/decisions', operationId: 'decideAdminKyb' },
   { method: 'POST', path: '/admin/kyb/decisions/{id}/approve', operationId: 'approveAdminKybDecision' },
