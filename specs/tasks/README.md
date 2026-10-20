@@ -95,6 +95,8 @@
 | [T-0526](T-0526.md) | WAL | M34 Close account: the balance is refunded before close | REQ-WAL-005 | 11 |
 | [T-0527](T-0527.md) | PO | Institution payouts reach HTTP: request, list, second approver decides | REQ-PO-001, REQ-PO-002, REQ-INS-004 | 11 |
 | [T-0528](T-0528.md) | PAY | Member app binds the device: Pay, Card, eSIM and Emergency open | REQ-PAY-001, REQ-ESIM-001 | 11 |
+| [T-0529](T-0529.md) | PAY | Member app reaches pay home and receiving currency; Home says only what is locked | REQ-PAY-004, REQ-PAY-007 | 12 |
+| [T-0530](T-0530.md) | PAY | Confirm sheet names the recipient as resolved, never by party id | REQ-PAY-001 | 12 |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
@@ -113,6 +115,12 @@
 | [T-0616](T-0616.md) | INS | Institution credit limit: two admins set it, allowance runs stop at it | REQ-INS-008 | 11 |
 | [T-0617](T-0617.md) | INS | US institutions pull USD by ACH, held until the bank's hold date | REQ-INS-009 | 12 |
 | [T-0618](T-0618.md) | INS | The bank's incoming credits post deposits by payment reference | REQ-INS-007 | later |
+| [T-0619](T-0619.md) | INS | Institution KYB record and decision; two reviewers when high risk | REQ-INS-011 | 12 |
+| [T-0620](T-0620.md) | INS | KYB over HTTP under /admin | REQ-INS-011 | 12 |
+| [T-0621](T-0621.md) | INS | The KYB gate on deposits, allowances, credit and payouts | REQ-INS-010 | 12 |
+| [T-0622](T-0622.md) | INS | KybPort and simulator: registry, exempt status, screening as evidence | REQ-INS-011, REQ-INS-013 | 12 |
+| [T-0623](T-0623.md) | PO | Institution payouts only to the verified own-name account | REQ-INS-012 | 12 |
+| [T-0624](T-0624.md) | INS | Daily sanctions rescreen and the KYB refresh sweep | REQ-INS-013, REQ-INS-014 | 12 |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
@@ -149,6 +157,7 @@
 | [T-0923](T-0923.md) | CMP | Recorded walkthroughs of REC-15 to REC-18; the package links all eighteen | — | 10 |
 | [T-0924](T-0924.md) | ADM | Admins onboard institutions and staff; finance and admin roles take a second admin | REQ-ADM-004 | 11 |
 | [T-0925](T-0925.md) | ADM | Customer 360 tells the truth: KYC, cards, balances as the member sees them | REQ-ADM-001 | 11 |
+| [T-0926](T-0926.md) | ADM | Admin console: an institution's KYB review | REQ-INS-011, REQ-INS-010 | 12 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |
@@ -161,4 +170,5 @@
 | [T-1010](T-1010.md) | AGT | Intent expiry sweep in the worker, never past a started send | REQ-AGT-006 | 10 |
 | [T-1011](T-1011.md) | AGT | A member can read the proposals waiting for them | REQ-AGT-006 | 11 |
 | [T-1012](T-1012.md) | AGT | Approve or decline an assistant's proposal in the app | REQ-AGT-006 | 11 |
+| [T-1013](T-1013.md) | AGT | Mount the MCP gateway on the API | REQ-AGT-001, REQ-AGT-002, REQ-AGT-006 | 12 |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.

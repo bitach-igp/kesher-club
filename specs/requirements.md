@@ -48,6 +48,11 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-INS-007 | P2 | Recorded institution deposits post once, after a second finance approver |
 | REQ-INS-008 | P2 | Allowance runs stop at the institution's two-admin credit limit |
 | REQ-INS-009 | P2 | US institutions pull USD by ACH, held until the bank's hold date |
+| REQ-INS-010 | P1 | Deposits, allowances, credit and payouts follow the institution's KYB decision |
+| REQ-INS-011 | P1 | KYB approval rests on recorded evidence; high risk takes two reviewers |
+| REQ-INS-012 | P1 | Institution payouts only to the verified own-name account |
+| REQ-INS-013 | P2 | Daily sanctions rescreen; an open match suspends payouts and credit draws |
+| REQ-INS-014 | P2 | KYB refresh every 12/24/36 months by risk; overdue drops to approved with limits |
 | REQ-FX-001 | P2 | Quotes lock 30 s with rate, markup, total |
 | REQ-FX-002 | P2 | Markup from plan config stored on the journal |
 | REQ-FX-003 | P2 | Conversions use the club-published, versioned rate; the version is on the quote and the journal |
