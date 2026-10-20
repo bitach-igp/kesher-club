@@ -6,6 +6,7 @@ import { format, fromWire, type Money } from '@kesher/domain';
 import type { Schemas } from '@kesher/sdk';
 import type { Result } from './api.ts';
 import { intlLocale, t, type Locale } from './i18n.ts';
+import { withStepUp } from './step-up.ts';
 
 export type Schedule = Schemas['AllowanceSchedule'];
 export type RunSummary = Schemas['AllowanceRunSummary'];
@@ -58,12 +59,8 @@ export async function previewRun(d: RunDeps, scheduleId: string, date: string): 
 /** Runs (or, for the second finance member, approves) once per key; one step-up and one retry when the API asks. */
 export async function executeRun(d: RunDeps, scheduleId: string, date: string): Promise<RunView> {
   const key = d.newKey();
-  let r = await d.run(scheduleId, date, key);
-  if (!r.ok && r.code === 'STEP_UP_REQUIRED') {
-    if (!(await d.stepUp())) return { kind: 'cancelled' };
-    r = await d.run(scheduleId, date, key);
-  }
-  if (!r.ok) return r.code === 'FEATURE_OFF' ? { kind: 'off' } : { kind: 'error', code: r.code };
+  const r = await withStepUp(() => d.run(scheduleId, date, key), d.stepUp);
+  if (!r.ok) return r.code === 'STEP_UP_CANCELLED' ? { kind: 'cancelled' } : r.code === 'FEATURE_OFF' ? { kind: 'off' } : { kind: 'error', code: r.code };
   if (r.value.status === 'awaiting_second_approval') return { kind: 'waiting', run: r.value };
   return { kind: r.value.status === 'failed' ? 'failed' : 'completed', run: r.value };
 }
