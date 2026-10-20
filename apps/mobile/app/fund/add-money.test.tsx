@@ -2,14 +2,17 @@
 // T-0524 screen smoke test through react-native-web: each state of P07 renders (form, the club-rate
 // quote, ACH with its notice, the receipt settled, held and processing, an error), in English and Hebrew.
 // Behaviour lives in add-money.model.test.ts.
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { FundApi, Load } from '../../src/api.ts';
 import { LocaleProvider, type Locale } from '../../src/i18n.ts';
+import { memoryRouter, RouterProvider } from '../../src/navigation.ts';
 import { createAddMoneyModel } from './add-money.model.ts';
 import { AddMoneyView } from './add-money.tsx';
 
 const NOW = new Date('2026-11-01T09:00:00Z');
+
+const router = memoryRouter('/fund/add-money');
 
 function mount(load: Load, opts: { ach?: boolean; locale?: Locale } = {}) {
   const fund: FundApi = { members: async () => [{ partyId: 'p1', self: true }], createLoad: async () => load };
@@ -23,7 +26,9 @@ function mount(load: Load, opts: { ach?: boolean; locale?: Locale } = {}) {
   });
   render(
     <LocaleProvider value={opts.locale ?? 'en'}>
-      <AddMoneyView model={model} />
+      <RouterProvider value={router}>
+        <AddMoneyView model={model} />
+      </RouterProvider>
     </LocaleProvider>,
   );
   return model;
@@ -74,6 +79,13 @@ describe('P07 add money screen (T-0524)', () => {
     await act(async () => model.setAmount('25'));
     await act(async () => model.confirm());
     expect(screen.getByTestId('fund-receipt-processing')).toBeTruthy();
+  });
+
+  it('links to auto-reload (T-0525)', async () => {
+    mount({ id: 'l1', amount: { minor: '5000', currency: 'USD' }, state: 'settled' });
+    const link = await screen.findByTestId('fund-auto-reload');
+    await act(async () => void fireEvent.click(link));
+    expect(router.current()).toBe('/fund/auto-reload');
   });
 
   it('renders in Hebrew', async () => {

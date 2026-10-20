@@ -4,6 +4,7 @@ import { useEffect, useMemo } from 'react';
 import { View } from 'react-native';
 import { uuidv7, type Currency } from '@kesher/domain';
 import { useApi } from '../../src/api.ts';
+import { useRouter } from '../../src/navigation.ts';
 import { useNow } from '../../src/clock.ts';
 import { Banner, Button, Card, Screen, Skeleton, TextField, Txt } from '../../src/components/index.ts';
 import { t, useLocale, type Locale } from '../../src/i18n.ts';
@@ -42,6 +43,7 @@ function Choice<T extends string>({ options, value, label, onChoose, testID }: {
 export function AddMoneyView({ model }: { model: AddMoneyModel }) {
   const s = useStore(model.store);
   const locale = useLocale();
+  const router = useRouter();
   useEffect(() => void model.load(), [model]);
   useEffect(() => {
     if (!s.quote) return;
@@ -112,6 +114,7 @@ export function AddMoneyView({ model }: { model: AddMoneyModel }) {
             <Choice options={methodsFor(s.achEnabled)} value={s.method} label={(m) => t(`fund.method.${m}`, locale)} onChoose={model.setMethod} testID="fund-method" />
             {s.method === 'ach' ? <Banner tone="warning" body={t('fund.ach.notice', locale)} testID="fund-ach-notice" /> : null}
           </Card>
+          <Button label={t('fund.autoReload.link', locale)} variant="tertiary" onPress={() => router.push('/fund/auto-reload')} testID="fund-auto-reload" />
         </>
       )}
     </Screen>

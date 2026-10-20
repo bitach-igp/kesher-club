@@ -35,6 +35,8 @@ export type Transaction = Schemas['Transaction'];
 export type TransactionPage = Schemas['TransactionPage'];
 export type FxQuote = Schemas['FxQuote'];
 export type Load = Schemas['Load'];
+export type AutoReloadRule = Schemas['AutoReloadRule'];
+export type AutoReloadRuleRequest = Schemas['AutoReloadRuleRequest'];
 export type FxConversion = Schemas['FxConversion'];
 export type OtpPurpose = 'register' | 'recovery';
 
@@ -131,6 +133,21 @@ export interface FundApi {
   createLoad(input: { memberPartyId: string; amount: MoneyWire; method: 'card' | 'apple_pay' | 'google_pay' | 'ach'; purseCurrency: 'USD' | 'ILS' }, idempotencyKey: string): Promise<Load>;
 }
 
+/** A payment method saved at the funding vendor; the app holds only its id and a label, never card data. */
+export interface SavedPaymentMethod {
+  id: string;
+  label: string;
+}
+
+/** P07 auto-reload (T-0525): the rule on one purse. */
+export interface AutoReloadApi {
+  /** NOT_FOUND when the member has set none. */
+  get(accountId: string): Promise<AutoReloadRule>;
+  set(accountId: string, rule: AutoReloadRuleRequest, idempotencyKey: string): Promise<AutoReloadRule>;
+  /** Saved methods the rule may charge. Listing them is P08's; until then the shell supplies them. */
+  paymentMethods(): Promise<readonly SavedPaymentMethod[]>;
+}
+
 export interface EmergencyCase {
   caseId: string;
   callbackSlaMinutes: number;
@@ -170,6 +187,7 @@ export interface Api {
   wallet: WalletApi;
   fx: FxApi;
   fund: FundApi;
+  reload: AutoReloadApi;
   esim: EsimUsageApi;
   grants: GrantsApi;
   concierge: ConciergeApi;
@@ -197,7 +215,7 @@ export function subjectOf(accessToken: string | undefined): string | undefined {
 }
 
 /** Binds the generated SDK client. `extras` cover operations the contract does not expose yet. */
-export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsageApi; concierge: ConciergeApi; invites: InvitesApi }): Api {
+export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsageApi; concierge: ConciergeApi; invites: InvitesApi; paymentMethods?: () => Promise<readonly SavedPaymentMethod[]> }): Api {
   return {
     auth: {
       startOtp: ({ phone, locale }) => client.post('/auth/otp', { body: { phone, locale } }),
@@ -260,6 +278,11 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
         return self ? [{ partyId: self, self: true }] : [];
       },
       createLoad: (input, idempotencyKey) => client.post('/loads', { body: input, idempotencyKey }),
+    },
+    reload: {
+      get: (id) => client.get('/accounts/{id}/auto-reload', { path: { id } }),
+      set: (id, rule, idempotencyKey) => client.post('/accounts/{id}/auto-reload', { path: { id }, body: rule, idempotencyKey }),
+      paymentMethods: extras.paymentMethods ?? (async () => []),
     },
     esim: extras.esim,
     grants: {
