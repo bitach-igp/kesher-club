@@ -34,6 +34,7 @@ export type MoneyWire = Schemas['Money'];
 export type Transaction = Schemas['Transaction'];
 export type TransactionPage = Schemas['TransactionPage'];
 export type FxQuote = Schemas['FxQuote'];
+export type Load = Schemas['Load'];
 export type FxConversion = Schemas['FxConversion'];
 export type OtpPurpose = 'register' | 'recovery';
 
@@ -116,6 +117,20 @@ export interface FxApi {
   convert(quoteId: string, idempotencyKey: string): Promise<FxConversion>;
 }
 
+/** Someone the signed-in person may load money for (T-0524). */
+export interface FundMember {
+  partyId: string;
+  /** The signed-in member's own purses. */
+  self: boolean;
+  name?: string | undefined;
+}
+
+/** P07 add money (T-0524): a one-time load into a member's purse. */
+export interface FundApi {
+  members(): Promise<readonly FundMember[]>;
+  createLoad(input: { memberPartyId: string; amount: MoneyWire; method: 'card' | 'apple_pay' | 'google_pay' | 'ach'; purseCurrency: 'USD' | 'ILS' }, idempotencyKey: string): Promise<Load>;
+}
+
 export interface EmergencyCase {
   caseId: string;
   callbackSlaMinutes: number;
@@ -154,6 +169,7 @@ export interface Api {
   status: StatusApi;
   wallet: WalletApi;
   fx: FxApi;
+  fund: FundApi;
   esim: EsimUsageApi;
   grants: GrantsApi;
   concierge: ConciergeApi;
@@ -166,6 +182,18 @@ export function useApi(): Api {
   const a = useContext(ApiContext);
   if (!a) throw new Error('ApiProvider is missing');
   return a;
+}
+
+/** The access token's subject: the signed-in party. Read for display and routing only; the API verifies it. */
+export function subjectOf(accessToken: string | undefined): string | undefined {
+  const payload = accessToken?.split('.')[1];
+  if (!payload) return undefined;
+  try {
+    const sub = (JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { sub?: unknown }).sub;
+    return typeof sub === 'string' ? sub : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Binds the generated SDK client. `extras` cover operations the contract does not expose yet. */
@@ -223,6 +251,15 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
     fx: {
       quote: (input, idempotencyKey) => client.post('/fx/quotes', { body: input, idempotencyKey }),
       convert: (quoteId, idempotencyKey) => client.post('/fx/conversions', { body: { quoteId }, idempotencyKey }),
+    },
+    fund: {
+      // A funder's members would come from GET /households, which answers FEATURE_OFF until it is built,
+      // so for now the signed-in member loads their own purses (T-0524).
+      members: async () => {
+        const self = subjectOf(session.accessToken());
+        return self ? [{ partyId: self, self: true }] : [];
+      },
+      createLoad: (input, idempotencyKey) => client.post('/loads', { body: input, idempotencyKey }),
     },
     esim: extras.esim,
     grants: {

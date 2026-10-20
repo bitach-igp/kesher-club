@@ -183,13 +183,14 @@ describe('service status (T-0911)', () => {
     expect(incidentBanner(outage)).toEqual({ title: 'Transfers are paused', body: 'Your money is safe. Details: https://status.example/x' });
     // Two strings and nothing else: no href, no action, so the URL stays words on the screen.
     expect(Object.keys(incidentBanner(outage)!)).toEqual(['title', 'body']);
-    expect(quickActions(outage).map((q) => q.action)).toEqual(['convert', 'card']);
+    expect(quickActions(outage).map((q) => q.action)).toEqual(['add', 'convert', 'card']);
   });
 
   it('all ok shows every quick action and no banner; off hides the action without a banner; unknown shows none', () => {
     expect(incidentBanner({ capabilities: all('ok') })).toBeUndefined();
-    expect(quickActions({ capabilities: all('ok') }).map((q) => q.href)).toEqual(['/pay/recipient', '/convert', '/card']);
-    expect(quickActions({ capabilities: { ...all('ok'), fx: 'off', card: 'off' } }).map((q) => q.action)).toEqual(['send']);
+    expect(quickActions({ capabilities: all('ok') }).map((q) => q.href)).toEqual(['/fund/add-money', '/pay/recipient', '/convert', '/card']);
+    expect(quickActions({ capabilities: { ...all('ok'), fx: 'off', card: 'off' } }).map((q) => q.action)).toEqual(['add', 'send']);
+    expect(quickActions({ capabilities: { ...all('ok'), wallet: 'degraded' } }).map((q) => q.action)).toEqual(['send', 'convert', 'card']);
     expect(incidentBanner({ capabilities: { ...all('ok'), fx: 'off' }, incident: outage.incident! })).toBeUndefined();
     expect(quickActions(undefined)).toEqual([]);
   });

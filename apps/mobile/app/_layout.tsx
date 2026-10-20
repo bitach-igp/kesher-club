@@ -143,15 +143,29 @@ export interface Platform {
 
 export function createRootDeps(config: MobileConfig, platform: Platform = {}): RootDeps {
   const session = memorySession(installId(platform.storage, () => uuidv7()));
-  const client = createClient({ baseUrl: config.apiUrl, getAccessToken: () => session.accessToken() ?? session.otpSession(), ...(platform.fetch ? { fetch: platform.fetch } : {}) });
+  let persona = platform.persona;
+  const authenticator = chooseAuthenticator(() => persona, platform.credentials);
+  // Every money call carries a fresh passkey step-up (REQ-AUTH-006): the client asks for one just before
+  // it sends, and this build's authenticator signs the challenge.
+  const client: ReturnType<typeof createClient> = createClient({
+    baseUrl: config.apiUrl,
+    getAccessToken: () => session.accessToken() ?? session.otpSession(),
+    getStepUpToken: async () => {
+      const { options } = await client.post('/auth/step-up', { body: {} });
+      const response = (await authenticator.get(options)) as Record<string, never>;
+      const { stepUpToken } = await client.post('/auth/step-up', { body: { response } });
+      if (!stepUpToken) throw new Error('Step-up returned no token');
+      return stepUpToken;
+    },
+    ...(platform.fetch ? { fetch: platform.fetch } : {}),
+  });
   const unbound = () => Promise.reject(new Error('Not available in this build yet'));
   const api = sdkApi(client, session, { esim: { usage: unbound }, concierge: { start: unbound }, invites: { accept: unbound } } as unknown as Parameters<typeof sdkApi>[2]);
-  let persona = platform.persona;
   const opener: Opener = { openURL: (url) => Linking.openURL(url).then(() => undefined), openSettings: () => Linking.openSettings() };
   return {
     api,
     session,
-    authenticator: chooseAuthenticator(() => persona, platform.credentials),
+    authenticator,
     opener,
     locale: platform.language?.startsWith('he') ? 'he' : 'en',
     ...(loadPersonas ? { personas: { load: loadPersonas, current: () => persona, choose: (key: string) => void (persona = key) } } : {}),
