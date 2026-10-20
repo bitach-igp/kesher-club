@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import type { App } from '@kesher/api/app';
 import { cardIssuingProcessor } from '@kesher/api/cards/settlement';
 import type { Database } from '@kesher/api/db';
-import type { EsimPort, FundingPort, FxPort, InsurancePort, Market, NotifyPort, ProviderRegistry } from '@kesher/ports';
+import type { EsimPort, FundingPort, FxPort, InsurancePort, KybPort, Market, NotifyPort, ProviderRegistry } from '@kesher/ports';
 import { z } from 'zod';
 import { EXPIRE_INTENTS_CYCLE_MS, ExpireIntentsJob } from './agent/expire-intents.ts';
 import { CardHoldReleaseJob, CYCLE_MS as CARD_HOLD_RELEASE_CYCLE_MS } from './cards/release-holds.ts';
@@ -18,6 +18,7 @@ import { CatalogueSync } from './catalogue/sync.ts';
 import { EsimUsagePoller } from './esim/usage.ts';
 import { REFRESH_CYCLE_MS, RefreshRatesJob } from './fx/refresh-rates.ts';
 import { VOID_STALE_CYCLE_MS, VoidStaleConversionsJob } from './fx/void-stale.ts';
+import { KybRefresh, KybRescreen } from './institutions/kyb-sweeps.ts';
 import { BalanceProof } from './ledger/balance-proof.ts';
 import { MonitoringJob } from './monitoring/job.ts';
 import { EXPIRE_CYCLE_MS, ExpireRequestsJob } from './p2p/expire-requests.ts';
@@ -37,8 +38,9 @@ export const MONITORING_CYCLE_MS = 60 * 60_000;
 export const ESIM_USAGE_CYCLE_MS = 60 * 60_000;
 
 /** Nightly jobs and their Israel wall-clock times (T-0023). The balance proof runs before reconciliation,
- *  which joins at 04:00 with the processor adapter, ahead of REQ-LED-004's 06:00 deadline. */
-export const NIGHTLY = { 'balance-proof': '02:30', 'catalogue-sync': '03:00' } as const;
+ *  which joins at 04:00 with the processor adapter, ahead of REQ-LED-004's 06:00 deadline. The KYB rescreen
+ *  and refresh (T-0624) run before the working day, so a payout that morning meets the day's answer. */
+export const NIGHTLY = { 'balance-proof': '02:30', 'catalogue-sync': '03:00', 'kyb-rescreen': '05:00', 'kyb-refresh': '05:15' } as const;
 
 /** What the nightly catalogue sync asks the vendors for: `config/catalogue.json`, so nothing is hard-coded. */
 export const catalogueConfigSchema = z
@@ -99,6 +101,8 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue }:
   const proof = new BalanceProof(db);
   const sync = new CatalogueSync(db, clock);
   const providerOf = (capability: string): string => registry.bindingFor(capability, market)?.provider ?? 'simulator';
+  const rescreen = new KybRescreen(db, s.institutionKyb, s.flags, registry.resolve<KybPort>('kyb', market), providerOf('kyb'), market, clock);
+  const refresh = new KybRefresh(s.institutionKyb, clock);
   // A market job's nightly run is recorded per market, so the US sync is not skipped because IL ran.
   const marketRuns: RunLog = {
     ranOn: (job, day) => runs.ranOn(`${market}:${job}`, day),
@@ -135,6 +139,8 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue }:
       marketRuns,
       clock,
     ),
+    daily({ name: 'kyb-rescreen', scope: 'market', at: NIGHTLY['kyb-rescreen'], run: () => rescreen.run() }, marketRuns, clock),
+    daily({ name: 'kyb-refresh', scope: 'club', at: NIGHTLY['kyb-refresh'], run: (now) => refresh.run(now) }, runs, clock),
   ];
 }
 

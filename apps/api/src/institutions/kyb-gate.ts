@@ -5,6 +5,10 @@
 // - setting and drawing on a credit line;
 // - payouts.
 // A closed capability answers FEATURE_OFF naming the status, so the console can say what is missing.
+//
+// An open sanctions match (T-0624, REQ-INS-013) suspends payouts and credit draws on top of that, whatever the
+// status, until compliance disposes of it. The institution's own money keeps flowing to its members:
+// deposits and allowances within the balance stay open.
 import { DomainError } from '@kesher/domain';
 import type { SqlClient } from '../db.ts';
 import type { InstitutionKyb, KybStatus } from './kyb.ts';
@@ -19,18 +23,30 @@ export const OPEN: Readonly<Record<KybStatus, readonly Capability[]>> = {
   rejected: [],
 };
 
+/** What an open sanctions match suspends. */
+export const SUSPENDED_BY_MATCH: readonly Capability[] = ['credit', 'payouts'];
+
 export class KybGate {
-  private readonly kyb: Pick<InstitutionKyb, 'current'>;
-  constructor(kyb: Pick<InstitutionKyb, 'current'>) {
+  private readonly kyb: Pick<InstitutionKyb, 'current' | 'openSanctionsMatches'>;
+  constructor(kyb: Pick<InstitutionKyb, 'current' | 'openSanctionsMatches'>) {
     this.kyb = kyb;
   }
 
   async allows(institutionId: string, capability: Capability, client?: SqlClient): Promise<boolean> {
-    return OPEN[(await this.kyb.current(institutionId, client)).status].includes(capability);
+    return !(await this.refusal(institutionId, capability, client));
   }
 
   async require(institutionId: string, capability: Capability, client?: SqlClient): Promise<void> {
+    const refused = await this.refusal(institutionId, capability, client);
+    if (refused) throw refused;
+  }
+
+  private async refusal(institutionId: string, capability: Capability, client?: SqlClient): Promise<DomainError | undefined> {
     const { status } = await this.kyb.current(institutionId, client);
-    if (!OPEN[status].includes(capability)) throw new DomainError('FEATURE_OFF', `The institution's KYB is ${status.replace(/_/g, ' ')}: ${capability} are not open yet`, { kyb: status, capability });
+    if (!OPEN[status].includes(capability)) return new DomainError('FEATURE_OFF', `The institution's KYB is ${status.replace(/_/g, ' ')}: ${capability} are not open yet`, { kyb: status, capability });
+    if (!SUSPENDED_BY_MATCH.includes(capability)) return undefined;
+    const matches = await this.kyb.openSanctionsMatches(institutionId, client);
+    if (matches.length) return new DomainError('FEATURE_OFF', `A potential sanctions match is open: ${capability} are suspended until compliance reviews it`, { kyb: status, capability, sanctionsMatches: matches });
+    return undefined;
   }
 }
