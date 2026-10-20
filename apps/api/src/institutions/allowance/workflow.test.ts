@@ -8,6 +8,8 @@ import { PostgresLedger } from '../../ledger/post.ts';
 import { ApprovalService } from '../../approvals/service.ts';
 import { createTestDatabase, type TestDatabase } from '../../test-db.ts';
 import { TransferService } from '../../transfers/service.ts';
+import { AuditService } from '../../audit/service.ts';
+import { InstitutionCredit } from '../credit.ts';
 import { PostgresAllowanceActivities } from './activities.ts';
 import { MAX_PARALLEL, preview, run, workflowId, type AllowanceActivities } from './workflow.ts';
 
@@ -40,9 +42,11 @@ beforeAll(async () => {
   ledger = new PostgresLedger(db);
   accounts = new AccountService(db, ledger);
   approvals = new ApprovalService(db);
-  activities = new PostgresAllowanceActivities(db, ledger, accounts, approvals, new TransferService(db), () => now);
+  activities = new PostgresAllowanceActivities(db, ledger, accounts, approvals, new TransferService(db), new InstitutionCredit(db, approvals, new AuditService(db)), () => now);
   institutionId = uuidv7();
   await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Example', 'IL')`, [institutionId]);
+  // A ₪100,000 credit line, as two admins would set it (T-0616), so these runs pay from an empty account.
+  await db.query(`insert into ops.institution_credit_limit (id, institution_id, currency, limit_minor, approval_id, set_at) values ($1, $2, 'ILS', 10000000, $3, $4)`, [uuidv7(), institutionId, uuidv7(), now]);
 }, 60_000);
 afterAll(async () => db.close());
 
@@ -104,6 +108,7 @@ describe('allowance workflow (REQ-INS-003)', () => {
       listMembers: async () => members,
       recordRun: async () => undefined,
       isApproved: async () => true,
+      startRun: async () => undefined,
       payMember: async (_wf, _key, memberPartyId) => {
         inFlight += 1;
         peak = Math.max(peak, inFlight);

@@ -875,7 +875,9 @@ paths:
       description: >-
         REQ-INS-003/004. Org finance; over ₪5,000 needs a second approver, who posts the same run. Idempotent; workflow id
         allowance:{schedule}:{date}. A run that moves money (`dryRun: false`) needs a step-up token younger than 5 minutes
-        (REQ-AUTH-006); a preview does not, and lists the members it would pay by roster name.
+        (REQ-AUTH-006); a preview does not, and lists the members it would pay by roster name. A run, or a preview, that
+        the institution's balance and credit limit cannot cover answers INSUFFICIENT_FUNDS with `balance`, `creditLimit`,
+        `reserved` and `needed` (REQ-INS-008).
       parameters:
         - { $ref: "#/components/parameters/Id" }
         - { $ref: "#/components/parameters/IdempotencyKey" }
@@ -1571,6 +1573,78 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/StaffAssignment" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/institutions/{id}/credit-limits:
+    get:
+      operationId: listAdminCreditLimits
+      tags: [admin]
+      summary: The institution's credit limit in each currency, and proposals waiting for a second admin
+      description: REQ-INS-008 (T-0616). A currency with no approved limit reads 0. Staff token only.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Limits and open proposals
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pending]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/CreditLimit" } }
+                  pending: { type: array, items: { $ref: "#/components/schemas/ApprovalRequest" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: proposeAdminCreditLimit
+      tags: [admin]
+      summary: Propose a credit limit for one currency
+      description: >-
+        REQ-INS-008 (T-0616). Admin staff only; audited. Nothing changes until a different admin approves. Allowance runs
+        may take the institution's account down to minus the limit; payouts never use it.
+      security: [{ staff: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [limit, reason]
+              properties:
+                limit: { $ref: "#/components/schemas/Money" }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201":
+          description: The proposal, waiting for a second admin
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+                properties:
+                  request: { $ref: "#/components/schemas/ApprovalRequest" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/credit-limits/{id}/approve:
+    post:
+      operationId: approveAdminCreditLimit
+      tags: [admin]
+      summary: Second approval of a credit limit
+      description: REQ-INS-008 (T-0616). Must come from a different admin than the proposer; the limit applies then and is audited. Staff token only.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The proposal after the decision, with the limit once it applied
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request]
+                properties:
+                  request: { $ref: "#/components/schemas/ApprovalRequest" }
+                  limit: { $ref: "#/components/schemas/CreditLimit" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/bindings:
     get:
       operationId: listAdminBindings
@@ -1869,13 +1943,20 @@ components:
       required: [id, kind, subject, status, approvals, requestedBy, expiresAt, payload]
       properties:
         id: { type: string, format: uuid }
-        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction, fx_rate, staff_grant, institution_deposit] }
+        kind: { type: string, enum: [allowance_run, payout, flag_flip, provider_binding, ledger_correction, fx_rate, staff_grant, institution_deposit, credit_limit] }
         subject: { type: string }
         status: { type: string, enum: [pending, awaiting_second_approval, approved, rejected, expired] }
         approvals: { type: integer, minimum: 0 }
         requestedBy: { type: string }
         expiresAt: { type: string, format: date-time }
         payload: { type: object, additionalProperties: true }
+    CreditLimit:
+      type: object
+      required: [currency, limit]
+      properties:
+        currency: { type: string, enum: [USD, ILS] }
+        limit: { $ref: "#/components/schemas/Money" }
+        setAt: { type: string, format: date-time, description: Absent while no limit was ever approved }
     InstitutionDeposit:
       type: object
       required: [id, institutionId, amount, rail, bankReference, valueDate, status, approvals, recordedByMe, createdAt]
@@ -2107,6 +2188,10 @@ components:
           enum: [UNAUTHENTICATED, STEP_UP_REQUIRED, RECOVERY_HOLD, FORBIDDEN, NOT_FOUND, VALIDATION_FAILED, INSUFFICIENT_FUNDS, LIMIT_EXCEEDED, QUOTE_EXPIRED, CARD_FROZEN, FEATURE_OFF, PROVIDER_UNAVAILABLE, IDEMPOTENCY_CONFLICT, RATE_LIMITED, AGENT_NOT_ALLOWED]
         detail: { type: string }
         traceId: { type: string }
+        balance: { $ref: "#/components/schemas/Money", description: "INSUFFICIENT_FUNDS on an allowance run: what the institution holds" }
+        creditLimit: { $ref: "#/components/schemas/Money", description: "INSUFFICIENT_FUNDS on an allowance run: the approved credit limit" }
+        reserved: { $ref: "#/components/schemas/Money", description: "INSUFFICIENT_FUNDS on an allowance run: what runs already started still owe" }
+        needed: { $ref: "#/components/schemas/Money", description: "INSUFFICIENT_FUNDS on an allowance run: what this run needs" }
     OtpStartRequest:
       type: object
       required: [phone]

@@ -34,6 +34,12 @@ export interface AllowanceActivities {
   listMembers(institutionId: string, filter: readonly string[]): Promise<readonly AllowanceMember[]>;
   recordRun(preview: Preview, status: 'preview' | 'awaiting_second_approval' | 'running' | 'completed' | 'failed', extra?: { failures?: number }): Promise<void>;
   isApproved(workflowId: string, total: Money, requestedBy: string): Promise<boolean>;
+  /**
+   * Records the run as running only if the institution can cover what it still owes (T-0616, REQ-INS-008):
+   * the check and the record commit together, so two runs cannot both pass on the same headroom.
+   * Throws INSUFFICIENT_FUNDS otherwise, and nobody is paid.
+   */
+  startRun(preview: Preview): Promise<void>;
   /** Posts the institution's account → member wallet with `transferKey` as the idempotency key. Throws on failure. */
   payMember(workflowId: string, transferKey: string, memberPartyId: string, amount: Money): Promise<{ journalId: string }>;
   recordPayment(workflowId: string, memberPartyId: string, transferKey: string, status: 'paid' | 'failed', attempts: number, journalId?: string, error?: string): Promise<void>;
@@ -65,7 +71,7 @@ export async function run(a: AllowanceActivities, scheduleId: string, runDate: s
     await a.recordRun(p, 'awaiting_second_approval');
     throw new DomainError('FORBIDDEN', 'Awaiting second approval', { workflowId: p.workflowId });
   }
-  await a.recordRun(p, 'running');
+  await a.startRun(p);
   let paid = 0;
   let failures = 0;
   const queue = [...p.members];

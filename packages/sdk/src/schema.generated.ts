@@ -252,6 +252,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/credit-limits/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second approval of a credit limit
+         * @description REQ-INS-008 (T-0616). Must come from a different admin than the proposer; the limit applies then and is audited. Staff token only.
+         */
+        readonly post: operations["approveAdminCreditLimit"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/customers": {
         readonly parameters: {
             readonly query?: never;
@@ -474,6 +494,30 @@ export interface paths {
          * @description REQ-ADM-004. Admin staff only; audited. Idempotent by key.
          */
         readonly post: operations["createAdminInstitution"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/institutions/{id}/credit-limits": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution's credit limit in each currency, and proposals waiting for a second admin
+         * @description REQ-INS-008 (T-0616). A currency with no approved limit reads 0. Staff token only.
+         */
+        readonly get: operations["listAdminCreditLimits"];
+        readonly put?: never;
+        /**
+         * Propose a credit limit for one currency
+         * @description REQ-INS-008 (T-0616). Admin staff only; audited. Nothing changes until a different admin approves. Allowance runs may take the institution's account down to minus the limit; payouts never use it.
+         */
+        readonly post: operations["proposeAdminCreditLimit"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -1043,7 +1087,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Dry-run or execute an allowance schedule for a date
-         * @description REQ-INS-003/004. Org finance; over ₪5,000 needs a second approver, who posts the same run. Idempotent; workflow id allowance:{schedule}:{date}. A run that moves money (`dryRun: false`) needs a step-up token younger than 5 minutes (REQ-AUTH-006); a preview does not, and lists the members it would pay by roster name.
+         * @description REQ-INS-003/004. Org finance; over ₪5,000 needs a second approver, who posts the same run. Idempotent; workflow id allowance:{schedule}:{date}. A run that moves money (`dryRun: false`) needs a step-up token younger than 5 minutes (REQ-AUTH-006); a preview does not, and lists the members it would pay by roster name. A run, or a preview, that the institution's balance and credit limit cannot cover answers INSUFFICIENT_FUNDS with `balance`, `creditLimit`, `reserved` and `needed` (REQ-INS-008).
          */
         readonly post: operations["runAllowance"];
         readonly delete?: never;
@@ -1960,7 +2004,7 @@ export interface components {
             /** Format: uuid */
             readonly id: string;
             /** @enum {string} */
-            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction" | "fx_rate" | "staff_grant" | "institution_deposit";
+            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction" | "fx_rate" | "staff_grant" | "institution_deposit" | "credit_limit";
             readonly payload: {
                 readonly [key: string]: unknown;
             };
@@ -2159,6 +2203,16 @@ export interface components {
             }[];
             readonly owedTotal: readonly components["schemas"]["Money"][];
             readonly total: readonly components["schemas"]["Money"][];
+        };
+        readonly CreditLimit: {
+            /** @enum {string} */
+            readonly currency: "USD" | "ILS";
+            readonly limit: components["schemas"]["Money"];
+            /**
+             * Format: date-time
+             * @description Absent while no limit was ever approved
+             */
+            readonly setAt?: string;
         };
         /** @description The app's install id, generated once and kept in the secure store. Not a hardware identifier. */
         readonly DeviceId: string;
@@ -2592,9 +2646,17 @@ export interface components {
             readonly updatedAt?: string;
         };
         readonly Problem: {
+            /** @description INSUFFICIENT_FUNDS on an allowance run: what the institution holds */
+            readonly balance?: components["schemas"]["Money"];
             /** @enum {string} */
             readonly code: "UNAUTHENTICATED" | "STEP_UP_REQUIRED" | "RECOVERY_HOLD" | "FORBIDDEN" | "NOT_FOUND" | "VALIDATION_FAILED" | "INSUFFICIENT_FUNDS" | "LIMIT_EXCEEDED" | "QUOTE_EXPIRED" | "CARD_FROZEN" | "FEATURE_OFF" | "PROVIDER_UNAVAILABLE" | "IDEMPOTENCY_CONFLICT" | "RATE_LIMITED" | "AGENT_NOT_ALLOWED";
+            /** @description INSUFFICIENT_FUNDS on an allowance run: the approved credit limit */
+            readonly creditLimit?: components["schemas"]["Money"];
             readonly detail?: string;
+            /** @description INSUFFICIENT_FUNDS on an allowance run: what this run needs */
+            readonly needed?: components["schemas"]["Money"];
+            /** @description INSUFFICIENT_FUNDS on an allowance run: what runs already started still owe */
+            readonly reserved?: components["schemas"]["Money"];
             readonly status: number;
             readonly title: string;
             readonly traceId?: string;
@@ -3176,6 +3238,32 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly approveAdminCreditLimit: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The proposal after the decision, with the limit once it applied */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly limit?: components["schemas"]["CreditLimit"];
+                        readonly request: components["schemas"]["ApprovalRequest"];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly listAdminCustomers: {
         readonly parameters: {
             readonly query: {
@@ -3522,6 +3610,67 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["AdminInstitution"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminCreditLimits: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Limits and open proposals */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["CreditLimit"][];
+                        readonly pending: readonly components["schemas"]["ApprovalRequest"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly proposeAdminCreditLimit: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly limit: components["schemas"]["Money"];
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The proposal, waiting for a second admin */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly request: components["schemas"]["ApprovalRequest"];
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];

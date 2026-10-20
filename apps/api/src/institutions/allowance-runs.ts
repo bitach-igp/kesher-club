@@ -2,7 +2,8 @@
 // preview a schedule's run for a date, or run it. The run is the allowance workflow (one per schedule and
 // date, workflow id allowance:{schedule}:{date}); over ₪5,000 it waits until a second finance member asks
 // for the same run. Every payment is an allowance transfer, so the monitoring job and the member's history
-// see it, and a rerun pays nobody twice. Institution money is behind `institutions.money`.
+// see it, and a rerun pays nobody twice. Institution money is behind `institutions.money`. A run, and its
+// preview, the institution's balance and credit limit cannot cover answers INSUFFICIENT_FUNDS (T-0616).
 // GET /institutions/{id}/allowance-schedules and /allowance-runs (T-0609) are what I07 reads: the active
 // schedules with their cohort and next date, and the run history with who asked and who approved, by
 // display name only. Both answer 404 to anyone but the institution's own staff.
@@ -14,6 +15,7 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { ok, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
 import { preview, run, type AllowanceActivities } from './allowance/workflow.ts';
+import { owedByRun, type InstitutionCredit } from './credit.ts';
 
 export const INSTITUTIONS_MONEY_FLAG = 'institutions.money';
 
@@ -39,6 +41,8 @@ function parse(body: unknown): RunRequest {
 
 export interface AllowanceRunDeps {
   activities: AllowanceActivities;
+  /** The early answer for a run the institution cannot cover; the authoritative check runs when the run starts. */
+  credit: Pick<InstitutionCredit, 'requireHeadroom'>;
   flags: FeatureFlags;
   /** The institution a staff member belongs to, if any. */
   staffInstitution(partyId: string): Promise<string | undefined>;
@@ -153,6 +157,8 @@ export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance'
       if (!b.dryRun) requireStepUp(d.stepUp, req);
 
       const planned = await preview(d.activities, b.scheduleId, b.date);
+      // A preview, or a first request, the account cannot cover is refused before any approval is asked for (REQ-INS-008).
+      await d.credit.requireHeadroom(institutionId, await owedByRun(d.db, planned), planned.workflowId);
       const view = { workflowId: planned.workflowId, memberCount: planned.memberCount, total: toWire(planned.total) };
       if (b.dryRun) {
         // One row per member the run would pay, by roster name (staff-entered, untrusted text).

@@ -78,6 +78,8 @@ beforeAll(async () => {
   }
   tokens.otherFinance = await issue(of, 'org_finance');
   tokens.orgStaff = await issue(st, 'org_staff');
+  // ₪100,000 paid in, as an approved deposit posts it (T-0614): runs stop at the balance and credit limit (T-0616).
+  await app.services.ledger.post({ idempotencyKey: 'fund-inst:settle', kind: 'deposit', effectiveAt: NOW, postings: [{ accountId: await app.services.accounts.systemAccount('partner_settlement', 'ILS'), currency: 'ILS', amountMinor: 10_000_000n }, { accountId: await app.services.accounts.institutionAccount(INST, 'ILS'), currency: 'ILS', amountMinor: -10_000_000n }], metadata: { institutionId: INST } });
 }, 60_000);
 afterAll(async () => db.close());
 

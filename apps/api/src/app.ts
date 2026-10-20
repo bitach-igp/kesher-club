@@ -56,6 +56,7 @@ import { CreditService } from './addons/credit.ts';
 import { CollectionsService, collectionsHandlers } from './institutions/collections.ts';
 import { allowanceRunHandlers } from './institutions/allowance-runs.ts';
 import { PostgresAllowanceActivities } from './institutions/allowance/activities.ts';
+import { creditHandlers, InstitutionCredit } from './institutions/credit.ts';
 import { exportHandler } from './institutions/export.ts';
 import { RosterService, importRosterHandler } from './institutions/roster.ts';
 import { ApprovalService } from './approvals/service.ts';
@@ -121,6 +122,7 @@ function buildServices(o: AppOptions) {
   // Club rates (REQ-FX-003) price every conversion: a card purchase the other purse pays (T-0409), a load into
   // the other purse (REQ-WAL-006), a converted send (REQ-PAY-006) and the convert screen.
   const rates = new RateService(o.db, approvals, audit);
+  const institutionCredit = new InstitutionCredit(o.db, approvals, audit);
   const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
   const provisioning = new ProvisioningService(o.db, cards, detailsTokenProvisioning(cardIssuing), flags);
   const physical = new PhysicalCardService(o.db, cardIssuing, kyc, cards, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
@@ -161,7 +163,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, institutionCredit };
 }
 
 export function createApp(o: AppOptions): App {
@@ -213,7 +215,8 @@ export function createApp(o: AppOptions): App {
     }),
     importRoster: importRosterHandler({ roster: s.roster, staffInstitution }),
     ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
-    ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.clock.now), flags: s.flags, staffInstitution, db: o.db, identity: s.identity, stepUp: s.stepUp }),
+    ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.institutionCredit, s.clock.now), credit: s.institutionCredit, flags: s.flags, staffInstitution, db: o.db, identity: s.identity, stepUp: s.stepUp }),
+    ...creditHandlers(s.institutionCredit),
     ...fxAdminHandlers(s.rates),
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
     ...depositHandlers(new InstitutionDeposits({ db: o.db, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, approvals: s.approvals, audit: s.audit, flags: s.flags })),
