@@ -16,3 +16,17 @@ Steps (from repo root, PowerShell on Windows unless stated):
 13. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with ledger at 21 migrations and org at 4. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`. Step 7 prints one row with `seq` 1. Step 8 fails with a check constraint violation (an exception without a reason). Step 9 fails with a check constraint violation (an approval without a risk). Step 10 prints one row with a `seq`. Step 11 fails with `permission denied for table kyb_decision`. Step 12 prints `INSERT 0 1`.
 Report back: the console output of steps 4, 5, 7, 8, 9, 10, 11 and 12.
+
+## Result
+PASS, 2026-10-20 18:06 (Asia/Jerusalem). Desktop checker, runner worktree at b9eeb37, Docker 29.8.2, postgres:16.
+
+- Step 4: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent. Revisions: ledger 21, org 4.
+- Step 5: `No migration files to execute` for every schema, then `ok` for all 9.
+- Step 6: `INSERT 0 1`.
+- Step 7: `seq` = 1, `INSERT 0 1`.
+- Step 8: `ERROR: new row for relation "kyb_check" violates check constraint "kyb_check_check"` (excepted, no reason).
+- Step 9: `ERROR: new row for relation "kyb_decision" violates check constraint "kyb_decision_check"` (approved, no risk).
+- Step 10: `seq` = 2, `INSERT 0 1` (identity value 1 was consumed by the failed step 9 insert).
+- Step 11: `ERROR: permission denied for table kyb_decision`.
+- Step 12: `INSERT 0 1`.
+- Step 13: container removed.
