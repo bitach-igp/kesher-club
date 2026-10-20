@@ -87,11 +87,16 @@ describe('demo yeshiva (T-0034)', () => {
     expect((await dev.app.services.identity.findUser(rivka))!.roles).toEqual(['member', 'org_finance']);
     const grants = await dev.app.services.audit.list(rivka, 10);
     expect(grants.find((e) => e.action === 'institution.staff.grant')!.payload).toMatchObject({ role: 'finance', institutionId: institution!.id });
+    // Its KYB is approved (T-0621), with Rivka at T2 as its control person, so its money flows are open.
+    expect(byKey(personas, 'rivka').kyc).toBe('T2');
+    expect(await dev.app.services.institutionKyb.current(institution!.id)).toMatchObject({ status: 'approved', risk: 'low' });
+    expect((await dev.app.services.institutionKyb.record(institution!.id)).people).toEqual([expect.objectContaining({ partyId: rivka, roles: ['control', 'signatory'] })]);
 
     await seed(target);
     expect(await count('org.institution')).toBe(1);
     expect(await count('org.roster_import')).toBe(1);
     expect(await count("ops.approval_request where kind = 'staff_grant'")).toBe(2);
+    expect(await count('org.kyb_decision')).toBe(1);
     expect(formatTable(await seed(target))).toContain(`Institution: ${INSTITUTION.name} (IL) ${institution!.id}`);
   }, 120_000);
 

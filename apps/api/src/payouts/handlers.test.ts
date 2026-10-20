@@ -12,6 +12,7 @@ import { createApp, type App } from '../app.ts';
 import { monthlyExport } from '../institutions/export.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import { decideKyb } from '../test-institution.ts';
 import { runLoad } from '../wallet/loads.ts';
 import { settleKey } from './service.ts';
 
@@ -56,6 +57,7 @@ beforeAll(async () => {
   host = new SimulatorHost(fixedClock(NOW.toISOString()) as AdvanceableClock);
   app = createApp({ db, registry: host.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags: new StaticFlags(undefined, { 'wallet.enabled': true, 'payouts.nium': true, 'institutions.money': true }) });
   await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Example', 'IL'), ($2, 'Other', 'IL')`, [INST, OTHER]);
+  for (const i of [INST, OTHER]) await decideKyb(db, i);
   staff.one = await person('+972501240001', ['org_finance']);
   staff.two = await person('+972501240002', ['org_finance']);
   staff.other = await person('+972501240003', ['org_finance']);

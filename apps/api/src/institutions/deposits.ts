@@ -15,6 +15,7 @@ import { created, ok, requireIdempotencyKey, route, type Handler } from '../http
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { TransferService } from '../transfers/service.ts';
+import type { KybGate } from './kyb-gate.ts';
 
 export const DEPOSITS_FLAG = 'institutions.deposits';
 export const DEPOSIT_JOURNAL_KIND = 'deposit';
@@ -90,6 +91,8 @@ export interface DepositDeps {
   approvals: ApprovalService;
   audit: AuditService;
   flags: FeatureFlags;
+  /** A deposit posts only while the institution's KYB decision opens deposits (T-0621). */
+  kyb: Pick<KybGate, 'require'>;
 }
 
 export class InstitutionDeposits {
@@ -134,6 +137,8 @@ export class InstitutionDeposits {
     if (r.status === 'rejected') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This deposit was rejected');
     // Posted already: approving again is a no-op that answers the deposit as it stands.
     if (r.status === 'posted') return this.view(r, actor.partyId);
+    // Before anything is decided: a blocked deposit stays pending with nothing written.
+    await this.d.kyb.require(r.institution_id, 'deposits');
     const approval = r.approval_id ? await this.d.approvals.get(r.approval_id) : undefined;
     if (!approval) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This deposit is still being recorded');
     // Approved already but not posted (a crash between the two): finish the post, which is keyed and safe to repeat.

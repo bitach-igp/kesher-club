@@ -11,6 +11,7 @@ import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import { decideKyb } from '../test-institution.ts';
 import { workflowId } from './allowance/workflow.ts';
 import { nextRunDate } from './allowance-runs.ts';
 
@@ -63,6 +64,7 @@ beforeAll(async () => {
   app = createApp({ ...opts, flags: new StaticFlags(undefined, { 'institutions.money': true }) });
   off = createApp({ ...opts, identity: app.services.identity, flags: new StaticFlags() });
   await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Example', 'IL'), ($2, 'Other', 'IL')`, [INST, OTHER]);
+  for (const i of [INST, OTHER]) await decideKyb(db, i);
   const one = await signUp(app, '+972501230001');
   const two = await signUp(app, '+972501230002');
   [F1, F2] = [one.partyId, two.partyId];

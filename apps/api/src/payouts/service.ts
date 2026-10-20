@@ -21,6 +21,7 @@ import type { Transfer, TransferService } from '../transfers/service.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
 import { checkPayee, type PayeeCheck } from './iban.ts';
+import type { KybGate } from '../institutions/kyb-gate.ts';
 
 export const PAYOUT_FLAG = 'payouts.nium';
 export const PAYOUT_PROVIDER = 'payout';
@@ -127,6 +128,8 @@ interface Deps {
   notify: NotifyPort;
   flags: FeatureFlags;
   provider: string;
+  /** An institution's payout waits on its KYB decision (T-0621); a member's does not. */
+  kyb: Pick<KybGate, 'require'>;
 }
 
 interface PayeeRow {
@@ -147,6 +150,8 @@ export class PayoutService implements PayoutActivities {
   /** POST /payouts: the flag, the payee (ours and the vendor's), the purse, then the workflow. */
   async request(partyId: string, body: unknown, key: string, now: Date, source: PayoutSource = { kind: 'member' }): Promise<PayoutView & { newPayee: boolean }> {
     if (!(await this.d.flags.isOn(PAYOUT_FLAG))) throw new DomainError('FEATURE_OFF', 'Payouts are not enabled yet');
+    // An institution pays out only while its KYB decision opens payouts (T-0621).
+    if (source.kind === 'institution') await this.d.kyb.require(partyId, 'payouts');
     const existing = await this.d.transfers.byKey(key);
     if (existing) {
       if (existing.kind !== 'payout' || existing.fromPartyId !== partyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');

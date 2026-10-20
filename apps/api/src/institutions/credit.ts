@@ -7,12 +7,15 @@
 // is started under one advisory lock per institution (`withLock`): the check and the run's move to
 // `running` commit together, so two runs cannot both pass on the same headroom; the second sees the first's
 // unpaid remainder reserved. Payouts (T-0527) never use the limit: credit pays students, not suppliers.
+// Credit also waits on the institution's KYB (T-0621): a limit is set, and drawn, only while the decision is
+// `approved`; under `approved_with_limits` the drawable limit is zero.
 import { DomainError, format, fromWire, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
 import type { ApprovalRequest, ApprovalService, Approver } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import { approvalBody } from '../admin/handlers.ts';
 import { requireStaff, staffActor } from '../admin/staff-token.ts';
 import type { Database, SqlClient } from '../db.ts';
+import type { KybGate } from './kyb-gate.ts';
 import { created, ok, requireIdempotencyKey, route, type Handler } from '../http.ts';
 
 const CURRENCIES = ['ILS', 'USD'] as const;
@@ -33,7 +36,10 @@ export interface CreditLimit {
 
 export interface Headroom {
   balance: Money;
+  /** The limit that can be drawn now: the approved one, or zero while the KYB decision keeps credit closed (T-0621). */
   limit: Money;
+  /** An approved limit exists but the KYB decision does not open credit. */
+  creditClosed: boolean;
   /** What runs already started, other than the one asking, still owe. */
   reserved: Money;
 }
@@ -50,10 +56,12 @@ export class InstitutionCredit {
   private readonly db: Database;
   private readonly approvals: ApprovalService;
   private readonly audit: AuditService;
-  constructor(db: Database, approvals: ApprovalService, audit: AuditService) {
+  private readonly kyb: Pick<KybGate, 'allows' | 'require'>;
+  constructor(db: Database, approvals: ApprovalService, audit: AuditService, kyb: Pick<KybGate, 'allows' | 'require'>) {
     this.db = db;
     this.approvals = approvals;
     this.audit = audit;
+    this.kyb = kyb;
   }
 
   /** The approved limit, or zero when none was ever set. */
@@ -77,17 +85,23 @@ export class InstitutionCredit {
         where s.institution_id = $1 and r.currency = $2 and r.status = 'running' and r.member_count > 0 and r.workflow_id <> $3`,
       [institutionId, currency, excludingWorkflow],
     );
-    return { balance: money(BigInt(b.rows[0]!.balance), currency), limit: await this.limit(institutionId, currency, client), reserved: money(BigInt(reserved.rows[0]!.reserved), currency) };
+    const approved = await this.limit(institutionId, currency, client);
+    const open = await this.kyb.allows(institutionId, 'credit', client);
+    return { balance: money(BigInt(b.rows[0]!.balance), currency), limit: open ? approved : money(0n, currency), creditClosed: !open && approved.minor > 0n, reserved: money(BigInt(reserved.rows[0]!.reserved), currency) };
   }
 
   /** INSUFFICIENT_FUNDS, saying what the account holds, the limit, and what the run needs, unless the headroom covers it. */
   async requireHeadroom(institutionId: string, needed: Money, workflowId: string, client: SqlClient = this.db): Promise<void> {
+    // Allowances wait on the KYB decision (T-0621); inside startRun this runs under the institution's lock.
+    await this.kyb.require(institutionId, 'allowances', client);
     const h = await this.headroom(institutionId, needed.currency, workflowId, client);
     if (needed.minor <= h.balance.minor + h.limit.minor - h.reserved.minor) return;
     const held = h.reserved.minor > 0n ? ` (${format(h.reserved)} of it is reserved by runs already started)` : '';
-    throw new DomainError('INSUFFICIENT_FUNDS', `The run needs ${format(needed)}; the account holds ${format(h.balance)} with a credit limit of ${format(h.limit)}${held}`, {
+    const limit = h.creditClosed ? 'no credit until the institution\'s KYB is fully approved' : `a credit limit of ${format(h.limit)}`;
+    throw new DomainError('INSUFFICIENT_FUNDS', `The run needs ${format(needed)}; the account holds ${format(h.balance)} with ${limit}${held}`, {
       balance: toWire(h.balance),
       creditLimit: toWire(h.limit),
+      ...(h.creditClosed ? { creditClosed: true } : {}),
       reserved: toWire(h.reserved),
       needed: toWire(needed),
     });
@@ -127,6 +141,7 @@ export class InstitutionCredit {
     }
     if (limit.minor < 0n) throw new DomainError('VALIDATION_FAILED', 'limit cannot be negative');
     await this.requireInstitution(input.institutionId);
+    await this.kyb.require(input.institutionId, 'credit');
     const payload: LimitPayload = { institutionId: input.institutionId, limitMinor: limit.minor.toString(), currency: limit.currency, reason };
     let req = await this.approvals.request({ kind: 'credit_limit', subject: `credit:${input.institutionId}:${limit.currency}:${input.idempotencyKey}`, scope: 'platform', requestedBy: actor, amount: limit, payload: { ...payload } }, now);
     const p = req.payload as unknown as LimitPayload;
@@ -142,6 +157,8 @@ export class InstitutionCredit {
   async approve(requestId: string, actor: Approver, now: Date): Promise<{ request: ApprovalRequest; limit?: CreditLimit }> {
     const pre = UUID.test(requestId) ? await this.approvals.get(requestId) : undefined;
     if (!pre || pre.kind !== 'credit_limit') throw new DomainError('NOT_FOUND', 'Credit limit proposal not found');
+    // The decision may have changed since the proposal.
+    if (pre.status === 'awaiting_second_approval') await this.kyb.require((pre.payload as unknown as LimitPayload).institutionId, 'credit');
     const request = await this.approvals.decide(requestId, actor, 'approve', now);
     if (request.status !== 'approved') return { request };
     const p = request.payload as unknown as LimitPayload;

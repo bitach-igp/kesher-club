@@ -13,6 +13,7 @@ import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import { decideKyb } from '../test-institution.ts';
 import { PostgresAllowanceActivities } from './allowance/activities.ts';
 import { run, workflowId } from './allowance/workflow.ts';
 
@@ -33,6 +34,7 @@ const balance = async (inst: string) => (await app.services.accounts.institution
 async function institution(heldMinor: bigint): Promise<string> {
   const id = uuidv7();
   await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Example', 'IL')`, [id]);
+  await decideKyb(db, id);
   if (heldMinor > 0n) {
     const s = app.services;
     await s.ledger.post({ idempotencyKey: `fund:${id}:settle`, kind: 'deposit', effectiveAt: NOW, postings: [{ accountId: await s.accounts.systemAccount('partner_settlement', 'ILS'), currency: 'ILS', amountMinor: heldMinor }, { accountId: await s.accounts.institutionAccount(id, 'ILS'), currency: 'ILS', amountMinor: -heldMinor }], metadata: { institutionId: id } });
