@@ -3,7 +3,7 @@
 // nothing here knows about sockets. Secrets arrive through the config loader (T-0004).
 import type { Database } from './db.ts';
 import type { AuthPort, BillingPort, CardIssuingPort, EventsPort, FundingPort, FxPort, PayoutPort, KycPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
-import { ok, requireIdempotencyKey, requirePrincipal, route, type Handler, type HttpRequest } from './http.ts';
+import { ok, requireIdempotencyKey, requirePrincipal, requireRole, route, type Handler, type HttpRequest } from './http.ts';
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
 import { fxAdminHandlers } from './fx/admin.ts';
@@ -180,6 +180,14 @@ export function createApp(o: AppOptions): App {
     ...fxHandlers(s.fx, s.stepUp),
     ...payoutHandlers(s.payouts, s.stepUp),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
+    // The institution console's landing (T-0608): the same active staff row every institution handler checks.
+    getMyInstitution: route(async (req) => {
+      const p = requireRole(req, 'org_staff', 'org_admin', 'org_finance');
+      const r = await o.db.query<{ id: string; name: string; market: 'US' | 'IL'; role: 'staff' | 'finance' | 'admin' }>('select i.id, i.name, i.market, s.role from org.staff s join org.institution i on i.id = s.institution_id where s.party_id = $1 and s.active', [p.partyId]);
+      const x = r.rows[0];
+      if (!x) throw new DomainError('FORBIDDEN', 'Not staff of an institution');
+      return ok({ institution: { id: x.id, name: x.name, market: x.market }, role: x.role });
+    }),
     createMembership: route(async (req) => {
       const p = requirePrincipal(req);
       const b = req.body as { memberPartyId: string; planCode: string; termMonths?: number; funderEmail?: string };
