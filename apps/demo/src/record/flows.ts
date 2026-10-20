@@ -20,13 +20,13 @@ export const URLS = {
   panel: 'http://localhost:4010',
   member: 'http://localhost:8081',
   console: 'http://localhost:3100',
+  /** The recording stack's readiness port (playwright.config.ts PORTS.ready). */
+  stack: 'http://127.0.0.1:4099',
 } as const;
 
 const SIZE = { width: 1600, height: 900 };
 /** How far the API's clock may run ahead of real time before the console's own sign-in stops working. */
 const CLOCK_SKEW_MS = 60_000;
-/** The recording stack's readiness port (playwright.config.ts PORTS.ready). */
-const STACK = 'http://127.0.0.1:4099';
 
 /** "$1,234.50", "₪367.22", "−$3.00" → minor units. The money on a screen, as the ledger would count it. */
 export function minorOf(text: string): bigint {
@@ -254,7 +254,7 @@ export const panel = {
  * request for the member's card, and it is delivered to the API as the processor would deliver it.
  */
 export async function cardSpend(partyId: string, amountMinor: bigint): Promise<{ result: string; reason?: string }> {
-  const card = (await (await fetch(`${STACK}/?cardOf=${partyId}`)).json()) as { processorCardId?: string };
+  const card = (await (await fetch(`${URLS.stack}/?cardOf=${partyId}`)).json()) as { processorCardId?: string };
   if (!card.processorCardId) throw new Error(`No active card for ${partyId}`);
   const signed = (await panel.hook('card-issuing', 'authorize', { cardId: card.processorCardId, amountMinor: amountMinor.toString(), mcc: '5814' })).result as { headers: Record<string, string>; rawBody: string };
   const res = await fetch(`${URLS.api}/jit/card-authorizations`, { method: 'POST', headers: { 'content-type': 'application/json', ...signed.headers }, body: signed.rawBody });
@@ -327,7 +327,7 @@ export function money(minor: bigint, currency: 'USD' | 'ILS'): string {
  * not mounted in the running API yet, so no assistant can reach it over HTTP; captions say so.
  */
 export async function assistantPropose(input: { partyId: string; toPartyId: string; amount: { minor: string; currency: 'USD' | 'ILS' }; note?: string }): Promise<{ intentId: string; assistant: string }> {
-  const res = await fetch(`${STACK}/propose`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
+  const res = await fetch(`${URLS.stack}/propose`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) });
   const json = (await res.json()) as { intentId?: string; assistant?: string; error?: string };
   if (!res.ok || !json.intentId) throw new Error(`The stack's propose answered ${res.status}: ${JSON.stringify(json)}`);
   return { intentId: json.intentId, assistant: json.assistant! };
