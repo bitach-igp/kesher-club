@@ -1,4 +1,4 @@
-h1:0h6UWSArsJRZbnepLCZA649Yk+Oq8WljhgbQ4rOqjHI=
+h1:+dBza4etpmNaacLx3P1EkDzEdCtqXWAfoDGLKp4JE5c=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
@@ -19,3 +19,4 @@ h1:0h6UWSArsJRZbnepLCZA649Yk+Oq8WljhgbQ4rOqjHI=
 0018_staff_grant.sql h1:w8QA1TF/ftInA6ZDNHT/WK3KlJEn5LlTROj3PPYbgg0=
 0019_institution_deposit.sql h1:UKYR5TpxA7am519V8re8EJ2XNA3FOMEw90nMQKR/sbY=
 0020_credit_limit.sql h1:9uknYRwVeYW1i7xwR43wMM75tUMxkf+LrUI/aoM1gvg=
+0021_kyb_approval.sql h1:5+zazeHHtzlausBaWVNWp3scvhl+VzclEBDVyiLvXYw=

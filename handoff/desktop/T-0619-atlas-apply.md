@@ -1,0 +1,18 @@
+Task: T-0619 · Branch: claude/practical-babbage-80xevv · Needs: docker
+Why: Migration org/0004 adds the institution KYB record (org.kyb_person, org.kyb_check, org.kyb_disposition, org.kyb_decision; insert-only for club_app except a person's party_id; an exception must carry a reason; an approval must carry a risk; checks and decisions get an identity `seq`). Ledger/0021 widens the ops.approval_request kind check with 'kyb_decision' (dropped and re-added NOT VALID). They need the real Postgres 16 apply; the cloud session only has PGlite. Each statement whose success another depends on is in its own `-c` call. Nothing here is a real institution or person.
+Steps (from repo root, PowerShell on Windows unless stated):
+1. docker run --name kesher-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=club -p 5433:5432 -d postgres:16
+2. Start-Sleep -Seconds 8
+3. Get-Content -Raw db/roles.sql | docker exec -i kesher-pg psql -U postgres -d club -v ON_ERROR_STOP=1
+4. node db/migrate.mjs --docker --url "postgres://postgres:postgres@localhost:5433/club?sslmode=disable"
+5. node db/migrate.mjs --docker --url "postgres://postgres:postgres@localhost:5433/club?sslmode=disable"
+6. docker exec -i kesher-pg psql -U postgres -d club -c "insert into org.institution (id, name, market) values ('00000000-0000-7000-8000-000000061900', 'T-0619 check', 'IL')"
+7. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into org.kyb_check (id, institution_id, kind, result, provider, checked_at) values ('00000000-0000-7000-8000-000000061901', '00000000-0000-7000-8000-000000061900', 'registry', 'clear', 'simulator', now()) returning seq"
+8. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into org.kyb_check (id, institution_id, kind, result, provider, checked_at) values ('00000000-0000-7000-8000-000000061902', '00000000-0000-7000-8000-000000061900', 'exempt_status', 'excepted', 'compliance', now())"
+9. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into org.kyb_decision (id, institution_id, status, decided_by, decided_at) values ('00000000-0000-7000-8000-000000061903', '00000000-0000-7000-8000-000000061900', 'approved', '00000000-0000-7000-8000-000000061909', now())"
+10. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into org.kyb_decision (id, institution_id, status, risk, decided_by, decided_at) values ('00000000-0000-7000-8000-000000061904', '00000000-0000-7000-8000-000000061900', 'approved', 'medium', '00000000-0000-7000-8000-000000061909', now()) returning seq"
+11. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; update org.kyb_decision set status = 'rejected'"
+12. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into ops.approval_request (id, kind, subject, payload, required, scope, requested_by, status, expires_at, created_at) values ('00000000-0000-7000-8000-000000061905', 'kyb_decision', 'kyb:t0619', '{}', 2, 'platform', '00000000-0000-7000-8000-000000061909', 'awaiting_second_approval', now() + interval '7 days', now())"
+13. docker rm -f kesher-pg
+Expected: step 4 prints `ok` for every schema, with ledger at 21 migrations and org at 4. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`. Step 7 prints one row with `seq` 1. Step 8 fails with a check constraint violation (an exception without a reason). Step 9 fails with a check constraint violation (an approval without a risk). Step 10 prints one row with a `seq`. Step 11 fails with `permission denied for table kyb_decision`. Step 12 prints `INSERT 0 1`.
+Report back: the console output of steps 4, 5, 7, 8, 9, 10, 11 and 12.
