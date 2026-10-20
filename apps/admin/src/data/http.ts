@@ -42,7 +42,7 @@ export const customerSummary = (c: Schemas['AdminCustomerSummary']): CustomerSum
 
 export const customerRecord = (c: Schemas['AdminCustomer']): CustomerRecord => ({
   ...customerSummary(c),
-  kyc: { status: c.kyc.status, provider: c.kyc.provider, checkedAt: c.kyc.checkedAt },
+  kyc: { status: c.kyc.status, tier: c.kyc.tier, provider: c.kyc.provider, checkedAt: c.kyc.checkedAt },
   // The API names the other party by id; the console shows the institution and leaves the funder's name to the roster.
   memberships: c.memberships.map((m) => ({ id: m.id, planCode: m.planCode, status: m.status, institutionName: m.institutionName, currentPeriodEnd: m.currentPeriodEnd })),
   accounts: c.purses.map((p) => ({ id: p.id, currency: p.currency, available: fromWire(p.available), holds: fromWire(p.holds) })),

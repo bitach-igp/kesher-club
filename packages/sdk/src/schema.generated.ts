@@ -1841,6 +1841,11 @@ export interface components {
                 readonly provider?: string;
                 /** @enum {string} */
                 readonly status: "none" | "pending" | "verified" | "rejected";
+                /**
+                 * @description The highest approved tier
+                 * @enum {string}
+                 */
+                readonly tier?: "T1" | "T2";
             };
             readonly memberships: readonly {
                 /** Format: uuid */

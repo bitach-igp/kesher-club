@@ -149,7 +149,7 @@ describe('httpAdminData', () => {
     expect(view.phoneMasked).toBe('•••• 4567');
     expect(view.emailMasked).toBeUndefined();
     expect(view.flags).toEqual(['recovery_hold', 'kyc_none', 'open_case']);
-    expect(view.balances).toEqual([{ id: 'acc-usd', currency: 'USD', available: '$80.00', holds: '$20.00', spendable: '$60.00' }]);
+    expect(view.balances).toEqual([{ id: 'acc-usd', currency: 'USD', available: '$80.00', holds: '$20.00', total: '$100.00' }]);
     expect(view.activeGrants).toEqual([]);
     expect(await data.getCustomer('01932e5a-0000-7000-8000-00000000dead')).toBeUndefined();
   });

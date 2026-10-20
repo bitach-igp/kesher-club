@@ -2033,6 +2033,7 @@ components:
               required: [status]
               properties:
                 status: { type: string, enum: [none, pending, verified, rejected] }
+                tier: { type: string, enum: [T1, T2], description: The highest approved tier, present when verified }
                 provider: { type: string }
                 checkedAt: { type: string, format: date-time }
             memberships:
