@@ -68,7 +68,7 @@ describe('TST-INS-006: the monthly export', () => {
     ]);
     expect(e.rows[4]).toMatchObject({ reverses: 'allowance', description: 'Reversal of allowance' });
     // The reversal counts against the allowances it undid, not as a fee.
-    expect(e.totals).toEqual({ allowancesOut: money(-50_000n, 'ILS'), feesIn: money(20_000n, 'ILS'), net: money(-30_000n, 'ILS') });
+    expect(e.totals).toEqual({ allowancesOut: money(-50_000n, 'ILS'), feesIn: money(20_000n, 'ILS'), payoutsOut: money(0n, 'ILS'), net: money(-30_000n, 'ILS') });
     const ledgerSum = (await db.query<{ s: string }>(
       `select coalesce(sum(p.amount_minor), 0)::text as s from ledger.posting p join ledger.account a on a.id = p.account_id join ledger.journal j on j.id = p.journal_id
          left join ledger.journal o on o.id = j.reverses_id
@@ -84,20 +84,21 @@ describe('TST-INS-006: the monthly export', () => {
     expect(monthBounds('2026-02')).toEqual({ start: new Date('2026-02-01T00:00:00Z'), end: new Date('2026-03-01T00:00:00Z') });
   });
 
-  it('CSV and XLSX carry the same rows, with the header and the three totals; a formula-shaped name is neutralised in the CSV only, and numbers stay numbers; the zip opens', async () => {
+  it('CSV and XLSX carry the same rows, with the header and the four totals; a formula-shaped name is neutralised in the CSV only, and numbers stay numbers; the zip opens', async () => {
     const e = await monthlyExport(db, INST, '2026-11', 'ILS');
     const grid = cells(e);
-    expect(grid).toHaveLength(1 + 5 + 3);
+    expect(grid).toHaveLength(1 + 5 + 4);
     expect(grid[0]).toEqual(['date', 'journal_id', 'kind', 'member_name', 'member_party_id', 'description', 'amount_minor', 'currency', 'amount']);
-    expect(grid[8]).toEqual(['', '', 'total', 'net', '', '', '-30000', 'ILS', '−₪300.00']);
+    expect(grid[8]).toEqual(['', '', 'total', 'payouts_out', '', '', '0', 'ILS', '₪0.00']);
+    expect(grid[9]).toEqual(['', '', 'total', 'net', '', '', '-30000', 'ILS', '−₪300.00']);
 
     const csv = toCsv(e);
     expect(csv.startsWith('﻿date,journal_id,kind')).toBe(true);
     const lines = csv.slice(1).trimEnd().split('\r\n');
-    expect(lines).toHaveLength(9);
+    expect(lines).toHaveLength(10);
     expect(lines[2]).toContain(`"'=HYPERLINK(""https://evil.example"",""pay"")"`); // quoted, doubled quotes, and defused
     expect(lines[1]).toContain(',-50000,ILS,'); // a negative amount is a number, not a defused formula
-    expect(lines[8]).toContain(',net,,,-30000,ILS,');
+    expect(lines[9]).toContain(',net,,,-30000,ILS,');
     expect(lines[4]).toContain(`"Books ""and"" more"`);
     expect(neutralise('=1+1')).toBe("'=1+1");
     expect(neutralise('+972')).toBe("'+972");

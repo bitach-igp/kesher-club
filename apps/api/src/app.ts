@@ -178,7 +178,11 @@ export function createApp(o: AppOptions): App {
     ...walletHandlers(s.loads, s.stepUp, s.flags, s.autoReload, s.closure),
     ...p2pHandlers(s.p2p, s.stepUp, s.flags, s.requests),
     ...fxHandlers(s.fx, s.stepUp),
-    ...payoutHandlers(s.payouts, s.stepUp),
+    ...payoutHandlers(s.payouts, s.stepUp, {
+      db: o.db,
+      identity: s.identity,
+      staffOf: async (partyId) => (await o.db.query<{ institution_id: string; role: 'staff' | 'finance' | 'admin' }>('select institution_id, role from org.staff where party_id = $1 and active', [partyId])).rows.map((x) => ({ institutionId: x.institution_id, role: x.role }))[0],
+    }),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
     // The institution console's landing (T-0608): the same active staff row every institution handler checks.
     getMyInstitution: route(async (req) => {

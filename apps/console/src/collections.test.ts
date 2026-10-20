@@ -42,12 +42,12 @@ describe('I08 collections (T-0611)', () => {
 
   it('the export round-trips its bytes exactly: the CSV keeps its BOM and Hebrew, the XLSX its zip magic', () => {
     const csv = [0xef, 0xbb, 0xbf, ...utf8('member,amount\r\nנועה,120.00\r\n')];
-    const out = decodeExport({ filename: 'collections-2026-11.csv', contentType: 'text/csv; charset=utf-8', base64: b64(csv), rows: 1, totals: { allowancesOut: ils('0'), feesIn: ils('12000'), net: ils('12000') } });
+    const out = decodeExport({ filename: 'collections-2026-11.csv', contentType: 'text/csv; charset=utf-8', base64: b64(csv), rows: 1, totals: { allowancesOut: ils('0'), feesIn: ils('12000'), payoutsOut: ils('0'), net: ils('12000') } });
     expect([...out]).toEqual(csv);
     expect(hasBom(out)).toBe(true);
     expect(new TextDecoder().decode(out.slice(3))).toContain('נועה');
     const xlsx = [0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0xff, 0x00, 0x80];
-    const back = decodeExport({ filename: 'collections-2026-11.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', base64: b64(xlsx), rows: 1, totals: { allowancesOut: ils('0'), feesIn: ils('0'), net: ils('0') } });
+    const back = decodeExport({ filename: 'collections-2026-11.xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', base64: b64(xlsx), rows: 1, totals: { allowancesOut: ils('0'), feesIn: ils('0'), payoutsOut: ils('0'), net: ils('0') } });
     expect([...back]).toEqual(xlsx);
     expect([isZip(back), hasBom(back)]).toEqual([true, false]);
   });

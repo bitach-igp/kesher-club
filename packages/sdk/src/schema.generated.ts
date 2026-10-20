@@ -1048,6 +1048,30 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/payouts": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution's payouts, newest first, with state, payee, cool-off end and the approvals so far
+         * @description REQ-PO-001/002, REQ-INS-004 (T-0527). Org finance of this institution only; another institution answers 404. Cursor-paged. `available` is what the institution's own account holds (T-0613). Staff appear by display name only.
+         */
+        readonly get: operations["listInstitutionPayouts"];
+        readonly put?: never;
+        /**
+         * Pay out ILS from the institution's account to a validated payee
+         * @description REQ-PO-001/002, REQ-INS-004 (T-0527). Org finance of this institution. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Never takes the institution's account below zero (INSUFFICIENT_FUNDS). A new payee over ₪2,000 cools off 24 h; over ₪5,000 a second finance member approves (approvePayout). Idempotent.
+         */
+        readonly post: operations["createInstitutionPayout"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/rosters": {
         readonly parameters: {
             readonly query?: never;
@@ -1350,6 +1374,46 @@ export interface paths {
          * @description REQ-PO-001/002. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). New payees over ₪2,000 cool off 24 h. Idempotent.
          */
         readonly post: operations["createPayout"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/payouts/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second finance approval of an institution payout; it then goes to the rail
+         * @description REQ-INS-004 (T-0527). A finance member of the payout's institution other than its requester (409 for the requester). Approving again is a no-op. Requires a step-up token younger than 5 minutes. Idempotent.
+         */
+        readonly post: operations["approvePayout"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/payouts/{id}/reject": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Reject an institution payout waiting for its second approver; nothing moves
+         * @description REQ-INS-004 (T-0527). A finance member of the payout's institution, with a reason. Requires a step-up token younger than 5 minutes. Idempotent.
+         */
+        readonly post: operations["rejectPayout"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -2043,6 +2107,8 @@ export interface components {
                 readonly allowancesOut: components["schemas"]["Money"];
                 readonly feesIn: components["schemas"]["Money"];
                 readonly net: components["schemas"]["Money"];
+                /** @description The institution's payouts and their reversals (T-0527) */
+                readonly payoutsOut: components["schemas"]["Money"];
             };
         };
         readonly FeeItem: {
@@ -2122,6 +2188,34 @@ export interface components {
                 /** Format: uuid */
                 readonly partyId: string;
             }[];
+        };
+        readonly InstitutionPayout: {
+            readonly amount: components["schemas"]["Money"];
+            readonly approvedBy: readonly components["schemas"]["StaffName"][];
+            /**
+             * Format: date-time
+             * @description Set while a new payee over ₪2
+             */
+            readonly coolOffEndsAt?: string;
+            /** Format: date-time */
+            readonly createdAt: string;
+            readonly failureCode?: string;
+            /** Format: uuid */
+            readonly id: string;
+            readonly payee: {
+                readonly ibanLast4: string;
+                /** @description Staff-entered text */
+                readonly name: string;
+            };
+            /** @description Staff-entered text */
+            readonly reference: string;
+            readonly requestedBy?: components["schemas"]["StaffName"];
+            /** @description True for the payout's requester */
+            readonly requestedByMe: boolean;
+            /** @description 0 until the payout asks for its approval (after any cool-off) */
+            readonly requiredApprovals: number;
+            /** @enum {string} */
+            readonly state: "cooling_off" | "awaiting_second_approval" | "submitted" | "processing" | "settled" | "failed" | "reversed" | "rejected";
         };
         readonly InstitutionStaffMember: {
             readonly active: boolean;
@@ -4169,6 +4263,68 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly listInstitutionPayouts: {
+        readonly parameters: {
+            readonly query?: {
+                readonly cursor?: string;
+                readonly limit?: number;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Payouts */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly available: components["schemas"]["Money"];
+                        readonly items: readonly components["schemas"]["InstitutionPayout"][];
+                        readonly nextCursor?: string;
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createInstitutionPayout: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["PayoutRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description The payout */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionPayout"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly importRoster: {
         readonly parameters: {
             readonly query?: never;
@@ -4602,6 +4758,68 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Payout"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approvePayout: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The payout after the decision */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionPayout"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly rejectPayout: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The payout, rejected */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionPayout"];
                 };
             };
             readonly default: components["responses"]["Problem"];

@@ -9,6 +9,7 @@
 import { DomainError, toWire, type Currency } from '@kesher/domain';
 import type { IdentityRepository } from '../auth/repository.ts';
 import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
+import { staffNames } from './staff-names.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { ok, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
@@ -49,7 +50,6 @@ export interface AllowanceRunDeps {
 
 type Cadence = 'weekly' | 'monthly' | 'once';
 type RunStatus = 'preview' | 'awaiting_second_approval' | 'running' | 'completed' | 'failed';
-const ROLE_NAME: Record<string, string> = { staff: 'Staff', finance: 'Finance', admin: 'Institution admin', org_admin: 'Institution admin' };
 const HISTORY_LIMIT = 100;
 
 const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
@@ -76,13 +76,6 @@ async function ownInstitution(d: AllowanceRunDeps, req: HttpRequest): Promise<{ 
   if ((await d.staffInstitution(p.partyId)) !== institutionId) throw new DomainError('NOT_FOUND', 'Institution not found');
   if (!(await d.flags.isOn(INSTITUTIONS_MONEY_FLAG))) throw new DomainError('FEATURE_OFF', 'Institution money is not enabled yet');
   return { institutionId, partyId: p.partyId };
-}
-
-/** "Finance •••• 0109": the role at the institution and the phone's last four digits, never the party id. */
-async function staffName(d: AllowanceRunDeps, partyId: string, role: string | undefined): Promise<{ displayName: string }> {
-  const user = await d.identity.findUser(partyId);
-  const label = ROLE_NAME[role ?? ''] ?? 'Former staff';
-  return { displayName: user ? `${label} •••• ${user.phone.slice(-4)}` : label };
 }
 
 export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance' | 'listAllowanceSchedules' | 'listAllowanceRuns', Handler> {
@@ -123,10 +116,7 @@ export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance'
           order by r.run_date desc, r.created_at desc limit ${HISTORY_LIMIT}`,
         [institutionId],
       );
-      // Roles as they stand now: a display label, not an audit record (the approvals table is that).
-      const people = [...new Set(r.rows.flatMap((x) => [x.requested_by, ...(x.approvers ?? [])]).filter((x): x is string => !!x))];
-      const roles = new Map((await d.db.query<{ party_id: string; role: string }>('select party_id, role from org.staff where party_id = any($1::uuid[])', [people])).rows.map((x) => [x.party_id, x.role]));
-      const names = new Map(await Promise.all(people.map(async (id) => [id, await staffName(d, id, roles.get(id))] as const)));
+      const names = await staffNames(d.db, d.identity, r.rows.flatMap((x) => [x.requested_by, ...(x.approvers ?? [])]).filter((x): x is string => !!x));
       return ok({
         items: r.rows.map((x) => ({
           workflowId: x.workflow_id,
