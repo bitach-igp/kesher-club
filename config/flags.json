@@ -147,6 +147,13 @@
     "turnOnTrigger": "wallet.enabled + institution agreement"
   },
   {
+    "key": "institutions.deposits",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "Institution deposits: recorded bank transfers in, and US ACH pulls",
+    "turnOnTrigger": "institutions.money + the bank account and payment references institutions pay into"
+  },
+  {
     "key": "funding.ach",
     "defaultProd": false,
     "owner": "Ezra",

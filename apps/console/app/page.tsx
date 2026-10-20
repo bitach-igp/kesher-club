@@ -33,6 +33,11 @@ export default async function Home() {
           <dd data-testid="institution-role">{ROLE_LABEL[landing.role]}</dd>
           <dt>Market</dt>
           <dd>{landing.institution.market}</dd>
+          <dt>Payment reference</dt>
+          <dd>
+            <code data-testid="payment-reference">{landing.paymentReference}</code>
+            <span className="muted"> · quote it on every transfer into Kesher Club, so the money reaches your account</span>
+          </dd>
         </dl>
         <p>
           <a href="/allowances" data-testid="nav-allowances">Allowances</a> · <a href="/collections" data-testid="nav-collections">Collections</a> · <a href="/payouts" data-testid="nav-payouts">Payouts</a>

@@ -30,6 +30,7 @@ import { CustomerReadModel } from './admin/customers.ts';
 import { ComplaintService } from './admin/complaints.ts';
 import { AlertService } from './admin/alerts.ts';
 import { InstitutionAdmin, institutionAdminHandlers } from './admin/institutions.ts';
+import { depositHandlers, InstitutionDeposits, paymentReference } from './institutions/deposits.ts';
 import { StaffTokenVerifier, staffBearerMiddleware } from './admin/staff-token.ts';
 import type { JWK } from 'jose';
 import { OtpService } from './auth/otp.ts';
@@ -190,7 +191,7 @@ export function createApp(o: AppOptions): App {
       const r = await o.db.query<{ id: string; name: string; market: 'US' | 'IL'; role: 'staff' | 'finance' | 'admin' }>('select i.id, i.name, i.market, s.role from org.staff s join org.institution i on i.id = s.institution_id where s.party_id = $1 and s.active', [p.partyId]);
       const x = r.rows[0];
       if (!x) throw new DomainError('FORBIDDEN', 'Not staff of an institution');
-      return ok({ institution: { id: x.id, name: x.name, market: x.market }, role: x.role });
+      return ok({ institution: { id: x.id, name: x.name, market: x.market }, role: x.role, paymentReference: paymentReference(x.id) });
     }),
     createMembership: route(async (req) => {
       const p = requirePrincipal(req);
@@ -215,6 +216,7 @@ export function createApp(o: AppOptions): App {
     ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.clock.now), flags: s.flags, staffInstitution, db: o.db, identity: s.identity, stepUp: s.stepUp }),
     ...fxAdminHandlers(s.rates),
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
+    ...depositHandlers(new InstitutionDeposits({ db: o.db, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, approvals: s.approvals, audit: s.audit, flags: s.flags })),
     ...preferenceHandlers(s.preferences),
     exportCollections: exportHandler(o.db, staffInstitution),
     // The member's own view of what their assistants proposed (T-1011): member tokens only; never an MCP tool.

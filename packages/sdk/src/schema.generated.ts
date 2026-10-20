@@ -292,6 +292,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/deposits/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second finance approval of a deposit; it then posts to the institution's account
+         * @description REQ-INS-007 (T-0614). A finance member other than the recorder (409 for the recorder). Behind `institutions.deposits`.
+         */
+        readonly post: operations["approveAdminDeposit"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/deposits/{id}/reject": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Reject a recorded deposit before it posts; its bank reference can then be recorded again
+         * @description REQ-INS-007 (T-0614). Kesher finance, with a reason. Behind `institutions.deposits`.
+         */
+        readonly post: operations["rejectAdminDeposit"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/flag-flips/{id}/approve": {
         readonly parameters: {
             readonly query?: never;
@@ -434,6 +474,30 @@ export interface paths {
          * @description REQ-ADM-004. Admin staff only; audited. Idempotent by key.
          */
         readonly post: operations["createAdminInstitution"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/institutions/{id}/deposits": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * An institution's recorded deposits, its payment reference and what its account holds
+         * @description REQ-INS-007 (T-0614). Staff token only. Behind `institutions.deposits`.
+         */
+        readonly get: operations["listAdminInstitutionDeposits"];
+        readonly put?: never;
+        /**
+         * Record a bank transfer in against the institution; a second finance member approves it before it posts
+         * @description REQ-INS-007 (T-0614). Kesher finance (staff role `finance`). The recorder's own approval is the first of two. Masav carries ILS, ACH USD, a wire either. A rail and bank reference already recorded (and not rejected) answers 409. The value date cannot be in the future. Idempotent. Behind `institutions.deposits`.
+         */
+        readonly post: operations["recordAdminInstitutionDeposit"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -1896,7 +1960,7 @@ export interface components {
             /** Format: uuid */
             readonly id: string;
             /** @enum {string} */
-            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction" | "fx_rate" | "staff_grant";
+            readonly kind: "allowance_run" | "payout" | "flag_flip" | "provider_binding" | "ledger_correction" | "fx_rate" | "staff_grant" | "institution_deposit";
             readonly payload: {
                 readonly [key: string]: unknown;
             };
@@ -2105,6 +2169,8 @@ export interface components {
             readonly rows: number;
             readonly totals: {
                 readonly allowancesOut: components["schemas"]["Money"];
+                /** @description Recorded bank transfers in and their reversals (T-0614) */
+                readonly depositsIn: components["schemas"]["Money"];
                 readonly feesIn: components["schemas"]["Money"];
                 readonly net: components["schemas"]["Money"];
                 /** @description The institution's payouts and their reversals (T-0527) */
@@ -2188,6 +2254,31 @@ export interface components {
                 /** Format: uuid */
                 readonly partyId: string;
             }[];
+        };
+        readonly InstitutionDeposit: {
+            readonly amount: components["schemas"]["Money"];
+            readonly approvals: number;
+            readonly bankReference: string;
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** Format: date-time */
+            readonly decidedAt?: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** Format: uuid */
+            readonly institutionId: string;
+            /** Format: uuid */
+            readonly journalId?: string;
+            /** @description Staff-entered text */
+            readonly note?: string;
+            /** @enum {string} */
+            readonly rail: "masav" | "wire" | "ach";
+            /** @description True for the recorder */
+            readonly recordedByMe: boolean;
+            /** @enum {string} */
+            readonly status: "pending" | "posted" | "rejected";
+            /** Format: date */
+            readonly valueDate: string;
         };
         readonly InstitutionPayout: {
             readonly amount: components["schemas"]["Money"];
@@ -2374,6 +2465,8 @@ export interface components {
                 readonly market: "US" | "IL";
                 readonly name: string;
             };
+            /** @description What the institution quotes on a transfer into Kesher's account (T-0614) */
+            readonly paymentReference: string;
             /** @enum {string} */
             readonly role: "staff" | "finance" | "admin";
         };
@@ -3131,6 +3224,58 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly approveAdminDeposit: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The deposit after the decision */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionDeposit"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly rejectAdminDeposit: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The deposit, rejected */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionDeposit"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly approveFlagFlip: {
         readonly parameters: {
             readonly query?: never;
@@ -3377,6 +3522,73 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["AdminInstitution"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminInstitutionDeposits: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Deposits */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly balances: readonly components["schemas"]["Money"][];
+                        readonly items: readonly components["schemas"]["InstitutionDeposit"][];
+                        /** @description What the institution quotes on its transfers */
+                        readonly paymentReference: string;
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly recordAdminInstitutionDeposit: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly amount: components["schemas"]["Money"];
+                    /** @description The statement line's reference; compared without spaces */
+                    readonly bankReference: string;
+                    readonly note?: string;
+                    /** @enum {string} */
+                    readonly rail: "masav" | "wire" | "ach";
+                    /** Format: date */
+                    readonly valueDate: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The deposit, waiting for its second approver */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionDeposit"];
                 };
             };
             readonly default: components["responses"]["Problem"];

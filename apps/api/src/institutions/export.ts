@@ -10,14 +10,14 @@ import type { Database } from '../db.ts';
 import { SYSTEM_OWNER } from '../ledger/accounts.ts';
 import { ok, requireRole, route, type Handler } from '../http.ts';
 
-export type ExportKind = 'allowance' | 'fee' | 'payout' | 'reversal';
+export type ExportKind = 'allowance' | 'fee' | 'payout' | 'deposit' | 'reversal';
 
 export interface ExportRow {
   date: string;
   journalId: string;
   kind: ExportKind;
   /** For a reversal, what it reversed; the totals count it against that kind. */
-  reverses?: 'allowance' | 'fee' | 'payout';
+  reverses?: 'allowance' | 'fee' | 'payout' | 'deposit';
   /** The roster name as the institution knows the member; untrusted display text. */
   memberName: string;
   memberPartyId: string;
@@ -32,8 +32,8 @@ export interface MonthlyExport {
   month: string;
   currency: Currency;
   rows: ExportRow[];
-  /** allowancesOut covers allowances and their reversals; feesIn fees and theirs; payoutsOut payouts and theirs (T-0527); net is every row. */
-  totals: { allowancesOut: Money; feesIn: Money; payoutsOut: Money; net: Money };
+  /** allowancesOut covers allowances and their reversals; feesIn fees and theirs; payoutsOut payouts and theirs (T-0527); depositsIn deposits and theirs (T-0614); net is every row. */
+  totals: { allowancesOut: Money; feesIn: Money; payoutsOut: Money; depositsIn: Money; net: Money };
 }
 
 export const MONTH = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -88,13 +88,15 @@ export async function monthlyExport(db: Database, institutionId: string, month: 
   const rows: ExportRow[] = r.rows.map((x) => {
     // institution_master is credit-normal: a debit (+) is money leaving the institution, a credit (−) money arriving.
     const minor = -BigInt(x.amount_minor);
-    const kindOf = (k: string | null): 'allowance' | 'fee' | 'payout' => (k === 'allowance' ? 'allowance' : k === 'payout' ? 'payout' : 'fee');
+    const kindOf = (k: string | null): 'allowance' | 'fee' | 'payout' | 'deposit' => (k === 'allowance' ? 'allowance' : k === 'payout' ? 'payout' : k === 'deposit' ? 'deposit' : 'fee');
     const kind: ExportKind = x.kind === 'reversal' ? 'reversal' : kindOf(x.kind);
     const reverses = kind === 'reversal' ? kindOf(x.reversed_kind) : undefined;
     const metaMember = typeof x.metadata['memberPartyId'] === 'string' ? x.metadata['memberPartyId'] : '';
     // A payout names its payee and reference (staff text, a data cell like any other).
     const payout = kind === 'payout' ? `Payout to ${String(x.metadata['payeeName'] ?? '')} •••• ${String(x.metadata['payeeLast4'] ?? '')}: ${String(x.metadata['reference'] ?? '')}` : undefined;
-    const description = typeof x.metadata['description'] === 'string' ? x.metadata['description'] : payout ?? (kind === 'allowance' ? 'Allowance' : kind === 'reversal' ? `Reversal of ${reverses}` : 'Fee');
+    // A deposit names its rail and the bank's reference: the statement line it came from.
+    const deposit = kind === 'deposit' ? `Deposit by ${String(x.metadata['rail'] ?? '')}: ${String(x.metadata['bankReference'] ?? '')}` : undefined;
+    const description = typeof x.metadata['description'] === 'string' ? x.metadata['description'] : payout ?? deposit ?? (kind === 'allowance' ? 'Allowance' : kind === 'reversal' ? `Reversal of ${reverses}` : 'Fee');
     return {
       date: new Date(x.effective_at).toISOString().slice(0, 10),
       journalId: x.journal_id,
@@ -110,7 +112,8 @@ export async function monthlyExport(db: Database, institutionId: string, month: 
   const allowancesOut = sum((x) => x.kind === 'allowance' || x.reverses === 'allowance');
   const feesIn = sum((x) => x.kind === 'fee' || x.reverses === 'fee');
   const payoutsOut = sum((x) => x.kind === 'payout' || x.reverses === 'payout');
-  return { institutionId, month, currency, rows, totals: { allowancesOut: money(allowancesOut, currency), feesIn: money(feesIn, currency), payoutsOut: money(payoutsOut, currency), net: money(allowancesOut + feesIn + payoutsOut, currency) } };
+  const depositsIn = sum((x) => x.kind === 'deposit' || x.reverses === 'deposit');
+  return { institutionId, month, currency, rows, totals: { allowancesOut: money(allowancesOut, currency), feesIn: money(feesIn, currency), payoutsOut: money(payoutsOut, currency), depositsIn: money(depositsIn, currency), net: money(allowancesOut + feesIn + payoutsOut + depositsIn, currency) } };
 }
 
 export const HEADERS = ['date', 'journal_id', 'kind', 'member_name', 'member_party_id', 'description', 'amount_minor', 'currency', 'amount'] as const;
@@ -124,6 +127,7 @@ export function cells(e: MonthlyExport): string[][] {
     ['', '', 'total', 'allowances_out', '', '', e.totals.allowancesOut.minor.toString(), e.currency, format(e.totals.allowancesOut)],
     ['', '', 'total', 'fees_in', '', '', e.totals.feesIn.minor.toString(), e.currency, format(e.totals.feesIn)],
     ['', '', 'total', 'payouts_out', '', '', e.totals.payoutsOut.minor.toString(), e.currency, format(e.totals.payoutsOut)],
+    ['', '', 'total', 'deposits_in', '', '', e.totals.depositsIn.minor.toString(), e.currency, format(e.totals.depositsIn)],
     ['', '', 'total', 'net', '', '', e.totals.net.minor.toString(), e.currency, format(e.totals.net)],
   ];
   return [[...HEADERS], ...body, ...totals];
@@ -306,7 +310,7 @@ export interface ExportFile {
   contentType: string;
   base64: string;
   rows: number;
-  totals: { allowancesOut: ReturnType<typeof toWire>; feesIn: ReturnType<typeof toWire>; payoutsOut: ReturnType<typeof toWire>; net: ReturnType<typeof toWire> };
+  totals: { allowancesOut: ReturnType<typeof toWire>; feesIn: ReturnType<typeof toWire>; payoutsOut: ReturnType<typeof toWire>; depositsIn: ReturnType<typeof toWire>; net: ReturnType<typeof toWire> };
 }
 
 export function exportFile(e: MonthlyExport, fmt: 'csv' | 'xlsx'): ExportFile {
@@ -316,7 +320,7 @@ export function exportFile(e: MonthlyExport, fmt: 'csv' | 'xlsx'): ExportFile {
     contentType: fmt === 'csv' ? 'text/csv; charset=utf-8' : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     base64: Buffer.from(bytes).toString('base64'),
     rows: e.rows.length,
-    totals: { allowancesOut: toWire(e.totals.allowancesOut), feesIn: toWire(e.totals.feesIn), payoutsOut: toWire(e.totals.payoutsOut), net: toWire(e.totals.net) },
+    totals: { allowancesOut: toWire(e.totals.allowancesOut), feesIn: toWire(e.totals.feesIn), payoutsOut: toWire(e.totals.payoutsOut), depositsIn: toWire(e.totals.depositsIn), net: toWire(e.totals.net) },
   };
 }
 

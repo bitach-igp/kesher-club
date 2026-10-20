@@ -10,6 +10,7 @@ import { generateSigningKey } from '../auth/tokens.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import { paymentReference } from '../institutions/deposits.ts';
 import { STAFF_AUDIENCE, STAFF_ISSUER, staffPartyId } from './staff-token.ts';
 
 let db: TestDatabase;
@@ -95,7 +96,7 @@ describe('admins onboard institutions and staff (T-0924, TST-ADM-004)', () => {
     // The institution console's landing (T-0608): her institution and role, only once her token carries it.
     expect((await call('GET', '/v1/me/institution', { token: before })).status).toBe(403);
     const mine = await call('GET', '/v1/me/institution', { token: await signIn(MIRIAM) });
-    expect(mine.body).toEqual({ institution: { id: yeshiva, name: 'Yeshivat Har Kesher', market: 'IL' }, role: 'finance' });
+    expect(mine.body).toEqual({ institution: { id: yeshiva, name: 'Yeshivat Har Kesher', market: 'IL' }, role: 'finance', paymentReference: paymentReference(yeshiva) });
     // The token from before the grant still carries only `member`; the next sign-in carries the role.
     expect((await call('GET', `/v1/institutions/${yeshiva}/collections?month=2026-11`, { token: before })).status).toBe(403);
     expect((await call('GET', `/v1/institutions/${yeshiva}/collections?month=2026-11`, { token: await signIn(MIRIAM) })).status).toBe(200);

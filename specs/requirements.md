@@ -45,6 +45,9 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-INS-004 | P2 | Second finance approver over 5,000 ILS |
 | REQ-INS-005 | P1 | No merchant-level spend for staff without consent |
 | REQ-INS-006 | P2 | Collections receipts and monthly export |
+| REQ-INS-007 | P2 | Recorded institution deposits post once, after a second finance approver |
+| REQ-INS-008 | P2 | Allowance runs stop at the institution's two-admin credit limit |
+| REQ-INS-009 | P2 | US institutions pull USD by ACH, held until the bank's hold date |
 | REQ-FX-001 | P2 | Quotes lock 30 s with rate, markup, total |
 | REQ-FX-002 | P2 | Markup from plan config stored on the journal |
 | REQ-FX-003 | P2 | Conversions use the club-published, versioned rate; the version is on the quote and the journal |

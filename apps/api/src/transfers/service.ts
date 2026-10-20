@@ -7,7 +7,7 @@ import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
 import { enqueue } from './outbox.ts';
 import { next, TERMINAL_STATES, type TransferEvent, type TransferState } from './state-machine.ts';
 
-export type TransferKind = 'p2p' | 'load' | 'payout' | 'fx' | 'allowance' | 'addon' | 'refund' | 'fee';
+export type TransferKind = 'p2p' | 'load' | 'payout' | 'fx' | 'allowance' | 'addon' | 'refund' | 'fee' | 'deposit';
 
 /**
  * The received leg of a cross-currency send (T-0515, REQ-PAY-006): priced once at create time from the
