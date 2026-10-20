@@ -36,6 +36,8 @@ export type TransactionPage = Schemas['TransactionPage'];
 export type FxQuote = Schemas['FxQuote'];
 export type Load = Schemas['Load'];
 export type AutoReloadRule = Schemas['AutoReloadRule'];
+export type MemberIntent = Schemas['MemberIntent'];
+export type ApprovedIntent = Schemas['ApprovedIntent'];
 export type AutoReloadRuleRequest = Schemas['AutoReloadRuleRequest'];
 export type FxConversion = Schemas['FxConversion'];
 export type OtpPurpose = 'register' | 'recovery';
@@ -133,6 +135,15 @@ export interface FundApi {
   createLoad(input: { memberPartyId: string; amount: MoneyWire; method: 'card' | 'apple_pay' | 'google_pay' | 'ach'; purseCurrency: 'USD' | 'ILS' }, idempotencyKey: string): Promise<Load>;
 }
 
+/** M35 (T-1012): what an assistant proposed, read, approved under a passkey, or declined (T-1011's API). */
+export interface ProposalsApi {
+  list(state?: MemberIntent['status']): Promise<{ items: readonly MemberIntent[] }>;
+  get(id: string): Promise<MemberIntent>;
+  /** A load proposal names no funding method, so its approval carries one. */
+  approve(id: string, idempotencyKey: string, funding?: { method: 'card' | 'apple_pay' | 'google_pay' | 'ach' }): Promise<ApprovedIntent>;
+  decline(id: string, idempotencyKey: string): Promise<MemberIntent>;
+}
+
 /** A payment method saved at the funding vendor; the app holds only its id and a label, never card data. */
 export interface SavedPaymentMethod {
   id: string;
@@ -188,6 +199,7 @@ export interface Api {
   fx: FxApi;
   fund: FundApi;
   reload: AutoReloadApi;
+  proposals: ProposalsApi;
   esim: EsimUsageApi;
   grants: GrantsApi;
   concierge: ConciergeApi;
@@ -283,6 +295,12 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
       get: (id) => client.get('/accounts/{id}/auto-reload', { path: { id } }),
       set: (id, rule, idempotencyKey) => client.post('/accounts/{id}/auto-reload', { path: { id }, body: rule, idempotencyKey }),
       paymentMethods: extras.paymentMethods ?? (async () => []),
+    },
+    proposals: {
+      list: (state) => client.get('/intents', state ? { query: { state } } : {}),
+      get: (id) => client.get('/intents/{id}', { path: { id } }),
+      approve: (id, idempotencyKey, funding) => client.post('/intents/{id}/approve', { path: { id }, idempotencyKey, ...(funding ? { body: funding } : {}) }),
+      decline: (id, idempotencyKey) => client.post('/intents/{id}/decline', { path: { id }, idempotencyKey }),
     },
     esim: extras.esim,
     grants: {
