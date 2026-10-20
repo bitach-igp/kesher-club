@@ -5,25 +5,15 @@ import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { earlierRun, executeRun, fmt, previewRun, type PreviewView, type RunDeps, type RunSummary, type RunView } from '../../src/allowances.ts';
 import { t, type CopyKey, type Locale } from '../../src/i18n.ts';
-import { stepUpAssert } from '../../src/passkey.ts';
-import { beginStepUp, finishStepUp, previewAllowance, runAllowance } from './actions.ts';
+import { passkeyStepUp } from '../step-up-flow.ts';
+import { previewAllowance, runAllowance } from './actions.ts';
 
 function useDeps(): RunDeps {
   return useMemo<RunDeps>(
     () => ({
       preview: previewAllowance,
       run: runAllowance,
-      async stepUp() {
-        const begun = await beginStepUp();
-        if (!begun.ok) return false;
-        let response: unknown;
-        try {
-          response = await stepUpAssert(begun.value);
-        } catch {
-          return false;
-        }
-        return (await finishStepUp(response)).ok;
-      },
+      stepUp: passkeyStepUp,
       newKey: () => crypto.randomUUID(),
     }),
     [],
