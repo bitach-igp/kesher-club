@@ -1,4 +1,0 @@
-# Recordings (T-0920) never enter git: videos, traces and the harness's scratch files.
-out/
-test-results/
-playwright-report/

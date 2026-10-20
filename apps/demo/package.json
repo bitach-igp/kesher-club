@@ -10,8 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "dev": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/dev.ts",
-    "seed": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/seed.ts",
-    "record": "playwright test -c playwright.config.ts"
+    "seed": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/seed.ts"
   },
   "dependencies": {
     "@kesher/api": "workspace:*",
@@ -22,8 +21,5 @@
     "@kesher/worker": "workspace:*",
     "jose": "6.2.12",
     "zod": "^4.6.7"
-  },
-  "devDependencies": {
-    "@playwright/test": "1.56.1"
   }
 }
