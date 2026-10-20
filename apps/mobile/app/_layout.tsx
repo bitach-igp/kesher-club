@@ -11,7 +11,7 @@ import { Linking, Pressable, View } from 'react-native';
 import { Slot, useGlobalSearchParams, useRootNavigationState, useRouter as useExpoRouter, useSegments, type Href as ExpoHref } from 'expo-router';
 import { uuidv7 } from '@kesher/domain';
 import { createClient } from '@kesher/sdk';
-import { ApiProvider, sdkApi, type Api } from '../src/api.ts';
+import { ApiProvider, sdkApi, type Api, type SavedPaymentMethod } from '../src/api.ts';
 import { Txt } from '../src/components/index.ts';
 import { buildEnv, parseMobileConfig, type MobileConfig } from '../src/config.ts';
 import { LocaleProvider, t, useLocale, type Locale } from '../src/i18n.ts';
@@ -129,6 +129,13 @@ export function chooseAuthenticator(persona: () => string | undefined, credentia
   return webAuthnAuthenticator(credentials);
 }
 
+/**
+ * Saved payment methods are P08's, which is not built: a development build offers the simulator's card
+ * fixture so the auto-reload rule (T-0525) can be set against the local stack; other builds have none yet.
+ */
+const simulatorCard: (() => Promise<readonly SavedPaymentMethod[]>) | undefined =
+  process.env.EXPO_PUBLIC_APP_ENV === 'development' ? async () => [{ id: 'pm_ok', label: 'Simulator test card' }] : undefined;
+
 const loadPersonas: (() => Promise<readonly DemoPersona[]>) | undefined =
   process.env.EXPO_PUBLIC_APP_ENV === 'development' ? () => import('@kesher/demo/personas').then((m) => m.PERSONAS.map(({ key, name, market }) => ({ key, name, market }))) : undefined;
 
@@ -160,7 +167,7 @@ export function createRootDeps(config: MobileConfig, platform: Platform = {}): R
     ...(platform.fetch ? { fetch: platform.fetch } : {}),
   });
   const unbound = () => Promise.reject(new Error('Not available in this build yet'));
-  const api = sdkApi(client, session, { esim: { usage: unbound }, concierge: { start: unbound }, invites: { accept: unbound } } as unknown as Parameters<typeof sdkApi>[2]);
+  const api = sdkApi(client, session, { esim: { usage: unbound }, concierge: { start: unbound }, invites: { accept: unbound }, ...(simulatorCard ? { paymentMethods: simulatorCard } : {}) } as unknown as Parameters<typeof sdkApi>[2]);
   const opener: Opener = { openURL: (url) => Linking.openURL(url).then(() => undefined), openSettings: () => Linking.openSettings() };
   return {
     api,
