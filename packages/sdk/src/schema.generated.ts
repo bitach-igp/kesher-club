@@ -1016,7 +1016,7 @@ export interface paths {
             readonly cookie?: never;
         };
         /**
-         * A month's paid fee items for the institution, with receipt numbers
+         * A month's paid fee items for the institution, with receipt numbers, and who still owes
          * @description REQ-INS-006. Org staff. Roster names are untrusted display text.
          */
         readonly get: operations["listCollections"];
@@ -2017,6 +2017,19 @@ export interface components {
                 readonly memberName: string;
             })[];
             readonly month: string;
+            /** @description Fee items still due, whatever month they fall due in, the oldest first (T-0611). No spend detail, consented or not (REQ-INS-005). */
+            readonly owed: readonly {
+                readonly amount: components["schemas"]["Money"];
+                /** @description Staff-entered text */
+                readonly description: string;
+                /** Format: date */
+                readonly dueAt: string;
+                /** Format: uuid */
+                readonly feeItemId: string;
+                /** @description Roster name; untrusted display text */
+                readonly memberName: string;
+            }[];
+            readonly owedTotal: readonly components["schemas"]["Money"][];
             readonly total: readonly components["schemas"]["Money"][];
         };
         /** @description The app's install id, generated once and kept in the secure store. Not a hardware identifier. */

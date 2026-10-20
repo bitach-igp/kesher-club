@@ -4,24 +4,10 @@
 // X-Step-Up header; page script never holds it. Errors come back as codes: server actions do not throw
 // across the wire.
 import { cookies } from 'next/headers';
-import { codeOf, institutionApi } from '../../src/api.ts';
 import type { Result, RunResult } from '../../src/allowances.ts';
 import { getConfig } from '../../src/config.ts';
-import { requestContext } from '../../src/request.ts';
+import { asStaff } from '../../src/request.ts';
 import { cookieOptions, secondsUntil, STEP_UP_COOKIE } from '../../src/session.ts';
-
-async function asStaff<T>(call: (api: ReturnType<typeof institutionApi>, institutionId: string) => Promise<T>): Promise<Result<T>> {
-  const { landing, access } = await requestContext();
-  if (landing.kind !== 'dashboard' || !access) return { ok: false, code: 'UNAUTHENTICATED' };
-  const stepUp = (await cookies()).get(STEP_UP_COOKIE)?.value;
-  try {
-    return { ok: true, value: await call(institutionApi(getConfig().CONSOLE_API_URL, access, stepUp), landing.institution.id) };
-  } catch (e) {
-    const code = codeOf(e);
-    if (!code) throw e;
-    return { ok: false, code };
-  }
-}
 
 export async function previewAllowance(scheduleId: string, date: string): Promise<Result<RunResult>> {
   return asStaff((api, id) => api.runAllowance(id, { scheduleId, date, dryRun: true }, `preview-${crypto.randomUUID()}`));

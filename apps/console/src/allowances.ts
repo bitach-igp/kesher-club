@@ -4,6 +4,7 @@
 // a run that already happened shows its result instead of a Run button; FEATURE_OFF is the off state.
 import { format, fromWire, type Money } from '@kesher/domain';
 import type { Schemas } from '@kesher/sdk';
+import type { Result } from './api.ts';
 import { intlLocale, t, type Locale } from './i18n.ts';
 
 export type Schedule = Schemas['AllowanceSchedule'];
@@ -11,8 +12,7 @@ export type RunSummary = Schemas['AllowanceRunSummary'];
 export type RunResult = Schemas['AllowanceRun'];
 export type Role = Schemas['MyInstitution']['role'];
 
-/** A server action's answer: the API's body, or its error code. Server actions do not throw across the wire. */
-export type Result<T> = { ok: true; value: T } | { ok: false; code: string };
+export type { Result };
 
 export const fmt = (m: Schemas['Money'], locale: Locale): string => format(fromWire(m), intlLocale(locale));
 

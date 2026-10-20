@@ -43,6 +43,21 @@ export interface FeeItemView {
   receipt?: Receipt;
 }
 
+/** A fee item still due, for the institution's "who owes" list. Description and name are data. */
+export interface OwedFee {
+  feeItemId: string;
+  memberName: string;
+  description: string;
+  amount: ReturnType<typeof toWire>;
+  dueAt: string;
+}
+
+const sumByCurrency = (rows: readonly { amount_minor: string; currency: Currency }[]): ReturnType<typeof toWire>[] => {
+  const totals = new Map<Currency, bigint>();
+  for (const x of rows) totals.set(x.currency, (totals.get(x.currency) ?? 0n) + BigInt(x.amount_minor));
+  return [...totals.entries()].map(([currency, minor]) => toWire(money(minor, currency)));
+};
+
 interface FeeRow {
   id: string;
   institution_id: string;
@@ -141,7 +156,7 @@ export class CollectionsService {
   }
 
   /** GET /institutions/{id}/collections: a month's paid fee items with the receipt each produced. */
-  async listForInstitution(institutionId: string, month: string): Promise<{ month: string; items: (Receipt & { memberName: string })[]; total: ReturnType<typeof toWire>[] }> {
+  async listForInstitution(institutionId: string, month: string): Promise<{ month: string; items: (Receipt & { memberName: string })[]; total: ReturnType<typeof toWire>[]; owed: OwedFee[]; owedTotal: ReturnType<typeof toWire>[] }> {
     const r = await this.db.query<FeeRow & { journal_id: string; effective_at: string | Date; member_name: string | null }>(
       `select ${FEE_COLUMNS}, j.id as journal_id, j.effective_at,
               (select m.member_name from org.member m where m.institution_id = f.institution_id and m.member_party_id = f.member_party_id order by m.updated_at desc limit 1) as member_name
@@ -152,9 +167,17 @@ export class CollectionsService {
       [institutionId, month],
     );
     const items = r.rows.map((x) => ({ ...this.toReceipt(x, x.journal_id, new Date(x.effective_at)), memberName: x.member_name ?? '' }));
-    const totals = new Map<Currency, bigint>();
-    for (const x of r.rows) totals.set(x.currency, (totals.get(x.currency) ?? 0n) + BigInt(x.amount_minor));
-    return { month, items, total: [...totals.entries()].map(([currency, minor]) => toWire(money(minor, currency))) };
+    // Who still owes, whatever month the fee falls due in (T-0611): unpaid items, the oldest due first.
+    const o = await this.db.query<FeeRow & { member_name: string | null }>(
+      `select ${FEE_COLUMNS},
+              (select m.member_name from org.member m where m.institution_id = f.institution_id and m.member_party_id = f.member_party_id order by m.updated_at desc limit 1) as member_name
+         from org.fee_item f join org.institution i on i.id = f.institution_id
+        where f.institution_id = $1 and f.status = 'due'
+        order by f.due_at, f.id limit 500`,
+      [institutionId],
+    );
+    const owed = o.rows.map((x) => ({ feeItemId: x.id, memberName: x.member_name ?? '', description: x.description, amount: toWire(money(BigInt(x.amount_minor), x.currency)), dueAt: new Date(x.due_at).toISOString().slice(0, 10) }));
+    return { month, items, total: sumByCurrency(r.rows), owed, owedTotal: sumByCurrency(o.rows) };
   }
 
   /** The transfer for a fee: created and submitted once, found again on a replay. */
