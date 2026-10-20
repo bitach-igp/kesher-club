@@ -13,10 +13,14 @@
 // - there is a control person, and each one has passed T2 KYC.
 // A true PEP match is not a bar, but it makes the institution high risk. A high-risk approval waits for a second, different compliance reviewer (approval kind `kyb_decision`).
 // Nothing here stores a document or an image, only a reference to where the evidence is kept.
+//
+// Keeping it current (T-0624): an approval is reviewed again every 12, 24 or 36 months by risk, and one past
+// that date drops to approved with limits; an open sanctions match suspends payouts and credit (the gate).
 import { DomainError, uuidv7 } from '@kesher/domain';
 import type { ApprovalRequest, ApprovalService, Approver } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
+import { SYSTEM_OWNER } from '../ledger/accounts.ts';
 
 export const KYB_STATUSES = ['needs_more_info', 'approved_with_limits', 'approved', 'rejected'] as const;
 export type KybStatus = (typeof KYB_STATUSES)[number];
@@ -74,6 +78,11 @@ interface PendingDecision {
   idempotencyKey: string;
 }
 
+/** REQ-INS-014: months between reviews, by risk. The refresh sweep takes another table when configured. */
+export const REFRESH_MONTHS: Readonly<Record<Risk, number>> = { high: 12, medium: 24, low: 36 };
+/** Who decides what no person decided: the refresh sweep's lapse of an overdue approval. */
+export const KYB_SWEEP_ACTOR: Approver = { partyId: SYSTEM_OWNER, role: 'system' };
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const iso = (v: string | Date): string => new Date(v).toISOString();
 const SCREENING: readonly CheckKind[] = ['sanctions', 'pep'];
@@ -97,6 +106,38 @@ export class InstitutionKyb {
     const d = r.rows[0];
     if (!d) return { status: 'needs_more_info', reasons: [] };
     return { status: d.status, ...(d.risk ? { risk: d.risk } : {}), reasons: d.reasons, decidedBy: d.decided_by, decidedAt: iso(d.decided_at) };
+  }
+
+  /**
+   * The open sanctions matches: each subject's latest sanctions check, when it is a hit not yet disposed of
+   * or a true match. While there is one, the gate suspends payouts and credit (T-0624, REQ-INS-013).
+   */
+  async openSanctionsMatches(institutionId: string, client: SqlClient = this.db): Promise<string[]> {
+    const r = await client.query<{ id: string }>(
+      `select c.id from (select distinct on (person_id) id, result from org.kyb_check where institution_id = $1 and kind = 'sanctions' order by person_id, seq desc) c
+         left join org.kyb_disposition d on d.check_id = c.id
+        where c.result = 'hit' and (d.outcome is null or d.outcome = 'true_match')
+        order by c.id`,
+      [institutionId],
+    );
+    return r.rows.map((x) => x.id);
+  }
+
+  /**
+   * REQ-INS-014: every approval past its review date drops to approved with limits, reason `refresh_overdue`,
+   * until compliance reviews it and decides again. One whose status is already limited is left as it is, and
+   * the day scopes the key, so a second run writes nothing. Answers the institutions it lapsed.
+   */
+  async refreshOverdue(now: Date, months: Readonly<Record<Risk, number>> = REFRESH_MONTHS): Promise<string[]> {
+    const r = await this.db.query<{ institution_id: string; risk: Risk }>(
+      `select institution_id, risk from (select distinct on (institution_id) institution_id, status, risk, decided_at from org.kyb_decision order by institution_id, seq desc) d
+        where status = 'approved' and decided_at + make_interval(months => case risk when 'high' then $1::int when 'medium' then $2::int else $3::int end) <= $4
+        order by institution_id`,
+      [months.high, months.medium, months.low, now],
+    );
+    const day = now.toISOString().slice(0, 10);
+    for (const d of r.rows) await this.write(d.institution_id, { status: 'approved_with_limits', risk: d.risk, reasons: ['refresh_overdue'] }, `kyb-refresh:${d.institution_id}:${day}`, KYB_SWEEP_ACTOR, now);
+    return r.rows.map((d) => d.institution_id);
   }
 
   async record(institutionId: string): Promise<KybRecord> {
