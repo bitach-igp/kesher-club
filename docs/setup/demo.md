@@ -68,19 +68,42 @@ prints the same table. The table holds no token.
 | `tamar` | Tamar Example | US | +1 555 555 0106 | T2, virtual card open | $200.00 | REC-12 |
 | `ruth` | Ruth Example | US | +1 555 555 0107 | T1 | $30.00 by card | REC-17 (ready to close: no holds, every dollar refundable) |
 | `ben` | Ben Example | US | +1 555 555 0108 | T1 | nothing | REC-01 funder mode, once the link below exists |
+| `rivka` | Rivka Example | IL | +1 555 555 0109 | T1 | nothing | REC-14, REC-15: yeshiva finance, imports the roster |
+| `shimon` | Shimon Example | IL | +1 555 555 0110 | T1 | nothing | REC-14: yeshiva finance, the second approver |
 
 Market is the market whose walkthroughs use the persona. The party itself has no market, since every
 member holds both purses; a transfer takes the market of the process that wrote it. Seed and record the
 IL flows against a `MARKET=IL` process. REC-11 (club rates) and REC-18 (ledger reversals) need a staff
 console session (T-0919), not a member.
 
+### The demo yeshiva (T-0034)
+
+With the console's staff key in the environment, the seed also stands up the institution the
+institution console (T-0608 onward) starts from. It goes through `/admin/*` the way two staff admins
+would (REQ-ADM-004):
+
+1. Ada Admin (`staff-admin-1`) onboards "Yeshivat Kesher (demo)", market IL.
+2. Ada proposes `rivka` and `shimon` as finance, and Abe Admin (`staff-admin-2`) approves each grant.
+3. `rivka` signs in again, so her token carries `org_finance`, and imports a three-row roster of
+   fictional students (`example.test` funder addresses). They become invited members.
+
+```sh
+set -a; . ./.env.local-staff; set +a   # ADMIN_API_SIGNING_KEY; the stack must run with the matching STAFF_JWKS
+pnpm --filter @kesher/demo seed
+```
+
+`ADMIN_API_SIGNING_KID` defaults to `local-staff-1`. Without `ADMIN_API_SIGNING_KEY`, the seed makes the
+members only and says how to add the yeshiva. The keys are `seed-yeshiva-…`: a rerun finds the
+institution, skips staff who are already active and replays the roster import, so it makes nothing new.
+The seed signs staff tokens with the local pair only. A deployed console's key never leaves its
+secret store.
+
 ### Not seeded: the contract cannot make these yet
 
 | Who | Recordings | Why |
 |---|---|---|
 | Funder linked to a member (Ben to Dana) | REC-01 funder mode, REC-04 | `POST /memberships` needs a plan in `billing.plan_version`, and no endpoint or migration creates one |
-| Institution with a roster | REC-14, REC-15 | No endpoint creates `org.institution`. A roster import only makes invited members, and nothing over HTTP activates them |
-| Finance requester and second approver | REC-14 | No endpoint creates `org.staff` or grants `org_finance`; sign-up always gives the member role |
+| Active roster members | REC-14, REC-15 | A roster import makes invited members, and nothing over HTTP activates them |
 | Allowance schedule | REC-14 | No endpoint creates `org.allowance_schedule` |
 
 ## Sign in to the console as staff (T-0919)
