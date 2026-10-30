@@ -16,3 +16,15 @@ Steps (from repo root, PowerShell on Windows unless stated):
 13. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with org at 6 migrations. Step 5 reports no pending migrations. Steps 6, 7 and 8 print `INSERT 0 1`. Step 9 fails with a check constraint violation (the key's length). Step 10 fails with a unique violation on `schedule_id` (one key per schedule). Step 11 fails with `permission denied for table allowance_schedule_request`, and so does step 12.
 Report back: the console output of steps 4 to 12.
+
+## Result
+PASS, 2026-10-30 05:06 (Asia/Jerusalem), on the desktop runner worktree at abea494 (claude/practical-babbage-80xevv), Docker 29.8.2, postgres:16.
+- Step 3 (roles.sql): ok, exit 0.
+- Step 4: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent; exit 0. org has 6 migration files; org.allowance_schedule_request exists.
+- Step 5: "No migration files to execute", all 9 `ok`.
+- Steps 6, 7, 8: `INSERT 0 1`.
+- Step 9: `ERROR: new row for relation "allowance_schedule_request" violates check constraint "allowance_schedule_request_idempotency_key_check"`.
+- Step 10: `ERROR: duplicate key value violates unique constraint "allowance_schedule_request_schedule_id_key"` (Key (schedule_id)=(…062701) already exists).
+- Step 11: `ERROR: permission denied for table allowance_schedule_request`.
+- Step 12: `ERROR: permission denied for table allowance_schedule_request`.
+- Step 13: container removed.
