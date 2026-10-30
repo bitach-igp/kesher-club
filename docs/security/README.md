@@ -24,6 +24,18 @@ The two preview jobs run once the preview environment exists, which needs the sh
 applied and its outputs stored as repository variables (`vars.AWS_CI_ROLE_ARN`). Until then GitHub
 shows them as skipped.
 
+### Accepted dependency advisories
+
+`pnpm.auditConfig.ignoreGhsas` in `package.json` lists each advisory the audit job accepts. Each one sits
+in developer tooling that never reaches an app bundle or a server, and has no patched release on the line
+that tooling uses. An entry comes out once its tool ships a fix.
+
+| Advisory | Package, and who brings it | Why it is accepted | Added |
+|---|---|---|---|
+| GHSA-vfj7-8cjw-p6xm | `braces`, through Metro's file watching | Build tooling on the developer's machine | T-0002 |
+| GHSA-86w9-cpqp-85rv | `node-forge`, through `@expo/cli` | Used only for local dev certificates | T-0033 |
+| GHSA-mrhx-c7xc-m3w5 (high, memory exhaustion validating oversized collections) | `zod` 3.25.76, through `@expo/cli` 58.x (the latest still declares `zod ^3.25.76`); no 3.x release is patched | It validates the CLI's own config and manifests on the developer's machine. The app and the API use `zod` 4.6.7, which is patched | 2026-10-30, accepted by Zvi |
+
 ## Rules the code already enforces
 
 These come from `docs/constitution.md` and are worth knowing before testing anything.

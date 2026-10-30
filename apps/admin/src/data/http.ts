@@ -9,7 +9,7 @@ import { ApiError, createClient, type Client, type Schemas } from '@kesher/sdk';
 import type { StaffSigner } from '../auth/staff-token.ts';
 import type { Market } from '@kesher/ports';
 import { gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type Deposit, type FlagState, type InstitutionDetail, type InstitutionRow, type ProviderBinding } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type Deposit, type FlagState, type InstitutionDetail, type InstitutionRow, type KybStatus, type KybView, type ProviderBinding, type Risk } from './types.ts';
 
 export const MARKETS: readonly Market[] = ['IL', 'US'];
 /** Club-wide reads and writes go here; any market's API serves them from the shared database, so the choice is fixed. */
@@ -96,6 +96,19 @@ export const deposit = (d: Schemas['InstitutionDeposit']): Deposit => ({
   createdAt: d.createdAt,
   decidedAt: d.decidedAt,
 });
+
+/** The record as the API answers it, with the pending high-risk approval's outcome read off its payload. */
+export const kybView = (r: Schemas['KybRecord']): KybView => {
+  const p = r.pendingApproval;
+  const payload = (p?.payload ?? {}) as { status?: KybStatus; risk?: Risk };
+  return {
+    decision: { status: r.decision.status, risk: r.decision.risk, reasons: [...r.decision.reasons], decidedAt: r.decision.decidedAt },
+    people: r.people.map((x) => ({ id: x.id, fullName: x.fullName, roles: [...x.roles], kycTier: x.kycTier })),
+    checks: r.checks.map((c) => ({ id: c.id, kind: c.kind, personId: c.personId, result: c.result, provider: c.provider, evidenceRef: c.evidenceRef, checkedAt: c.checkedAt, disposition: c.disposition })),
+    blocking: [...r.blocking],
+    ...(p ? { pendingApproval: { id: p.id, status: p.status, outcome: payload.status ?? 'approved', risk: payload.risk, proposedByMe: r.proposedByMe === true } } : {}),
+  };
+};
 
 const mapError = (e: unknown): never => {
   if (e instanceof ApiError) {
@@ -223,6 +236,25 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData & { apiFor(mar
     async decideDeposit(id, decision, _by, reason) {
       if (decision === 'approve') return deposit(await run(() => client.post('/admin/deposits/{id}/approve', { path: { id } })));
       return deposit(await run(() => client.post('/admin/deposits/{id}/reject', { path: { id }, body: { reason: reason ?? '' } })));
+    },
+    async getKyb(id) {
+      try {
+        return kybView(await client.get('/admin/institutions/{id}/kyb', { path: { id } }));
+      } catch (e) {
+        if (e instanceof ApiError && e.problem.code === 'NOT_FOUND') return undefined;
+        return mapError(e);
+      }
+    },
+    async disposeKybCheck(checkId, outcome, note) {
+      await run(() => client.post('/admin/kyb/checks/{id}/dispose', { path: { id: checkId }, body: { outcome, note } }));
+    },
+    async decideKyb(institutionId, input) {
+      const body = { status: input.status, ...(input.risk ? { risk: input.risk } : {}), reasons: input.reasons };
+      const r = await run(() => client.post('/admin/institutions/{id}/kyb/decisions', { path: { id: institutionId }, body, idempotencyKey: input.key }));
+      return r.decision ? 'decided' : 'awaiting_second_approval';
+    },
+    async approveKybDecision(approvalId) {
+      await run(() => client.post('/admin/kyb/decisions/{id}/approve', { path: { id: approvalId } }));
     },
 
     async auditLog() {

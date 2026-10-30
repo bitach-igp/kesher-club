@@ -2238,6 +2238,7 @@ components:
         fullName: { type: string, description: Staff-entered text }
         roles: { type: array, items: { type: string, enum: [board, control, signatory] } }
         partyId: { type: string, format: uuid }
+        kycTier: { type: string, enum: [T1, T2], description: The highest KYC tier the linked member has passed (T-0926); absent before one is linked or approved }
     KybCheck:
       type: object
       required: [id, kind, result, provider, detail, checkedAt]
@@ -2277,6 +2278,7 @@ components:
         checks: { type: array, items: { $ref: "#/components/schemas/KybCheck" }, description: The latest check of each kind for the institution and each person }
         blocking: { type: array, items: { type: string }, description: What an approval would be refused for today; empty when it is supported }
         pendingApproval: { $ref: "#/components/schemas/ApprovalRequest" }
+        proposedByMe: { type: boolean, description: With pendingApproval, true for the compliance member who proposed it, who cannot approve it (T-0926) }
     CreditLimit:
       type: object
       required: [currency, limit]

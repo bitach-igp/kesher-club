@@ -131,6 +131,43 @@ export interface DepositInput {
   key: string;
 }
 
+export type KybStatus = 'needs_more_info' | 'approved_with_limits' | 'approved' | 'rejected';
+export type Risk = 'low' | 'medium' | 'high';
+
+/** One check in an institution's KYB record (T-0619): the latest of each kind for the institution and each person. */
+export interface KybCheckView {
+  id: string;
+  kind: 'registry' | 'identifier' | 'exempt_status' | 'sanctions' | 'pep';
+  /** Absent for a check on the institution itself. */
+  personId?: string | undefined;
+  result: 'clear' | 'hit' | 'missing' | 'excepted';
+  provider: string;
+  /** Where the evidence is kept; never the evidence itself. */
+  evidenceRef?: string | undefined;
+  checkedAt: string;
+  disposition?: { outcome: 'false_positive' | 'true_match'; note: string; decidedBy: string; decidedAt: string } | undefined;
+}
+
+/** An institution's KYB record as compliance reviews it (T-0926). */
+export interface KybView {
+  decision: { status: KybStatus; risk?: Risk | undefined; reasons: string[]; decidedAt?: string | undefined };
+  /** Staff-entered names: shown as text. */
+  people: { id: string; fullName: string; roles: ('board' | 'control' | 'signatory')[]; kycTier?: 'T1' | 'T2' | undefined }[];
+  checks: KybCheckView[];
+  /** The API's codes for what an approval would be refused for today; the screen puts them in words. */
+  blocking: string[];
+  /** A high-risk approval waiting for a second compliance member. */
+  pendingApproval?: { id: string; status: string; outcome: KybStatus; risk?: Risk | undefined; proposedByMe: boolean } | undefined;
+}
+
+export interface KybDecisionInput {
+  status: KybStatus;
+  risk?: Risk | undefined;
+  reasons: string[];
+  /** The form's attempt key: a double submit decides once. */
+  key: string;
+}
+
 export interface AdminActor {
   subject: string;
   roles: readonly string[];
@@ -164,6 +201,15 @@ export interface AdminData {
   recordDeposit(institutionId: string, input: DepositInput, by: AdminActor, now: Date): Promise<Deposit>;
   /** A different finance member approves (it posts) or rejects (with a reason). */
   decideDeposit(id: string, decision: 'approve' | 'reject', by: AdminActor, reason: string | undefined, now: Date): Promise<Deposit>;
+
+  /** An institution's KYB record (T-0926); `by` decides whether they proposed the pending high-risk approval. */
+  getKyb(institutionId: string, by: AdminActor): Promise<KybView | undefined>;
+  /** Compliance disposes of a screening hit once, as a false positive or a true match, with a note. */
+  disposeKybCheck(checkId: string, outcome: 'false_positive' | 'true_match', note: string, by: AdminActor, now: Date): Promise<void>;
+  /** Compliance decides; a high-risk approval waits for a second compliance member instead. */
+  decideKyb(institutionId: string, input: KybDecisionInput, by: AdminActor, now: Date): Promise<'decided' | 'awaiting_second_approval'>;
+  /** A different compliance member approves a high-risk approval. */
+  approveKybDecision(approvalId: string, by: AdminActor, now: Date): Promise<void>;
 
   auditLog(): Promise<{ at: string; actor: string; action: string; subject: string; detail?: string | undefined }[]>;
 }

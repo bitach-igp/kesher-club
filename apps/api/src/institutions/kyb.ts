@@ -36,6 +36,8 @@ export interface KybPerson {
   fullName: string;
   roles: PersonRole[];
   partyId?: string;
+  /** The highest KYC tier the linked member party has passed (T-0926); absent before one is linked or approved. */
+  kycTier?: 'T1' | 'T2';
 }
 
 export interface KybCheck {
@@ -302,7 +304,12 @@ export class InstitutionKyb {
   }
 
   private async people(institutionId: string): Promise<KybPerson[]> {
-    const r = await this.db.query<PersonRow>('select id, institution_id, full_name, roles, party_id from org.kyb_person where institution_id = $1 order by created_at, id', [institutionId]);
+    const r = await this.db.query<PersonRow>(
+      `select p.id, p.institution_id, p.full_name, p.roles, p.party_id,
+              (select max(s.tier) from identity.kyc_session s where s.party_id = p.party_id and s.status = 'approved') as kyc_tier
+         from org.kyb_person p where p.institution_id = $1 order by p.created_at, p.id`,
+      [institutionId],
+    );
     return r.rows.map(toPerson);
   }
 
@@ -341,6 +348,7 @@ interface PersonRow {
   full_name: string;
   roles: PersonRole[];
   party_id: string | null;
+  kyc_tier?: 'T1' | 'T2' | null;
 }
 
 interface CheckRow {
@@ -358,4 +366,4 @@ interface CheckRow {
   decided_at: string | Date | null;
 }
 
-const toPerson = (r: PersonRow): KybPerson => ({ id: r.id, fullName: r.full_name, roles: r.roles, ...(r.party_id ? { partyId: r.party_id } : {}) });
+const toPerson = (r: PersonRow): KybPerson => ({ id: r.id, fullName: r.full_name, roles: r.roles, ...(r.party_id ? { partyId: r.party_id } : {}), ...(r.kyc_tier ? { kycTier: r.kyc_tier } : {}) });

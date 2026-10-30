@@ -2652,6 +2652,11 @@ export interface components {
             readonly fullName: string;
             /** Format: uuid */
             readonly id: string;
+            /**
+             * @description The highest KYC tier the linked member has passed (T-0926); absent before one is linked or approved
+             * @enum {string}
+             */
+            readonly kycTier?: "T1" | "T2";
             /** Format: uuid */
             readonly partyId?: string;
             readonly roles: readonly ("board" | "control" | "signatory")[];
@@ -2666,6 +2671,8 @@ export interface components {
             readonly institutionId: string;
             readonly pendingApproval?: components["schemas"]["ApprovalRequest"];
             readonly people: readonly components["schemas"]["KybPerson"][];
+            /** @description With pendingApproval */
+            readonly proposedByMe?: boolean;
         };
         readonly KycSession: {
             /** Format: date-time */
