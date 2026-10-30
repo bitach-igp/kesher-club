@@ -1,10 +1,12 @@
 // Home view model (T-0511): balances per currency with on-hold rows, the identity card while
 // verification is unfinished, the frozen-card banner, transactions grouped by day with filter and
 // search, a declined purchase's reason copy, and merchant text treated as data. T-0911: the incident
-// banner and the quick actions from the public status.
+// banner and the quick actions from the public status. T-0529 (TST-PAY-004, TST-PAY-007 screen rows): Home reaches
+// M12 and M33, and a T1 member's identity card names only the card, never payments.
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
 import type { Account, CapabilityState, Card, CardsApi, KycApi, KycStatus, ServiceStatus, Transaction, WalletApi } from '../../src/api.ts';
+import { t } from '../../src/i18n.ts';
 import { memoryRouter } from '../../src/navigation.ts';
 import { createHomeModel, declinedCopy, filterTransactions, frozenCard, groupByDay, incidentBanner, kycCard, purseRows, quickActions, signedAmount } from './home.model.ts';
 
@@ -59,7 +61,12 @@ describe('pure views', () => {
     expect(kycCard({ status: 'pending' })).toEqual({ body: 'home.kyc.pending', action: false, tone: 'info' });
     expect(kycCard({ status: 'review' })).toEqual({ body: 'home.kyc.review', action: false, tone: 'warning' });
     expect(kycCard({ status: 'rejected' })).toEqual({ body: 'home.kyc.rejected', action: true, tone: 'danger' });
-    expect(kycCard({ status: 'approved', approvedTier: 'T1' })).toEqual({ body: 'home.kyc.none', action: true, tone: 'info' });
+    // T1 pays and gets paid already: the card says only that a card needs more.
+    expect(kycCard({ status: 'approved', approvedTier: 'T1' })).toEqual({ body: 'home.kyc.t1', action: true, tone: 'info' });
+    expect(t('home.kyc.t1', 'en')).toBe('You can pay and get paid. Verify further to get a card.');
+    expect(t('home.kyc.t1', 'en')).not.toMatch(/unlock/i);
+    // A T1 member whose T2 is under review sees that, not a request to start again.
+    expect(kycCard({ status: 'pending', approvedTier: 'T1' })).toEqual({ body: 'home.kyc.pending', action: false, tone: 'info' });
     expect(kycCard({ status: 'approved', approvedTier: 'T2' })).toBeUndefined();
     expect(frozenCard([card('active')])).toBeUndefined();
     expect(frozenCard([card('active'), { ...card('frozen'), id: 'c2' }])?.id).toBe('c2');
@@ -135,6 +142,8 @@ describe('the model', () => {
     expect(router.current()).toBe('/kyc');
     m.goCard();
     expect(router.current()).toBe('/card');
+    m.goReceiveIn();
+    expect(router.current()).toBe('/settings/currency');
     m.goWallet('a-ils');
     expect(router.current()).toBe('/wallet?account=a-ils');
   });
@@ -188,9 +197,10 @@ describe('service status (T-0911)', () => {
 
   it('all ok shows every quick action and no banner; off hides the action without a banner; unknown shows none', () => {
     expect(incidentBanner({ capabilities: all('ok') })).toBeUndefined();
-    expect(quickActions({ capabilities: all('ok') }).map((q) => q.href)).toEqual(['/fund/add-money', '/pay/recipient', '/convert', '/card']);
-    expect(quickActions({ capabilities: { ...all('ok'), fx: 'off', card: 'off' } }).map((q) => q.action)).toEqual(['add', 'send']);
-    expect(quickActions({ capabilities: { ...all('ok'), wallet: 'degraded' } }).map((q) => q.action)).toEqual(['send', 'convert', 'card']);
+    // "Requests and splits" opens M12, the pay home, and goes with p2p like Send.
+    expect(quickActions({ capabilities: all('ok') }).map((q) => q.href)).toEqual(['/fund/add-money', '/pay/recipient', '/pay', '/convert', '/card']);
+    expect(quickActions({ capabilities: { ...all('ok'), fx: 'off', card: 'off' } }).map((q) => q.action)).toEqual(['add', 'send', 'requests']);
+    expect(quickActions({ capabilities: { ...all('ok'), wallet: 'degraded' } }).map((q) => q.action)).toEqual(['send', 'requests', 'convert', 'card']);
     expect(incidentBanner({ capabilities: { ...all('ok'), fx: 'off' }, incident: outage.incident! })).toBeUndefined();
     expect(quickActions(undefined)).toEqual([]);
   });

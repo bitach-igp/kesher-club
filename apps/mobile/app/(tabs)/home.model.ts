@@ -4,7 +4,9 @@
 // purchase explained from the server's reason code. Merchant and member text (`counterparty`,
 // `untrusted.*`) is data: searched and shown as written, never parsed for meaning. T-0911: the public
 // status names each money capability ok, degraded or off; a degraded one shows the incident banner (plain
-// text, never a link) and its quick action is hidden, as are actions for anything not ok.
+// text, never a link) and its quick action is hidden, as are actions for anything not ok. T-0529: Home reaches
+// M12 (requests and splits) and M33 (the receiving currency), and the identity card says only what the
+// member's tier still lacks: a T1 member is told about the card, never that payments are locked.
 import { format, fromWire, money, type Currency, type Money } from '@kesher/domain';
 import { errorIs, type Account, type Card, type CardsApi, type KycApi, type KycStatus, type ProposalsApi, type ServiceStatus, type StatusApi, type Transaction, type WalletApi } from '../../src/api.ts';
 import { intlLocale, type CopyKey, type Locale } from '../../src/i18n.ts';
@@ -67,6 +69,7 @@ export interface HomeDeps {
   cardHref?: string;
   walletHref?: string;
   proposalsHref?: string;
+  receiveInHref?: string;
 }
 
 // ---- pure views -------------------------------------------------------------------------------
@@ -84,6 +87,8 @@ export function purseRows(accounts: readonly Account[]): PurseRow[] {
 /** The identity card: which message, if any, while T2 is not approved. */
 export function kycCard(status: KycStatus | undefined): { body: CopyKey; action: boolean; tone: 'info' | 'warning' | 'danger' } | undefined {
   if (!status || status.approvedTier === 'T2') return status ? undefined : { body: 'home.kyc.none', action: true, tone: 'info' };
+  // T1 already pays and receives; only the card waits for T2.
+  if (status.approvedTier === 'T1' && (status.status === 'approved' || status.status === 'none')) return { body: 'home.kyc.t1', action: true, tone: 'info' };
   switch (status.status) {
     case 'pending':
       return { body: 'home.kyc.pending', action: false, tone: 'info' };
@@ -98,10 +103,12 @@ export function kycCard(status: KycStatus | undefined): { body: CopyKey; action:
 
 export const frozenCard = (cards: readonly Card[]): Card | undefined => cards.find((c) => c.status === 'frozen');
 
-export type QuickAction = 'add' | 'send' | 'convert' | 'card';
+export type QuickAction = 'add' | 'send' | 'requests' | 'convert' | 'card';
 export const QUICK_ACTIONS: readonly { action: QuickAction; capability: keyof ServiceStatus['capabilities']; label: CopyKey; href: string }[] = [
   { action: 'add', capability: 'wallet', label: 'home.quick.add', href: '/fund/add-money' },
   { action: 'send', capability: 'p2p', label: 'home.quick.send', href: '/pay/recipient' },
+  // M12 pay home: requests, splits and the inbox.
+  { action: 'requests', capability: 'p2p', label: 'home.quick.requests', href: '/pay' },
   { action: 'convert', capability: 'fx', label: 'home.quick.convert', href: '/convert' },
   { action: 'card', capability: 'card', label: 'home.quick.card', href: '/card' },
 ];
@@ -193,6 +200,8 @@ export interface HomeModel {
   /** Finds a transaction, paging further into the purse's activity (up to LOCATE_PAGES pages) when it is not loaded yet. */
   locate(id: string, accountId?: string): Promise<Transaction | undefined>;
   goVerify(): void;
+  /** M33: which currency money sent to the member lands in. A preference, so it shows whatever the service status. */
+  goReceiveIn(): void;
   goCard(): void;
   goWallet(accountId: string): void;
   goProposals(): void;
@@ -291,6 +300,9 @@ export function createHomeModel(deps: HomeDeps): HomeModel {
     },
     goVerify() {
       deps.router.push(deps.kycHref ?? '/kyc');
+    },
+    goReceiveIn() {
+      deps.router.push(deps.receiveInHref ?? '/settings/currency');
     },
     goCard() {
       deps.router.push(deps.cardHref ?? '/card');
