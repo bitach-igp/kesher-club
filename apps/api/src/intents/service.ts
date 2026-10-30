@@ -152,7 +152,8 @@ export class IntentService {
     if (input.kind === 'p2p' || input.kind === 'load') {
       const amount = parseMoney(input.payload['amount']);
       if (amount.minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'Amount must be positive');
-      if (input.kind === 'p2p' && typeof input.payload['toPartyId'] !== 'string') throw new DomainError('VALIDATION_FAILED', 'toPartyId required');
+      // A member id, checked now: a phone or a name here would only fail later, at the member's passkey (T-1013).
+      if (input.kind === 'p2p' && !(typeof input.payload['toPartyId'] === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.payload['toPartyId']))) throw new DomainError('VALIDATION_FAILED', 'toPartyId must be a member id');
     }
     const id = uuidv7(now);
     await this.db.query(`insert into agent.pending_intent (id, grant_id, party_id, kind, payload, status, expires_at) values ($1, $2, $3, $4, $5, 'pending', $6)`, [id, input.grantId, input.partyId, input.kind, JSON.stringify(input.payload), new Date(now.getTime() + INTENT_TTL_MS)]);

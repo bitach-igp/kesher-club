@@ -16,6 +16,12 @@ export async function dispatch(app: App, input: { method: string; url: string; h
   const traceId = input.headers['traceparent']?.split('-')[1] ?? randomUUID();
   const u = new URL(input.url, 'http://api.local');
   const pathname = u.pathname.replace(/^\/v1(?=\/)/, '');
+  // /mcp speaks JSON-RPC (T-1013), outside the REST route table and the contract.
+  if (app.mcp.owns(pathname)) {
+    const headers = Object.fromEntries(Object.entries(input.headers).map(([k, v]) => [k.toLowerCase(), v]));
+    const out = await app.mcp.handle({ method: input.method, pathname, headers, rawBody: input.rawBody, now: input.now ?? new Date() });
+    return { ...out, headers: { 'content-type': 'application/json', ...out.headers } };
+  }
   const found = match(input.method, pathname);
   if (!found) return toProblem(new DomainError('NOT_FOUND', 'No such route'), traceId);
   let body: unknown = undefined;

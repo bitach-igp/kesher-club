@@ -13,6 +13,9 @@ import { CimdRegistry, type Fetcher, type Resolver } from './mcp/cimd.ts';
 import { AuthorizeService, oauthHandlers, type OAuthConfig } from './oauth/authorize.ts';
 import { ConsentService, consentHandlers } from './oauth/consent.ts';
 import { TokenEndpoint, tokenHandler } from './oauth/token.ts';
+import { McpTokenValidator } from './mcp/auth.ts';
+import { McpGateway } from './mcp/gateway.ts';
+import { McpHttp, toolContext } from './mcp/http.ts';
 import { lookup } from 'node:dns/promises';
 import { PreferenceService, preferenceHandlers } from './me/preferences.ts';
 import { RateService } from './fx/rates.ts';
@@ -109,6 +112,8 @@ export interface AppOptions {
 
 export interface App {
   handlers: HandlerTable;
+  /** /mcp and its metadata (T-1013): JSON-RPC, outside the REST route table. */
+  mcp: McpHttp;
   authenticate: (req: HttpRequest) => Promise<HttpRequest>;
   services: ReturnType<typeof buildServices>;
 }
@@ -304,7 +309,12 @@ export function createApp(o: AppOptions): App {
     const r = await staff(req);
     return r.principal ? r : member(r);
   };
-  return { handlers, authenticate, services: s };
+  // The MCP resource server (T-1013): the gateway checks tokens this API's authorization server issued (ADR-009).
+  const mcpConfig = { resource: s.oauthConfig.resource, authorizationServers: [s.oauthConfig.issuer.replace(/\/$/, '')] };
+  const mcpValidator = new McpTokenValidator(o.db, { key: o.signingKey.publicKey, issuer: mcpConfig.authorizationServers[0]! }, mcpConfig.resource);
+  const gateway = new McpGateway(mcpConfig, o.db, mcpValidator, (now) => toolContext({ accounts: s.accounts, cards: s.cards, intents: s.intents }, now));
+  const mcp = new McpHttp(mcpConfig, gateway, mcpValidator, s.flags);
+  return { handlers, authenticate, services: s, mcp };
 }
 
 /** Operations whose cards wait on ADR-006 (cards, loads, fx, payouts, households) answer FEATURE_OFF, never 500. */
