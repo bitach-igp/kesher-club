@@ -58,7 +58,7 @@ export function EsimPlansView({ model }: { model: EsimModel }) {
   return (
     <Screen title={t('esim.title', locale)} subtitle={t('esim.subtitle', locale)} testID="screen-esim-plans">
       {s.status === 'loading' ? <Skeleton /> : null}
-      {s.status === 'notCapable' ? <EmptyState title={t('esim.notCapable.title', locale)} body={t('esim.notCapable.body', locale)} /> : null}
+      {s.notCapable ? <Banner tone="warning" title={t('esim.notCapable.title', locale)} body={t('esim.notCapable.body', locale)} testID="esim-not-capable" /> : null}
       {s.status === 'empty' ? <EmptyState title={t('esim.empty.title', locale)} body={t('esim.empty.body', locale)} /> : null}
       {s.status === 'error' && s.error ? <Banner tone="warning" body={t(s.error, locale)} action={{ label: t('common.retry', locale), onPress: () => void model.loadPlans() }} /> : null}
       {s.status === 'ready' && s.credit && s.credit.remaining > 0 ? <Badge label={t('esim.credit.left', locale, { n: s.credit.remaining, unit: s.credit.unit })} tone="success" /> : null}
