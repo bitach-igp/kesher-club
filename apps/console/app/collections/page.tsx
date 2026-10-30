@@ -1,5 +1,7 @@
 // I08 Collections (T-0611, REQ-INS-006): a month's paid fees with receipts, who still owes, per student,
 // and the month's export. Fees only: no spend detail for any student (REQ-INS-005; see src/collections.ts).
+// Finance gets Bill members (T-0629).
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { institutionApi } from '../../src/api.ts';
 import { fmt } from '../../src/allowances.ts';
@@ -20,6 +22,11 @@ export default async function CollectionsPage({ searchParams }: { searchParams: 
   const header = (
     <>
       <h1>{t('collections.title', locale)}</h1>
+      {landing.role === 'finance' ? (
+        <p>
+          <Link href="/collections/new" data-testid="collections-bill">{t('collections.bill', locale)}</Link>
+        </p>
+      ) : null}
       <p className="row">
         <a href={`/collections?month=${shiftMonth(month, -1)}`}>{t('collections.prev', locale)}</a>
         <strong data-testid="collections-month">{t('collections.month', locale, { month })}</strong>

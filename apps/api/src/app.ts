@@ -64,6 +64,7 @@ import { FUNDING_PROVIDER, LoadService } from './wallet/loads.ts';
 import { AddonOrderService } from './addons/orders.ts';
 import { CreditService } from './addons/credit.ts';
 import { CollectionsService, collectionsHandlers } from './institutions/collections.ts';
+import { FeeBilling, feeBillingHandlers } from './institutions/fee-billing.ts';
 import { allowanceRunHandlers } from './institutions/allowance-runs.ts';
 import { PostgresAllowanceActivities } from './institutions/allowance/activities.ts';
 import { creditHandlers, InstitutionCredit } from './institutions/credit.ts';
@@ -260,6 +261,7 @@ export function createApp(o: AppOptions): App {
     importRoster: importRosterHandler({ roster: s.roster, staffInstitution, onCommitted: (importId, now) => s.invites.fanOut(importId, now) }),
     ...inviteHandlers(s.invites),
     ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
+    ...feeBillingHandlers({ billing: new FeeBilling(o.db), flags: s.flags, staffInstitution }),
     ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.institutionCredit, s.clock.now), credit: s.institutionCredit, flags: s.flags, staffInstitution, db: o.db, identity: s.identity, stepUp: s.stepUp }),
     ...creditHandlers(s.institutionCredit),
     ...payoutAccountHandlers(s.payoutAccounts),

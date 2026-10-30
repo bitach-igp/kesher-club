@@ -67,6 +67,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/invites/{token}', operationId: 'getInvite', public: true },
   { method: 'POST', path: '/invites/{token}/accept', operationId: 'acceptInvite' },
   { method: 'POST', path: '/institutions/{id}/rosters', operationId: 'importRoster' },
+  { method: 'POST', path: '/institutions/{id}/fee-items', operationId: 'createFeeItems' },
   { method: 'GET', path: '/institutions/{id}/collections', operationId: 'listCollections' },
   { method: 'GET', path: '/institutions/{id}/collections/export', operationId: 'exportCollections' },
   { method: 'GET', path: '/fee-items', operationId: 'listFeeItems' },

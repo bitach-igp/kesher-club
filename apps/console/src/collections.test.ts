@@ -1,8 +1,9 @@
 // T-0611 I08 Collections (screen rows of TST-INS-006): the owed and paid totals equal their rows (bigint);
 // the export round-trips its bytes exactly (a CSV keeps its byte-order mark, an XLSX its zip magic number);
 // a student who has not consented shows fees owed and nothing of their spending (REQ-INS-005).
+// T-0629: billing checks the amount and the due date before the call, and bills once per attempt key.
 import { describe, expect, it } from 'vitest';
-import { byStudent, decodeExport, hasBom, isZip, shiftMonth, totalsMatch, type Collections } from './collections.ts';
+import { billMembers, byStudent, checkBill, decodeExport, hasBom, isZip, shiftMonth, totalsMatch, type BillDeps, type BillDraft, type Collections } from './collections.ts';
 
 const ils = (minor: string) => ({ minor, currency: 'ILS' as const });
 const receipt = (n: number, memberName: string, minor: string) => ({ receiptNumber: `KC-202611-${n}`, feeItemId: `f${n}`, institutionId: 'i', institutionName: 'Yeshiva', memberPartyId: `p-${memberName}`, description: 'Tuition', amount: ils(minor), paidAt: '2026-11-03T09:00:00Z', journalId: `j${n}`, memberName });
@@ -54,5 +55,28 @@ describe('I08 collections (T-0611)', () => {
 
   it('months step across the year', () => {
     expect([shiftMonth('2026-01', -1), shiftMonth('2026-12', 1), shiftMonth('2026-11', 0)]).toEqual(['2025-12', '2027-01', '2026-11']);
+  });
+});
+
+describe('billing members (T-0629)', () => {
+  const draft = (over: Partial<BillDraft> = {}): BillDraft => ({ description: 'Tuition, term 2', amountText: '120', dueDate: '2026-12-01', ...over });
+
+  it('checks the amount and the due date before the call, in the market\'s currency', () => {
+    expect(checkBill(draft(), 'IL', '2026-11-10')).toEqual({ ok: true, body: { description: 'Tuition, term 2', amount: { minor: '12000', currency: 'ILS' }, dueDate: '2026-12-01', members: { kind: 'all' } } });
+    expect(checkBill(draft({ amountText: '10,000.00' }), 'US', '2026-11-10')).toMatchObject({ ok: true, body: { amount: { minor: '1000000', currency: 'USD' } } });
+    expect(checkBill(draft({ amountText: '10,000.01' }), 'IL', '2026-11-10')).toEqual({ ok: false, problems: ['over_max'] });
+    expect(checkBill(draft({ amountText: '0', dueDate: '2026-11-09', description: ' ' }), 'IL', '2026-11-10')).toEqual({ ok: false, problems: ['description', 'amount', 'due'] });
+    expect(checkBill(draft({ dueDate: '2027-11-12' }), 'IL', '2026-11-10')).toEqual({ ok: false, problems: ['due'] });
+  });
+
+  it('bills once per attempt with a fresh key; an invalid draft never calls; FEATURE_OFF is the off state', async () => {
+    const keys: string[] = [];
+    const batch = { id: 'b1', description: 'Tuition, term 2', amount: { minor: '12000', currency: 'ILS' as const }, dueDate: '2026-12-01', memberCount: 3, total: { minor: '36000', currency: 'ILS' as const } };
+    let n = 0;
+    const deps: BillDeps = { create: async (_body, key) => (keys.push(key), { ok: true, value: batch }), newKey: () => `key-${++n}` };
+    expect(await billMembers(deps, draft(), 'IL', '2026-11-10')).toEqual({ kind: 'done', batch });
+    expect(await billMembers(deps, draft({ amountText: '' }), 'IL', '2026-11-10')).toEqual({ kind: 'invalid', problems: ['amount'] });
+    expect(keys).toEqual(['key-1']);
+    expect(await billMembers({ create: async () => ({ ok: false, code: 'FEATURE_OFF' }), newKey: () => 'k' }, draft(), 'IL', '2026-11-10')).toEqual({ kind: 'off' });
   });
 });

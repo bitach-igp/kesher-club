@@ -2,10 +2,15 @@
 // student, and the month's export. Fees only: the console shows no spend detail for any student, consented
 // or not, because no API serves it yet (REQ-INS-005 lets staff see it only with consent; that screen comes
 // with its own API). The export arrives as a base64 envelope and leaves as the exact bytes the API wrote.
+// Billing (T-0629): finance bills a fee to every active member; the amount and the due date are checked first.
 import type { Schemas } from '@kesher/sdk';
+import type { Result } from './api.ts';
+import { parseShekels } from './payouts.ts';
 
 export type Collections = Schemas['Collections'];
 export type ExportFile = Schemas['ExportFile'];
+export type FeeBillRequest = Schemas['FeeBillRequest'];
+export type FeeBatch = Schemas['FeeBatch'];
 type Money = Schemas['Money'];
 
 export interface StudentFees {
@@ -67,3 +72,49 @@ export function shiftMonth(month: string, by: number): string {
   const [y, m] = month.split('-').map(Number) as [number, number];
   return monthOf(new Date(Date.UTC(y, m - 1 + by, 1)));
 }
+
+/** The API's ceiling, a typo guard: 10,000.00 a member. */
+export const MAX_FEE_MINOR = 1_000_000n;
+const DESCRIPTION_MAX = 120;
+
+export interface BillDraft {
+  description: string;
+  /** Major units as typed: "120" or "1,250.50". */
+  amountText: string;
+  /** YYYY-MM-DD, from the date input. */
+  dueDate: string;
+}
+
+export type BillProblem = 'description' | 'amount' | 'over_max' | 'due';
+
+const addDays = (date: string, days: number): string => new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10);
+
+/** Everything the console can know before the call: a description, an amount, a due date from today to a year on. */
+export function checkBill(d: BillDraft, market: 'IL' | 'US', today: string): { ok: true; body: FeeBillRequest } | { ok: false; problems: BillProblem[] } {
+  const problems: BillProblem[] = [];
+  const description = d.description.trim();
+  if (!description || description.length > DESCRIPTION_MAX) problems.push('description');
+  const minor = parseShekels(d.amountText);
+  if (minor === undefined) problems.push('amount');
+  else if (minor > MAX_FEE_MINOR) problems.push('over_max');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d.dueDate) || d.dueDate < today || d.dueDate > addDays(today, 366)) problems.push('due');
+  if (problems.length || minor === undefined) return { ok: false, problems };
+  return { ok: true, body: { description, amount: { minor: minor.toString(), currency: market === 'US' ? 'USD' : 'ILS' }, dueDate: d.dueDate, members: { kind: 'all' } } };
+}
+
+export type BillOutcome = { kind: 'done'; batch: FeeBatch } | { kind: 'invalid'; problems: BillProblem[] } | { kind: 'off' } | { kind: 'error'; code: string };
+
+export interface BillDeps {
+  create(body: FeeBillRequest, idempotencyKey: string): Promise<Result<FeeBatch>>;
+  newKey(): string;
+}
+
+/** Checks the draft, then bills once per attempt key. */
+export async function billMembers(d: BillDeps, draft: BillDraft, market: 'IL' | 'US', today: string): Promise<BillOutcome> {
+  const checked = checkBill(draft, market, today);
+  if (!checked.ok) return { kind: 'invalid', problems: checked.problems };
+  const r = await d.create(checked.body, d.newKey());
+  if (r.ok) return { kind: 'done', batch: r.value };
+  return r.code === 'FEATURE_OFF' ? { kind: 'off' } : { kind: 'error', code: r.code };
+}
+

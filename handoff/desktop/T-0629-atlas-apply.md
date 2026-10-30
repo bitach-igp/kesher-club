@@ -1,0 +1,17 @@
+Task: T-0629 · Branch: claude/practical-babbage-80xevv · Needs: docker
+Why: Migration org/0007 adds org.fee_batch, which keeps each billing call's Idempotency-Key and fingerprint, and a nullable org.fee_item.batch_id that points at it (the foreign key goes on NOT VALID: every existing fee item has no batch). club_app may insert and read batches but not update or delete them. This needs the real Postgres 16 apply; the cloud session only has PGlite. Each statement whose success another depends on is in its own `-c` call. Nothing here is a real institution or member.
+Steps (from repo root, PowerShell on Windows unless stated):
+1. docker run --name kesher-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=club -p 5433:5432 -d postgres:16
+2. Start-Sleep -Seconds 8
+3. Get-Content -Raw db/roles.sql | docker exec -i kesher-pg psql -U postgres -d club -v ON_ERROR_STOP=1
+4. node db/migrate.mjs --docker --url "postgres://postgres:postgres@localhost:5433/club?sslmode=disable"
+5. node db/migrate.mjs --docker --url "postgres://postgres:postgres@localhost:5433/club?sslmode=disable"
+6. docker exec -i kesher-pg psql -U postgres -d club -c "insert into org.institution (id, name, market) values ('00000000-0000-7000-8000-000000062900', 'T-0629 check', 'IL')"
+7. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into org.fee_batch (id, idempotency_key, institution_id, description, amount_minor, currency, due_at, member_count, request_hash, created_by, created_at) values ('00000000-0000-7000-8000-000000062901', 't0629-key-1', '00000000-0000-7000-8000-000000062900', 'Tuition', 12000, 'ILS', '2026-12-01', 1, 'h', '00000000-0000-7000-8000-000000062999', now())"
+8. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into org.fee_item (id, institution_id, member_party_id, description, amount_minor, currency, due_at, batch_id) values ('00000000-0000-7000-8000-000000062902', '00000000-0000-7000-8000-000000062900', '00000000-0000-7000-8000-000000062998', 'Tuition', 12000, 'ILS', '2026-12-01', '00000000-0000-7000-8000-000000062901')"
+9. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into org.fee_item (id, institution_id, member_party_id, description, amount_minor, currency, due_at, batch_id) values ('00000000-0000-7000-8000-000000062903', '00000000-0000-7000-8000-000000062900', '00000000-0000-7000-8000-000000062998', 'Tuition', 12000, 'ILS', '2026-12-01', '00000000-0000-7000-8000-0000000629ff')"
+10. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into org.fee_batch (id, idempotency_key, institution_id, description, amount_minor, currency, due_at, member_count, request_hash, created_by, created_at) values ('00000000-0000-7000-8000-000000062904', 'short', '00000000-0000-7000-8000-000000062900', 'Tuition', 12000, 'ILS', '2026-12-01', 1, 'h', '00000000-0000-7000-8000-000000062999', now())"
+11. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; delete from org.fee_batch"
+12. docker rm -f kesher-pg
+Expected: step 4 prints `ok` for every schema, with org at 7 migrations. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`, and so do steps 7 and 8 (each after `SET`). Step 9 fails with a foreign key violation on `fee_item_batch_fk` (no such batch). Step 10 fails with a check constraint violation (the key's length). Step 11 fails with `permission denied for table fee_batch`.
+Report back: the console output of steps 4 to 11.

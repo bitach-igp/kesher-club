@@ -1364,6 +1364,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/fee-items": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Bill a fee to every active member, or a listed few; one fee item each
+         * @description REQ-INS-006 (T-0629). The institution's finance staff only: other staff answer 403, another institution 404. The amount is per member, in the institution's currency, above zero and at most 10,000.00; the due date is today or later, within a year. A listed cohort names active members by their roster member id, and naming anyone else answers 422. One call is one batch, all or none. A retry with the same Idempotency-Key answers the batch it made; the same key with a different body answers 409. Behind `institutions.money`.
+         */
+        readonly post: operations["createFeeItems"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/payout-account": {
         readonly parameters: {
             readonly query?: never;
@@ -2741,6 +2761,31 @@ export interface components {
                 readonly net: components["schemas"]["Money"];
                 /** @description The institution's payouts and their reversals (T-0527) */
                 readonly payoutsOut: components["schemas"]["Money"];
+            };
+        };
+        readonly FeeBatch: {
+            readonly amount: components["schemas"]["Money"];
+            /** @description Staff-entered text */
+            readonly description: string;
+            /** Format: date */
+            readonly dueDate: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** @description Fee items made */
+            readonly memberCount: number;
+            readonly total: components["schemas"]["Money"];
+        };
+        readonly FeeBillRequest: {
+            readonly amount: components["schemas"]["Money"];
+            /** @description Staff-entered text the member sees */
+            readonly description: string;
+            /** Format: date */
+            readonly dueDate: string;
+            readonly members: {
+                /** @enum {string} */
+                readonly kind: "all" | "listed";
+                /** @description listed only: roster member ids, each an active member of this institution */
+                readonly memberIds?: readonly string[];
             };
         };
         readonly FeeItem: {
@@ -5620,6 +5665,36 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["ExportFile"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createFeeItems: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["FeeBillRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Billed, or the batch this key already made */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FeeBatch"];
                 };
             };
             readonly default: components["responses"]["Problem"];
