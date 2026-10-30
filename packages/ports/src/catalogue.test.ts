@@ -1,4 +1,4 @@
-// T-0008: the 19 ports of Tab 3 §4 (18, and KybPort from T-0622) all exist, each with a contract suite and (where the spec says so)
+// T-0008: the 20 ports of Tab 3 §4 (18, KybPort from T-0622 and BankPort from T-0618) all exist, each with a contract suite and (where the spec says so)
 // a simulator, and every flag they cite is in config/flags.json.
 import fs from 'node:fs';
 import path from 'node:path';
@@ -10,9 +10,9 @@ const src = path.dirname(fileURLToPath(import.meta.url));
 const flags = new Set((JSON.parse(fs.readFileSync(path.resolve(src, '../../../config/flags.json'), 'utf8')) as { key: string }[]).map((f) => f.key));
 
 describe('port catalogue', () => {
-  it('lists exactly 19 ports with unique capabilities', () => {
-    expect(PORTS.length).toBe(19);
-    expect(new Set(PORTS.map((p) => p.capability)).size).toBe(19);
+  it('lists exactly 20 ports with unique capabilities', () => {
+    expect(PORTS.length).toBe(20);
+    expect(new Set(PORTS.map((p) => p.capability)).size).toBe(20);
   });
 
   it.each(PORTS.map((p) => [p.capability, p] as const))('%s has its interface, contract suite and simulator files', (_c, p) => {

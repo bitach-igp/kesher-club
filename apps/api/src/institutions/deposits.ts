@@ -4,6 +4,14 @@
 // `deposit` transfer settled by its journal: Dr partner_settlement, Cr the institution's own account
 // (T-0613). One statement line is one deposit: the rail and the bank reference are unique among deposits
 // not rejected, so the same line cannot post twice, whoever records it and for whichever institution.
+//
+// The bank feed (T-0618): when Kesher's bank reports an incoming credit (BankPort), a credit quoting exactly one
+// payment reference that names an institution is recorded here by the feed and posted through the same `post()`,
+// so it is the same transfer and journal keys, and the same uniqueness: a statement line already recorded by hand
+// never posts twice. A bank-verified credit needs no second person; the two-person rule is for lines people type.
+// Anything else (no reference, an unknown or second one, the wrong currency for the rail, an amount that
+// differs from a line recorded by hand, KYB not allowing deposits) opens a `suspense` case for ops and posts
+// nothing: money is never guessed onto an institution, and ops record it through the two-person path once known.
 import { createHash } from 'node:crypto';
 import { DomainError, fromWire, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
 import type { Approver, ApprovalService } from '../approvals/service.ts';
@@ -15,9 +23,16 @@ import { created, ok, requireIdempotencyKey, route, type Handler } from '../http
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { TransferService } from '../transfers/service.ts';
+import { SYSTEM_OWNER } from '../ledger/accounts.ts';
+import type { WebhookVerifier } from '../webhooks/verify.ts';
+import type { InboundEvent } from '../webhooks/store.ts';
 import type { KybGate } from './kyb-gate.ts';
+import { BankError, type BankPort, type IncomingCredit } from '@kesher/ports';
 
 export const DEPOSITS_FLAG = 'institutions.deposits';
+export const BANK_FEED_FLAG = 'institutions.bankFeed';
+/** The webhook route's provider, /hooks/bank. */
+export const BANK_PROVIDER = 'bank';
 export const DEPOSIT_JOURNAL_KIND = 'deposit';
 export const RAILS = ['masav', 'wire', 'ach'] as const;
 export type Rail = (typeof RAILS)[number];
@@ -38,6 +53,33 @@ export function paymentReference(institutionId: string): string {
   let out = '';
   for (let i = 0; i < 8; i++) out += CROCKFORD[h[i]! % 32];
   return `KC-${out}`;
+}
+
+/** Every payment reference a remitter's text quotes, normalised and without repeats; a reference is never guessed from a near miss. */
+export function referencesIn(text: string): string[] {
+  const found = text.toUpperCase().match(/KC-[0-9A-HJKMNP-TV-Z]{8}(?![0-9A-Z])/g) ?? [];
+  return [...new Set(found)];
+}
+
+export type SuspenseReason = 'no_reference' | 'ambiguous_reference' | 'unknown_reference' | 'rail_currency' | 'amount_differs' | 'kyb_blocked';
+export type CreditOutcome = { kind: 'off' } | { kind: 'posted'; depositId: string } | { kind: 'already_recorded'; depositId: string } | { kind: 'suspense'; reason: SuspenseReason };
+
+/** The bank's notification, verified through its port; a forged one is stored for forensics and never processed. */
+export function bankCreditVerifier(port: BankPort): WebhookVerifier {
+  return {
+    verify: async (headers, rawBody) => {
+      try {
+        const { eventId, credit } = await port.parseWebhook(headers, rawBody);
+        return { ok: true, eventId, payload: { eventId, credit: { ...credit, amount: toWire(credit.amount) } } };
+      } catch (e) {
+        if (!(e instanceof BankError)) throw e;
+        const eventId = /"eventId"\s*:\s*"([^"]{1,200})"/.exec(rawBody)?.[1] ?? '';
+        // A forged notification is refused; a signed one the port cannot read is kept and carries no credit
+        // (the daily statement still finds the credit itself).
+        return { ok: e.code !== 'BAD_SIGNATURE', eventId, payload: { error: e.code }, reason: e.code };
+      }
+    },
+  };
 }
 
 /** A statement's reference as one string: upper case, no spaces, so "ft 2611-abc" and "FT2611-ABC" are the same line. */
@@ -158,6 +200,106 @@ export class InstitutionDeposits {
     await this.d.db.query(`update ops.institution_deposit set status = 'rejected', decided_at = $2 where id = $1 and status = 'pending'`, [id, now]);
     await this.d.audit.record({ actorId: actor.partyId, actorRole: actor.role, action: 'institution.deposit.reject', subject: r.institution_id, reason: why, payload: { depositId: id, bankReference: r.bank_reference } }, now);
     return this.view((await this.row(id))!, actor.partyId);
+  }
+
+  /** Whether the bank feed runs: deposits on, and the feed itself (`institutions.bankFeed`). */
+  async bankFeedOn(): Promise<boolean> {
+    return (await this.d.flags.isOn(DEPOSITS_FLAG)) && (await this.d.flags.isOn(BANK_FEED_FLAG));
+  }
+
+  /** The stored notification (`/hooks/bank`), processed: the credit it carries, applied. */
+  async applyBankEvent(event: InboundEvent, now: Date): Promise<CreditOutcome | undefined> {
+    const p = event.payload as { credit?: Omit<IncomingCredit, 'amount'> & { amount: { minor: string; currency: string } } } | undefined;
+    if (!p?.credit) return undefined;
+    return this.applyBankCredit({ ...p.credit, amount: fromWire(p.credit.amount) }, event.provider, now);
+  }
+
+  /**
+   * One incoming credit, applied once however often it is told: from the notification, a bank's retry, or the
+   * daily statement after a notification was lost. Posts it to the institution its one payment reference names,
+   * finds the line already recorded, or opens a suspense case.
+   */
+  async applyBankCredit(credit: IncomingCredit, provider: string, now: Date): Promise<CreditOutcome> {
+    if (!(await this.bankFeedOn())) return { kind: 'off' };
+    const key = `bank-credit:${provider}:${credit.creditId}`;
+    const bankReference = normalizeReference(credit.bankReference).slice(0, 64);
+    const mine = await this.byKey(key);
+    // A line recorded by hand, or by an earlier notification for another credit id: the same line never posts twice.
+    const line = mine ?? (await this.d.db.query<Row>(`select ${COLUMNS} from ops.institution_deposit where rail = $1 and bank_reference = $2 and status <> 'rejected'`, [credit.rail, bankReference])).rows[0];
+    if (line && !mine) {
+      if (BigInt(line.amount_minor) !== credit.amount.minor || line.currency !== credit.amount.currency) return this.suspense(credit, provider, 'amount_differs', now, line.institution_id);
+      return { kind: 'already_recorded', depositId: line.id };
+    }
+    if (mine?.status === 'posted') return { kind: 'already_recorded', depositId: mine.id };
+    if (!RAIL_CURRENCIES[credit.rail].includes(credit.amount.currency)) return this.suspense(credit, provider, 'rail_currency', now);
+    const refs = referencesIn(credit.remitterReference);
+    if (refs.length !== 1) return this.suspense(credit, provider, refs.length ? 'ambiguous_reference' : 'no_reference', now);
+    const institutionId = await this.institutionByReference(refs[0]!);
+    if (!institutionId) return this.suspense(credit, provider, 'unknown_reference', now);
+    try {
+      await this.d.kyb.require(institutionId, 'deposits');
+    } catch (e) {
+      if (e instanceof DomainError) return this.suspense(credit, provider, 'kyb_blocked', now, institutionId);
+      throw e;
+    }
+    let row = mine;
+    if (!row) {
+      const id = uuidv7(now);
+      try {
+        await this.d.db.query(
+          `insert into ops.institution_deposit (id, idempotency_key, institution_id, rail, bank_reference, amount_minor, currency, value_date, note, status, recorded_by, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11)`,
+          [id, key, institutionId, credit.rail, bankReference, credit.amount.minor.toString(), credit.amount.currency, credit.valueDate, 'Bank feed', SYSTEM_OWNER, now],
+        );
+      } catch (e) {
+        // Someone recorded the same line a moment ago: theirs stands.
+        if (isPgError(e, PG.UNIQUE_VIOLATION)) return this.applyBankCredit(credit, provider, now);
+        throw e;
+      }
+      await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('institution_deposit', $1, $2, $3) on conflict do nothing`, [id, provider, credit.creditId]);
+      row = (await this.row(id))!;
+    }
+    await this.post(row, { partyId: SYSTEM_OWNER, role: 'bank_feed' }, now);
+    return { kind: 'posted', depositId: row.id };
+  }
+
+  /**
+   * The daily reconciliation's other half: a deposit recorded for this value date that the bank's statement does
+   * not show is either a typo or money that never came. Opens one case each; returns how many it found.
+   */
+  async notOnStatement(valueDate: string, statement: readonly IncomingCredit[], now: Date): Promise<number> {
+    const seen = new Set(statement.map((c) => `${c.rail}:${normalizeReference(c.bankReference).slice(0, 64)}`));
+    const rows = await this.d.db.query<Row>(`select ${COLUMNS} from ops.institution_deposit where value_date = $1 and status <> 'rejected'`, [valueDate]);
+    let n = 0;
+    for (const r of rows.rows) {
+      if (seen.has(`${r.rail}:${r.bank_reference}`)) continue;
+      n += 1;
+      await this.d.db.query(
+        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'deposit_not_on_statement', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
+        [uuidv7(now), `deposit-not-on-statement:${r.id}`, { depositId: r.id, institutionId: r.institution_id, rail: r.rail, bankReference: r.bank_reference, amount: toWire(money(BigInt(r.amount_minor), r.currency)), valueDate, status: r.status }, now],
+      );
+    }
+    return n;
+  }
+
+  /** The institution whose payment reference this is. The reference is a hash of the id, so it is computed, not stored. */
+  private async institutionByReference(reference: string): Promise<string | undefined> {
+    const all = await this.d.db.query<{ id: string }>('select id from org.institution');
+    return all.rows.find((r) => paymentReference(r.id) === reference)?.id;
+  }
+
+  /** Money that came in for no one we can name: a case for ops, never a journal. One case per credit. */
+  private async suspense(credit: IncomingCredit, provider: string, reason: SuspenseReason, now: Date, institutionId?: string): Promise<CreditOutcome> {
+    await this.d.db.query(
+      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'suspense', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
+      [
+        uuidv7(now),
+        `bank-credit:${provider}:${credit.creditId}`,
+        // The remitter's text is data for ops to read, never instructions; it is already cut to 140 characters.
+        { reason, provider, creditId: credit.creditId, rail: credit.rail, amount: toWire(credit.amount), bankReference: credit.bankReference, valueDate: credit.valueDate, remitterReference: credit.remitterReference, ...(institutionId ? { institutionId } : {}) },
+        now,
+      ],
+    );
+    return { kind: 'suspense', reason };
   }
 
   /** The institution's deposits, newest first, with its payment reference and what its account holds. */

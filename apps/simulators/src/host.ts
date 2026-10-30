@@ -1,6 +1,7 @@
 // Simulator host (T-0009): one instance of every simulator, sharing one advanceable clock, bound in a
 // ProviderRegistry for both markets in `sim` mode. Control hooks let the panel (and tests) drive
 // webhooks, decisions and outages without touching simulator internals from the outside.
+import { money } from '@kesher/domain';
 import {
   AuthSimulator,
   BillingSimulator,
@@ -10,6 +11,7 @@ import {
   EventsSimulator,
   FederatedIdPSimulator,
   FundingSimulator,
+  BankSimulator,
   FxSimulator,
   IlPayInitSimulator,
   InsuranceSimulator,
@@ -51,6 +53,7 @@ export interface Simulators {
   kyb: KybSimulator;
   billing: BillingSimulator;
   funding: FundingSimulator;
+  bank: BankSimulator;
   'card-issuing': CardIssuingSimulator;
   'wallet-provisioning': WalletProvisioningSimulator;
   fx: FxSimulator;
@@ -82,6 +85,7 @@ export class SimulatorHost {
       kyb: new KybSimulator(c),
       billing: new BillingSimulator(c),
       funding: new FundingSimulator(c),
+      bank: new BankSimulator(c),
       'card-issuing': new CardIssuingSimulator(c),
       'wallet-provisioning': new WalletProvisioningSimulator(c),
       fx: new FxSimulator(c),
@@ -120,6 +124,13 @@ export class SimulatorHost {
       },
       kyc: {
         decide: { describe: 'Settle a KYC session (status: approved | rejected | review)', args: ['sessionId', 'status'], run: (id, status) => s.kyc.decide(id, (status || undefined) as 'approved' | 'rejected' | 'review' | undefined) },
+      },
+      bank: {
+        credit: {
+          describe: 'A credit lands on Kesher\'s collection account (rail masav | wire | ach) and the bank\'s signed notification for it',
+          args: ['rail', 'minor', 'currency', 'remitterReference'],
+          run: (rail, minor, currency, remitter) => s.bank.credit({ rail: (rail || 'masav') as 'masav' | 'wire' | 'ach', amount: money(BigInt(minor || '0'), (currency || 'ILS') as 'ILS' | 'USD'), remitterReference: remitter ?? '' }),
+        },
       },
       funding: {
         settle: { describe: 'Signed webhook that settles or fails a load', args: ['loadId', 'status'], run: (id, status) => s.funding.webhookFor(id, (status || 'succeeded') as 'succeeded' | 'failed') },
@@ -184,6 +195,10 @@ const FIXTURES: Partial<Record<keyof Simulators, Fixture[]>> = {
   billing: [
     { trigger: 'email @declined.example', effect: 'CARD_DECLINED on subscribe' },
     { trigger: 'email @outage.example', effect: 'PROVIDER_UNAVAILABLE' },
+  ],
+  bank: [
+    { trigger: 'statement for value date 2000-01-01', effect: 'PROVIDER_UNAVAILABLE' },
+    { trigger: 'header x-sim-signature other than sim', effect: 'BAD_SIGNATURE' },
   ],
   funding: [
     { trigger: 'paymentMethodId pm_declined / pm_outage', effect: 'DECLINED / PROVIDER_UNAVAILABLE' },

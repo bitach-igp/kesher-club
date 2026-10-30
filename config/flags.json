@@ -161,6 +161,13 @@
     "turnOnTrigger": "institutions.money + the bank account and payment references institutions pay into"
   },
   {
+    "key": "institutions.bankFeed",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "The bank's incoming credits post institution deposits by payment reference, and the daily statement reconciliation",
+    "turnOnTrigger": "institutions.deposits + ADR-006 bank chosen + its BankPort adapter passing the contract suite"
+  },
+  {
     "key": "funding.ach",
     "defaultProd": false,
     "owner": "Ezra",

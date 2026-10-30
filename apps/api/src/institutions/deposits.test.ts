@@ -4,10 +4,15 @@
 // approving again is a no-op; the same
 // rail and bank reference cannot post twice, for any institution; a rejected one posts nothing and frees
 // its reference; Masav is shekels and ACH dollars; the monthly export reads the deposit.
+// T-0618, the bank feed: a credit quoting one institution's payment reference posts at once, once, however often
+// the bank says so; a line already recorded by hand does not post twice; a credit naming no institution, an unknown
+// or a second one, in the wrong currency for its rail, or for an institution KYB blocks opens a suspense case and
+// posts nothing; a forged notification is refused; with the feed off nothing happens.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { money, uuidv7 } from '@kesher/domain';
 import { SimulatorHost } from '@kesher/simulators';
+import type { BankRail } from '@kesher/ports';
 import { STAFF_AUDIENCE, STAFF_ISSUER } from '../admin/staff-token.ts';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
@@ -21,10 +26,13 @@ import { monthlyExport } from './export.ts';
 let db: TestDatabase;
 let app: App;
 let off: App;
+let feed: App;
+let host: SimulatorHost;
 let privateKey: CryptoKey;
 const NOW = new Date('2026-11-10T09:00:00Z');
 const INST = uuidv7(NOW);
 const OTHER = uuidv7(NOW);
+const BLOCKED = uuidv7(NOW);
 
 const token = (sub: string, roles: string[]) =>
   new SignJWT({ roles }).setProtectedHeader({ alg: 'ES256', kid: 'admin-1' }).setIssuer(STAFF_ISSUER).setAudience(STAFF_AUDIENCE).setSubject(sub).setIssuedAt(Math.floor(NOW.getTime() / 1000)).setExpirationTime(Math.floor(NOW.getTime() / 1000) + 300).sign(privateKey);
@@ -41,11 +49,15 @@ beforeAll(async () => {
   const pair = await generateKeyPair('ES256');
   privateKey = pair.privateKey;
   const jwk = { ...(await exportJWK(pair.publicKey)), kid: 'admin-1', alg: 'ES256', use: 'sig' };
-  const opts = { db, registry: new SimulatorHost().registry, market: 'IL' as const, signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', staffJwks: [jwk], clock: () => NOW };
+  host = new SimulatorHost();
+  const opts = { db, registry: host.registry, market: 'IL' as const, signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', staffJwks: [jwk], clock: () => NOW };
   app = createApp({ ...opts, flags: new StaticFlags(undefined, { 'institutions.deposits': true }) });
   off = createApp({ ...opts, identity: app.services.identity, flags: new StaticFlags() });
+  feed = createApp({ ...opts, identity: app.services.identity, flags: new StaticFlags(undefined, { 'institutions.deposits': true, 'institutions.bankFeed': true }) });
   await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Example', 'IL'), ($2, 'Day School', 'US')`, [INST, OTHER]);
   for (const i of [INST, OTHER]) await decideKyb(db, i);
+  // No KYB decision yet: deposits are not open to it (T-0621).
+  await db.query(`insert into org.institution (id, name, market) values ($1, 'Not Yet Verified', 'IL')`, [BLOCKED]);
 }, 60_000);
 afterAll(async () => db.close());
 
@@ -142,3 +154,68 @@ describe('institution deposits (T-0614, TST-INS-007)', () => {
     expect((await call(off, A, 'GET', `/v1/admin/institutions/${INST}/deposits`)).body).toMatchObject({ code: 'FEATURE_OFF' });
   });
 });
+
+describe('the bank feed (T-0618, TST-INS-007)', () => {
+  type Hook = { headers: Record<string, string>; rawBody: string };
+  const deliver = (a: App, n: Hook) => dispatch(a, { method: 'POST', url: '/v1/hooks/bank', headers: n.headers, rawBody: n.rawBody, now: NOW });
+  const credit = (minor: bigint, remitterReference: string, over: { rail?: BankRail; currency?: 'ILS' | 'USD'; bankReference?: string } = {}) =>
+    host.simulators.bank.credit({ rail: over.rail ?? 'masav', amount: money(minor, over.currency ?? 'ILS'), remitterReference, valueDate: '2026-11-09', ...(over.bankReference ? { bankReference: over.bankReference } : {}) });
+  const journals = async (inst: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where kind = 'deposit' and metadata->>'institutionId' = $1`, [inst])).rows[0]!.n;
+  const caseFor = async (creditId: string) => (await db.query<{ kind: string; payload: { reason: string } }>(`select kind, payload from ops.case where dedupe_key = $1`, [`bank-credit:bank:${creditId}`])).rows[0];
+
+  it('a ₪1,200.00 credit quoting the yeshiva\'s reference posts at once, once, however often the bank says so', async () => {
+    const before = await balance();
+    const journalsBefore = await journals(INST);
+    const n = credit(120_000n, `Tuition Nov ${paymentReference(INST).toLowerCase()} thanks`);
+    expect((await deliver(feed, n)).status).toBe(200);
+    expect(await balance()).toBe(before + 120_000n);
+    // The bank's retry of the same event, and a second notification for the same credit, change nothing.
+    await deliver(feed, n);
+    await deliver(feed, host.simulators.bank.notificationFor(n.credit.creditId));
+    expect(await balance()).toBe(before + 120_000n);
+    expect(await journals(INST)).toBe(journalsBefore + 1);
+    const items = ((await call(app, A, 'GET', `/v1/admin/institutions/${INST}/deposits`)).body as { items: InstitutionDeposit[] }).items;
+    expect(items.find((d) => d.bankReference === n.credit.bankReference)).toMatchObject({ status: 'posted', note: 'Bank feed', amount: { minor: '120000', currency: 'ILS' }, valueDate: '2026-11-09' });
+    // The same statement line recorded by hand afterwards is refused: it is already the institution's.
+    expect((await record(A, INST, { amount: { minor: '120000', currency: 'ILS' }, bankReference: n.credit.bankReference }, 'dep-after-feed-1')).status).toBe(409);
+  });
+
+  it('a line already recorded by hand does not post twice; the same line for another amount is suspense', async () => {
+    const before = await balance();
+    const journalsBefore = await journals(INST);
+    expect((await deliver(feed, credit(2_000_000n, paymentReference(INST), { bankReference: 'FT2611-ABC' }))).status).toBe(200);
+    expect([await balance(), await journals(INST)]).toEqual([before, journalsBefore]);
+    const differs = credit(1_999_999n, paymentReference(INST), { bankReference: 'FT2611-ABC' });
+    await deliver(feed, differs);
+    expect(await caseFor(differs.credit.creditId)).toMatchObject({ kind: 'suspense', payload: { reason: 'amount_differs' } });
+    expect(await balance()).toBe(before);
+  });
+
+  it('no reference, an unknown one, two, the wrong currency for the rail, or a KYB block: a suspense case and no journal, never a guess', async () => {
+    const before = { inst: await balance(), other: await balance(OTHER, 'USD') };
+    const cases: [ReturnType<typeof credit>, string][] = [
+      [credit(5_000n, 'tuition, see email'), 'no_reference'],
+      [credit(5_000n, 'KC-ZZZZZZZZ'), 'unknown_reference'],
+      [credit(5_000n, `${paymentReference(INST)} ${paymentReference(OTHER)}`), 'ambiguous_reference'],
+      [credit(5_000n, paymentReference(INST), { currency: 'USD' }), 'rail_currency'],
+      [credit(5_000n, paymentReference(BLOCKED)), 'kyb_blocked'],
+    ];
+    for (const [n, reason] of cases) {
+      expect((await deliver(feed, n)).status).toBe(200);
+      expect(await caseFor(n.credit.creditId), reason).toMatchObject({ kind: 'suspense', payload: { reason, remitterReference: n.credit.remitterReference } });
+    }
+    expect({ inst: await balance(), other: await balance(OTHER, 'USD') }).toEqual(before);
+    expect(await journals(BLOCKED)).toBe(0);
+  });
+
+  it('a forged notification is refused; with the feed off a credit moves nothing and opens nothing', async () => {
+    const n = credit(7_000n, paymentReference(INST));
+    expect((await deliver(feed, { ...n, headers: { 'x-sim-signature': 'forged' } })).status).toBe(401);
+    const before = await balance();
+    // A fresh notification: the store keeps the first delivery of an event id, the forged one included.
+    expect((await deliver(app, host.simulators.bank.notificationFor(n.credit.creditId))).status).toBe(200);
+    expect(await balance()).toBe(before);
+    expect(await caseFor(n.credit.creditId)).toBeUndefined();
+  });
+});
+
