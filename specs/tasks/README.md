@@ -124,6 +124,8 @@
 | [T-0623](T-0623.md) | PO | Institution payouts only to the verified own-name account | REQ-INS-012 | 12 |
 | [T-0624](T-0624.md) | INS | Daily sanctions rescreen and the KYB refresh sweep | REQ-INS-013, REQ-INS-014 | 12 |
 | [T-0625](T-0625.md) | INS | Institution payouts are withdrawals to the own account: API fills the payee, console shows it | REQ-INS-012, REQ-PO-001 | 12 |
+| [T-0626](T-0626.md) | INS | A student joins from their invite: preview, accept, active once identity-checked | REQ-INS-002 | 13 |
+| [T-0627](T-0627.md) | INS | Finance creates an allowance schedule in I07 | REQ-INS-003 | 13 |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
@@ -156,11 +158,12 @@
 | [T-0919](T-0919.md) | ADM | Staff sign in to a local console through a simulator identity provider | REQ-AUTH-009 | 10 |
 | [T-0920](T-0920.md) | CMP | Recorded walkthroughs of REC-01 to REC-05, and the recording harness | — | 10 |
 | [T-0921](T-0921.md) | CMP | Recorded walkthroughs of REC-06 to REC-09 | — | 10 |
-| [T-0922](T-0922.md) | CMP | Recorded walkthroughs of REC-10 to REC-14 | — | 10 |
+| [T-0922](T-0922.md) | CMP | Recorded walkthroughs of REC-10 to REC-12 | — | 10 |
 | [T-0923](T-0923.md) | CMP | Recorded walkthroughs of REC-15 to REC-18; the package links all eighteen | — | 10 |
 | [T-0924](T-0924.md) | ADM | Admins onboard institutions and staff; finance and admin roles take a second admin | REQ-ADM-004 | 11 |
 | [T-0925](T-0925.md) | ADM | Customer 360 tells the truth: KYC, cards, balances as the member sees them | REQ-ADM-001 | 11 |
 | [T-0926](T-0926.md) | ADM | Admin console: an institution's KYB review | REQ-INS-011, REQ-INS-010 | 12 |
+| [T-0927](T-0927.md) | CMP | Recordings REC-13 (withdrawal) and REC-14 (allowance run) on the institution console | — | 13 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |
