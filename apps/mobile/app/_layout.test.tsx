@@ -45,6 +45,25 @@ describe('routing on the session', () => {
     expect(guard(false, ['(tabs)', 'home'])).toBe('/(auth)/sign-in');
     expect(guard(true, ['+not-found'])).toBe('/(tabs)/home');
   });
+
+  it('an assistant\'s consent request survives sign-in; nothing else does (T-1017)', async () => {
+    const { RootLayoutView, createRootDeps, resumable } = await layoutFor('preview');
+    expect([resumable(['connect', '[id]'], { id: 'req 1' }), resumable(['pay'], { id: 'x' }), resumable(['connect', '[id]'], {})]).toEqual(['/connect/req%201', undefined, undefined]);
+    const deps = createRootDeps(config);
+    const router = memoryRouter('/connect/req-1');
+    const { rerender } = render(<RootLayoutView deps={deps} router={router} segments={['connect', '[id]']} params={{ id: 'req-1' }} />);
+    expect(router.current()).toBe('/(auth)/sign-in');
+    rerender(<RootLayoutView deps={deps} router={router} segments={['(auth)', 'sign-in']} />);
+    deps.session.signIn({ accessToken: 'at', refreshToken: 'rt', accessExpiresAt: '2026-11-01T09:10:00Z' });
+    rerender(<RootLayoutView deps={deps} router={router} segments={['(auth)', 'sign-in']} />);
+    expect(router.current()).toBe('/connect/req-1');
+    // Used once: the next time the member signs in, they start at Home.
+    deps.session.signOut();
+    rerender(<RootLayoutView deps={deps} router={router} segments={['(tabs)', 'home']} />);
+    deps.session.signIn({ accessToken: 'at2', refreshToken: 'rt2', accessExpiresAt: '2026-11-01T09:10:00Z' });
+    rerender(<RootLayoutView deps={deps} router={router} segments={['(auth)', 'sign-in']} />);
+    expect(router.current()).toBe('/(tabs)/home');
+  });
 });
 
 describe('the device reaches every screen (T-0528)', () => {

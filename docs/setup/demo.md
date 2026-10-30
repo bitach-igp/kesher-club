@@ -116,6 +116,27 @@ secret store.
 | Active roster members | REC-14, REC-15 | A roster import makes invited members, and nothing over HTTP activates them |
 | Allowance schedule | REC-14 | No endpoint creates `org.allowance_schedule` |
 
+## Connect an assistant (T-1017)
+
+The panel hosts a demo assistant, an OAuth client of the API's in-house authorization server (ADR-009). It
+lets you connect a persona the way a real assistant would. You need the member app's web build running at
+`DEMO_WEB_ORIGINS` (default `http://localhost:8081`).
+
+1. Sign in to the member app as the persona.
+2. Open `http://localhost:4010/assistant/start`. The panel sends the browser to the API's `/oauth/authorize`,
+   which sends it on to the app's "Connect an assistant" screen.
+   - On the web build a full page load starts signed out. Pick the persona and sign in again, and the app
+     comes back to the request.
+3. Untick anything you don't want to share, then tap **Connect with passkey**. The browser returns to the panel,
+   which says what was granted. It never shows a token.
+   - `GET http://localhost:4010/assistant/status` says whether the demo assistant is connected.
+
+The assistant's client id is `https://assistant.kesher.test/client.json`, on a reserved `.test` host. The demo
+process answers that host itself, so the API's client-metadata guard (T-1003) stays as strict as anywhere else.
+The client's redirect URI is the panel's `http://localhost:4010/assistant/callback`. Loopback http redirect URIs
+are allowed for native and command-line clients (RFC 8252). Grants show under Settings, Assistants in the app,
+where one tap revokes them.
+
 ## Sign in to the console as staff (T-0919)
 
 The console keeps its full Identity Center sign-in: discovery, authorization code, token, JWKS. Locally,

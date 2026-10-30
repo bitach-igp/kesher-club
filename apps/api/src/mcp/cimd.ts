@@ -121,6 +121,22 @@ export class CimdRegistry {
   }
 }
 
+/**
+ * A redirect URI a client may list: https, or http on a loopback host for a native or command-line client
+ * (OAuth 2.1 §8.4.2, RFC 8252 §7.3; T-1017). Never a fragment, never credentials.
+ */
+export function allowedRedirectUri(v: unknown): boolean {
+  if (typeof v !== 'string') return false;
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return false;
+  }
+  if (u.hash || u.username || u.password) return false;
+  return u.protocol === 'https:' || (u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname));
+}
+
 function parseMetadata(text: string, clientId: string): ClientMetadata {
   let doc: Partial<ClientMetadata>;
   try {
@@ -130,6 +146,6 @@ function parseMetadata(text: string, clientId: string): ClientMetadata {
   }
   if (doc.client_id !== clientId) throw new DomainError('AGENT_NOT_ALLOWED', 'client_id in the document must equal its URL');
   if (!doc.client_name || typeof doc.client_name !== 'string' || doc.client_name.length > 80) throw new DomainError('AGENT_NOT_ALLOWED', 'client_name required (≤ 80 chars)');
-  if (!Array.isArray(doc.redirect_uris) || doc.redirect_uris.length === 0 || !doc.redirect_uris.every((u) => typeof u === 'string' && /^https:\/\//.test(u))) throw new DomainError('AGENT_NOT_ALLOWED', 'redirect_uris must be https');
+  if (!Array.isArray(doc.redirect_uris) || doc.redirect_uris.length === 0 || !doc.redirect_uris.every(allowedRedirectUri)) throw new DomainError('AGENT_NOT_ALLOWED', 'redirect_uris must be https, or http on a loopback host');
   return { client_id: clientId, client_name: doc.client_name, redirect_uris: doc.redirect_uris, ...(doc.client_uri ? { client_uri: doc.client_uri } : {}), ...(doc.logo_uri ? { logo_uri: doc.logo_uri } : {}), ...(doc.scope ? { scope: doc.scope } : {}), ...(doc.token_endpoint_auth_method ? { token_endpoint_auth_method: doc.token_endpoint_auth_method } : {}) };
 }
