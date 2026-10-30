@@ -14,3 +14,16 @@ Steps (from repo root, PowerShell on Windows unless stated):
 11. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with agent at 2 migrations. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`. Step 7 prints `INSERT 0 1`. Step 8 fails with a check constraint violation (the challenge). Step 9 fails with a check constraint violation (approved without a grant or code). Step 10 fails with `permission denied for table authorization_request`.
 Report back: the console output of steps 4 to 10.
+
+## Result
+PASS, 2026-10-30 03:15 (Asia/Jerusalem), Kesher desktop checker on Zvi's PC. Runner worktree at edaba66 (main), Docker 29.8.2, postgres:16.
+
+- Step 3 (roles.sql): exit 0.
+- Step 4: exit 0; `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent. agent migrated to version 0002 (2 migrations).
+- Step 5: exit 0; "No migration files to execute" for all nine schemas, `ok` for all nine.
+- Step 6: `INSERT 0 1`.
+- Step 7: `SET` / `INSERT 0 1`.
+- Step 8: `ERROR:  new row for relation "authorization_request" violates check constraint "authorization_request_code_challenge_check"`.
+- Step 9: `ERROR:  new row for relation "authorization_request" violates check constraint "authorization_request_check"` (row status approved, grant/code columns null).
+- Step 10: `ERROR:  permission denied for table authorization_request`.
+- Step 11: container `kesher-pg` removed.
