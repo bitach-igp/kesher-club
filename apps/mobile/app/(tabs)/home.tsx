@@ -70,6 +70,9 @@ export function HomeView({ model }: { model: HomeModel }) {
           <Button label={t('home.seeAll', locale)} variant="tertiary" onPress={() => model.goWallet(p.accountId)} testID={`home-wallet-${p.currency}`} />
         </Card>
       ))}
+      <Card testID="home-settings">
+        <ListRow title={t('home.receiveIn', locale)} onPress={model.goReceiveIn} last testID="home-receive-in" />
+      </Card>
       {actions.length ? (
         <Card testID="home-quick">
           <Txt variant="headline">{t('home.quick.title', locale)}</Txt>
