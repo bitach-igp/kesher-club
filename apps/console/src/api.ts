@@ -51,6 +51,7 @@ export function institutionApi(baseUrl: string, accessToken: string, stepUpToken
     runAllowance: (id: string, body: Schemas['AllowanceRunRequest'], idempotencyKey: string) => c.post('/institutions/{id}/allowance-runs', { path: { id }, body, idempotencyKey }),
     stepUp: (response?: unknown) => c.post('/auth/step-up', { body: response ? { response: response as Record<string, never> } : {} }),
     collections: (id: string, month: string) => c.get('/institutions/{id}/collections', { path: { id }, query: { month } }),
+    billMembers: (id: string, body: Schemas['FeeBillRequest'], idempotencyKey: string) => c.post('/institutions/{id}/fee-items', { path: { id }, body, idempotencyKey }),
     exportCollections: (id: string, month: string, format: 'csv' | 'xlsx') => c.get('/institutions/{id}/collections/export', { path: { id }, query: { month, format } }),
     payouts: (id: string, cursor?: string) => c.get('/institutions/{id}/payouts', { path: { id }, query: cursor ? { cursor } : {} }),
     payoutAccount: (id: string) => c.get('/institutions/{id}/payout-account', { path: { id } }),
