@@ -115,12 +115,14 @@ link sent before it, and the table says so for that student instead of guessing.
 The seed signs staff tokens with the local pair only. A deployed console's key never leaves its
 secret store.
 
+The yeshiva starts with no allowance schedule: a finance persona makes one in the console under
+Allowances → New schedule (T-0627), as REC-14 does on camera.
+
 ### Not seeded: the contract cannot make these yet
 
 | Who | Recordings | Why |
 |---|---|---|
 | Funder linked to a member (Ben to Dana) | REC-01 funder mode, REC-04 | `POST /memberships` needs a plan in `billing.plan_version`, and no endpoint or migration creates one |
-| Allowance schedule | REC-14 | No endpoint creates `org.allowance_schedule` |
 
 ## Connect an assistant (T-1017)
 

@@ -1117,6 +1117,30 @@ paths:
                 properties:
                   items: { type: array, items: { $ref: "#/components/schemas/AllowanceSchedule" } }
         default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createAllowanceSchedule
+      summary: Create an allowance schedule for every active member or a listed few
+      description: >-
+        REQ-INS-003 (T-0627). The institution's finance staff only: other staff answer 403, another institution
+        404. The amount is per member, in the institution's currency, above zero and at most 10,000.00; a listed
+        cohort names active members by their roster member id, and naming anyone else answers 422. A retry with
+        the same Idempotency-Key answers the schedule it made; the same key with a different body answers 409.
+        Behind `institutions.money`.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AllowanceScheduleRequest" }
+      responses:
+        "201":
+          description: Created, or the schedule this key already made
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AllowanceSchedule" }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/allowance-runs:
     get:
       operationId: listAllowanceRuns
@@ -3450,6 +3474,25 @@ components:
             kind: { type: string, enum: [all, listed], description: "all: every active member of the institution; listed: the members the schedule names" }
             memberCount: { type: integer, minimum: 0, description: Active members a run would pay today }
         nextDate: { type: string, format: date }
+    AllowanceScheduleRequest:
+      type: object
+      required: [name, amount, cadence, cohort]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 80, description: Staff-entered text }
+        amount: { $ref: "#/components/schemas/Money" }
+        cadence: { type: string, enum: [weekly, monthly, once] }
+        cohort:
+          type: object
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [all, listed] }
+            memberIds:
+              type: array
+              description: "listed only: roster member ids (InviteAcceptance.memberId), each an active member of this institution"
+              minItems: 1
+              maxItems: 1000
+              uniqueItems: true
+              items: { type: string, format: uuid }
     StaffName:
       type: object
       required: [displayName]

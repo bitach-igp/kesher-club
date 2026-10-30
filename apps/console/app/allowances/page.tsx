@@ -30,6 +30,11 @@ export default async function AllowancesPage() {
     <>
       <h1>{t('allowances.title', locale)}</h1>
       <h2>{t('allowances.schedules', locale)}</h2>
+      {landing.role === 'finance' ? (
+        <p>
+          <Link href="/allowances/new" data-testid="schedule-new">{t('allowances.new', locale)}</Link>
+        </p>
+      ) : null}
       {schedules.length === 0 ? <p className="muted" data-testid="schedules-none">{t('allowances.schedules.none', locale)}</p> : null}
       {schedules.map((s) => (
         <div className="card" key={s.id} data-testid={`schedule-${s.id}`}>

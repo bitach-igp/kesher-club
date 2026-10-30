@@ -79,7 +79,6 @@ export const INSTITUTION = {
 /** Personas the contract cannot make yet. Listed, never created through SQL. */
 export const MISSING: readonly { who: string; recs: readonly string[]; why: string }[] = [
   { who: 'Funder linked to a member (Ben to Dana)', recs: ['REC-01', 'REC-04'], why: 'POST /memberships needs a plan in billing.plan_version, and no endpoint or migration creates one' },
-  { who: 'Allowance schedule', recs: ['REC-14'], why: 'no endpoint creates org.allowance_schedule' },
 ];
 
 /** The yeshiva's roster file: one row per student persona, under the persona's own name. */

@@ -204,3 +204,69 @@ describe('GET allowance schedules and runs (T-0609, TST-INS-003, TST-INS-004)', 
     expect(nextRunDate('weekly', '2026-10-01', '2026-11-10')).toBe('2026-11-10');
   });
 });
+
+describe('POST /institutions/{id}/allowance-schedules (TST-INS-003 schedule rows, T-0627)', () => {
+  const create = (token: string, body: unknown, key = `sched-${uuidv7()}`, institution = INST) =>
+    dispatch(app, { method: 'POST', url: `/v1/institutions/${institution}/allowance-schedules`, headers: { authorization: `Bearer ${token}`, 'idempotency-key': key }, rawBody: JSON.stringify(body), now: NOW });
+  const weekly = (minor: string, cohort: unknown = { kind: 'all' }) => ({ name: 'Shiur Alef weekly', amount: { minor, currency: 'ILS' }, cadence: 'weekly', cohort });
+  /** A roster member of `institution` in `status`, with a party once they joined. */
+  const member = async (status: 'active' | 'verified' | 'invited', institution = INST): Promise<string> => {
+    const id = uuidv7();
+    await db.query(`insert into org.member (id, institution_id, member_name, member_party_id, status) values ($1, $2, 'Student', $3, $4)`, [id, institution, status === 'invited' ? null : uuidv7(), status]);
+    return id;
+  };
+
+  it('staff who are not finance get 403; another institution\'s finance gets 404; with institutions.money off FEATURE_OFF', async () => {
+    tokens.orgStaff ||= (await app.services.tokens.issue({ partyId: ST, deviceId: 'web', roles: ['org_staff'] })).accessToken;
+    expect((await create(tokens.orgStaff, weekly('10000'))).status).toBe(403);
+    expect((await create(tokens.otherFinance, weekly('10000'))).status).toBe(404);
+    const offRes = await dispatch(off, { method: 'POST', url: `/v1/institutions/${INST}/allowance-schedules`, headers: { authorization: `Bearer ${tokens.finance1}`, 'idempotency-key': 'sched-off-1' }, rawBody: JSON.stringify(weekly('10000')), now: NOW });
+    expect(offRes.body).toMatchObject({ code: 'FEATURE_OFF' });
+    expect((await create(tokens.finance1, weekly('10000'), 'short')).status).toBe(422);
+  });
+
+  it('an amount of 0, or more than ₪10,000.00 a member, answers 422, as do the wrong currency and an unknown cadence', async () => {
+    for (const minor of ['0', '1000001', '-5', '12.5']) expect((await create(tokens.finance1, weekly(minor))).status, minor).toBe(422);
+    expect((await create(tokens.finance1, { ...weekly('10000'), amount: { minor: '10000', currency: 'USD' } })).status).toBe(422);
+    expect((await create(tokens.finance1, { ...weekly('10000'), cadence: 'daily' })).status).toBe(422);
+    expect((await create(tokens.finance1, { ...weekly('10000'), name: ' ' })).status).toBe(422);
+    expect((await create(tokens.finance1, weekly('1000000'))).status).toBe(201);
+  });
+
+  it('a cohort naming a member who is not active, or of another institution, answers 422 and names them', async () => {
+    const active = await member('active');
+    for (const other of [await member('verified'), await member('invited'), await member('active', OTHER), uuidv7()]) {
+      const r = await create(tokens.finance1, weekly('10000', { kind: 'listed', memberIds: [active, other] }));
+      expect(r.status).toBe(422);
+      expect(r.body).toMatchObject({ code: 'VALIDATION_FAILED', notActive: [other] });
+    }
+    expect((await create(tokens.finance1, weekly('10000', { kind: 'listed', memberIds: [] }))).status).toBe(422);
+    expect((await create(tokens.finance1, weekly('10000', { kind: 'listed', memberIds: [active, active] }))).status).toBe(422);
+  });
+
+  it('a retried key answers the same schedule; the key with a different body is a conflict', async () => {
+    const [a, b] = [await member('active'), await member('active')];
+    const body = { name: 'Two students', amount: { minor: '25000', currency: 'ILS' }, cadence: 'monthly', cohort: { kind: 'listed', memberIds: [a, b] } };
+    const first = await create(tokens.finance1, body, 'sched-retry-1');
+    expect(first.status).toBe(201);
+    expect(first.body).toEqual({ id: expect.any(String), name: 'Two students', amount: { minor: '25000', currency: 'ILS' }, cadence: 'monthly', cohort: { kind: 'listed', memberCount: 2 }, nextDate: '2026-11-10' });
+    // The same members in another order are the same request.
+    const again = await create(tokens.finance1, { ...body, cohort: { kind: 'listed', memberIds: [b, a] } }, 'sched-retry-1');
+    expect(again.body).toEqual(first.body);
+    expect((await create(tokens.finance1, { ...body, name: 'Something else' }, 'sched-retry-1')).body).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    const id = (first.body as { id: string }).id;
+    expect((await db.query<{ n: number }>('select count(*)::int as n from org.allowance_schedule where id = $1', [id])).rows[0]!.n).toBe(1);
+    const stored = await db.query<{ member_filter: string[]; created_by: string }>('select member_filter, created_by from org.allowance_schedule where id = $1', [id]);
+    expect(stored.rows[0]!.created_by).toBe(F1);
+    expect(stored.rows[0]!.member_filter).toHaveLength(2);
+  });
+
+  it('the new schedule lists with its next date, and a preview of it pays every active member', async () => {
+    const r = await create(tokens.finance2, { name: 'Everyone, once', amount: { minor: '5000', currency: 'ILS' }, cadence: 'once', cohort: { kind: 'all' } });
+    const made = r.body as { id: string; cohort: { memberCount: number } };
+    const listed = await dispatch(app, { method: 'GET', url: `/v1/institutions/${INST}/allowance-schedules`, headers: { authorization: `Bearer ${tokens.finance1}` }, rawBody: '', now: NOW });
+    expect((listed.body as { items: unknown[] }).items).toContainEqual({ ...made, cohort: { kind: 'all', memberCount: made.cohort.memberCount }, nextDate: '2026-11-10' });
+    const active = (await db.query<{ n: number }>(`select count(*)::int as n from org.member where institution_id = $1 and status = 'active' and member_party_id is not null`, [INST])).rows[0]!.n;
+    expect(made.cohort.memberCount).toBe(active);
+  });
+});
