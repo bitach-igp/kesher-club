@@ -27,6 +27,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/.well-known/oauth-authorization-server', operationId: 'getAuthorizationServerMetadata', public: true },
   { method: 'GET', path: '/oauth/jwks', operationId: 'getOAuthJwks', public: true },
   { method: 'GET', path: '/oauth/authorize', operationId: 'authorizeAgent', public: true },
+  { method: 'POST', path: '/oauth/token', operationId: 'issueAgentToken', public: true },
   { method: 'GET', path: '/oauth/requests/{id}', operationId: 'getAgentConsent' },
   { method: 'POST', path: '/oauth/requests/{id}/approve', operationId: 'approveAgentConsent' },
   { method: 'POST', path: '/oauth/requests/{id}/deny', operationId: 'denyAgentConsent' },
