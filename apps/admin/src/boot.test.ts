@@ -68,6 +68,18 @@ describe('identity provider location (T-0919)', () => {
     expect(lines).toEqual([]);
   });
 
+  it('a shared clock is for local only: preview with ADMIN_CLOCK_URL exits 1 naming it (T-0923)', async () => {
+    const { exit, lines } = await boot({ ...local, ADMIN_ENVIRONMENT: 'preview', NODE_ENV: 'preview', ADMIN_OIDC_ISSUER: 'https://idp.kesher.example', ADMIN_OIDC_JWKS_URL: 'https://idp.kesher.example/jwks', ADMIN_CLOCK_URL: 'http://localhost:4010/health' });
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(JSON.parse(lines[0]!)).toMatchObject({ event: 'boot_failed', message: expect.stringMatching(/ADMIN_CLOCK_URL: a shared clock is for ADMIN_ENVIRONMENT=local only/) });
+  });
+
+  it('local with ADMIN_CLOCK_URL boots', async () => {
+    const { exit, lines } = await boot({ ...local, ADMIN_CLOCK_URL: 'http://localhost:4010/health' });
+    expect(exit).not.toHaveBeenCalled();
+    expect(lines).toEqual([]);
+  });
+
   it('local with plain http to another host exits 1: the simulator issuer cannot be pointed off the machine', async () => {
     const { exit, lines } = await boot({ ...local, ADMIN_OIDC_ISSUER: 'http://idp.example/oidc', ADMIN_OIDC_JWKS_URL: 'http://idp.example/oidc/jwks' });
     expect(exit).toHaveBeenCalledWith(1);

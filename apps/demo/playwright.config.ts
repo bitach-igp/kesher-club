@@ -74,6 +74,8 @@ export default defineConfig({
         ADMIN_API_URL_US: `http://localhost:${PORTS.api}/v1`,
         ADMIN_API_SIGNING_KID: KID,
         ADMIN_API_SIGNING_KEY: staff.ADMIN_API_SIGNING_KEY,
+        // Sign at the stack's clock: the recordings move it days ahead, and the API checks tokens against it.
+        ADMIN_CLOCK_URL: `http://localhost:${PORTS.panel}/health`,
       },
     },
     {

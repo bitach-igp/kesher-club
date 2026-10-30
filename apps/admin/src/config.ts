@@ -80,7 +80,10 @@ export const adminConfigSchema = z.object({
       }
     }),
   ADMIN_API_SIGNING_KID: z.string().min(1).optional(),
+  /** Local only (T-0923): the demo's shared clock, the simulator panel's `/health`, which staff tokens are signed at. */
+  ADMIN_CLOCK_URL: z.string().url().optional(),
 }).superRefine((c, ctx) => {
+  if (c.ADMIN_CLOCK_URL !== undefined && c.ADMIN_ENVIRONMENT !== 'local') ctx.addIssue({ code: 'custom', path: ['ADMIN_CLOCK_URL'], message: 'a shared clock is for ADMIN_ENVIRONMENT=local only' });
   if (c.ADMIN_DATA === 'memory' && c.ADMIN_ENVIRONMENT !== 'local' && c.ADMIN_ENVIRONMENT !== 'preview') ctx.addIssue({ code: 'custom', path: ['ADMIN_DATA'], message: 'memory data is allowed in local and preview only' });
   if (c.ADMIN_DATA === 'api') for (const k of API_MODE_KEYS) if (c[k] === undefined) ctx.addIssue({ code: 'custom', path: [k], message: `${k} is required when ADMIN_DATA=api` });
   for (const k of OIDC_URL_KEYS) {
@@ -109,6 +112,7 @@ export const readAdminEnv = (): Record<string, string | undefined> => ({
   ADMIN_API_URL_US: process.env.ADMIN_API_URL_US,
   ADMIN_API_SIGNING_KEY: process.env.ADMIN_API_SIGNING_KEY,
   ADMIN_API_SIGNING_KID: process.env.ADMIN_API_SIGNING_KID,
+  ADMIN_CLOCK_URL: process.env.ADMIN_CLOCK_URL,
 });
 
 /** Parses an env record. Throws ConfigError (listing every missing key) rather than defaulting. */
