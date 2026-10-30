@@ -1608,6 +1608,30 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/me/display-name": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The name others see when they pay this member
+         * @description REQ-PAY-008 (T-0531). Bearer only. Empty until the member sets one. Only the first name and the last initial are kept, sealed; `displayName` reads "Avi E.".
+         */
+        readonly get: operations["getDisplayName"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        /**
+         * Set the name others see when they pay this member
+         * @description REQ-PAY-008 (T-0531). Bearer only; it moves no money. The first name is 1 to 40 letters in any script, with spaces, hyphens and apostrophes; the last name is optional and only its initial is kept. Anything else answers VALIDATION_FAILED with `field`.
+         */
+        readonly patch: operations["updateDisplayName"];
+        readonly trace?: never;
+    };
     readonly "/me/institution": {
         readonly parameters: {
             readonly query?: never;
@@ -2425,6 +2449,15 @@ export interface components {
         };
         /** @description The app's install id, generated once and kept in the secure store. Not a hardware identifier. */
         readonly DeviceId: string;
+        /** @description Member-written text, shown as text. Absent fields mean no name is set yet. */
+        readonly DisplayName: {
+            /** @example Avi E. */
+            readonly displayName?: string;
+            readonly firstName?: string;
+            readonly lastInitial?: string;
+            /** Format: date-time */
+            readonly updatedAt?: string;
+        };
         readonly ExportFile: {
             readonly base64: string;
             readonly contentType: string;
@@ -5628,6 +5661,56 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Closure"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getDisplayName: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The name, or nothing yet */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["DisplayName"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly updateDisplayName: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly firstName: string;
+                    /** @description Only its first letter is kept */
+                    readonly lastName?: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The name as others will see it */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["DisplayName"];
                 };
             };
             readonly default: components["responses"]["Problem"];

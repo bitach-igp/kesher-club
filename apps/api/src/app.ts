@@ -7,6 +7,7 @@ import { ok, requireIdempotencyKey, requirePrincipal, requireRole, route, type H
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
 import { fxAdminHandlers } from './fx/admin.ts';
+import { DisplayNameService, displayNameHandlers } from './me/display-name.ts';
 import { PreferenceService, preferenceHandlers } from './me/preferences.ts';
 import { RateService } from './fx/rates.ts';
 import { cardHandlers } from './cards/handlers.ts';
@@ -73,7 +74,9 @@ import { InboundEventStore } from './webhooks/store.ts';
 import { simulatorVerifier } from './webhooks/verify.ts';
 import { OutboundEventsService } from './events/outbound.ts';
 import { ROUTES, type HandlerTable } from './routes.ts';
-import { toWire, DomainError } from '@kesher/domain';
+import { randomBytes } from 'node:crypto';
+import { toWire, DomainError, Secret } from '@kesher/domain';
+import { createPiiCipher, type PiiCipher } from './crypto/pii.ts';
 
 export interface AppOptions {
   db: Database;
@@ -87,6 +90,11 @@ export interface AppOptions {
   staffJwks?: readonly JWK[];
   /** Feature flags; defaults to the two-person-approved store (FlagService). Tests inject StaticFlags. */
   flags?: FeatureFlags;
+  /**
+   * The process's PII cipher (T-0024): main.ts and the demo pass theirs, so what one process seals another opens.
+   * Defaults to one with throwaway keys, which suits a test: nothing it seals outlives the process.
+   */
+  pii?: PiiCipher;
 }
 
 export interface App {
@@ -159,6 +167,7 @@ function buildServices(o: AppOptions) {
   const p2pLimits = new P2pLimitService(o.db, memberships, entitlements, plans);
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
   const preferences = new PreferenceService(o.db);
+  const displayNames = new DisplayNameService(o.db, o.pii ?? createPiiCipher({ dataKey: new Secret(randomBytes(32).toString('base64')), indexKey: new Secret(randomBytes(32).toString('base64')) }));
   // A send to a member who receives in the other currency prices at the club rate with their plan's markup (REQ-PAY-006).
   const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort, preferences, rates, markups: fx });
   // An approved agent intent runs the member's own send or load (T-1008, T-1009), so the intents come after them, and the JIT after the intents.
@@ -172,7 +181,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, institutionCredit, institutionKyb, kybGate, payoutAccounts };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, institutionCredit, institutionKyb, kybGate, payoutAccounts };
 }
 
 export function createApp(o: AppOptions): App {
@@ -233,6 +242,7 @@ export function createApp(o: AppOptions): App {
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
     ...depositHandlers(new InstitutionDeposits({ db: o.db, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, approvals: s.approvals, audit: s.audit, flags: s.flags, kyb: s.kybGate })),
     ...preferenceHandlers(s.preferences),
+    ...displayNameHandlers(s.displayNames),
     exportCollections: exportHandler(o.db, staffInstitution),
     // The member's own view of what their assistants proposed (T-1011): member tokens only; never an MCP tool.
     listIntents: route(async (req) => {

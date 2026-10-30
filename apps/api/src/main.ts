@@ -43,6 +43,7 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
       signingKey,
       issuer: config.TOKEN_ISSUER,
       identity: new PostgresIdentityRepository(db, pii),
+      pii,
       staffJwks: config.STAFF_JWKS,
     });
     const server = createServer(app);
