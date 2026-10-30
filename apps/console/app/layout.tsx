@@ -5,6 +5,7 @@ import { headers } from 'next/headers';
 import { theme } from '@kesher/tokens';
 import { getConfig } from '../src/config.ts';
 import { dirOf, localeFrom, t } from '../src/i18n.ts';
+import { showsDeposits } from '../src/deposits.ts';
 import { decodeLanding, LANDING_HEADER } from '../src/session.ts';
 
 export const metadata = { title: 'Kesher Club institution console' };
@@ -15,7 +16,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   const cfg = getConfig();
   const h = await headers();
   const locale = localeFrom(h.get('accept-language'));
-  const signedIn = decodeLanding(h.get(LANDING_HEADER)).kind === 'dashboard';
+  const landing = decodeLanding(h.get(LANDING_HEADER));
+  const signedIn = landing.kind === 'dashboard';
   const th = theme.light;
   const css = `
     :root { --bg: ${th.color.bg.canvas}; --surface: ${th.color.bg.surface}; --sunken: ${th.color.bg.sunken}; --text: ${th.color.text.primary}; --muted: ${th.color.text.secondary};
@@ -46,6 +48,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             <a href="/allowances">{t('nav.allowances', locale)}</a>
             <a href="/collections">{t('nav.collections', locale)}</a>
             <a href="/payouts">{t('nav.payouts', locale)}</a>
+            {showsDeposits(landing) ? <a href="/deposits">{t('nav.deposits', locale)}</a> : null}
           </nav>
         ) : null}
         <main>{children}</main>
