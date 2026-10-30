@@ -1,6 +1,5 @@
 // The recording harness (T-0920): Playwright starts the demo stack (src/record/stack.ts), the member app's
-// web build (T-0033), the admin console against the simulator identity provider (T-0919) and the institution
-// console with its local persona sign-in (T-0608, for REC-13 and REC-14), then records
+// web build (T-0033) and the admin console against the simulator identity provider (T-0919), then records
 // each flow's harness page. A staff key pair is made here, per run: the API trusts its public half, and the
 // console and the stack's seed sign with the private half. Nothing here is a production key or setting.
 //
@@ -23,7 +22,7 @@ const staff = {
 };
 process.env['RECORD_STAFF_KID'] = KID;
 
-export const PORTS = { api: 3000, panel: 4010, member: 8081, console: 3100, institution: 3200, ready: 4099 } as const;
+export const PORTS = { api: 3000, panel: 4010, member: 8081, console: 3100, ready: 4099 } as const;
 
 export default defineConfig({
   testDir: 'src/record',
@@ -75,14 +74,6 @@ export default defineConfig({
         ADMIN_API_SIGNING_KID: KID,
         ADMIN_API_SIGNING_KEY: staff.ADMIN_API_SIGNING_KEY,
       },
-    },
-    {
-      command: `pnpm exec next dev -p ${PORTS.institution}`,
-      cwd: path.resolve(here, '../console'),
-      url: `http://localhost:${PORTS.institution}/sign-in`,
-      timeout: 240_000,
-      reuseExistingServer: false,
-      env: { NODE_ENV: 'development', CONSOLE_ENVIRONMENT: 'local', CONSOLE_API_URL: `http://localhost:${PORTS.api}/v1` },
     },
   ],
 });

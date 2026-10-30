@@ -1,7 +1,7 @@
 // The recording stack (T-0920): the T-0031 process on a fresh in-memory database, seeded with the T-0032
 // personas and the T-0034 yeshiva, its club rate fetched, then a readiness port the recorder waits on, which
-// also answers a member's processor card id for the JIT hook (T-0920), a payout's id at the payout rail for
-// its status webhook (T-0927), and proposes a send as a connected assistant would (T-0921).
+// also answers a member's processor card id for the JIT hook (T-0920) and proposes a send as a connected
+// assistant would (T-0921).
 // Development only, like `pnpm dev`: APP_ENV must be development, and every key comes from the recorder.
 //
 //   node --experimental-strip-types src/record/stack.ts   (started by playwright.config.ts, not by hand)
@@ -70,16 +70,6 @@ http
           async (r) => res.writeHead(r.status, { 'content-type': 'application/json' }).end(await r.text()),
           (e: Error) => res.writeHead(502, { 'content-type': 'application/json' }).end(JSON.stringify({ error: e.message })),
         );
-      });
-      return;
-    }
-    // The rail's id for a payout, which the panel's payout hook needs to send its status webhook (T-0927). Like
-    // processor card ids, staff and members never see it; it lives in ops.external_ref.
-    const payout = new URL(req.url ?? '/', 'http://localhost').searchParams.get('payoutOf');
-    if (payout) {
-      void db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'transfer' and entity_id = $1`, [payout]).then((r) => {
-        const id = r.rows[0]?.external_id;
-        res.writeHead(id ? 200 : 404, { 'content-type': 'application/json' }).end(JSON.stringify(id ? { payoutId: id } : { error: 'not_submitted' }));
       });
       return;
     }
