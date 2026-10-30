@@ -1,10 +1,13 @@
 // One institution (T-0615, REQ-INS-007, REQ-INS-008): the payment reference it quotes, its balances, its staff,
 // and its deposits. Finance records a statement line; a different finance member approves (it posts) or
-// rejects it with a reason. Support sees the page and records nothing.
+// rejects it with a reason. Support sees the page and records nothing. T-0926: its KYB decision and what each
+// money capability does under it (ADR-017), with a link to the review.
 import { randomUUID } from 'node:crypto';
+import Link from 'next/link';
 import { Fragment } from 'react';
 import { notFound } from 'next/navigation';
 import { getAdminData } from '../../../src/data/index.ts';
+import { capabilities, STATUS_WORDS } from '../../../src/institutions/kyb.ts';
 import { canDecide, errorWords, formProblem, isFinance, money$, problemWords, RAILS } from '../../../src/institutions/view.ts';
 import { currentActor } from '../../../src/ui/actor.ts';
 
@@ -12,7 +15,8 @@ export default async function InstitutionPage({ params, searchParams }: { params
   const { id } = await params;
   const sp = await searchParams;
   const actor = await currentActor();
-  const inst = await (await getAdminData()).getInstitution(id, actor);
+  const data = await getAdminData();
+  const [inst, kyb] = await Promise.all([data.getInstitution(id, actor), data.getKyb(id, actor)]);
   if (!inst) notFound();
   const one = (k: string) => (typeof sp[k] === 'string' ? sp[k] : undefined);
   const error = errorWords(one('error'));
@@ -48,6 +52,22 @@ export default async function InstitutionPage({ params, searchParams }: { params
             ))}
           </dl>
         </div>
+        {kyb ? (
+          <div className="card" data-testid="institution-kyb">
+            <h2>KYB · {STATUS_WORDS[kyb.decision.status]}</h2>
+            <ul>
+              {capabilities(kyb).map((c) => (
+                <li key={c.capability}>
+                  <span className={`tag ${c.open ? 'green' : 'red'}`}>{c.open ? 'open' : 'closed'}</span> {c.capability}
+                  {c.why ? <span className="muted"> · {c.why}</span> : null}
+                </li>
+              ))}
+            </ul>
+            <p>
+              <Link href={`${base}/kyb`}>Review KYB{kyb.blocking.length ? ` · ${kyb.blocking.length} open item(s)` : ''} →</Link>
+            </p>
+          </div>
+        ) : null}
         <div className="card">
           <h2>Staff · {inst.activeStaff} active</h2>
           {inst.pendingGrants ? <p className="tag amber">{inst.pendingGrants} grant(s) waiting for a second admin</p> : null}

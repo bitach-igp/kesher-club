@@ -1,7 +1,8 @@
 // T-0620 KYB over HTTP (TST-INS-011, HTTP rows), through the dispatcher and PGlite. Compliance builds a record:
 // people, a hand-made exception and screening results. An approval is refused with the blocking codes in the
 // problem body, then succeeds. A support token reads but cannot decide, and a replayed key answers the same
-// person and the same decision. A high-risk approval goes to a second compliance reviewer over HTTP.
+// person and the same decision. A high-risk approval goes to a second compliance reviewer over HTTP. T-0926: each
+// person reads with their KYC tier, and the record says whether the caller proposed the pending approval.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { uuidv7 } from '@kesher/domain';
@@ -76,8 +77,10 @@ describe('KYB over HTTP (T-0620, TST-INS-011)', () => {
     const approved = await call(CLEO, 'POST', `/v1/admin/institutions/${inst}/kyb/decisions`, { status: 'approved', risk: 'low', reasons: ['All clear'] }, `decide-${inst}-2`);
     expect(approved).toMatchObject({ status: 201, body: { decision: { status: 'approved', risk: 'low' } } });
     expect((await call(CLEO, 'POST', `/v1/admin/institutions/${inst}/kyb/decisions`, { status: 'approved', risk: 'low' }, `decide-${inst}-2`)).body).toMatchObject({ decision: { status: 'approved' } });
-    const record = (await call(SAM, 'GET', `/v1/admin/institutions/${inst}/kyb`)).body as { blocking: string[]; checks: { kind: string; result: string; provider: string }[] };
+    const record = (await call(SAM, 'GET', `/v1/admin/institutions/${inst}/kyb`)).body as { blocking: string[]; people: { kycTier?: string }[]; checks: { kind: string; result: string; provider: string }[] };
     expect(record.blocking).toEqual([]);
+    // Each person reads with the tier the linked member passed (T-0926).
+    expect(record.people).toEqual([expect.objectContaining({ id: person, kycTier: 'T2' })]);
     expect(record.checks.find((c) => c.kind === 'exempt_status')).toMatchObject({ result: 'excepted', provider: 'compliance' });
   });
 
@@ -88,6 +91,9 @@ describe('KYB over HTTP (T-0620, TST-INS-011)', () => {
     const approval = (proposed.body as { approval: { id: string; status: string; kind: string } }).approval;
     expect(approval).toMatchObject({ kind: 'kyb_decision', status: 'awaiting_second_approval' });
     expect(((await call(SAM, 'GET', `/v1/admin/institutions/${inst}/kyb`)).body as { pendingApproval?: { id: string } }).pendingApproval?.id).toBe(approval.id);
+    // The record says who proposed it, so the console offers the proposer no Approve (T-0926).
+    const mine = async (who: typeof CLEO) => ((await call(who, 'GET', `/v1/admin/institutions/${inst}/kyb`)).body as { proposedByMe?: boolean }).proposedByMe;
+    expect([await mine(CLEO), await mine(CARL)]).toEqual([true, false]);
     expect((await call(CLEO, 'POST', `/v1/admin/kyb/decisions/${approval.id}/approve`)).status).toBe(409);
     const second = await call(CARL, 'POST', `/v1/admin/kyb/decisions/${approval.id}/approve`);
     expect(second).toMatchObject({ status: 200, body: { approval: { status: 'approved' }, decision: { status: 'approved', risk: 'high' } } });

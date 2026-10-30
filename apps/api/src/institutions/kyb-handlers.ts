@@ -17,9 +17,10 @@ const compliance = (req: HttpRequest): Approver => ({ ...staffActor(requireStaff
 export function kybHandlers(kyb: InstitutionKyb, checks: KybChecks): Record<'getAdminInstitutionKyb' | 'addAdminKybPerson' | 'recordAdminKybCheck' | 'runAdminKybChecks' | 'disposeAdminKybCheck' | 'decideAdminKyb' | 'approveAdminKybDecision', Handler> {
   return {
     getAdminInstitutionKyb: route(async (req) => {
-      requireStaff(req);
+      const p = requireStaff(req);
       const r = await kyb.record(req.params['id'] ?? '');
-      return ok({ ...r, ...(r.pendingApproval ? { pendingApproval: approvalBody(r.pendingApproval) } : {}) });
+      // The proposer of a high-risk approval is never its second reviewer: the console offers them no Approve (T-0926).
+      return ok({ ...r, ...(r.pendingApproval ? { pendingApproval: approvalBody(r.pendingApproval), proposedByMe: r.pendingApproval.requestedBy === p.partyId } : {}) });
     }),
 
     addAdminKybPerson: route(async (req) => {

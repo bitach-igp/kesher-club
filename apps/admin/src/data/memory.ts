@@ -3,7 +3,7 @@ import { money } from '@kesher/domain';
 import { PORTS } from '@kesher/ports';
 import flagsRegistry from '../../../../config/flags.json' with { type: 'json' };
 import { evaluateFlip, gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type Deposit, type FlagState, type InstitutionDetail, type ProviderBinding } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type Deposit, type FlagState, type InstitutionDetail, type KybView, type ProviderBinding } from './types.ts';
 
 type AuditRow = { at: string; actor: string; action: string; subject: string; detail?: string | undefined };
 
@@ -97,6 +97,30 @@ export function memoryAdminData(): AdminData {
   const yeshiva: InstitutionDetail = { id: '01932e5a-0000-7000-8000-0000000000f1', name: 'Yeshivat Example', market: 'IL', activeStaff: 2, createdAt: T0, paymentReference: 'KC-7M4QX2HD', balances: [money(0n, 'ILS'), money(0n, 'USD')], deposits: [], depositsOff: false, staff: [], pendingGrants: 0 };
   const recorders = new Map<string, string>();
   const depositView = (d: Deposit, by: AdminActor): Deposit => ({ ...d, recordedByMe: recorders.get(d.id) === by.subject });
+  // Its KYB record (T-0926): the checks are clear but for one open hit on a board member, and Rivka, its control
+  // person, has passed T1 only, so an approval is refused until both are dealt with. The blocking reasons are
+  // worked out the way the API's are, for the hits and the control people; the API holds the full rule.
+  const kyb: Omit<KybView, 'blocking' | 'pendingApproval'> = {
+    decision: { status: 'needs_more_info', reasons: [] },
+    people: [
+      { id: 'kyb-p-1', fullName: 'Rivka Example', roles: ['control', 'signatory'], kycTier: 'T1' },
+      { id: 'kyb-p-2', fullName: 'Board Member Example', roles: ['board'], kycTier: 'T2' },
+    ],
+    checks: [
+      ...(['registry', 'identifier', 'exempt_status', 'sanctions', 'pep'] as const).map((kind) => ({ id: `kyb-c-${kind}`, kind, result: 'clear' as const, provider: 'simulator', evidenceRef: `sim:${kind}`, checkedAt: T0 })),
+      ...(['kyb-p-1', 'kyb-p-2'] as const).flatMap((personId) => (['sanctions', 'pep'] as const).map((kind) => ({ id: `kyb-c-${kind}-${personId}`, kind, personId, result: 'clear' as const, provider: 'simulator', evidenceRef: `sim:${kind}`, checkedAt: T0 }))),
+    ],
+  };
+  Object.assign(kyb.checks.find((c) => c.id === 'kyb-c-sanctions-kyb-p-2')!, { result: 'hit', evidenceRef: 'sim-screen:2:sdn' });
+  let pending: { id: string; status: string; outcome: 'approved' | 'approved_with_limits'; risk: 'high'; proposer: string; reasons: string[] } | undefined;
+  const blocking = (): string[] => [
+    ...kyb.checks.filter((c) => c.result === 'hit' && !c.disposition).map((c) => `${c.kind}_hit_undisposed:${c.id}`),
+    ...kyb.checks.filter((c) => c.kind === 'sanctions' && c.disposition?.outcome === 'true_match').map((c) => `sanctions_true_match:${c.id}`),
+    ...kyb.people.filter((p) => p.roles.includes('control') && p.kycTier !== 'T2').map((p) => `control_person_not_t2:${p.id}`),
+  ];
+  const requireCompliance = (by: AdminActor) => {
+    if (!by.roles.includes('compliance')) throw new AdminDataError('FORBIDDEN', 'Only Kesher compliance decides KYB');
+  };
   const complaint = (id: string) => {
     const c = complaints.find((x) => x.id === id);
     if (!c) throw new AdminDataError('NOT_FOUND', `Unknown complaint ${id}`);
@@ -219,6 +243,43 @@ export function memoryAdminData(): AdminData {
       }
       log(by, `institution.deposit.${decision}`, yeshiva.id, now, reason);
       return depositView(d, by);
+    },
+
+    async getKyb(id, by) {
+      if (id !== yeshiva.id) return undefined;
+      return structuredClone({ ...kyb, blocking: blocking(), ...(pending ? { pendingApproval: { id: pending.id, status: pending.status, outcome: pending.outcome, risk: pending.risk, proposedByMe: pending.proposer === by.subject } } : {}) });
+    },
+    async disposeKybCheck(checkId, outcome, note, by, now) {
+      requireCompliance(by);
+      const c = kyb.checks.find((x) => x.id === checkId);
+      if (!c) throw new AdminDataError('NOT_FOUND', 'Check not found');
+      if (c.disposition) throw new AdminDataError('CONFLICT', 'This hit is already disposed of');
+      if (c.result !== 'hit' || !note.trim()) throw new AdminDataError('INVALID', 'Only a screening hit is disposed of, with a note');
+      c.disposition = { outcome, note: note.trim(), decidedBy: by.subject, decidedAt: now.toISOString() };
+      log(by, 'institution.kyb.dispose', yeshiva.id, now, outcome);
+    },
+    async decideKyb(institutionId, input, by, now) {
+      if (institutionId !== yeshiva.id) throw new AdminDataError('NOT_FOUND', 'Institution not found');
+      requireCompliance(by);
+      const approval = input.status === 'approved' || input.status === 'approved_with_limits';
+      if (approval && (!input.risk || blocking().length)) throw new AdminDataError('INVALID', 'The KYB record does not support an approval yet');
+      if (!approval && !input.reasons.length) throw new AdminDataError('INVALID', 'Say why');
+      if (approval && input.risk === 'high') {
+        pending = { id: `kyb-apr-${now.getTime()}`, status: 'awaiting_second_approval', outcome: input.status as 'approved' | 'approved_with_limits', risk: 'high', proposer: by.subject, reasons: input.reasons };
+        log(by, 'institution.kyb.propose', yeshiva.id, now, input.status);
+        return 'awaiting_second_approval';
+      }
+      kyb.decision = { status: input.status, ...(approval ? { risk: input.risk } : {}), reasons: input.reasons, decidedAt: now.toISOString() };
+      log(by, 'institution.kyb.decide', yeshiva.id, now, input.status);
+      return 'decided';
+    },
+    async approveKybDecision(approvalId, by, now) {
+      requireCompliance(by);
+      if (!pending || pending.id !== approvalId) throw new AdminDataError('NOT_FOUND', 'KYB approval not found');
+      if (pending.proposer === by.subject) throw new AdminDataError('SAME_APPROVER', 'The proposer cannot approve their own decision');
+      kyb.decision = { status: pending.outcome, risk: pending.risk, reasons: pending.reasons, decidedAt: now.toISOString() };
+      pending = undefined;
+      log(by, 'institution.kyb.decide', yeshiva.id, now, 'second approval');
     },
 
     async auditLog() {
