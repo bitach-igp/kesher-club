@@ -9,6 +9,8 @@ import type { App } from './app.ts';
 import { DomainError } from '@kesher/domain';
 
 const MAX_BODY = 2 * 1024 * 1024 + 1024;
+/** OAuth's token endpoint takes a form body (RFC 6749 §3.2, T-1016); every other route stays JSON-only. */
+const FORM_BODY = new Set(['issueAgentToken']);
 
 export async function dispatch(app: App, input: { method: string; url: string; headers: Record<string, string>; rawBody: string; now?: Date }): Promise<HttpResponse> {
   const traceId = input.headers['traceparent']?.split('-')[1] ?? randomUUID();
@@ -17,7 +19,9 @@ export async function dispatch(app: App, input: { method: string; url: string; h
   const found = match(input.method, pathname);
   if (!found) return toProblem(new DomainError('NOT_FOUND', 'No such route'), traceId);
   let body: unknown = undefined;
-  if (input.rawBody) {
+  if (input.rawBody && FORM_BODY.has(found.route.operationId) && (input.headers['content-type'] ?? '').startsWith('application/x-www-form-urlencoded')) {
+    body = Object.fromEntries(new URLSearchParams(input.rawBody));
+  } else if (input.rawBody) {
     try {
       body = JSON.parse(input.rawBody);
     } catch {

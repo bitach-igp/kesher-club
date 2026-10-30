@@ -271,6 +271,45 @@ paths:
           headers:
             Location: { schema: { type: string, format: uri } }
         default: { $ref: "#/components/responses/Problem" }
+  /oauth/token:
+    servers: [{ url: "https://api.kesher.example" }]
+    post:
+      operationId: issueAgentToken
+      tags: [agent]
+      summary: An assistant trades a code or a refresh token for tokens (OAuth 2.1 token endpoint)
+      description: >-
+        REQ-AGT-011, REQ-AGT-002 (T-1016, ADR-009). Public: clients have no secret. Behind `mcp.enabled`. Form-encoded, as
+        OAuth requires. `authorization_code` checks the code once, within 60 seconds, against the client, redirect URI and
+        S256 verifier; a failed check burns the code and a reused code revokes its grant. `refresh_token` rotates; a
+        refresh token already used revokes the grant. Errors are OAuth's own JSON with 400, not a problem document.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [grant_type, client_id]
+              properties:
+                grant_type: { type: string, enum: [authorization_code, refresh_token] }
+                client_id: { type: string, format: uri }
+                code: { type: string }
+                code_verifier: { type: string, minLength: 43, maxLength: 128 }
+                redirect_uri: { type: string, format: uri }
+                refresh_token: { type: string }
+                resource: { type: string, format: uri }
+      responses:
+        "200":
+          description: The tokens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentTokenResponse" }
+        "400":
+          description: An OAuth error
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OAuthError" }
+        default: { $ref: "#/components/responses/Problem" }
   /oauth/requests/{id}:
     get:
       operationId: getAgentConsent
@@ -3069,6 +3108,21 @@ components:
             title: { type: string }
             body: { type: string, description: Plain text, shown as written; never a link }
             since: { type: string, format: date-time }
+    AgentTokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in, refresh_token, scope]
+      properties:
+        access_token: { type: string, description: "ES256 JWT, audience the MCP URL, 10 minutes" }
+        token_type: { type: string, enum: [Bearer] }
+        expires_in: { type: integer, example: 600 }
+        refresh_token: { type: string, description: Opaque; rotates on every use for up to 30 days }
+        scope: { type: string }
+    OAuthError:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string, enum: [invalid_request, invalid_grant, unsupported_grant_type, invalid_target] }
+        error_description: { type: string }
     AgentConsent:
       type: object
       required: [id, client, scopes, expiresAt]

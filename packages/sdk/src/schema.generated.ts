@@ -1816,6 +1816,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/oauth/token": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * An assistant trades a code or a refresh token for tokens (OAuth 2.1 token endpoint)
+         * @description REQ-AGT-011, REQ-AGT-002 (T-1016, ADR-009). Public: clients have no secret. Behind `mcp.enabled`. Form-encoded, as OAuth requires. `authorization_code` checks the code once, within 60 seconds, against the client, redirect URI and S256 verifier; a failed check burns the code and a reused code revokes its grant. `refresh_token` rotates; a refresh token already used revokes the grant. Errors are OAuth's own JSON with 400, not a problem document.
+         */
+        readonly post: operations["issueAgentToken"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/p2p/recipients/resolve": {
         readonly parameters: {
             readonly query?: never;
@@ -2331,6 +2351,17 @@ export interface components {
             /** Format: date-time */
             readonly lastUsedAt?: string;
             readonly scopes: readonly string[];
+        };
+        readonly AgentTokenResponse: {
+            /** @description ES256 JWT, audience the MCP URL, 10 minutes */
+            readonly access_token: string;
+            /** @example 600 */
+            readonly expires_in: number;
+            /** @description Opaque; rotates on every use for up to 30 days */
+            readonly refresh_token: string;
+            readonly scope: string;
+            /** @enum {string} */
+            readonly token_type: "Bearer";
         };
         readonly AllowanceRun: {
             readonly failures?: number;
@@ -3026,6 +3057,11 @@ export interface components {
             readonly paymentReference: string;
             /** @enum {string} */
             readonly role: "staff" | "finance" | "admin";
+        };
+        readonly OAuthError: {
+            /** @enum {string} */
+            readonly error: "invalid_request" | "invalid_grant" | "unsupported_grant_type" | "invalid_target";
+            readonly error_description?: string;
         };
         readonly OtpStart: {
             readonly attemptsAllowed: number;
@@ -6155,6 +6191,52 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["AgentConsentRedirect"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly issueAgentToken: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/x-www-form-urlencoded": {
+                    /** Format: uri */
+                    readonly client_id: string;
+                    readonly code?: string;
+                    readonly code_verifier?: string;
+                    /** @enum {string} */
+                    readonly grant_type: "authorization_code" | "refresh_token";
+                    /** Format: uri */
+                    readonly redirect_uri?: string;
+                    readonly refresh_token?: string;
+                    /** Format: uri */
+                    readonly resource?: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The tokens */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AgentTokenResponse"];
+                };
+            };
+            /** @description An OAuth error */
+            readonly 400: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["OAuthError"];
                 };
             };
             readonly default: components["responses"]["Problem"];
