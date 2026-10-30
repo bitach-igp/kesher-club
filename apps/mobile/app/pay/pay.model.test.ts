@@ -3,12 +3,14 @@
 // sheet, the hold banner with cancel, split maths, the request inbox's pay or decline, and camera or
 // contacts denied. Request notes are data: shown as written, never parsed. T-0516: the purses offered
 // with their balances and the default; the server's preview of a converted send; both amounts once sent;
-// rates unavailable reads as such.
+// rates unavailable reads as such. T-0530 (TST-PAY-001 recipient rows): a typed phone resolves to the member
+// before M14; a contact resolves through the same lookup; the confirm sheet names "Bob E." or "a Kesher member"
+// and never renders a uuid; a recipient who cannot receive, or is gone, says so on the sheet.
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
 import type { Account, MoneyWire, PaidPaymentRequest, PayApi, PaymentRequest, Split, Transfer, TransferPreview } from '../../src/api.ts';
 import { memoryRouter } from '../../src/navigation.ts';
-import { available, buildQr, convertedTo, createPayModel, defaultPurse, inboxView, parseAmount, parseQr, partyIdOf, problemFor, purseOptions, splitPreview, type PayDeps } from './pay.model.ts';
+import { available, buildQr, convertedTo, createPayModel, defaultPurse, inboxView, parseAmount, parseQr, partyIdOf, problemFor, purseOptions, recipientLabel, splitPreview, type PayDeps } from './pay.model.ts';
 
 const ME = '11111111-1111-7111-8111-111111111111';
 const BOB = '22222222-2222-7222-8222-222222222222';
@@ -39,7 +41,20 @@ function fakePay(
   const declined: string[] = [];
   const requests: PaymentRequest[] = opts.requests ?? [];
   let fail = opts.fail;
+  const lookups: unknown[] = [];
+  /** Who the API knows: Bob by his phone and id, named; Cal unnamed and not yet verified; anyone else is 404. */
+  const directory = [
+    { phone: '+972500000002', partyId: BOB, displayName: 'Bob E.', canReceive: true },
+    { phone: '+972500000003', partyId: CAL, canReceive: false },
+  ];
   const api: PayApi = {
+    async resolveRecipient(input) {
+      lookups.push(input);
+      const hit = directory.find((d) => ('phone' in input ? d.phone === input.phone : d.partyId === input.memberId));
+      if (!hit) throw problem('NOT_FOUND', 404);
+      const { phone: _phone, ...r } = hit;
+      return r;
+    },
     async listAccounts() {
       const items: Account[] = opts.accounts ?? [{ id: 'acc-ils', currency: 'ILS', settled: ils(opts.available ?? '20000'), holds: ils('0'), available: ils(opts.available ?? '20000') }];
       return { items };
@@ -100,7 +115,7 @@ function fakePay(
       return r;
     },
   };
-  return { api, sends, previews, cancels, created, paid, declined, requests, setFail: (f: typeof fail) => void (fail = f) };
+  return { api, sends, previews, cancels, created, paid, declined, requests, lookups, setFail: (f: typeof fail) => void (fail = f) };
 }
 
 function model(api: PayApi, over: Partial<PayDeps> = {}, initial: Parameters<typeof createPayModel>[1] = {}) {
@@ -168,13 +183,13 @@ describe('the send flow (M13 → M15)', () => {
     const { api } = fakePay({ available: '5000' });
     const { m, router } = model(api);
     await m.load();
-    m.goAmount();
+    await m.goAmount();
     expect(m.store.get().error).toEqual({ key: 'pay.recipient.invalid' });
     m.setRecipient(ME);
-    m.goAmount();
+    await m.goAmount();
     expect(m.store.get().error).toEqual({ key: 'pay.recipient.self' });
     m.setRecipient(BOB);
-    m.goAmount();
+    await m.goAmount();
     expect(router.current()).toBe(`/pay/amount?to=${BOB}&amount=&currency=ILS`);
     m.setAmount('60');
     m.goConfirm();
@@ -422,5 +437,56 @@ describe('requests, splits and the inbox (M16–M18)', () => {
     await m.declineRequest('r-asked');
     expect(declined).toEqual(['r-asked:decline-request-r-asked']);
     expect(inboxView(m.store.get().requests, ME).history.map((r) => r.id).sort()).toEqual(['r-asked', 'r-owed']);
+  });
+});
+
+describe('the recipient, resolved (T-0530)', () => {
+  const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+  it('a typed phone, spaces and all, resolves to the member before M14; a stranger\'s number says so and goes nowhere', async () => {
+    const { api, lookups } = fakePay();
+    const { m, router } = model(api);
+    await m.load();
+    m.setRecipient('+972 50-000-0002');
+    await m.goAmount();
+    expect(lookups).toEqual([{ phone: '+972500000002' }]);
+    expect(m.store.get()).toMatchObject({ recipient: BOB, recipientName: 'Bob E.' });
+    expect(router.current()).toBe(`/pay/amount?to=${BOB}&amount=&currency=ILS`);
+    const stranger = model(api);
+    await stranger.m.load();
+    stranger.m.setRecipient('+972500000099');
+    await stranger.m.goAmount();
+    expect(stranger.m.store.get().error).toEqual({ key: 'pay.recipient.notMember' });
+    expect(stranger.router.current()).toBe('/pay');
+  });
+
+  it('a picked contact resolves through the same lookup when the screen passes no resolver of its own', async () => {
+    const { api } = fakePay();
+    const { m } = model(api, { contacts: { pickOne: async () => ({ status: 'granted', contact: { name: 'Bob', phone: '+972 500 000 002' } }) } });
+    await m.pickContact();
+    expect(m.store.get().recipient).toBe(BOB);
+  });
+
+  it('the confirm sheet names "Bob E." or "a Kesher member", and never renders a uuid', async () => {
+    const { api } = fakePay();
+    const named = model(api, {}, { recipient: BOB, amountText: '10' });
+    await named.m.resolveRecipient();
+    expect(recipientLabel(named.m.store.get(), 'en')).toBe('Bob E.');
+    // Before the lookup answers, and for a member with no name, the sheet still names nobody by id.
+    const before = model(api, {}, { recipient: BOB, amountText: '10' });
+    expect(recipientLabel(before.m.store.get(), 'en')).toBe('a Kesher member');
+    expect(recipientLabel(before.m.store.get(), 'he')).toBe('חבר בקשר');
+    for (const label of [recipientLabel(named.m.store.get(), 'en'), recipientLabel(before.m.store.get(), 'en')]) expect(label).not.toMatch(UUID);
+  });
+
+  it('a recipient who cannot receive yet, or is gone, says so on the sheet', async () => {
+    const { api } = fakePay();
+    const cal = model(api, {}, { recipient: CAL, amountText: '10' });
+    await cal.m.resolveRecipient();
+    expect(cal.m.store.get()).toMatchObject({ recipientName: undefined, error: { key: 'pay.confirm.unverified' } });
+    const gone = model(api, {}, { recipient: '44444444-4444-7444-8444-444444444444', amountText: '10' });
+    await gone.m.resolveRecipient();
+    expect(gone.m.store.get().error).toEqual({ key: 'pay.confirm.recipientGone' });
+    expect(recipientLabel(gone.m.store.get(), 'en')).toBe('a Kesher member');
   });
 });

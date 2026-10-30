@@ -8,6 +8,7 @@ import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
 import { fxAdminHandlers } from './fx/admin.ts';
 import { DisplayNameService, displayNameHandlers } from './me/display-name.ts';
+import { RecipientLookup } from './p2p/recipients.ts';
 import { PreferenceService, preferenceHandlers } from './me/preferences.ts';
 import { RateService } from './fx/rates.ts';
 import { cardHandlers } from './cards/handlers.ts';
@@ -168,6 +169,7 @@ function buildServices(o: AppOptions) {
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
   const preferences = new PreferenceService(o.db);
   const displayNames = new DisplayNameService(o.db, o.pii ?? createPiiCipher({ dataKey: new Secret(randomBytes(32).toString('base64')), indexKey: new Secret(randomBytes(32).toString('base64')) }));
+  const recipients = new RecipientLookup({ identity, kyc, names: displayNames });
   // A send to a member who receives in the other currency prices at the club rate with their plan's markup (REQ-PAY-006).
   const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort, preferences, rates, markups: fx });
   // An approved agent intent runs the member's own send or load (T-1008, T-1009), so the intents come after them, and the JIT after the intents.
@@ -181,7 +183,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, institutionCredit, institutionKyb, kybGate, payoutAccounts };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, institutionCredit, institutionKyb, kybGate, payoutAccounts };
 }
 
 export function createApp(o: AppOptions): App {
@@ -197,7 +199,7 @@ export function createApp(o: AppOptions): App {
     ...kycHandlers(s.kyc),
     ...cardHandlers(s.cards, s.jit, s.provisioning, s.stepUp, s.physical),
     ...walletHandlers(s.loads, s.stepUp, s.flags, s.autoReload, s.closure),
-    ...p2pHandlers(s.p2p, s.stepUp, s.flags, s.requests),
+    ...p2pHandlers(s.p2p, s.stepUp, s.flags, s.requests, s.recipients),
     ...fxHandlers(s.fx, s.stepUp),
     ...payoutHandlers(s.payouts, s.stepUp, {
       db: o.db,

@@ -2,18 +2,20 @@
 // hold (a recovered account cannot send for 24 h), then the flag, then the Idempotency-Key that names
 // the SendWorkflow. Cancelling (T-0506, REQ-PAY-003) takes back a send still in its new-pair hold. Requests
 // and splits (T-0507, REQ-PAY-004) need only the key; paying one is a send and needs the step-up too.
-// The preview (T-0518, REQ-PAY-006) moves nothing, so it needs the bearer and the flag only.
+// The preview (T-0518, REQ-PAY-006) moves nothing, so it needs the bearer and the flag only. So does resolving
+// who a payment goes to (T-0530): a name and whether they can receive, never more.
 import { DomainError } from '@kesher/domain';
 import { assertNotRestricted } from '../auth/recovery.ts';
 import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import { created, ok, requireIdempotencyKey, requirePrincipal, route, type Handler } from '../http.ts';
+import type { RecipientLookup } from './recipients.ts';
 import type { PaymentRequestService } from './requests.ts';
 import type { P2pSendService } from './send.ts';
 
 export const P2P_FLAG = 'p2p.enabled';
 
-export function p2pHandlers(send: P2pSendService, stepUp: StepUpService, flags: FeatureFlags, requests: PaymentRequestService): Record<string, Handler> {
+export function p2pHandlers(send: P2pSendService, stepUp: StepUpService, flags: FeatureFlags, requests: PaymentRequestService, recipients: RecipientLookup): Record<string, Handler> {
   const gate = async () => {
     if (!(await flags.isOn(P2P_FLAG))) throw new DomainError('FEATURE_OFF', 'Member transfers are not enabled yet');
   };
@@ -66,6 +68,12 @@ export function p2pHandlers(send: P2pSendService, stepUp: StepUpService, flags: 
       assertNotRestricted(p, 'p2p_send', req.now);
       await gate();
       return ok(await send.preview(p.partyId, req.body, req.now));
+    }),
+    resolveRecipient: route(async (req) => {
+      const p = requirePrincipal(req);
+      await gate();
+      const b = (req.body ?? {}) as { phone?: unknown; memberId?: unknown };
+      return ok(await recipients.resolve(p.partyId, { phone: b.phone, memberId: b.memberId }, req.now));
     }),
     cancelTransfer: route(async (req) => {
       const p = requirePrincipal(req);

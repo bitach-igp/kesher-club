@@ -1696,6 +1696,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/p2p/recipients/resolve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Who a payment would go to, by phone or member id
+         * @description REQ-PAY-001 (T-0530). Bearer and `p2p.enabled`; nothing is created. Answers the member's id, the name they set (T-0531, "Avi E."), and whether they can receive (T1 approved). A number that is not a member, or a closed account, answers the same NOT_FOUND with no hint. 30 lookups a minute per member; the 31st answers RATE_LIMITED.
+         */
+        readonly post: operations["resolveRecipient"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/payouts": {
         readonly parameters: {
             readonly query?: never;
@@ -3035,6 +3055,14 @@ export interface components {
             /** Format: date-time */
             readonly paidAt: string;
             readonly receiptNumber: string;
+        };
+        readonly ResolvedRecipient: {
+            /** @description False until the recipient has passed T1 verification */
+            readonly canReceive: boolean;
+            /** @description The first name and last initial the recipient set; absent when they set none. Member text */
+            readonly displayName?: string;
+            /** Format: uuid */
+            readonly partyId: string;
         };
         readonly RosterImportRequest: {
             /** @description false = validate only */
@@ -5809,6 +5837,36 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Membership"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly resolveRecipient: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** Format: uuid */
+                    readonly memberId?: string;
+                    /** @description International form */
+                    readonly phone?: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The recipient */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ResolvedRecipient"];
                 };
             };
             readonly default: components["responses"]["Problem"];

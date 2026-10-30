@@ -427,6 +427,32 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/TransferPreview" }
         default: { $ref: "#/components/responses/Problem" }
+  /p2p/recipients/resolve:
+    post:
+      operationId: resolveRecipient
+      summary: Who a payment would go to, by phone or member id
+      description: >-
+        REQ-PAY-001 (T-0530). Bearer and `p2p.enabled`; nothing is created. Answers the member's id, the name they set
+        (T-0531, "Avi E."), and whether they can receive (T1 approved). A number that is not a member, or a closed
+        account, answers the same NOT_FOUND with no hint. 30 lookups a minute per member; the 31st answers RATE_LIMITED.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Exactly one of phone or memberId.
+              properties:
+                phone: { type: string, description: International form, like +972501234567 }
+                memberId: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The recipient
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ResolvedRecipient" }
+        default: { $ref: "#/components/responses/Problem" }
   /transfers/{id}/cancel:
     post:
       operationId: cancelTransfer
@@ -2919,6 +2945,13 @@ components:
             title: { type: string }
             body: { type: string, description: Plain text, shown as written; never a link }
             since: { type: string, format: date-time }
+    ResolvedRecipient:
+      type: object
+      required: [partyId, canReceive]
+      properties:
+        partyId: { type: string, format: uuid }
+        displayName: { type: string, description: The first name and last initial the recipient set; absent when they set none. Member text, shown as text. }
+        canReceive: { type: boolean, description: False until the recipient has passed T1 verification }
     DisplayName:
       type: object
       description: Member-written text, shown as text. Absent fields mean no name is set yet.

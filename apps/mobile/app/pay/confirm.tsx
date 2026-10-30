@@ -1,13 +1,14 @@
 // M15 confirm: one Idempotency-Key per sheet, kept through the passkey step-up and a retry, so a double
 // tap is one transfer. A held first payment shows the hold banner with cancel. When the recipient
 // receives another currency, the sheet shows what they receive from the server's preview, and the sent
-// sheet shows both amounts from the transfer itself (T-0516).
+// sheet shows both amounts from the transfer itself (T-0516). T-0530: the sheet names the recipient as the API
+// resolved them ("Avi E.", or "a Kesher member"), never by id.
 import { useEffect } from 'react';
 import { Banner, Button, Card, Screen, Txt } from '../../src/components/index.ts';
 import { t, useLocale } from '../../src/i18n.ts';
 import { useStore } from '../../src/model.ts';
 import { usePayModel } from './index.tsx';
-import { convertedTo, formatMoney, parseAmount, type PayModel } from './pay.model.ts';
+import { convertedTo, formatMoney, parseAmount, recipientLabel, type PayModel } from './pay.model.ts';
 
 export default function ConfirmScreen() {
   return <ConfirmView model={usePayModel()} />;
@@ -19,6 +20,7 @@ export function ConfirmView({ model }: { model: PayModel }) {
   useEffect(() => {
     void model.load();
     model.openConfirm();
+    void model.resolveRecipient();
     void model.previewSend();
     return () => model.closeConfirm();
   }, [model]);
@@ -31,7 +33,7 @@ export function ConfirmView({ model }: { model: PayModel }) {
   return (
     <Screen
       title={t('pay.confirm.title', locale)}
-      subtitle={t('pay.confirm.body', locale, { amount, to: s.recipient })}
+      subtitle={t('pay.confirm.body', locale, { amount, to: recipientLabel(s, locale) })}
       testID="screen-pay-confirm"
       footer={held ? <Button label={t('pay.hold.cancel', locale)} variant="destructive" onPress={() => void model.cancelHold()} loading={s.busy} testID="confirm-cancel-hold" /> : done ? undefined : <Button label={t('pay.confirm.send', locale, { amount })} onPress={() => void model.send()} loading={s.busy} testID="confirm-send" />}
     >

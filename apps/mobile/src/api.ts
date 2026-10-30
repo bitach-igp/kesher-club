@@ -25,6 +25,7 @@ export type Transfer = Schemas['Transfer'];
 export type TransferPreview = Schemas['TransferPreview'];
 export type Preferences = Schemas['Preferences'];
 export type DisplayName = Schemas['DisplayName'];
+export type ResolvedRecipient = Schemas['ResolvedRecipient'];
 export type Closure = Schemas['Closure'];
 export type ServiceStatus = Schemas['ServiceStatus'];
 export type CapabilityState = Schemas['CapabilityState'];
@@ -89,6 +90,8 @@ export interface CardsApi {
 /** M12–M19 pay screens (T-0508): purses, sends, requests and splits over the P2P contract (T-0505..T-0507). */
 export interface PayApi {
   listAccounts(): Promise<{ items: readonly Account[] }>;
+  /** Who a payment would go to (T-0530): their id, the name they set ("Avi E."), whether they can receive. Moves nothing. */
+  resolveRecipient(input: { phone: string } | { memberId: string }): Promise<ResolvedRecipient>;
   send(input: { toPartyId: string; amount: MoneyWire; note?: string }, idempotencyKey: string): Promise<Transfer>;
   /** What a send would land as in the recipient's purse, priced as the send prices it (T-0518). Moves nothing. */
   preview(input: { toPartyId: string; amount: MoneyWire }): Promise<TransferPreview>;
@@ -273,6 +276,7 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
       startProvisioning: (id, wallet, deviceId, clientData, idempotencyKey) => client.post('/cards/{id}/provisioning/{wallet}', { path: { id, wallet }, body: { deviceId, clientData }, idempotencyKey }),
     },
     pay: {
+      resolveRecipient: (input) => client.post('/p2p/recipients/resolve', { body: input }),
       listAccounts: () => client.get('/accounts'),
       send: (input, idempotencyKey) => client.post('/transfers', { body: input, idempotencyKey }),
       preview: (input) => client.post('/transfers/preview', { body: input }),
