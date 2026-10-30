@@ -1,5 +1,7 @@
 // Plans and plan versions (T-0302). Versions are immutable: a price or entitlement change is a
 // new version; existing memberships keep the version (and price) they started on for the term.
+// T-0932: a version finance proposes waits `proposed` until a second finance member approves it
+// (plan-catalogue.ts); only an `active` version is offered to a new member.
 import { DomainError, type Currency, type Money } from '@kesher/domain';
 import type { Database } from '../db.ts';
 
@@ -16,6 +18,13 @@ export interface EntitlementTemplate {
 }
 
 export type EntitlementTemplates = Record<string, EntitlementTemplate>;
+
+/** Who proposed a version that waits for a second finance approver (T-0932), and why. */
+export interface Proposal {
+  by: string;
+  reason: string;
+  market: 'IL' | 'US';
+}
 
 export interface PlanVersion {
   planCode: string;
@@ -49,7 +58,7 @@ export class PlanService {
   }
 
   /** Appends the next version. Never updates an existing one. */
-  async createVersion(input: { planCode: string; price: Money; termMonths: number; entitlements: EntitlementTemplates; fxMarkupBps?: bigint; effectiveFrom: Date }): Promise<PlanVersion> {
+  async createVersion(input: { planCode: string; price: Money; termMonths: number; entitlements: EntitlementTemplates; fxMarkupBps?: bigint; effectiveFrom: Date; proposal?: Proposal }): Promise<PlanVersion> {
     for (const [key, t] of Object.entries(input.entitlements)) {
       if (!/^\d+$/.test(t.limit)) throw new DomainError('VALIDATION_FAILED', `Entitlement ${key} limit must be an integer string`);
     }
@@ -57,16 +66,16 @@ export class PlanService {
       const last = await tx.query<{ v: number | null }>('select max(version) as v from billing.plan_version where plan_code = $1', [input.planCode]);
       const version = (last.rows[0]?.v ?? 0) + 1;
       await tx.query(
-        `insert into billing.plan_version (plan_code, version, price_minor, currency, term_months, entitlements, fx_markup_bps, effective_from) values ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [input.planCode, version, input.price.minor.toString(), input.price.currency, input.termMonths, JSON.stringify(input.entitlements), Number(input.fxMarkupBps ?? DEFAULT_FX_MARKUP_BPS), input.effectiveFrom],
+        `insert into billing.plan_version (plan_code, version, price_minor, currency, term_months, entitlements, fx_markup_bps, effective_from, state, market, proposed_by, reason) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [input.planCode, version, input.price.minor.toString(), input.price.currency, input.termMonths, JSON.stringify(input.entitlements), Number(input.fxMarkupBps ?? DEFAULT_FX_MARKUP_BPS), input.effectiveFrom, input.proposal ? 'proposed' : 'active', input.proposal?.market ?? null, input.proposal?.by ?? null, input.proposal?.reason ?? null],
       );
       return (await this.get(input.planCode, version, tx))!;
     });
   }
 
-  /** The version in force at `at` (latest effective_from ≤ at). */
+  /** The version offered at `at`: the latest approved one whose effective_from ≤ at. A proposed or rejected one never is. */
   async current(planCode: string, at: Date): Promise<PlanVersion> {
-    const r = await this.db.query<Row>('select * from billing.plan_version where plan_code = $1 and effective_from <= $2 order by version desc limit 1', [planCode, at]);
+    const r = await this.db.query<Row>(`select * from billing.plan_version where plan_code = $1 and effective_from <= $2 and state = 'active' order by version desc limit 1`, [planCode, at]);
     if (!r.rows[0]) throw new DomainError('NOT_FOUND', `No plan version for ${planCode}`);
     return toVersion(r.rows[0]);
   }

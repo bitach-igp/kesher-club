@@ -876,6 +876,70 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/plans": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Every plan version, newest first, each saying whether a new member joins on it now
+         * @description REQ-ADM-006 (T-0932). Any staff token reads. 200 at most.
+         */
+        readonly get: operations["listAdminPlans"];
+        readonly put?: never;
+        /**
+         * Propose a plan version; it is offered only after a second finance member approves it
+         * @description REQ-ADM-006 (T-0932). Staff token with the finance role; the proposer is the first of two approvers and the version waits `proposed`, offered to no one. A new plan code creates the plan with this name. Priced in the market's currency (IL in ILS, US in USD), above zero and at most 100,000.00; a term of 1 to 12 months; entitlement limits are whole numbers as strings. Without `effectiveFrom` it is offered once approved. A version is never edited: a newer one supersedes it for new members, and members keep the version they joined on.
+         */
+        readonly post: operations["proposeAdminPlanVersion"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/plans/{code}/versions/{version}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second-approve a proposed plan version; it is offered from its effective date
+         * @description REQ-ADM-006 (T-0932). Staff token with the finance role, not the proposer (409). Audited. A decided version answers 409.
+         */
+        readonly post: operations["approveAdminPlanVersion"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/plans/{code}/versions/{version}/reject": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Withdraw or refuse a proposed plan version; it is never offered
+         * @description REQ-ADM-006 (T-0932). Staff token with the finance role, with a reason.
+         */
+        readonly post: operations["rejectAdminPlanVersion"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/price-rules": {
         readonly parameters: {
             readonly query?: never;
@@ -2916,6 +2980,16 @@ export interface components {
             /** Format: date-time */
             readonly updatedAt?: string;
         };
+        /** @description Per key, e.g. "esim.dataGb": the limit as a whole number in a string, its unit and its period */
+        readonly EntitlementTemplates: {
+            readonly [key: string]: {
+                readonly limit: string;
+                /** @enum {string} */
+                readonly period: "month" | "term" | "none";
+                /** @enum {string} */
+                readonly unit: "gb" | "calls" | "minor" | "count";
+            };
+        };
         readonly ExportFile: {
             readonly base64: string;
             readonly contentType: string;
@@ -3537,6 +3611,42 @@ export interface components {
             /** @enum {string} */
             readonly status: "pending" | "approved" | "rejected" | "expired";
             readonly summary?: string;
+        };
+        readonly PlanVersion: {
+            readonly approval?: {
+                readonly approvals: number;
+                /** Format: uuid */
+                readonly id: string;
+                readonly requestedBy?: string;
+                /** @enum {string} */
+                readonly status: "pending" | "awaiting_second_approval" | "approved" | "rejected" | "expired";
+            };
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** Format: date-time */
+            readonly decidedAt?: string;
+            /** Format: date-time */
+            readonly effectiveFrom: string;
+            readonly entitlements: components["schemas"]["EntitlementTemplates"];
+            readonly fxMarkupBps: number;
+            /**
+             * @description Absent on versions made before T-0932
+             * @enum {string}
+             */
+            readonly market?: "IL" | "US";
+            readonly name: string;
+            /** @description The version a new member of this plan joins on now */
+            readonly offered: boolean;
+            readonly planCode: string;
+            readonly price: components["schemas"]["Money"];
+            /** @description The proposer's staff subject */
+            readonly proposedBy?: string;
+            /** @description Staff-entered text */
+            readonly reason?: string;
+            /** @enum {string} */
+            readonly state: "proposed" | "active" | "rejected";
+            readonly termMonths: number;
+            readonly version: number;
         };
         readonly Preferences: {
             /** @enum {string} */
@@ -5234,6 +5344,121 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["PayoutAccount"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminPlans: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Plan versions */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["PlanVersion"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly proposeAdminPlanVersion: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** Format: date-time */
+                    readonly effectiveFrom?: string;
+                    readonly entitlements?: components["schemas"]["EntitlementTemplates"];
+                    /** @default 75 */
+                    readonly fxMarkupBps?: number;
+                    /** @enum {string} */
+                    readonly market: "IL" | "US";
+                    readonly name: string;
+                    readonly planCode: string;
+                    readonly price: components["schemas"]["Money"];
+                    readonly reason: string;
+                    readonly termMonths: number;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The proposed version, waiting for its second approver */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PlanVersion"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveAdminPlanVersion: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly code: string;
+                readonly version: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The version, active */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PlanVersion"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly rejectAdminPlanVersion: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly code: string;
+                readonly version: number;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The rejected version */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PlanVersion"];
                 };
             };
             readonly default: components["responses"]["Problem"];

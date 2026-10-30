@@ -1737,6 +1737,102 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PriceRule" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/plans:
+    get:
+      operationId: listAdminPlans
+      tags: [admin]
+      summary: Every plan version, newest first, each saying whether a new member joins on it now
+      description: REQ-ADM-006 (T-0932). Any staff token reads. 200 at most.
+      security: [{ staff: [] }]
+      responses:
+        "200":
+          description: Plan versions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/PlanVersion" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: proposeAdminPlanVersion
+      tags: [admin]
+      summary: Propose a plan version; it is offered only after a second finance member approves it
+      description: >-
+        REQ-ADM-006 (T-0932). Staff token with the finance role; the proposer is the first of two approvers and the
+        version waits `proposed`, offered to no one. A new plan code creates the plan with this name. Priced in the
+        market's currency (IL in ILS, US in USD), above zero and at most 100,000.00; a term of 1 to 12 months;
+        entitlement limits are whole numbers as strings. Without `effectiveFrom` it is offered once approved. A version
+        is never edited: a newer one supersedes it for new members, and members keep the version they joined on.
+      security: [{ staff: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [planCode, name, market, price, termMonths, reason]
+              properties:
+                planCode: { type: string, pattern: "^[a-z][a-z0-9-]{1,39}$" }
+                name: { type: string, minLength: 1, maxLength: 80 }
+                market: { type: string, enum: [IL, US] }
+                price: { $ref: "#/components/schemas/Money" }
+                termMonths: { type: integer, minimum: 1, maximum: 12 }
+                entitlements: { $ref: "#/components/schemas/EntitlementTemplates" }
+                fxMarkupBps: { type: integer, minimum: 0, maximum: 10000, default: 75 }
+                effectiveFrom: { type: string, format: date-time }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201":
+          description: The proposed version, waiting for its second approver
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanVersion" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/plans/{code}/versions/{version}/approve:
+    post:
+      operationId: approveAdminPlanVersion
+      tags: [admin]
+      summary: Second-approve a proposed plan version; it is offered from its effective date
+      description: REQ-ADM-006 (T-0932). Staff token with the finance role, not the proposer (409). Audited. A decided version answers 409.
+      security: [{ staff: [] }]
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string, pattern: "^[a-z][a-z0-9-]{1,39}$" } }
+        - { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      responses:
+        "200":
+          description: The version, active
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanVersion" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/plans/{code}/versions/{version}/reject:
+    post:
+      operationId: rejectAdminPlanVersion
+      tags: [admin]
+      summary: Withdraw or refuse a proposed plan version; it is never offered
+      description: REQ-ADM-006 (T-0932). Staff token with the finance role, with a reason.
+      security: [{ staff: [] }]
+      parameters:
+        - { name: code, in: path, required: true, schema: { type: string, pattern: "^[a-z][a-z0-9-]{1,39}$" } }
+        - { name: version, in: path, required: true, schema: { type: integer, minimum: 1 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: The rejected version
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanVersion" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/flags:
     get:
       operationId: listAdminFlags
@@ -2769,6 +2865,44 @@ components:
         reason: { type: string, description: Staff-entered text }
         createdAt: { type: string, format: date-time }
         activatedAt: { type: string, format: date-time }
+        approval:
+          type: object
+          required: [id, status, approvals]
+          properties:
+            id: { type: string, format: uuid }
+            status: { type: string, enum: [pending, awaiting_second_approval, approved, rejected, expired] }
+            approvals: { type: integer, minimum: 0 }
+            requestedBy: { type: string }
+    EntitlementTemplates:
+      type: object
+      description: 'Per key, e.g. "esim.dataGb": the limit as a whole number in a string, its unit and its period'
+      maxProperties: 30
+      additionalProperties:
+        type: object
+        required: [limit, unit, period]
+        properties:
+          limit: { type: string, pattern: "^[0-9]{1,19}$" }
+          unit: { type: string, enum: [gb, calls, minor, count] }
+          period: { type: string, enum: [month, term, none] }
+    PlanVersion:
+      type: object
+      required: [planCode, name, version, price, termMonths, entitlements, fxMarkupBps, effectiveFrom, state, offered, createdAt]
+      properties:
+        planCode: { type: string }
+        name: { type: string }
+        version: { type: integer, minimum: 1 }
+        market: { type: string, enum: [IL, US], description: Absent on versions made before T-0932 }
+        price: { $ref: "#/components/schemas/Money" }
+        termMonths: { type: integer, minimum: 1, maximum: 12 }
+        entitlements: { $ref: "#/components/schemas/EntitlementTemplates" }
+        fxMarkupBps: { type: integer }
+        effectiveFrom: { type: string, format: date-time }
+        state: { type: string, enum: [proposed, active, rejected] }
+        offered: { type: boolean, description: The version a new member of this plan joins on now }
+        proposedBy: { type: string, description: The proposer's staff subject }
+        reason: { type: string, description: Staff-entered text }
+        createdAt: { type: string, format: date-time }
+        decidedAt: { type: string, format: date-time }
         approval:
           type: object
           required: [id, status, approvals]
