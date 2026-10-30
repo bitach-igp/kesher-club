@@ -3,7 +3,7 @@
 // development build signs as a picked demo persona, every other build uses the platform's WebAuthn even
 // when the API sends the simulator's options. The config refuses plain http anywhere but localhost.
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { AuthSimulator, type PasskeyAuthenticationOptions, type PasskeyRegistrationOptions } from '@kesher/ports';
 import { memoryRouter } from '../src/navigation.ts';
 import { memorySession } from '../src/session.ts';
@@ -18,6 +18,13 @@ async function layoutFor(appEnv: string) {
   vi.stubEnv('EXPO_PUBLIC_APP_ENV', appEnv);
   return import('./_layout.tsx');
 }
+
+// The layout pulls in react-native-web and every screen it reaches. Transforming that graph the first time takes a
+// second here and five on a busy CI runner, which was charged to whichever test imported it first and timed it out.
+// Warm it once with its own budget: each test still re-imports it fresh (resetModules), from the transform cache.
+beforeAll(async () => {
+  await import('./_layout.tsx');
+}, 60_000);
 
 afterEach(() => {
   cleanup();
