@@ -167,6 +167,7 @@
 | [T-0926](T-0926.md) | ADM | Admin console: an institution's KYB review | REQ-INS-011, REQ-INS-010 | 12 |
 | [T-0927](T-0927.md) | CMP | Recordings REC-13 (withdrawal) and REC-14 (allowance run) on the institution console | — | 13 |
 | [T-0928](T-0928.md) | ADM | Kesher finance sets add-on price rules, two-person approved (API) | REQ-MKT-002 | 13 |
+| [T-0929](T-0929.md) | ADM | A05 price rules in the admin console, and the demo's eSIM rule | REQ-MKT-002 | 13 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |

@@ -3,7 +3,7 @@ import { money } from '@kesher/domain';
 import { PORTS } from '@kesher/ports';
 import flagsRegistry from '../../../../config/flags.json' with { type: 'json' };
 import { evaluateFlip, gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type Deposit, type FlagState, type InstitutionDetail, type KybView, type ProviderBinding } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type Deposit, type FlagState, type InstitutionDetail, type KybView, type PriceRuleRow, type ProviderBinding } from './types.ts';
 
 type AuditRow = { at: string; actor: string; action: string; subject: string; detail?: string | undefined };
 
@@ -94,6 +94,7 @@ export function memoryAdminData(): AdminData {
     return f;
   };
   // One seeded yeshiva (T-0615); its deposits follow the API's two-person rule so the screens behave alike.
+  const priceRules: PriceRuleRow[] = [];
   const yeshiva: InstitutionDetail = { id: '01932e5a-0000-7000-8000-0000000000f1', name: 'Yeshivat Example', market: 'IL', activeStaff: 2, createdAt: T0, paymentReference: 'KC-7M4QX2HD', balances: [money(0n, 'ILS'), money(0n, 'USD')], deposits: [], depositsOff: false, staff: [], pendingGrants: 0 };
   const recorders = new Map<string, string>();
   const depositView = (d: Deposit, by: AdminActor): Deposit => ({ ...d, recordedByMe: recorders.get(d.id) === by.subject });
@@ -243,6 +244,28 @@ export function memoryAdminData(): AdminData {
       }
       log(by, `institution.deposit.${decision}`, yeshiva.id, now, reason);
       return depositView(d, by);
+    },
+
+    async listPriceRules() {
+      return structuredClone(priceRules);
+    },
+    async proposePriceRule(input, by, now) {
+      if (!by.roles.includes('finance')) throw new AdminDataError('FORBIDDEN', 'Only Kesher finance proposes price rules');
+      const r: PriceRuleRow = { id: `rule-${priceRules.length + 1}`, ...input, state: 'proposed', proposedBy: by.subject, createdAt: now.toISOString() };
+      priceRules.unshift(r);
+      log(by, 'price_rule.propose', `${input.kind}:${input.provider}`, now, input.reason);
+      return structuredClone(r);
+    },
+    async decidePriceRule(id, decision, by, reason, now) {
+      const r = priceRules.find((x) => x.id === id);
+      if (!r) throw new AdminDataError('NOT_FOUND', 'Price rule not found');
+      if (!by.roles.includes('finance')) throw new AdminDataError('FORBIDDEN', 'Only Kesher finance decides price rules');
+      if (r.state !== 'proposed') throw new AdminDataError('CONFLICT', `This rule is already ${r.state}`);
+      if (decision === 'approve' && r.proposedBy === by.subject) throw new AdminDataError('SAME_APPROVER', 'The proposer cannot approve their own rule');
+      if (decision === 'reject' && !reason?.trim()) throw new AdminDataError('INVALID', 'A reason is required');
+      Object.assign(r, decision === 'approve' ? { state: 'active', activatedAt: now.toISOString() } : { state: 'rejected' });
+      log(by, `price_rule.${decision}`, `${r.kind}:${r.provider}`, now, reason);
+      return structuredClone(r);
     },
 
     async getKyb(id, by) {

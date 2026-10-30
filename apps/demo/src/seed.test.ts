@@ -5,6 +5,7 @@
 // roster; a rerun makes no second institution, grant or import. T-0531: every persona has the name others see. T-0625: its KYB checks run against the
 // KybPort simulator, and its own bank account is recorded by one compliance member and approved by another.
 // T-0626: three student personas accept their roster invites from the panel's outbox and are active at once.
+// T-0929: the demo's eSIM price rule goes through the admin API, and the catalogue lists the priced plans.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, type JWK } from 'jose';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
@@ -58,7 +59,7 @@ describe('demo seed (T-0032)', () => {
     expect(await count('ledger.journal')).toBe(journals);
     expect(await dev.app.services.displayNames.get(byKey(first, 'avi').partyId)).toEqual(named);
     expect(await count('identity.member_display_name')).toBe(PERSONAS.length);
-    expect(formatTable(second)).toBe(formatTable({ personas: first, institution: second.institution }));
+    expect(formatTable(second)).toBe(formatTable({ personas: first, institution: second.institution, catalogue: second.catalogue }));
   }, 120_000);
 
   it('each persona signs in with its seeded passkey as the party the seed made', async () => {
@@ -84,7 +85,8 @@ describe('demo seed (T-0032)', () => {
 
 describe('demo yeshiva (T-0034)', () => {
   it('onboards the yeshiva once, with both finance personas granted by two admins and the roster imported', async () => {
-    const { personas, institution } = await seed(target);
+    const { personas, institution, catalogue } = await seed(target);
+    expect(catalogue).toEqual({ rule: 'active', esimPlans: 3 });
     expect(institution).toMatchObject({ name: INSTITUTION.name, finance: ['rivka', 'shimon'], rosterStatus: 'committed', rosterRows: 3 });
     expect(await count('org.institution')).toBe(1);
     expect(await count('org.roster_import')).toBe(1);
@@ -115,6 +117,15 @@ describe('demo yeshiva (T-0034)', () => {
     expect(await count('org.payout_account')).toBe(1);
     expect(await count('org.kyb_check')).toBe(7);
     expect(await count("org.invite where status = 'accepted'")).toBe(3);
+    // T-0929: the demo's eSIM rule, proposed and approved through the admin API by two finance staff, prices the
+    // simulator's Israel plans; a rerun proposes nothing new.
+    expect(await count('addons.price_rule')).toBe(1);
+    const plans = await db.query<{ vendor_sku: string; cost_minor: string; price_minor: string }>(`select vendor_sku, cost_minor::text, price_minor::text from addons.catalogue_item where kind = 'esim' and active order by vendor_sku`);
+    expect(plans.rows).toEqual([
+      { vendor_sku: 'IL-10GB-30D', cost_minor: '1600', price_minor: '2099' },
+      { vendor_sku: 'IL-20GB-30D', cost_minor: '2600', price_minor: '3299' },
+      { vendor_sku: 'IL-5GB-30D', cost_minor: '950', price_minor: '1199' },
+    ]);
     expect(formatTable(await seed(target))).toContain(`Institution: ${INSTITUTION.name} (IL) ${institution!.id}`);
   }, 120_000);
 

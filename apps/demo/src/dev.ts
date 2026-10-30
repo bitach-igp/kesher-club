@@ -169,10 +169,11 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
     const jobs: Job[] = buildJobs({ app, db, registry, market: config.MARKET, clock: now, runs: pgRunLog(db), catalogue: loadCatalogueConfig() });
     const scheduler = new Scheduler(jobs, noLock, (event, fields) => log(event, fields));
 
+    // Asked for by a person (the panel, a test): a daily job runs now, not only at its hour once a day (T-0929).
     const runJob = (name: string): Promise<unknown> => {
       const job = jobs.find((j) => j.name === name);
       if (!job) throw new Error(`No job named ${name}`);
-      return job.run();
+      return job.runNow ? job.runNow() : job.run();
     };
 
     const api = withLoopbackCors(createServer(app), demo.DEMO_WEB_ORIGINS);

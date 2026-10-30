@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { daily, type DailyJob, israelClock, type Job, type JobLock, noLock, type RunLog, Scheduler } from './scheduler.ts';
+import { daily, type DailyJob, IDLE, israelClock, type Job, type JobLock, noLock, type RunLog, Scheduler } from './scheduler.ts';
 
 type Line = { event: string; fields: Record<string, string | number | boolean> };
 
@@ -263,6 +263,20 @@ describe('daily jobs at Israel wall-clock times (T-0023)', () => {
     const { log, lines } = recorder();
     await runFor('2026-10-19T09:00:00Z', 3, nightly('23:59'), memoryRuns(), log);
     expect(lines).toEqual([]);
+  });
+
+  it('runs now when a person asks, whatever the hour or today\'s record; its timer still runs it once a day (T-0929)', async () => {
+    vi.useFakeTimers({ now: new Date('2026-10-19T09:00:00Z') }); // noon in Israel
+    const job = nightly('02:30');
+    const runs = memoryRuns();
+    const d = daily(job, runs, now);
+    await d.run(); // the timer's run for 19 Oct
+    expect(await d.run()).toBe(IDLE);
+    await d.runNow!();
+    await d.runNow!();
+    expect(job.runs).toEqual(['2026-10-19T09:00:00.000Z', '2026-10-19T09:00:00.000Z', '2026-10-19T09:00:00.000Z']);
+    vi.setSystemTime(new Date('2026-10-19T19:00:00Z')); // 22:00 in Israel, before 02:30 tomorrow
+    expect(await d.run()).toBe(IDLE);
   });
 
   it('refuses a time that is not HH:MM', () => {

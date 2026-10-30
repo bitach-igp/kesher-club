@@ -168,6 +168,37 @@ export interface KybDecisionInput {
   key: string;
 }
 
+/** An add-on price rule (A05, T-0929): price = max(floor, cost × (1 + margin)), rounded up to .99 when asked. */
+export type PriceRuleKind = 'esim' | 'insurance' | 'concierge';
+export interface PriceRuleRow {
+  id: string;
+  kind: PriceRuleKind;
+  provider: string;
+  skuPattern: string;
+  marginBps: number;
+  floor: Money;
+  roundTo99: boolean;
+  priority: number;
+  state: 'proposed' | 'active' | 'rejected';
+  /** The proposer's staff subject: they are never offered Approve or Reject on their own rule. */
+  proposedBy?: string | undefined;
+  /** Staff-entered text. */
+  reason?: string | undefined;
+  createdAt: string;
+  activatedAt?: string | undefined;
+}
+
+export interface PriceRuleInput {
+  kind: PriceRuleKind;
+  provider: string;
+  skuPattern: string;
+  marginBps: number;
+  floor: Money;
+  roundTo99: boolean;
+  priority: number;
+  reason: string;
+}
+
 export interface AdminActor {
   subject: string;
   roles: readonly string[];
@@ -210,6 +241,13 @@ export interface AdminData {
   decideKyb(institutionId: string, input: KybDecisionInput, by: AdminActor, now: Date): Promise<'decided' | 'awaiting_second_approval'>;
   /** A different compliance member approves a high-risk approval. */
   approveKybDecision(approvalId: string, by: AdminActor, now: Date): Promise<void>;
+
+  /** A05 (T-0929): the add-on price rules, newest first. */
+  listPriceRules(): Promise<PriceRuleRow[]>;
+  /** Kesher finance proposes; the proposer is the first of two approvers and the rule waits inactive. */
+  proposePriceRule(input: PriceRuleInput, by: AdminActor, now: Date): Promise<PriceRuleRow>;
+  /** A different finance member approves (the rule becomes active) or either rejects it with a reason. */
+  decidePriceRule(id: string, decision: 'approve' | 'reject', by: AdminActor, reason: string | undefined, now: Date): Promise<PriceRuleRow>;
 
   auditLog(): Promise<{ at: string; actor: string; action: string; subject: string; detail?: string | undefined }[]>;
 }

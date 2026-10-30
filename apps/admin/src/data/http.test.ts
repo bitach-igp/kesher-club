@@ -14,6 +14,7 @@ const cmp2 = { id: '01932e5a-0000-7000-8000-00000000c002', partyId: NOA, channel
 const alert1 = { id: '01932e5a-0000-7000-8000-00000000a001', kind: 'structuring', severity: 'high', status: 'open', partyId: NOA, summary: '10 sends of ₪490 within one hour', openedAt: '2026-10-31T11:00:00Z' };
 const YESHIVA = '01932e5a-0000-7000-8000-0000000000f1';
 const dep1 = { id: '01932e5a-0000-7000-8000-00000000d001', institutionId: YESHIVA, amount: { minor: '9007199254740993', currency: 'ILS' }, rail: 'masav', bankReference: 'FT2611-ABC', valueDate: '2026-11-09', status: 'pending', approvals: 1, recordedByMe: true, createdAt: '2026-11-10T09:00:00Z' };
+const rule1 = { id: '01932e5a-0000-7000-8000-00000000e001', kind: 'esim', provider: 'simulator', skuPattern: '^IL-', marginBps: 2500, floor: { minor: '0', currency: 'USD' }, roundTo99: true, priority: 10, state: 'proposed', proposedBy: 'zvi', reason: 'Launch margin', createdAt: '2026-11-10T09:00:00Z' };
 const problemOf = (status: number, code: string, detail: string) => Response.json({ type: 'about:blank', title: code, status, code, detail }, { status, headers: { 'content-type': 'application/problem+json' } });
 const noaSummary = { partyId: NOA, displayName: 'Noa Example', phoneMasked: '•••• 4567', status: 'active', locale: 'he', mode: 'member', createdAt: '2026-10-01T09:00:00Z' };
 const noa360 = {
@@ -64,6 +65,10 @@ async function setup() {
     if (url.pathname === `/admin/institutions/${YESHIVA}/deposits`) return depositsOn ? Response.json({ paymentReference: 'KC-7M4QX2HD', balances: [{ minor: '2000000', currency: 'ILS' }], items: [dep1] }) : problemOf(404, 'FEATURE_OFF', 'institutions.deposits is off');
     if (url.pathname === `/admin/deposits/${dep1.id}/approve`) return problemOf(409, 'IDEMPOTENCY_CONFLICT', 'The recorder cannot approve');
     if (url.pathname === `/admin/deposits/${dep1.id}/reject`) return Response.json({ ...dep1, status: 'rejected', recordedByMe: false, decidedAt: '2026-11-10T10:00:00Z' });
+    if (url.pathname === '/admin/price-rules' && init?.method === 'POST') return Response.json(rule1, { status: 201 });
+    if (url.pathname === '/admin/price-rules') return Response.json({ items: [rule1] });
+    if (url.pathname === `/admin/price-rules/${rule1.id}/approve`) return problemOf(409, 'IDEMPOTENCY_CONFLICT', 'The proposer cannot approve');
+    if (url.pathname === `/admin/price-rules/${rule1.id}/reject`) return Response.json({ ...rule1, state: 'rejected' });
     if (url.pathname === '/admin/audit') return Response.json({ items: [{ seq: 1, id: 'e1', at: '2026-11-01T09:00:00Z', actorId: 'p-ops-2', actorRole: 'admin', action: 'flag.flip', subject: url.searchParams.get('subject'), reason: 'go live', payload: {}, hash: 'h', prevHash: 'genesis' }] });
     return new Response('nope', { status: 500 });
   };
@@ -189,4 +194,18 @@ describe('httpAdminData', () => {
     depositsOff();
     expect(await data.getInstitution(YESHIVA, zvi)).toMatchObject({ depositsOff: true, deposits: [], balances: [], staff: [{ partyId: NOA }] });
   });
+
+  it('lists, proposes and decides price rules against the API, money in bigint (T-0929)', async () => {
+    const { data, calls } = await setup();
+    const zvi = { subject: 'zvi', roles: ['finance'] };
+    expect(await data.listPriceRules()).toEqual([{ ...rule1, floor: money(0n, 'USD'), activatedAt: undefined }]);
+    calls.length = 0;
+    const proposed = await data.proposePriceRule({ kind: 'esim', provider: 'simulator', skuPattern: '^IL-', marginBps: 2500, floor: money(0n, 'USD'), roundTo99: true, priority: 10, reason: 'Launch margin' }, zvi, new Date());
+    expect(proposed).toMatchObject({ state: 'proposed', proposedBy: 'zvi' });
+    expect(calls[0]).toMatchObject({ method: 'POST', url: '/admin/price-rules', body: { kind: 'esim', marginBps: 2500, floor: { minor: '0', currency: 'USD' }, priority: 10 } });
+    await expect(data.decidePriceRule(rule1.id, 'approve', zvi, undefined, new Date())).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(await data.decidePriceRule(rule1.id, 'reject', zvi, 'Too high', new Date())).toMatchObject({ state: 'rejected' });
+    expect(calls.at(-1)).toMatchObject({ body: { reason: 'Too high' } });
+  });
 });
+

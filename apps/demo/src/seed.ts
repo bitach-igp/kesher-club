@@ -17,7 +17,7 @@ import { SIM_OTP_CODE, type PasskeyAuthenticationOptions, type PasskeyRegistrati
 import { ApiError, createClient, type Schemas } from '@kesher/sdk';
 import { z } from 'zod';
 import { DEFAULT_PORT, DEFAULT_SIMULATOR_PORT } from './dev.ts';
-import { deviceIdOf, INSTITUTION, MISSING, passkeyOf, PERSONAS, rosterCsv, type Persona } from './personas.ts';
+import { DEMO_PRICE_RULE, deviceIdOf, INSTITUTION, MISSING, passkeyOf, PERSONAS, rosterCsv, type Persona } from './personas.ts';
 
 export interface SeedTarget {
   /** The API's base URL, with or without /v1. */
@@ -42,6 +42,8 @@ export interface SeededInstitution {
 export interface SeedResult {
   personas: SeededPersona[];
   institution?: SeededInstitution | undefined;
+  /** The demo's eSIM price rule and the plans the catalogue sync priced with it (T-0929); needs the staff key. */
+  catalogue?: { rule: string; esimPlans: number } | undefined;
 }
 
 export interface SeededPersona {
@@ -65,7 +67,32 @@ const partyOf = (accessToken: string): string => (JSON.parse(Buffer.from(accessT
 export async function seed(target: SeedTarget): Promise<SeedResult> {
   const personas: SeededPersona[] = [];
   for (const persona of PERSONAS) personas.push(await seedPersona(target, persona));
-  return { personas, ...(target.staffKey ? { institution: await seedInstitution(target, target.staffKey, personas) } : {}) };
+  if (!target.staffKey) return { personas };
+  return { personas, institution: await seedInstitution(target, target.staffKey, personas), catalogue: await seedCatalogue(target, target.staffKey) };
+}
+
+/**
+ * The demo's eSIM price rule (T-0929), the way Kesher finance sets one: proposed by one finance member through the
+ * admin API, approved by another. A rerun finds the active rule and proposes nothing. Then the nightly catalogue
+ * sync runs now from the panel, so the club lists the plans at the rule's prices.
+ */
+async function seedCatalogue(target: SeedTarget, key: { jwk: JWK; kid: string }): Promise<{ rule: string; esimPlans: number }> {
+  const { proposer: proposerSub, approver: approverSub, ...rule } = DEMO_PRICE_RULE;
+  const [proposer, approver] = await Promise.all([staffClient(target, key, proposerSub, ['finance']), staffClient(target, key, approverSub, ['finance'])]);
+  const same = (r: Schemas['PriceRule']) => r.kind === rule.kind && r.provider === rule.provider && r.skuPattern === rule.skuPattern && r.marginBps === rule.marginBps;
+  const { items } = await proposer.get('/admin/price-rules');
+  let current = items.find((r) => same(r) && r.state !== 'rejected');
+  if (!current) current = await proposer.post('/admin/price-rules', { body: { ...rule, floor: { ...rule.floor } } });
+  if (current.state === 'proposed') current = await approver.post('/admin/price-rules/{id}/approve', { path: { id: current.id } });
+  const synced = (await panelJob(target, 'catalogue-sync')) as { esim?: { priced: number } } | undefined;
+  return { rule: current.state, esimPlans: synced?.esim?.priced ?? 0 };
+}
+
+async function panelJob(target: SeedTarget, name: string): Promise<unknown> {
+  const res = await fetch(`${target.panelUrl.replace(/\/$/, '')}/jobs/${name}/run`, { method: 'POST' });
+  const body = (await res.json()) as { ok?: boolean; result?: unknown; error?: string };
+  if (!body.ok) throw new Error(`Panel job ${name} failed: ${body.error ?? res.status}`);
+  return body.result;
 }
 
 /**
@@ -289,8 +316,9 @@ export function formatTable(result: SeedResult): string {
   const institution = i
     ? ['', `Institution: ${i.name} (${INSTITUTION.market}) ${i.id}`, `- finance staff: ${i.finance.join(', ') || 'none'}`, `- roster: ${i.rosterStatus}, ${i.rosterRows} members`, ...i.students.map((st) => `- student ${st.key}: ${st.status}`)]
     : ['', 'Institution: not seeded; set ADMIN_API_SIGNING_KEY and ADMIN_API_SIGNING_KID from .env.local-staff (docs/setup/demo.md)'];
+  const catalogue = result.catalogue ? [`Catalogue: eSIM price rule ${result.catalogue.rule}, ${result.catalogue.esimPlans} plans priced`] : [];
   const missing = MISSING.map((m) => `- ${m.who} (${m.recs.join(', ')}): ${m.why}`);
-  return [line(head), ...body.map(line), ...institution, '', 'Not seeded (the contract cannot make them yet):', ...missing].join('\n');
+  return [line(head), ...body.map(line), ...institution, ...catalogue, '', 'Not seeded (the contract cannot make them yet):', ...missing].join('\n');
 }
 
 const seedConfigSchema = z.object({

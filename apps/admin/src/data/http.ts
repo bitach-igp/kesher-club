@@ -9,7 +9,7 @@ import { ApiError, createClient, type Client, type Schemas } from '@kesher/sdk';
 import type { StaffSigner } from '../auth/staff-token.ts';
 import type { Market } from '@kesher/ports';
 import { gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type Deposit, type FlagState, type InstitutionDetail, type InstitutionRow, type KybStatus, type KybView, type ProviderBinding, type Risk } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type Deposit, type FlagState, type InstitutionDetail, type InstitutionRow, type KybStatus, type KybView, type PriceRuleRow, type ProviderBinding, type Risk } from './types.ts';
 
 export const MARKETS: readonly Market[] = ['IL', 'US'];
 /** Club-wide reads and writes go here; any market's API serves them from the shared database, so the choice is fixed. */
@@ -109,6 +109,23 @@ export const kybView = (r: Schemas['KybRecord']): KybView => {
     ...(p ? { pendingApproval: { id: p.id, status: p.status, outcome: payload.status ?? 'approved', risk: payload.risk, proposedByMe: r.proposedByMe === true } } : {}),
   };
 };
+
+/** The API's PriceRule as the screens read it. */
+const priceRule = (r: Schemas['PriceRule']): PriceRuleRow => ({
+  id: r.id,
+  kind: r.kind,
+  provider: r.provider,
+  skuPattern: r.skuPattern,
+  marginBps: r.marginBps,
+  floor: fromWire(r.floor),
+  roundTo99: r.roundTo99,
+  priority: r.priority,
+  state: r.state,
+  proposedBy: r.proposedBy,
+  reason: r.reason,
+  createdAt: r.createdAt,
+  activatedAt: r.activatedAt,
+});
 
 const mapError = (e: unknown): never => {
   if (e instanceof ApiError) {
@@ -236,6 +253,17 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData & { apiFor(mar
     async decideDeposit(id, decision, _by, reason) {
       if (decision === 'approve') return deposit(await run(() => client.post('/admin/deposits/{id}/approve', { path: { id } })));
       return deposit(await run(() => client.post('/admin/deposits/{id}/reject', { path: { id }, body: { reason: reason ?? '' } })));
+    },
+    async listPriceRules() {
+      return (await run(() => client.get('/admin/price-rules'))).items.map(priceRule);
+    },
+    async proposePriceRule(input) {
+      const body = { kind: input.kind, provider: input.provider, skuPattern: input.skuPattern, marginBps: input.marginBps, floor: { minor: input.floor.minor.toString(), currency: input.floor.currency }, roundTo99: input.roundTo99, priority: input.priority, reason: input.reason };
+      return priceRule(await run(() => client.post('/admin/price-rules', { body })));
+    },
+    async decidePriceRule(id, decision, _by, reason) {
+      if (decision === 'approve') return priceRule(await run(() => client.post('/admin/price-rules/{id}/approve', { path: { id } })));
+      return priceRule(await run(() => client.post('/admin/price-rules/{id}/reject', { path: { id }, body: { reason: reason ?? '' } })));
     },
     async getKyb(id) {
       try {
