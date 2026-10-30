@@ -1,0 +1,54 @@
+# Trimmed by the desktop checker: ANSI colours removed; dropped the repeated scheduler "job_ran" lines,
+# Node's NO_COLOR/FORCE_COLOR warnings and the two Next.js hydration component-tree dumps. Nothing else changed.
+# Run: Zvi's PC (Windows, Node v24.19.0, pnpm 10.28.0 via corepack), runner worktree at 476db73, 2026-10-30 11:13-11:21 UTC.
+
+> @kesher/demo@0.1.0 record C:\dev\bitach\IGP\05-code\_runner\kesher-club\apps\demo
+> playwright test -c playwright.config.ts
+
+[WebServer] {"at":"2026-10-30T11:13:47.140Z","service":"demo","event":"listening","api":3000,"panel":4010,"market":"US","jobs":19,"flags":"all on"}
+[WebServer] persona  name            market  phone         party                                 kyc  USD     ILS      card    recordings
+[WebServer] dana     Dana Example    US      +15555550101  96dddd6a-dfa4-4585-83c8-8b653c49e042  T2   500.00  0.00     active  REC-01 REC-02 REC-04 REC-05 REC-07 REC-09 REC-16
+[WebServer] avi      Avi Example     US      +15555550102  35724256-9651-4431-85e6-6953d0b77a18  T1   0.00    0.00     none    REC-05 REC-08
+[WebServer] noa      Noa Example     IL      +15555550103  9cc2562f-afcd-45d1-a617-7f52a951792b  T2   100.00  5000.00  active  REC-03 REC-07 REC-08 REC-10 REC-14
+[WebServer] maya     Maya Example    IL      +15555550104  6dcd97d6-8d03-43c7-b0cf-51798ff62e31  T1   0.00    1000.00  none    REC-06 REC-14
+[WebServer] eli      Eli Example     IL      +15555550105  a64b4a59-53fe-4903-83c5-f5585d8c45ff  T1   0.00    0.00     none    REC-06 REC-14
+[WebServer] tamar    Tamar Example   US      +15555550106  cd1f8c44-1e3a-4740-8151-7e05e25d5ad6  T2   200.00  0.00     active  REC-12
+[WebServer] ruth     Ruth Example    US      +15555550107  ab7b3671-b02d-483f-accb-d1593ab1b686  T1   30.00   0.00     none    REC-17
+[WebServer] ben      Ben Example     US      +15555550108  3b42baa1-1e35-4106-95d0-d03f3b2fe56b  T1   0.00    0.00     none    REC-01
+[WebServer] rivka    Rivka Example   IL      +15555550109  8c338801-f270-49ab-8da3-f2993645ddf7  T2   0.00    0.00     active  REC-13 REC-14 REC-15
+[WebServer] shimon   Shimon Example  IL      +15555550110  0e2471d0-9450-4db4-afb0-00f8c18c1069  T1   0.00    0.00     none    REC-13 REC-14
+[WebServer] Institution: Yeshivat Kesher (demo) (IL) 01a18c84-1afe-7a8e-bdf3-69f7e92ecd74
+[WebServer] - finance staff: rivka, shimon
+[WebServer] - roster: committed, 3 members
+[WebServer] - student noa: active
+[WebServer] - student maya: active
+[WebServer] - student eli: active
+[WebServer] Catalogue: eSIM price rule active, 3 plans priced
+[WebServer] Not seeded (the contract cannot make them yet):
+[WebServer] - Funder linked to a member (Ben to Dana) (REC-01, REC-04): POST /memberships needs a plan in billing.plan_version, and no endpoint or migration creates one
+[WebServer] {"at":"2026-10-30T11:13:51.075Z","service":"demo","event":"record_ready","port":4099}
+
+Running 18 tests using 1 worker
+
+  ok  1 src\record\rec-01-05.spec.ts:13:1 > REC-01 load by card (54.0s)
+  ok  2 src\record\rec-01-05.spec.ts:58:1 > REC-03 load into the other purse at the club rate (14.6s)
+  ok  3 src\record\rec-01-05.spec.ts:116:1 > REC-04 auto-reload (17.1s)
+  ok  4 src\record\rec-01-05.spec.ts:162:1 > REC-05 P2P send (17.1s)
+  ok  5 src\record\rec-01-05.spec.ts:204:1 > REC-02 ACH load with bank hold and release (18.2s)
+  ok  6 src\record\rec-06-09.spec.ts:16:1 > REC-07 P2P send across currencies (18.3s)
+  ok  7 src\record\rec-06-09.spec.ts:76:1 > REC-08 payment requests and splits (14.8s)
+  ok  8 src\record\rec-06-09.spec.ts:131:1 > REC-09 send proposed by an assistant (13.1s)
+  ok  9 src\record\rec-06-09.spec.ts:181:1 > REC-06 P2P new-pair hold, cancel and release (22.5s)
+  ok 10 src\record\rec-10-12.spec.ts:34:1 > REC-10 FX conversion between purses (13.8s)
+  ok 11 src\record\rec-10-12.spec.ts:71:1 > REC-11 club rates: published, then a two-person manual rate (38.5s)
+  ok 12 src\record\rec-10-12.spec.ts:128:1 > REC-12 card authorisation and its hold (16.8s)
+  ok 13 src\record\rec-13-14.spec.ts:85:1 > REC-13 institution withdrawal to its own account (33.8s)
+[WebServer] [browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. (Next.js hydration warning; diff was body data-leaving="1")
+  ok 14 src\record\rec-13-14.spec.ts:173:1 > REC-14 institution allowance run (33.2s)
+[WebServer] [browser] A tree hydrated but some attributes of the server rendered HTML didn't match the client properties. (same warning, same body data-leaving="1" diff)
+  ok 15 src\record\rec-15-18.spec.ts:30:1 > REC-15 institution collections (19.3s)
+  ok 16 src\record\rec-15-18.spec.ts:108:1 > REC-16 add-on purchase (14.0s)
+  ok 17 src\record\rec-15-18.spec.ts:153:1 > REC-17 account closure refunds (12.2s)
+  ok 18 src\record\rec-15-18.spec.ts:184:1 > REC-18 ledger reversal and the nightly balance proof (17.1s)
+
+  18 passed (7.4m)
