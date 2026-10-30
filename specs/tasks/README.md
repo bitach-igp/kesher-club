@@ -37,6 +37,7 @@
 | [T-0034](T-0034.md) | SETUP | The demo seed onboards the yeshiva, its finance pair and a roster through the admin API | REQ-ADM-004 | 11 |
 | [T-0035](T-0035.md) | SETUP | The demo's shared clock reaches every API request | REQ-ADM-004 | 11 |
 | [T-0036](T-0036.md) | SETUP | The mobile layout tests warm their module graph, so CI's first test does not time out | REQ-AUTH-001 | 12 |
+| [T-0037](T-0037.md) | SETUP | The README says where the project stands; the six ADR drafts are recorded as accepted | — | 12 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
@@ -54,6 +55,7 @@
 | [T-0204](T-0204.md) | LED | Inbound webhook store, verify, dedupe, replay | REQ-LED-003 | 4 |
 | [T-0205](T-0205.md) | LED | Transfer state machine + outbox publisher | — | 4 |
 | [T-0206](T-0206.md) | LED | Reconciliation job + ops cases | REQ-LED-004 | 4 |
+| [T-0207](T-0207.md) | LED | A forged webhook never claims a genuine event's id | REQ-LED-005 | 12 |
 | [T-0301](T-0301.md) | BIL | Stripe adapter incl. Apple/Google Pay | — | 3 |
 | [T-0302](T-0302.md) | BIL | Plans, versions, entitlement templates, can() + /me/capabilities | — | 3 |
 | [T-0303](T-0303.md) | BIL | Dunning, pause/resume, 10-month term | — | 3 |
@@ -132,6 +134,7 @@
 | [T-0628](T-0628.md) | PO | An institution payout keeps its requester through a cool-off | REQ-INS-004 | 13 |
 | [T-0629](T-0629.md) | INS | Finance bills a fee to the yeshiva's members in I08 | REQ-INS-006 | 13 |
 | [T-0630](T-0630.md) | INS | Console: US finance pull from the institution's bank by ACH and see what is on hold | REQ-INS-009 | 12 |
+| [T-0631](T-0631.md) | INS | A suspense bank credit is recorded against the right institution from its case | REQ-INS-015 | 12 |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
@@ -173,6 +176,10 @@
 | [T-0927](T-0927.md) | CMP | Recordings REC-13 (withdrawal) and REC-14 (allowance run) on the institution console | — | 13 |
 | [T-0928](T-0928.md) | ADM | Kesher finance sets add-on price rules, two-person approved (API) | REQ-MKT-002 | 13 |
 | [T-0929](T-0929.md) | ADM | A05 price rules in the admin console, and the demo's eSIM rule | REQ-MKT-002 | 13 |
+| [T-0930](T-0930.md) | ADM | Ops cases form one queue: filter, assign, resolve or dismiss with a note, audited | REQ-ADM-005 | 12 |
+| [T-0931](T-0931.md) | ADM | The admin console's ops queue, and a suspense credit recorded from its case | REQ-ADM-005 | 12 |
+| [T-0932](T-0932.md) | ADM | Plan versions: finance proposes, a second approves, only then offered | REQ-ADM-006 | 12 |
+| [T-0933](T-0933.md) | ADM | A13 Plans in the admin console, and the demo's plan through it | REQ-ADM-006 | 12 |
 | [T-1001](T-1001.md) | AGT | Protected Resource Metadata + 401 | REQ-AGT-001 | 10 |
 | [T-1002](T-1002.md) | AGT | Token validation: audience, scopes, grant | REQ-AGT-002, REQ-AGT-005 | 10 |
 | [T-1003](T-1003.md) | AGT | CIMD registration with SSRF guard | REQ-AGT-003 | 10 |
