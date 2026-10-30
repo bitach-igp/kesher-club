@@ -24,7 +24,7 @@ for example ₪500.00 (50,000 agorot).
 | 10 | FX conversion between purses | SEQ-08 | REQ-FX-001, REQ-FX-002, REQ-FX-003, REQ-FX-004 | TST-FX-001 to TST-FX-004 | REC-10 FX conversion |
 | 11 | Club rates: published rate and two-person manual rate | SEQ: not in Tab 3 §7 | REQ-FX-003, REQ-FX-004, REQ-ADM-003 | TST-FX-003, TST-FX-004, TST-ADM-003 | REC-11 club rates |
 | 12 | Card authorisation (JIT) and settlement | SEQ-01 | REQ-CRD-003, REQ-CRD-004, REQ-CRD-005, REQ-CRD-008 | TST-CRD-003, TST-CRD-004, TST-CRD-008 | REC-12 card authorisation |
-| 13 | Payout to an Israeli bank account | SEQ-09 | REQ-PO-001, REQ-PO-002 | TST-PO-001, TST-PO-002 | REC-13 payout |
+| 13 | Institution withdrawal to its own bank account | SEQ-09 | REQ-PO-001, REQ-PO-002, REQ-INS-004, REQ-INS-012 | TST-PO-001, TST-PO-002 | REC-13 institution withdrawal |
 | 14 | Institution allowance run | SEQ-07 | REQ-INS-003, REQ-INS-004 | TST-INS-003, TST-INS-004 | REC-14 allowance run |
 | 15 | Institution collections (fee payment) | SEQ: not in Tab 3 §7 | REQ-INS-006 | TST-INS-006 | REC-15 collections |
 | 16 | Add-on purchase (eSIM, insurance) | SEQ-10 | REQ-MKT-001, REQ-ESIM-002, REQ-INSR-001 | TST-MKT-001, TST-ESIM-002 | REC-16 add-on purchase |
@@ -514,40 +514,53 @@ own currency, with no conversion. The founder decides with the processor.
 
 Decided (ADR-014, decision 10): the shekel purse pays first for a merchant in Israel; a short purse is covered by the other, converted at the club rate with the plan markup. Built in T-0409 (`apps/api/src/cards/jit.ts:226-260`).
 
-## 13. Payout to an Israeli bank account
+## 13. Institution withdrawal to its own bank account
 
-A member sends shekels from their ILS purse to a validated Israeli bank account.
+An institution's finance staff withdraw shekels from the institution's account at Kesher to the institution's own
+bank account, verified as held in its registered name. Members have no payout screen; the same rules sit behind
+the API's member payout, which no recording shows.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-09 | REQ-PO-001, REQ-PO-002 | `payouts.nium` (`apps/api/src/payouts/service.ts:25`, `:128`) | REC-13 payout |
+| SEQ-09 | REQ-PO-001, REQ-PO-002, REQ-INS-004, REQ-INS-012 | `payouts.nium`, `institutions.money` | REC-13 institution withdrawal |
 
-- ILS only (`apps/api/src/payouts/service.ts:144`). The payee is checked by us (Israeli IBAN checksum,
-  name) and then by the provider (`apps/api/src/payouts/service.ts:136-137`, `:156-173`).
-- Cooling off: a payee with no settled payout yet, and an amount above ₪2,000.00 (200,000 agorot),
-  waits 24 hours with nothing moved (`apps/api/src/payouts/service.ts:28-30`, `:184-193`).
-- Second approver: above ₪5,000.00 (500,000 agorot) the payout waits for a finance or org-admin
-  approver who is not the requester (`apps/api/src/approvals/service.ts:11-12`, `:53`, `:76`, `:96`;
-  `apps/api/src/payouts/service.ts:199-202`).
-- Then the journal posts and the provider is asked, both under the same key
-  (`apps/api/src/payouts/service.ts:204-221`). The worker resumes payouts whose cooling-off ended or
-  whose approval landed, every minute (`apps/worker/src/payouts/payout-workflow.ts:1-8`).
-- Provider webhooks settle or fail the payout once (`apps/api/src/payouts/service.ts:284-294`). A failure
-  reverses the journal and pushes a notice to the payer (`apps/api/src/payouts/service.ts:251-257`).
-- A provider outage keeps the money reserved on the journal for a retry with the same key; a payee the
-  provider rejects reverses the journal and fails the payout (`apps/api/src/payouts/service.ts:222-233`).
+- The institution's own finance staff ask in I09, with a passkey step-up
+  (`apps/api/src/payouts/handlers.ts:91-93`). The payee is never in the request: it is the institution's
+  approved own-name account (T-0623, T-0625), and a body that names one is refused
+  (`apps/api/src/payouts/handlers.ts:98-100`; `apps/api/src/institutions/payout-account.ts:118`, `:134`).
+- Only while the institution's KYB decision opens payouts (`apps/api/src/payouts/service.ts:156-157`), and
+  never more than its account holds (`:177-179`).
+- Cooling off: the account's first payout above ₪2,000.00 (200,000 agorot) waits 24 hours with nothing moved
+  (`apps/api/src/payouts/service.ts:30-32`, `:215-224`). The account counts as known once a payout to it settled
+  (`:282`).
+- Second approver: above ₪5,000.00 (500,000 agorot) a finance member of the same institution who is not the
+  requester approves, with a passkey (`apps/api/src/payouts/service.ts:230-234`, `:339-342`;
+  `apps/api/src/approvals/service.ts:11-12`). The worker resumes payouts whose cooling-off ended or whose
+  approval landed, every minute (`apps/worker/src/payouts/payout-workflow.ts:1-8`).
+- Then the journal posts and the rail is asked, both under the same key
+  (`apps/api/src/payouts/service.ts:236-252`). The rail's signed webhook settles or fails the payout once
+  (`:319-326`); a failure reverses the journal (`:286-291`). A rail outage keeps the money reserved on the journal
+  for a retry with the same key; a payee the rail rejects reverses it at once (`:254-268`).
 
 | Journal kind | Key | Dr | Cr | Currency |
 |---|---|---|---|---|
-| `payout` | `{key}:settle` | member `wallet` | `partner_settlement` | ILS |
-| `reversal` (on failure) | `{key}:settle:reversal` | `partner_settlement` | member `wallet` | ILS |
+| `deposit` (funding it, T-0614; `apps/api/src/institutions/deposits.ts:1-5`, `:175-179`) | `deposit:{depositId}:settle` | `partner_settlement` | the institution's `institution_master` | ILS |
+| `payout` | `{key}:settle` | the institution's `institution_master` | `partner_settlement` | ILS |
+| `reversal` (on failure) | `{key}:settle:reversal` | `partner_settlement` | the institution's `institution_master` | ILS |
 
-Source: `apps/api/src/payouts/service.ts:99`, `:208-218`, `:229`, `:253`.
+Source: `apps/api/src/payouts/service.ts:239-252`, `:288`; `apps/api/src/ledger/accounts.ts:69-76`.
+
+Worked example (REC-13, in agorot): Kesher finance records a ₪20,000.00 Masav deposit and a second finance member
+approves it: +2,000,000. The yeshiva's finance lead withdraws ₪6,000.00 (600,000): it is the account's first payout
+and above 200,000, so it cools off 24 hours with the balance still 2,000,000; it is above 500,000, so a second
+finance member approves it; the `payout` journal posts Dr the yeshiva 600,000, Cr `partner_settlement` 600,000;
+the rail settles it and nothing more posts. The yeshiva holds 1,400,000, ₪14,000.00.
 
 Tests: TST-PO-001 (`apps/api/src/payouts/service.test.ts:75`; `apps/api/src/payouts/iban.test.ts:9-29`),
 TST-PO-002 (`apps/api/src/payouts/service.test.ts:90`, `:129`, `:150`, `:175`;
-`apps/worker/src/payouts/payout-workflow.test.ts:51`, `:88`). Example: a new payee at ₪3,000.00 is
-scheduled 24 hours later (`apps/api/src/payouts/service.test.ts:90`).
+`apps/worker/src/payouts/payout-workflow.test.ts:51`, `:88`), institution payouts
+(`apps/api/src/payouts/handlers.test.ts:85`, `:99`, `:116`, `:128`, `:146`), and the recording's own asserts
+(`apps/demo/src/record/rec-13-14.spec.ts`).
 
 Open: the second-approver line for a USD amount is above $1,250.00 (125,000 cents), set as ₪5,000 at
 1:4 (`apps/api/src/approvals/service.ts:54`). Payouts are ILS only, so this applies to other kinds; the
