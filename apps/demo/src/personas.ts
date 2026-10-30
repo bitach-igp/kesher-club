@@ -31,14 +31,14 @@ export interface Persona {
 export const PERSONAS: readonly Persona[] = [
   { key: 'dana', name: 'Dana Example', phone: '+15555550101', market: 'US', kyc: 'T2', loads: [{ currency: 'USD', minor: 50_000n }], recs: ['REC-01', 'REC-02', 'REC-04', 'REC-05', 'REC-07', 'REC-09', 'REC-16'], role: 'US member, sender' },
   { key: 'avi', name: 'Avi Example', phone: '+15555550102', market: 'US', kyc: 'T1', loads: [], recs: ['REC-05', 'REC-08'], role: 'US member, Dana pays him' },
-  { key: 'noa', name: 'Noa Example', phone: '+15555550103', market: 'IL', kyc: 'T2', loads: [{ currency: 'ILS', minor: 500_000n }, { currency: 'USD', minor: 10_000n }], recs: ['REC-03', 'REC-07', 'REC-08', 'REC-10', 'REC-13', 'REC-14'], role: 'IL member, both purses' },
+  { key: 'noa', name: 'Noa Example', phone: '+15555550103', market: 'IL', kyc: 'T2', loads: [{ currency: 'ILS', minor: 500_000n }, { currency: 'USD', minor: 10_000n }], recs: ['REC-03', 'REC-07', 'REC-08', 'REC-10', 'REC-14'], role: 'IL member, both purses' },
   { key: 'maya', name: 'Maya Example', phone: '+15555550104', market: 'IL', kyc: 'T1', loads: [{ currency: 'ILS', minor: 100_000n }], recs: ['REC-06', 'REC-14'], role: 'new pair, sender' },
   { key: 'eli', name: 'Eli Example', phone: '+15555550105', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-06', 'REC-14'], role: 'new pair, recipient; has never been paid by Maya' },
   { key: 'tamar', name: 'Tamar Example', phone: '+15555550106', market: 'US', kyc: 'T2', loads: [{ currency: 'USD', minor: 20_000n }], recs: ['REC-12'], role: 'member with an open virtual card' },
   { key: 'ruth', name: 'Ruth Example', phone: '+15555550107', market: 'US', kyc: 'T1', loads: [{ currency: 'USD', minor: 3_000n }], recs: ['REC-17'], role: 'ready to close: card-loaded money only, no holds' },
   { key: 'ben', name: 'Ben Example', phone: '+15555550108', market: 'US', kyc: 'T1', loads: [], recs: ['REC-01'], role: 'funder; the link to a member is missing (see docs/setup/demo.md)' },
-  { key: 'rivka', name: 'Rivka Example', phone: '+15555550109', market: 'IL', kyc: 'T2', loads: [], recs: ['REC-14', 'REC-15'], role: 'yeshiva finance: imports the roster, requests runs and payouts; the yeshiva\'s KYB control person', staff: 'finance' },
-  { key: 'shimon', name: 'Shimon Example', phone: '+15555550110', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-14'], role: 'yeshiva finance: the second approver', staff: 'finance' },
+  { key: 'rivka', name: 'Rivka Example', phone: '+15555550109', market: 'IL', kyc: 'T2', loads: [], recs: ['REC-13', 'REC-14', 'REC-15'], role: 'yeshiva finance: imports the roster, requests runs and payouts; the yeshiva\'s KYB control person', staff: 'finance' },
+  { key: 'shimon', name: 'Shimon Example', phone: '+15555550110', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-13', 'REC-14'], role: 'yeshiva finance: the second approver', staff: 'finance' },
 ];
 
 /**
