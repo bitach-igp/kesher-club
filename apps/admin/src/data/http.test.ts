@@ -17,6 +17,7 @@ const dep1 = { id: '01932e5a-0000-7000-8000-00000000d001', institutionId: YESHIV
 const rule1 = { id: '01932e5a-0000-7000-8000-00000000e001', kind: 'esim', provider: 'simulator', skuPattern: '^IL-', marginBps: 2500, floor: { minor: '0', currency: 'USD' }, roundTo99: true, priority: 10, state: 'proposed', proposedBy: 'zvi', reason: 'Launch margin', createdAt: '2026-11-10T09:00:00Z' };
 const case1 = { id: '01932e5a-0000-7000-8000-0000000c5001', kind: 'suspense', severity: 'high', status: 'open', summary: 'ILS 5,000.00 by masav, no payment reference', payload: { reason: 'no_reference', rail: 'masav', amount: { minor: '500000', currency: 'ILS' }, bankReference: 'MSV-1', valueDate: '2026-11-09', remitterReference: 'see email' }, openedAt: '2026-11-10T06:00:00Z' };
 const case2 = { ...case1, id: '01932e5a-0000-7000-8000-0000000c5002', kind: 'balance_break', summary: 'Balance differs', payload: {} };
+const plan1 = { planCode: 'club-il', name: 'Kesher Club Israel', version: 2, market: 'IL', price: { minor: '9007199254740993', currency: 'ILS' }, termMonths: 10, entitlements: { 'esim.dataGb': { limit: '5', unit: 'gb', period: 'month' } }, fxMarkupBps: 75, effectiveFrom: '2026-11-10T00:00:00Z', state: 'proposed', offered: false, proposedBy: 'zvi', reason: 'Second year', createdAt: '2026-11-10T09:00:00Z' };
 const problemOf = (status: number, code: string, detail: string) => Response.json({ type: 'about:blank', title: code, status, code, detail }, { status, headers: { 'content-type': 'application/problem+json' } });
 const noaSummary = { partyId: NOA, displayName: 'Noa Example', phoneMasked: '•••• 4567', status: 'active', locale: 'he', mode: 'member', createdAt: '2026-10-01T09:00:00Z' };
 const noa360 = {
@@ -67,6 +68,10 @@ async function setup(clock?: () => Promise<Date>) {
     if (url.pathname === `/admin/institutions/${YESHIVA}/deposits`) return depositsOn ? Response.json({ paymentReference: 'KC-7M4QX2HD', balances: [{ minor: '2000000', currency: 'ILS' }], items: [dep1] }) : problemOf(404, 'FEATURE_OFF', 'institutions.deposits is off');
     if (url.pathname === `/admin/deposits/${dep1.id}/approve`) return problemOf(409, 'IDEMPOTENCY_CONFLICT', 'The recorder cannot approve');
     if (url.pathname === `/admin/deposits/${dep1.id}/reject`) return Response.json({ ...dep1, status: 'rejected', recordedByMe: false, decidedAt: '2026-11-10T10:00:00Z' });
+    if (url.pathname === '/admin/plans' && init?.method === 'POST') return Response.json(plan1, { status: 201 });
+    if (url.pathname === '/admin/plans') return Response.json({ items: [plan1] });
+    if (url.pathname === '/admin/plans/club-il/versions/2/approve') return problemOf(409, 'IDEMPOTENCY_CONFLICT', 'The proposer cannot approve');
+    if (url.pathname === '/admin/plans/club-il/versions/2/reject') return Response.json({ ...plan1, state: 'rejected', decidedAt: '2026-11-10T10:00:00Z' });
     // The queue answers two pages: the first names a cursor, the second does not.
     if (url.pathname === '/admin/cases') return Response.json(url.searchParams.get('cursor') === 'p2' ? { items: [case2] } : { items: [case1], nextCursor: 'p2' });
     if (url.pathname === `/admin/cases/${case1.id}`) return Response.json(case1);
@@ -245,5 +250,19 @@ describe('httpAdminData', () => {
     calls.length = 0;
     await data.recordDeposit(YESHIVA, { amount: money(500_000n, 'ILS'), rail: 'masav', bankReference: 'MSV-1', valueDate: '2026-11-09', key: 'form-key-1', caseId: case1.id }, zvi, now);
     expect(calls[0]).toMatchObject({ method: 'POST', body: { caseId: case1.id, amount: { minor: '500000', currency: 'ILS' }, rail: 'masav', bankReference: 'MSV-1', valueDate: '2026-11-09' } });
+  });
+
+  it('lists, proposes and decides plan versions against the API, the price in bigint (T-0933)', async () => {
+    const { data, calls } = await setup();
+    const zvi = { subject: 'zvi', roles: ['finance'] };
+    const now = new Date();
+    expect(await data.listPlanVersions()).toEqual([expect.objectContaining({ planCode: 'club-il', version: 2, price: money(9_007_199_254_740_993n, 'ILS'), entitlements: { 'esim.dataGb': { limit: '5', unit: 'gb', period: 'month' } } })]);
+    calls.length = 0;
+    await data.proposePlanVersion({ planCode: 'club-il', name: 'Kesher Club Israel', market: 'IL', price: money(21_000n, 'ILS'), termMonths: 10, entitlements: {}, fxMarkupBps: 75, reason: 'Second year' }, zvi, now);
+    expect(calls[0]).toMatchObject({ method: 'POST', url: '/admin/plans', body: { planCode: 'club-il', market: 'IL', price: { minor: '21000', currency: 'ILS' }, termMonths: 10, fxMarkupBps: 75, reason: 'Second year' } });
+    expect(calls[0]!.body).not.toHaveProperty('effectiveFrom');
+    await expect(data.decidePlanVersion('club-il', 2, 'approve', zvi, undefined, now)).rejects.toMatchObject({ code: 'CONFLICT' });
+    expect(await data.decidePlanVersion('club-il', 2, 'reject', zvi, 'Not agreed', now)).toMatchObject({ state: 'rejected' });
+    expect(calls.at(-1)).toMatchObject({ url: '/admin/plans/club-il/versions/2/reject', body: { reason: 'Not agreed' } });
   });
 });

@@ -6,6 +6,7 @@
 // KybPort simulator, and its own bank account is recorded by one compliance member and approved by another.
 // T-0626: three student personas accept their roster invites from the panel's outbox and are active at once.
 // T-0929: the demo's eSIM price rule goes through the admin API, and the catalogue lists the priced plans.
+// T-0933: a demo plan per market is proposed and approved by two finance staff, and Ben funds Dana's membership.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, type JWK } from 'jose';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
@@ -59,7 +60,7 @@ describe('demo seed (T-0032)', () => {
     expect(await count('ledger.journal')).toBe(journals);
     expect(await dev.app.services.displayNames.get(byKey(first, 'avi').partyId)).toEqual(named);
     expect(await count('identity.member_display_name')).toBe(PERSONAS.length);
-    expect(formatTable(second)).toBe(formatTable({ personas: first, institution: second.institution, catalogue: second.catalogue }));
+    expect(formatTable(second)).toBe(formatTable({ ...second, personas: first }));
   }, 120_000);
 
   it('each persona signs in with its seeded passkey as the party the seed made', async () => {
@@ -75,10 +76,10 @@ describe('demo seed (T-0032)', () => {
     }
   }, 60_000);
 
-  it('prints no token and lists the personas the contract cannot make yet', async () => {
+  it('prints no token, and says nothing is left unseeded now that Ben funds Dana', async () => {
     const table = formatTable(await seed(target));
     expect(table).not.toMatch(/eyJ|rt_|su_|otps_/);
-    expect(table).toContain('Not seeded');
+    expect(table).toContain('Not seeded: nothing');
     expect(table).toContain('REC-14');
   }, 60_000);
 });
@@ -127,6 +128,29 @@ describe('demo yeshiva (T-0034)', () => {
       { vendor_sku: 'IL-5GB-30D', cost_minor: '950', price_minor: '1199' },
     ]);
     expect(formatTable(await seed(target))).toContain(`Institution: ${INSTITUTION.name} (IL) ${institution!.id}`);
+  }, 120_000);
+
+  it('a demo plan per market goes through two finance staff, and Ben funds Dana on the US one, once (T-0933)', async () => {
+    const { personas, plans, funding } = await seed(target);
+    expect(plans).toEqual([
+      { planCode: 'demo-club-il', version: 1, state: 'active' },
+      { planCode: 'demo-club-us', version: 1, state: 'active' },
+    ]);
+    expect(funding).toEqual({ funder: 'ben', member: 'dana', planCode: 'demo-club-us', planVersion: 1, status: 'active' });
+    const rows = await db.query<{ market: string; currency: string; price_minor: string; proposed_by: string; state: string }>(`select market, currency, price_minor::text, proposed_by, state from billing.plan_version where plan_code like 'demo-club-%' order by plan_code`);
+    expect(rows.rows).toEqual([
+      { market: 'IL', currency: 'ILS', price_minor: '18000', proposed_by: 'staff-finance-1', state: 'active' },
+      { market: 'US', currency: 'USD', price_minor: '4900', proposed_by: 'staff-finance-1', state: 'active' },
+    ]);
+    const m = await db.query<{ member_party_id: string; funder_party_id: string; status: string }>(`select member_party_id, funder_party_id, status from billing.membership`);
+    expect(m.rows).toEqual([{ member_party_id: byKey(personas, 'dana').partyId, funder_party_id: byKey(personas, 'ben').partyId, status: 'active' }]);
+
+    const again = await seed(target);
+    expect(again.funding).toEqual(funding);
+    expect(await count('billing.plan_version')).toBe(2);
+    expect(await count('billing.membership')).toBe(1);
+    expect(await count("ops.approval_request where kind = 'plan_version'")).toBe(2);
+    expect(formatTable(again)).toContain("Funding: ben pays dana's demo-club-us v1 membership (active)");
   }, 120_000);
 
   it('without a staff key the seed says how to get one and makes no institution', async () => {

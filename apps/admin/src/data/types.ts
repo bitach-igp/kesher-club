@@ -227,6 +227,48 @@ export interface PriceRuleInput {
   reason: string;
 }
 
+/** A plan version (A13, T-0932/T-0933): what a new member joins on, once a second finance member approves it. */
+export type PlanVersionState = 'proposed' | 'active' | 'rejected';
+export interface PlanEntitlement {
+  /** A whole number as a string. */
+  limit: string;
+  unit: 'gb' | 'calls' | 'minor' | 'count';
+  period: 'month' | 'term' | 'none';
+}
+export interface PlanVersionRow {
+  planCode: string;
+  name: string;
+  version: number;
+  /** Absent on versions made before T-0932. */
+  market?: Market | undefined;
+  price: Money;
+  termMonths: number;
+  entitlements: Record<string, PlanEntitlement>;
+  fxMarkupBps: number;
+  effectiveFrom: string;
+  state: PlanVersionState;
+  /** The version a new member of this plan joins on now. */
+  offered: boolean;
+  /** The proposer's staff subject: they are never offered Approve or Reject on their own version. */
+  proposedBy?: string | undefined;
+  /** Staff-entered text. */
+  reason?: string | undefined;
+  createdAt: string;
+  decidedAt?: string | undefined;
+}
+export interface PlanVersionInput {
+  planCode: string;
+  name: string;
+  market: Market;
+  price: Money;
+  termMonths: number;
+  entitlements: Record<string, PlanEntitlement>;
+  fxMarkupBps: number;
+  /** Absent: offered as soon as it is approved. */
+  effectiveFrom?: string | undefined;
+  reason: string;
+}
+
 export interface AdminActor {
   subject: string;
   roles: readonly string[];
@@ -284,6 +326,13 @@ export interface AdminData {
   proposePriceRule(input: PriceRuleInput, by: AdminActor, now: Date): Promise<PriceRuleRow>;
   /** A different finance member approves (the rule becomes active) or either rejects it with a reason. */
   decidePriceRule(id: string, decision: 'approve' | 'reject', by: AdminActor, reason: string | undefined, now: Date): Promise<PriceRuleRow>;
+
+  /** A13 (T-0933): every plan version, newest first. */
+  listPlanVersions(): Promise<PlanVersionRow[]>;
+  /** Kesher finance proposes; the proposer is the first of two approvers and the version is offered to no one yet. */
+  proposePlanVersion(input: PlanVersionInput, by: AdminActor, now: Date): Promise<PlanVersionRow>;
+  /** A different finance member approves (it is offered from its effective date) or either rejects it with a reason. */
+  decidePlanVersion(planCode: string, version: number, decision: 'approve' | 'reject', by: AdminActor, reason: string | undefined, now: Date): Promise<PlanVersionRow>;
 
   auditLog(): Promise<{ at: string; actor: string; action: string; subject: string; detail?: string | undefined }[]>;
 }
