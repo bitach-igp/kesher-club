@@ -6,6 +6,7 @@ export * from './org-idp.contract.ts';
 export * from './kyc.contract.ts';
 export * from './billing.contract.ts';
 export * from './funding.contract.ts';
+export * from './bank.contract.ts';
 export * from './card-issuing.contract.ts';
 export * from './wallet-provisioning.contract.ts';
 export * from './fx.contract.ts';

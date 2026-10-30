@@ -80,12 +80,12 @@ describe('buildJobs (T-0022)', () => {
       ...Object.fromEntries(Object.keys(NIGHTLY).map((n) => [n, DAILY_TICK_MS / 1000])),
     });
     // The nightly jobs tick every minute and run once a day at their Israel time.
-    expect(NIGHTLY).toEqual({ 'balance-proof': '02:30', 'catalogue-sync': '03:00', 'kyb-rescreen': '05:00', 'kyb-refresh': '05:15' });
+    expect(NIGHTLY).toEqual({ 'balance-proof': '02:30', 'catalogue-sync': '03:00', 'kyb-rescreen': '05:00', 'kyb-refresh': '05:15', 'deposit-reconcile': '06:30' });
   });
 
   it('gives every job a scope: market jobs sweep their own market\'s rows, club jobs run one at a time in the club (T-0028)', () => {
     const byScope = (scope: string) => jobs.filter((j) => j.scope === scope).map((j) => j.name).sort();
-    expect(byScope('market')).toEqual(['ach-release-holds', 'auto-reload', 'card-token-events', 'catalogue-sync', 'esim-usage', 'kyb-rescreen', 'load-sweep', 'p2p-release-holds', 'payout-sweep', 'webhook-replay']);
+    expect(byScope('market')).toEqual(['ach-release-holds', 'auto-reload', 'card-token-events', 'catalogue-sync', 'deposit-reconcile', 'esim-usage', 'kyb-rescreen', 'load-sweep', 'p2p-release-holds', 'payout-sweep', 'webhook-replay']);
     expect(byScope('club')).toEqual(['agent-expire-intents', 'balance-proof', 'card-release-holds', 'fx-refresh-rates', 'fx-void-stale', 'kyb-refresh', 'monitoring', 'p2p-expire-requests', 'send-sweep']);
     expect(jobs.every((j) => j.scope === 'market' || j.scope === 'club')).toBe(true);
   });
@@ -103,10 +103,11 @@ describe('buildJobs (T-0022)', () => {
 
   it('records each nightly run in ops.job_run for its Israel day, so a second tick that day does nothing', async () => {
     const r = await db.query<{ job: string; run_date: string }>(`select job, to_char(run_date, 'YYYY-MM-DD') as run_date from ops.job_run order by job`);
-    // The balance proof and the KYB refresh are the club's; the catalogue sync and the KYB rescreen ask this
-    // market's providers, so their runs are keyed by market.
+    // The balance proof and the KYB refresh are the club's; the catalogue sync, the KYB rescreen and the deposit
+    // reconciliation ask this market's providers, so their runs are keyed by market.
     expect(r.rows).toEqual([
       { job: 'IL:catalogue-sync', run_date: '2026-10-19' },
+      { job: 'IL:deposit-reconcile', run_date: '2026-10-19' },
       { job: 'IL:kyb-rescreen', run_date: '2026-10-19' },
       { job: 'balance-proof', run_date: '2026-10-19' },
       { job: 'kyb-refresh', run_date: '2026-10-19' },

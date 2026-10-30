@@ -21,6 +21,7 @@ export const PORTS: readonly PortDescriptor[] = [
   { capability: 'kyb', port: 'KybPort', direction: 'out', simulator: true, contract: 'kyb.contract.ts', flags: ['institutions.kyb.checks'], vendors: ['data-gov-il', 'middesk', 'persona', 'candid'] },
   { capability: 'billing', port: 'BillingPort', direction: 'out', simulator: true, contract: 'billing.contract.ts', flags: ['billing.stripe', 'billing.applePay', 'billing.googlePay'], vendors: ['stripe'] },
   { capability: 'funding', port: 'FundingPort', direction: 'out', simulator: true, contract: 'funding.contract.ts', flags: ['wallet.enabled', 'funding.ach', 'funding.rtp'], vendors: ['stripe', 'plaid'] },
+  { capability: 'bank', port: 'BankPort', direction: 'in', simulator: true, contract: 'bank.contract.ts', flags: ['institutions.bankFeed'], vendors: [] },
   { capability: 'card-issuing', port: 'CardIssuingPort', direction: 'out+in', simulator: true, contract: 'card-issuing.contract.ts', flags: ['card.virtual', 'card.physical', 'card.agentic', 'card.paymentPasskey'], vendors: ['marqeta', 'galileo', 'i2c'] },
   { capability: 'wallet-provisioning', port: 'WalletProvisioningPort', direction: 'out', simulator: true, contract: 'wallet-provisioning.contract.ts', flags: ['card.pushProvisioning', 'card.webPushProvisioning'], vendors: ['processor'] },
   { capability: 'fx', port: 'FxPort', direction: 'out', simulator: true, contract: 'fx.contract.ts', flags: ['fx.enabled'], vendors: ['processor', 'nium'] },
