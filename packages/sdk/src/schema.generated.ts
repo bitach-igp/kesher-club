@@ -2880,6 +2880,11 @@ export interface components {
             readonly from: components["schemas"]["Money"];
             readonly markup: components["schemas"]["Money"];
             readonly markupBps: number;
+            /**
+             * Format: date-time
+             * @description When the server priced the quote (T-0533). The lock lasts expiresAt − quotedAt; a client counts that down from when the quote arrived, never against its own clock, which may be off by any amount.
+             */
+            readonly quotedAt: string;
             readonly quoteId: string;
             /** @description Decimal string for display only */
             readonly rate: string;

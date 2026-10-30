@@ -66,7 +66,7 @@ describe('TST-FX-001: quotes lock for 30 s', () => {
     expect(r.status).toBe(201);
     const q = r.body as FxQuoteView;
     // $100 × 3.71 = ₪371.00 gross; 0.75 % = ₪2.78 markup (half-up); the member receives ₪368.22.
-    expect(q).toEqual({ quoteId: expect.any(String), from: { minor: '10000', currency: 'USD' }, total: { minor: '36822', currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' }, markupBps: Number(DEFAULT_FX_MARKUP_BPS), rate: '3.710000', rateVersion: 1, expiresAt: new Date(NOW.getTime() + 30_000).toISOString() });
+    expect(q).toEqual({ quoteId: expect.any(String), from: { minor: '10000', currency: 'USD' }, total: { minor: '36822', currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' }, markupBps: Number(DEFAULT_FX_MARKUP_BPS), rate: '3.710000', rateVersion: 1, quotedAt: NOW.toISOString(), expiresAt: new Date(NOW.getTime() + 30_000).toISOString() });
     expect(rateString(269_542n)).toBe('0.269542');
     expect((await quote({ minor: '10000', currency: 'USD' }, 'ILS', 'fx-quote-1')).body).toEqual(q);
     // Validation and the balance.

@@ -3,25 +3,27 @@
 // fresh one; a step-up keeps the quote's key; a fresh quote is a fresh key.
 import { describe, expect, it } from 'vitest';
 import type { Account, FxApi, FxConversion, FxQuote } from '../../src/api.ts';
-import { createFxModel, markupPercent, other, parseAmount, problemFor, secondsLeft } from './fx.model.ts';
+import { createFxModel, markupPercent, other, parseAmount, problemFor } from './fx.model.ts';
 
 const T0 = new Date('2026-11-10T09:00:00Z');
 const problem = (code: string, status: number, extra: Record<string, unknown> = {}) => Object.assign(new Error(code), { code, status, ...extra });
 
-function fakeFx(opts: { expiredOnce?: boolean; stepUpOnce?: boolean } = {}) {
+/** `serverAheadMs`: how far the server's clock runs ahead of the phone's (T-0533). */
+function fakeFx(opts: { expiredOnce?: boolean; stepUpOnce?: boolean; serverAheadMs?: number } = {}) {
   const quotes: { key: string; from: string; to: string }[] = [];
   const converts: { quoteId: string; key: string }[] = [];
   let expired = opts.expiredOnce ?? false;
   let stepUp = opts.stepUpOnce ?? false;
   let n = 0;
   let now = T0;
+  const server = () => now.getTime() + (opts.serverAheadMs ?? 0);
   const api: FxApi = {
     async quote(input, key) {
       quotes.push({ key, from: input.from.minor, to: input.to });
       const minor = BigInt(input.from.minor);
       const gross = input.to === 'ILS' ? minor * 371n / 100n : minor * 269_542n / 1_000_000n;
       const markup = (gross * 75n + 5_000n) / 10_000n;
-      const q: FxQuote = { quoteId: `fxq_${++n}`, from: input.from, total: { minor: (gross - markup).toString(), currency: input.to }, markup: { minor: markup.toString(), currency: input.to }, markupBps: 75, rate: input.to === 'ILS' ? '3.710000' : '0.269542', expiresAt: new Date(now.getTime() + 30_000).toISOString() };
+      const q: FxQuote = { quoteId: `fxq_${++n}`, from: input.from, total: { minor: (gross - markup).toString(), currency: input.to }, markup: { minor: markup.toString(), currency: input.to }, markupBps: 75, rate: input.to === 'ILS' ? '3.710000' : '0.269542', quotedAt: new Date(server()).toISOString(), expiresAt: new Date(server() + 30_000).toISOString() };
       return q;
     },
     async convert(quoteId, key) {
@@ -43,7 +45,7 @@ function fakeFx(opts: { expiredOnce?: boolean; stepUpOnce?: boolean } = {}) {
 }
 
 describe('helpers', () => {
-  it('parses amounts, swaps currencies, formats the markup and counts down', () => {
+  it('parses amounts, swaps currencies and formats the markup', () => {
     expect(parseAmount('100', 'USD')).toEqual({ amount: { minor: 10_000n, currency: 'USD' } });
     expect(parseAmount('0', 'USD')).toEqual({ problem: 'fx.amount.zero' });
     expect(parseAmount('x', 'USD')).toEqual({ problem: 'fx.amount.invalid' });
@@ -52,12 +54,6 @@ describe('helpers', () => {
     expect(markupPercent(75)).toBe('0.75%');
     expect(markupPercent(100)).toBe('1%');
     expect(markupPercent(0)).toBe('0%');
-    const q: FxQuote = { quoteId: 'q', from: { minor: '1', currency: 'USD' }, total: { minor: '1', currency: 'ILS' }, markup: { minor: '0', currency: 'ILS' }, markupBps: 75, rate: '3.71', expiresAt: new Date(T0.getTime() + 30_000).toISOString() };
-    expect(secondsLeft(q, T0)).toBe(30);
-    expect(secondsLeft(q, new Date(T0.getTime() + 29_100))).toBe(1);
-    expect(secondsLeft(q, new Date(T0.getTime() + 30_000))).toBe(0);
-    expect(secondsLeft(q, new Date(T0.getTime() + 60_000))).toBe(0);
-    expect(secondsLeft(undefined, T0)).toBe(0);
     expect(problemFor(problem('QUOTE_EXPIRED', 409), 'en')).toBe('expired');
     expect(problemFor(problem('INSUFFICIENT_FUNDS', 422, { available: '1234', currency: 'USD' }), 'en')).toEqual({ key: 'fx.insufficient', vars: { available: '$12.34' } });
   });
@@ -84,6 +80,18 @@ describe('TST-FX-001/002 at the screen', () => {
     expect(m.store.get()).toMatchObject({ result: { conversionId: 'fxc_1', status: 'settled' }, quote: undefined, notice: { key: 'fx.done', vars: { total: '₪368.22' } } });
     m.reset();
     expect(m.store.get()).toMatchObject({ amountText: '', result: undefined });
+  });
+
+  it('a phone clock days behind the server still sees a 30 s lock, and the quote drops 30 s later, not days (T-0533)', async () => {
+    const f = fakeFx({ serverAheadMs: 5 * 86_400_000 });
+    const m = createFxModel({ fx: f.api, accounts: f.accounts, newKey: () => 'k', now: f.nowRef });
+    await m.load();
+    m.setAmount('100');
+    await m.getQuote();
+    expect(m.store.get().secondsLeft).toBe(30);
+    f.setNow(new Date(T0.getTime() + 31_000));
+    m.tick();
+    expect(m.store.get()).toMatchObject({ quote: undefined, secondsLeft: 0, notice: { key: 'fx.expired' } });
   });
 
   it('the countdown reaching zero drops the quote; confirming at zero, or getting QUOTE_EXPIRED, fetches a fresh quote with a fresh key', async () => {
