@@ -137,6 +137,21 @@ The client's redirect URI is the panel's `http://localhost:4010/assistant/callba
 are allowed for native and command-line clients (RFC 8252). Grants show under Settings, Assistants in the app,
 where one tap revokes them.
 
+### Call /mcp as the assistant (T-1013)
+
+Once a persona has connected the demo assistant, the API's `/mcp` (Streamable HTTP, one JSON-RPC message per POST)
+answers the assistant's token. The recording stack (`src/record/stack.ts`) forwards a message with that token on
+its readiness port, so you never handle the token yourself:
+
+```sh
+curl -s -X POST http://127.0.0.1:4099/mcp -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+- **Which tools appear.** The list is what the grant's scopes allow and what the flags switch on: `mcp.enabled`, then `mcp.write.enabled` for acting and `mcp.money.propose` for proposals.
+- **Proposals.** `propose_p2p` leaves a pending intent that the member approves in the app with a passkey. Home shows "1 proposal waiting".
+- **Not yet wired.** `list_transactions`, `spending_summary` and `get_esim_usage` answer a tool error saying they are not available yet. The API has no transaction feed or eSIM usage endpoint behind them.
+
 ## Sign in to the console as staff (T-0919)
 
 The console keeps its full Identity Center sign-in: discovery, authorization code, token, JWKS. Locally,

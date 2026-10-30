@@ -58,6 +58,21 @@ http
       });
       return;
     }
+    // An assistant's call (T-1013): one JSON-RPC message to the API's /mcp with the demo assistant's bearer, once a
+    // persona connected it at the panel's /assistant/start. The token never leaves this process.
+    if (req.method === 'POST' && req.url === '/mcp') {
+      let raw = '';
+      req.on('data', (c: Buffer) => (raw += c.toString()));
+      req.on('end', () => {
+        const token = dev.assistant.accessToken();
+        if (!token) return void res.writeHead(409, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'connect the demo assistant first: /assistant/start on the panel' }));
+        fetch(`http://127.0.0.1:${dev.apiPort}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: raw }).then(
+          async (r) => res.writeHead(r.status, { 'content-type': 'application/json' }).end(await r.text()),
+          (e: Error) => res.writeHead(502, { 'content-type': 'application/json' }).end(JSON.stringify({ error: e.message })),
+        );
+      });
+      return;
+    }
     const party = new URL(req.url ?? '/', 'http://localhost').searchParams.get('cardOf');
     if (!party) return void res.writeHead(200, { 'content-type': 'text/plain' }).end('ready');
     void db.query<{ processor_card_id: string }>(`select processor_card_id from cards.card where party_id = $1 and status = 'active' order by issued_at limit 1`, [party]).then((r) => {
