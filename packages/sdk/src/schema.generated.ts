@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    readonly "/.well-known/oauth-authorization-server": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Authorization server metadata for assistants (RFC 8414)
+         * @description REQ-AGT-010 (T-1014, ADR-009). Public, behind `mcp.enabled`. Names the endpoints. Authorization code with S256 PKCE only; public clients identified by their Client ID Metadata Document; the scopes of REQ-AGT-005.
+         */
+        readonly get: operations["getAuthorizationServerMetadata"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/accounts": {
         readonly parameters: {
             readonly query?: never;
@@ -1696,6 +1716,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/oauth/authorize": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * An assistant asks for a grant (OAuth 2.1 authorization request)
+         * @description REQ-AGT-010 (T-1014, ADR-009). Public, behind `mcp.enabled`; the member's browser arrives here from the assistant. A good request is stored for 10 minutes and answers 302 to the member app's consent screen. Until the client and its redirect URI check out, a fault answers 400 here; after that it answers 302 back to the client's redirect URI with `error` (invalid_request, unsupported_response_type, invalid_scope or invalid_target) and the `state`.
+         */
+        readonly get: operations["authorizeAgent"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/oauth/jwks": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The public keys assistant tokens are signed with
+         * @description REQ-AGT-010 (T-1014). Public, behind `mcp.enabled`.
+         */
+        readonly get: operations["getOAuthJwks"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/p2p/recipients/resolve": {
         readonly parameters: {
             readonly query?: never;
@@ -2292,6 +2352,22 @@ export interface components {
             readonly entries: number;
             readonly ok: boolean;
             readonly reason?: string;
+        };
+        readonly AuthorizationServerMetadata: {
+            /** Format: uri */
+            readonly authorization_endpoint: string;
+            readonly client_id_metadata_document_supported?: boolean;
+            readonly code_challenge_methods_supported: readonly "S256"[];
+            readonly grant_types_supported: readonly string[];
+            /** Format: uri */
+            readonly issuer: string;
+            /** Format: uri */
+            readonly jwks_uri: string;
+            readonly response_types_supported: readonly string[];
+            readonly scopes_supported?: readonly string[];
+            /** Format: uri */
+            readonly token_endpoint: string;
+            readonly token_endpoint_auth_methods_supported?: readonly string[];
         };
         readonly AutoReloadRule: {
             /** Format: uuid */
@@ -3242,6 +3318,27 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    readonly getAuthorizationServerMetadata: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The metadata */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AuthorizationServerMetadata"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly listAccounts: {
         readonly parameters: {
             readonly query?: never;
@@ -5837,6 +5934,63 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Membership"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly authorizeAgent: {
+        readonly parameters: {
+            readonly query: {
+                /** @description The client's metadata document URL (https) */
+                readonly client_id: string;
+                readonly code_challenge: string;
+                readonly code_challenge_method: "S256";
+                readonly redirect_uri: string;
+                /** @description The MCP URL (RFC 8707) */
+                readonly resource: string;
+                readonly response_type: "code";
+                /** @description Space-separated scopes from REQ-AGT-005 */
+                readonly scope: string;
+                readonly state: string;
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description To the member app's consent screen, or back to the client with an error */
+            readonly 302: {
+                headers: {
+                    readonly Location?: string;
+                    readonly [name: string]: unknown;
+                };
+                content?: never;
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getOAuthJwks: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description A JSON Web Key Set */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly keys: readonly {
+                            readonly [key: string]: unknown;
+                        }[];
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];

@@ -45,6 +45,7 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
       identity: new PostgresIdentityRepository(db, pii),
       pii,
       staffJwks: config.STAFF_JWKS,
+      ...(config.MEMBER_APP_URL ? { oauth: { consentUrl: `${config.MEMBER_APP_URL.replace(/\/$/, '')}/connect` } } : {}),
     });
     const server = createServer(app);
     await new Promise<void>((resolve, reject) => {
