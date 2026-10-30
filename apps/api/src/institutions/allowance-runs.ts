@@ -7,12 +7,16 @@
 // GET /institutions/{id}/allowance-schedules and /allowance-runs (T-0609) are what I07 reads: the active
 // schedules with their cohort and next date, and the run history with who asked and who approved, by
 // display name only. Both answer 404 to anyone but the institution's own staff.
-import { DomainError, toWire, type Currency } from '@kesher/domain';
+// POST /institutions/{id}/allowance-schedules (T-0627) is how finance makes a schedule: an amount per member in
+// the institution's currency, a cadence, and every active member or a listed few. Its Idempotency-Key is kept
+// in org.allowance_schedule_request with the body's fingerprint, so a retry answers the schedule it made.
+import { createHash } from 'node:crypto';
+import { DomainError, toWire, uuidv7, type Currency } from '@kesher/domain';
 import type { IdentityRepository } from '../auth/repository.ts';
 import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import { staffNames } from './staff-names.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
-import type { Database } from '../db.ts';
+import { isPgError, PG, type Database } from '../db.ts';
 import { ok, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
 import { preview, run, type AllowanceActivities } from './allowance/workflow.ts';
 import { owedByRun, type InstitutionCredit } from './credit.ts';
@@ -53,6 +57,43 @@ export interface AllowanceRunDeps {
 }
 
 type Cadence = 'weekly' | 'monthly' | 'once';
+const CADENCES: readonly Cadence[] = ['weekly', 'monthly', 'once'];
+/** ₪10,000.00 (or $10,000.00) a member a run: above it is a typo, not an allowance. */
+export const MAX_ALLOWANCE_MINOR = 1_000_000n;
+const NAME_MAX = 80;
+const COHORT_MAX = 1000;
+const MARKET_CURRENCY: Record<string, Currency> = { IL: 'ILS', US: 'USD' };
+
+interface ScheduleRequest {
+  name: string;
+  amountMinor: bigint;
+  currency: Currency;
+  cadence: Cadence;
+  /** Roster member ids; empty for every active member. */
+  memberIds: string[];
+}
+
+/** The body, checked in full before anything is read: every problem is a 422 naming the field. */
+function parseSchedule(body: unknown, currency: Currency): ScheduleRequest {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const name = typeof b['name'] === 'string' ? b['name'].trim() : '';
+  if (!name || name.length > NAME_MAX) throw new DomainError('VALIDATION_FAILED', `name must be 1 to ${NAME_MAX} characters`);
+  const amount = (b['amount'] ?? {}) as Record<string, unknown>;
+  const minor = typeof amount['minor'] === 'string' && /^\d{1,19}$/.test(amount['minor']) ? BigInt(amount['minor']) : undefined;
+  if (amount['currency'] !== currency) throw new DomainError('VALIDATION_FAILED', `amount must be in ${currency}, the institution's currency`);
+  if (minor === undefined || minor <= 0n || minor > MAX_ALLOWANCE_MINOR) throw new DomainError('VALIDATION_FAILED', 'amount must be above zero and at most 10,000.00 a member', { maxMinor: MAX_ALLOWANCE_MINOR.toString() });
+  const cadence = b['cadence'] as Cadence;
+  if (!CADENCES.includes(cadence)) throw new DomainError('VALIDATION_FAILED', 'cadence must be weekly, monthly or once');
+  const cohort = (b['cohort'] ?? {}) as Record<string, unknown>;
+  if (cohort['kind'] === 'all') return { name, amountMinor: minor, currency, cadence, memberIds: [] };
+  const ids = cohort['memberIds'];
+  if (cohort['kind'] !== 'listed' || !Array.isArray(ids) || ids.length === 0 || ids.length > COHORT_MAX || !ids.every((x) => typeof x === 'string' && UUID.test(x)) || new Set(ids).size !== ids.length) {
+    throw new DomainError('VALIDATION_FAILED', `cohort must be { kind: all } or { kind: listed, memberIds: 1 to ${COHORT_MAX} distinct member ids }`);
+  }
+  return { name, amountMinor: minor, currency, cadence, memberIds: (ids as string[]).map((x) => x.toLowerCase()).sort() };
+}
+
+const fingerprint = (r: ScheduleRequest): string => createHash('sha256').update(JSON.stringify([r.name, r.amountMinor.toString(), r.currency, r.cadence, r.memberIds])).digest('base64url');
 type RunStatus = 'preview' | 'awaiting_second_approval' | 'running' | 'completed' | 'failed';
 const HISTORY_LIMIT = 100;
 
@@ -82,25 +123,84 @@ async function ownInstitution(d: AllowanceRunDeps, req: HttpRequest): Promise<{ 
   return { institutionId, partyId: p.partyId };
 }
 
-export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance' | 'listAllowanceSchedules' | 'listAllowanceRuns', Handler> {
+interface ScheduleRow {
+  id: string;
+  name: string;
+  amount_minor: string;
+  currency: Currency;
+  cadence: Cadence;
+  member_filter: string[];
+  member_count: number;
+  last_run: string | Date | null;
+}
+
+/** The institution's active schedules, or the one asked for, with the active members each would pay today. */
+const readSchedules = async (db: Database, institutionId: string, scheduleId?: string): Promise<ScheduleRow[]> =>
+  (
+    await db.query<ScheduleRow>(
+      `select s.id, s.name, s.amount_minor::text, s.currency, s.cadence, s.member_filter,
+              (select count(*)::int from org.member m where m.institution_id = s.institution_id and m.status = 'active' and m.member_party_id is not null
+                 and (jsonb_array_length(s.member_filter) = 0 or s.member_filter ? m.member_party_id::text)) as member_count,
+              (select max(run_date) from org.allowance_run r where r.schedule_id = s.id and r.status <> 'preview') as last_run
+         from org.allowance_schedule s where s.institution_id = $1 and s.active and ($2::uuid is null or s.id = $2) order by s.created_at, s.id`,
+      [institutionId, scheduleId ?? null],
+    )
+  ).rows;
+
+function scheduleView(x: ScheduleRow, today: string) {
+  const next = nextRunDate(x.cadence, x.last_run ? isoDate(new Date(x.last_run)) : undefined, today);
+  return { id: x.id, name: x.name, amount: { minor: x.amount_minor, currency: x.currency }, cadence: x.cadence, cohort: { kind: x.member_filter.length === 0 ? ('all' as const) : ('listed' as const), memberCount: x.member_count }, ...(next ? { nextDate: next } : {}) };
+}
+
+export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance' | 'listAllowanceSchedules' | 'createAllowanceSchedule' | 'listAllowanceRuns', Handler> {
   return {
     listAllowanceSchedules: route(async (req) => {
       const { institutionId } = await ownInstitution(d, req);
-      const r = await d.db.query<{ id: string; name: string; amount_minor: string; currency: Currency; cadence: Cadence; member_filter: string[]; member_count: number; last_run: string | Date | null }>(
-        `select s.id, s.name, s.amount_minor::text, s.currency, s.cadence, s.member_filter,
-                (select count(*)::int from org.member m where m.institution_id = s.institution_id and m.status = 'active' and m.member_party_id is not null
-                   and (jsonb_array_length(s.member_filter) = 0 or s.member_filter ? m.member_party_id::text)) as member_count,
-                (select max(run_date) from org.allowance_run r where r.schedule_id = s.id and r.status <> 'preview') as last_run
-           from org.allowance_schedule s where s.institution_id = $1 and s.active order by s.created_at, s.id`,
-        [institutionId],
-      );
       const today = isoDate(req.now);
-      return ok({
-        items: r.rows.map((x) => {
-          const next = nextRunDate(x.cadence, x.last_run ? isoDate(new Date(x.last_run)) : undefined, today);
-          return { id: x.id, name: x.name, amount: { minor: x.amount_minor, currency: x.currency }, cadence: x.cadence, cohort: { kind: x.member_filter.length === 0 ? 'all' : 'listed', memberCount: x.member_count }, ...(next ? { nextDate: next } : {}) };
-        }),
-      });
+      return ok({ items: (await readSchedules(d.db, institutionId)).map((x) => scheduleView(x, today)) });
+    }),
+
+    createAllowanceSchedule: route(async (req) => {
+      const p = requireRole(req, 'org_finance');
+      const key = requireIdempotencyKey(req);
+      const institutionId = req.params['id'] ?? '';
+      if ((await d.staffInstitution(p.partyId)) !== institutionId) throw new DomainError('NOT_FOUND', 'Institution not found');
+      if (!(await d.flags.isOn(INSTITUTIONS_MONEY_FLAG))) throw new DomainError('FEATURE_OFF', 'Institution money is not enabled yet');
+      const market = (await d.db.query<{ market: string }>('select market from org.institution where id = $1', [institutionId])).rows[0]?.market ?? '';
+      const body = parseSchedule(req.body, MARKET_CURRENCY[market] ?? 'ILS');
+      const hash = fingerprint(body);
+      const answer = async (scheduleId: string) => ok(scheduleView((await readSchedules(d.db, institutionId, scheduleId))[0]!, isoDate(req.now)), 201);
+      const replay = async () => {
+        const r = await d.db.query<{ schedule_id: string; request_hash: string; institution_id: string }>('select schedule_id, request_hash, institution_id from org.allowance_schedule_request where idempotency_key = $1', [key]);
+        const prior = r.rows[0];
+        if (!prior) return undefined;
+        if (prior.request_hash !== hash || prior.institution_id !== institutionId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key was used for a different schedule');
+        return answer(prior.schedule_id);
+      };
+      const earlier = await replay();
+      if (earlier) return earlier;
+      // A listed cohort names active members of this institution only; the schedule keeps their parties.
+      let parties: string[] = [];
+      if (body.memberIds.length > 0) {
+        const r = await d.db.query<{ id: string; member_party_id: string }>(`select id, member_party_id from org.member where institution_id = $1 and status = 'active' and member_party_id is not null and id = any($2::uuid[])`, [institutionId, body.memberIds]);
+        if (r.rows.length !== body.memberIds.length) {
+          const found = new Set(r.rows.map((x) => x.id));
+          throw new DomainError('VALIDATION_FAILED', 'Every listed member must be an active member of this institution', { notActive: body.memberIds.filter((x) => !found.has(x)) });
+        }
+        parties = r.rows.map((x) => x.member_party_id).sort();
+      }
+      const id = uuidv7(req.now);
+      try {
+        await d.db.transaction(async (tx) => {
+          await tx.query(`insert into org.allowance_schedule (id, institution_id, name, amount_minor, currency, cadence, member_filter, created_by, created_at) values ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)`, [id, institutionId, body.name, body.amountMinor.toString(), body.currency, body.cadence, JSON.stringify(parties), p.partyId, req.now]);
+          await tx.query(`insert into org.allowance_schedule_request (idempotency_key, institution_id, schedule_id, request_hash, created_by, created_at) values ($1, $2, $3, $4, $5, $6)`, [key, institutionId, id, hash, p.partyId, req.now]);
+        });
+      } catch (e) {
+        // Two attempts with one key at once: the loser answers what the winner made.
+        if (isPgError(e, PG.UNIQUE_VIOLATION)) return (await replay())!;
+        throw e;
+      }
+      return answer(id);
     }),
 
     listAllowanceRuns: route(async (req) => {

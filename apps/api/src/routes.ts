@@ -72,6 +72,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/fee-items', operationId: 'listFeeItems' },
   { method: 'POST', path: '/fee-items/{id}/pay', operationId: 'payFeeItem' },
   { method: 'GET', path: '/institutions/{id}/allowance-schedules', operationId: 'listAllowanceSchedules' },
+  { method: 'POST', path: '/institutions/{id}/allowance-schedules', operationId: 'createAllowanceSchedule' },
   { method: 'GET', path: '/institutions/{id}/payouts', operationId: 'listInstitutionPayouts' },
   { method: 'POST', path: '/institutions/{id}/payouts', operationId: 'createInstitutionPayout' },
   { method: 'GET', path: '/institutions/{id}/payout-account', operationId: 'getInstitutionPayoutAccount' },

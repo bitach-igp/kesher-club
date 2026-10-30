@@ -1313,7 +1313,11 @@ export interface paths {
          */
         readonly get: operations["listAllowanceSchedules"];
         readonly put?: never;
-        readonly post?: never;
+        /**
+         * Create an allowance schedule for every active member or a listed few
+         * @description REQ-INS-003 (T-0627). The institution's finance staff only: other staff answer 403, another institution 404. The amount is per member, in the institution's currency, above zero and at most 10,000.00; a listed cohort names active members by their roster member id, and naming anyone else answers 422. A retry with the same Idempotency-Key answers the schedule it made; the same key with a different body answers 409. Behind `institutions.money`.
+         */
+        readonly post: operations["createAllowanceSchedule"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -2466,6 +2470,19 @@ export interface components {
             readonly name: string;
             /** Format: date */
             readonly nextDate?: string;
+        };
+        readonly AllowanceScheduleRequest: {
+            readonly amount: components["schemas"]["Money"];
+            /** @enum {string} */
+            readonly cadence: "weekly" | "monthly" | "once";
+            readonly cohort: {
+                /** @enum {string} */
+                readonly kind: "all" | "listed";
+                /** @description listed only: roster member ids (InviteAcceptance.memberId), each an active member of this institution */
+                readonly memberIds?: readonly string[];
+            };
+            /** @description Staff-entered text */
+            readonly name: string;
         };
         readonly ApprovalRequest: {
             readonly approvals: number;
@@ -5521,6 +5538,36 @@ export interface operations {
                     readonly "application/json": {
                         readonly items: readonly components["schemas"]["AllowanceSchedule"][];
                     };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createAllowanceSchedule: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["AllowanceScheduleRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Created, or the schedule this key already made */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AllowanceSchedule"];
                 };
             };
             readonly default: components["responses"]["Problem"];

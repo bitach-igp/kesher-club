@@ -1,8 +1,9 @@
 // T-0610 I07 Allowances (screen rows of TST-INS-003 and TST-INS-004): the preview total equals the sum of
 // its rows (bigint); the requester sees no Approve on their own run; a run takes one step-up and keeps its
-// key; a rerun shows the earlier result and pays nobody twice; FEATURE_OFF is the off state.
+// key; a rerun shows the earlier result and pays nobody twice; FEATURE_OFF is the off state. T-0627: a new
+// schedule's amount is checked before the call, and the form shows the dates it would run.
 import { describe, expect, it } from 'vitest';
-import { canApprove, earlierRun, executeRun, previewRun, rowsTotal, type Result, type RunDeps, type RunResult, type RunSummary } from './allowances.ts';
+import { canApprove, checkSchedule, createSchedule, earlierRun, executeRun, previewRun, rowsTotal, runDates, type Result, type RunDeps, type RunResult, type RunSummary, type ScheduleDeps, type ScheduleDraft, type ScheduleRequest } from './allowances.ts';
 import { COPY, localeFrom, t } from './i18n.ts';
 
 const SCHEDULE = '0190a0a0-0000-7000-8000-0000000000c1';
@@ -91,5 +92,35 @@ describe('I07 allowances (T-0610)', () => {
     expect(Object.keys(COPY.he).sort()).toEqual(Object.keys(COPY.en).sort());
     expect(t('allowances.requestedBy', 'en', { name: '<b>Rivka</b>' })).toBe('Asked by <b>Rivka</b>');
     expect([localeFrom('he-IL,he;q=0.9,en;q=0.8'), localeFrom('en-US,he;q=0.5'), localeFrom(undefined)]).toEqual(['he', 'en', 'en']);
+  });
+});
+
+describe('a new schedule (T-0627)', () => {
+  const draft = (over: Partial<ScheduleDraft> = {}): ScheduleDraft => ({ name: 'Shiur Alef weekly', amountText: '150', cadence: 'weekly', ...over });
+
+  it('checks the amount before the call: above zero and at most 10,000.00 a member, in the market\'s currency', () => {
+    expect(checkSchedule(draft(), 'IL')).toEqual({ ok: true, body: { name: 'Shiur Alef weekly', amount: { minor: '15000', currency: 'ILS' }, cadence: 'weekly', cohort: { kind: 'all' } } });
+    expect(checkSchedule(draft({ amountText: '10,000.00' }), 'US')).toMatchObject({ ok: true, body: { amount: { minor: '1000000', currency: 'USD' } } });
+    expect(checkSchedule(draft({ amountText: '0' }), 'IL')).toEqual({ ok: false, problems: ['amount'] });
+    expect(checkSchedule(draft({ amountText: '10,000.01' }), 'IL')).toEqual({ ok: false, problems: ['over_max'] });
+    expect(checkSchedule(draft({ amountText: '12.345', name: '  ' }), 'IL')).toEqual({ ok: false, problems: ['name', 'amount'] });
+  });
+
+  it('shows the dates it would run: today, then a week or a calendar month on; a one-off once', () => {
+    expect(runDates('weekly', '2026-11-10')).toEqual(['2026-11-10', '2026-11-17']);
+    expect(runDates('monthly', '2027-01-31')).toEqual(['2027-01-31', '2027-02-28']);
+    expect(runDates('once', '2026-11-10')).toEqual(['2026-11-10']);
+  });
+
+  it('calls once per attempt with a fresh key; an invalid draft never calls; FEATURE_OFF is the off state', async () => {
+    const calls: [ScheduleRequest, string][] = [];
+    const schedule = { id: 's1', name: 'Shiur Alef weekly', amount: { minor: '15000', currency: 'ILS' as const }, cadence: 'weekly' as const, cohort: { kind: 'all' as const, memberCount: 3 }, nextDate: '2026-11-10' };
+    let n = 0;
+    const deps: ScheduleDeps = { create: async (body, key) => (calls.push([body, key]), { ok: true, value: schedule }), newKey: () => `key-${++n}` };
+    expect(await createSchedule(deps, draft(), 'IL')).toEqual({ kind: 'done', schedule });
+    expect(await createSchedule(deps, draft({ amountText: '' }), 'IL')).toEqual({ kind: 'invalid', problems: ['amount'] });
+    expect(calls.map(([, k]) => k)).toEqual(['key-1']);
+    expect(await createSchedule({ create: async () => ({ ok: false, code: 'FEATURE_OFF' }), newKey: () => 'k' }, draft(), 'IL')).toEqual({ kind: 'off' });
+    expect(await createSchedule({ create: async () => ({ ok: false, code: 'VALIDATION_FAILED' }), newKey: () => 'k' }, draft(), 'IL')).toEqual({ kind: 'error', code: 'VALIDATION_FAILED' });
   });
 });

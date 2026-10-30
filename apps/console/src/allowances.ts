@@ -2,16 +2,21 @@
 // must add up to its total; a run takes a step-up and is retried once with the same key after it; over
 // ₪5,000 it waits for a second finance member, and the requester is never offered Approve on their own run;
 // a run that already happened shows its result instead of a Run button; FEATURE_OFF is the off state.
+// A new schedule (T-0627) is checked before the call (a name, an amount above zero and at most 10,000.00 a
+// member) and shows the dates it would run; it pays every active member.
 import { format, fromWire, type Money } from '@kesher/domain';
 import type { Schemas } from '@kesher/sdk';
 import type { Result } from './api.ts';
 import { intlLocale, t, type Locale } from './i18n.ts';
+import { parseShekels } from './payouts.ts';
 import { withStepUp } from './step-up.ts';
 
 export type Schedule = Schemas['AllowanceSchedule'];
 export type RunSummary = Schemas['AllowanceRunSummary'];
 export type RunResult = Schemas['AllowanceRun'];
 export type Role = Schemas['MyInstitution']['role'];
+export type ScheduleRequest = Schemas['AllowanceScheduleRequest'];
+export type Cadence = ScheduleRequest['cadence'];
 
 export type { Result };
 
@@ -64,3 +69,56 @@ export async function executeRun(d: RunDeps, scheduleId: string, date: string): 
   if (r.value.status === 'awaiting_second_approval') return { kind: 'waiting', run: r.value };
   return { kind: r.value.status === 'failed' ? 'failed' : 'completed', run: r.value };
 }
+
+/** The API's ceiling, a typo guard: 10,000.00 a member a run. */
+export const MAX_ALLOWANCE_MINOR = 1_000_000n;
+const NAME_MAX = 80;
+
+export interface ScheduleDraft {
+  name: string;
+  /** Major units as typed: "150" or "1,250.50". */
+  amountText: string;
+  cadence: Cadence;
+}
+
+export type ScheduleProblem = 'name' | 'amount' | 'over_max';
+
+/** Everything the console can know before the call; the institution's currency follows its market. */
+export function checkSchedule(d: ScheduleDraft, market: 'IL' | 'US'): { ok: true; body: ScheduleRequest } | { ok: false; problems: ScheduleProblem[] } {
+  const problems: ScheduleProblem[] = [];
+  const name = d.name.trim();
+  if (!name || name.length > NAME_MAX) problems.push('name');
+  const minor = parseShekels(d.amountText);
+  if (minor === undefined) problems.push('amount');
+  else if (minor > MAX_ALLOWANCE_MINOR) problems.push('over_max');
+  if (problems.length || minor === undefined) return { ok: false, problems };
+  return { ok: true, body: { name, amount: { minor: minor.toString(), currency: market === 'US' ? 'USD' : 'ILS' }, cadence: d.cadence, cohort: { kind: 'all' } } };
+}
+
+const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
+
+/** A new schedule runs first today (as the list shows it), then a week or a calendar month on, clamped to the month's end. */
+export function runDates(cadence: Cadence, today: string): string[] {
+  if (cadence === 'once') return [today];
+  if (cadence === 'weekly') return [today, isoDate(new Date(Date.parse(`${today}T00:00:00Z`) + 7 * 86_400_000))];
+  const [y, m, d] = today.split('-').map(Number) as [number, number, number];
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return [today, isoDate(new Date(Date.UTC(y, m, Math.min(d, last))))];
+}
+
+export type ScheduleOutcome = { kind: 'done'; schedule: Schedule } | { kind: 'invalid'; problems: ScheduleProblem[] } | { kind: 'off' } | { kind: 'error'; code: string };
+
+export interface ScheduleDeps {
+  create(body: ScheduleRequest, idempotencyKey: string): Promise<Result<Schedule>>;
+  newKey(): string;
+}
+
+/** Checks the draft, then creates the schedule once per attempt key. */
+export async function createSchedule(d: ScheduleDeps, draft: ScheduleDraft, market: 'IL' | 'US'): Promise<ScheduleOutcome> {
+  const checked = checkSchedule(draft, market);
+  if (!checked.ok) return { kind: 'invalid', problems: checked.problems };
+  const r = await d.create(checked.body, d.newKey());
+  if (r.ok) return { kind: 'done', schedule: r.value };
+  return r.code === 'FEATURE_OFF' ? { kind: 'off' } : { kind: 'error', code: r.code };
+}
+

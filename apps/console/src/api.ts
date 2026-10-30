@@ -46,6 +46,7 @@ export function institutionApi(baseUrl: string, accessToken: string, stepUpToken
   });
   return {
     schedules: (id: string) => c.get('/institutions/{id}/allowance-schedules', { path: { id } }),
+    createSchedule: (id: string, body: Schemas['AllowanceScheduleRequest'], idempotencyKey: string) => c.post('/institutions/{id}/allowance-schedules', { path: { id }, body, idempotencyKey }),
     runs: (id: string) => c.get('/institutions/{id}/allowance-runs', { path: { id } }),
     runAllowance: (id: string, body: Schemas['AllowanceRunRequest'], idempotencyKey: string) => c.post('/institutions/{id}/allowance-runs', { path: { id }, body, idempotencyKey }),
     stepUp: (response?: unknown) => c.post('/auth/step-up', { body: response ? { response: response as Record<string, never> } : {} }),
