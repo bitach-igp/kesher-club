@@ -3,7 +3,7 @@
 import { getConfig } from '../config.ts';
 import { currentActor } from '../ui/actor.ts';
 import { staffSigner } from '../auth/staff-token.ts';
-import { httpAdminData, panelClock } from './http.ts';
+import { httpAdminData } from './http.ts';
 import { memoryAdminData } from './memory.ts';
 import type { AdminData } from './types.ts';
 
@@ -18,5 +18,5 @@ async function build(): Promise<AdminData> {
   const cfg = getConfig();
   if (cfg.ADMIN_DATA === 'memory') return memoryAdminData();
   const signer = await staffSigner(cfg.ADMIN_API_SIGNING_KEY, cfg.ADMIN_API_SIGNING_KID);
-  return httpAdminData({ apis: { IL: cfg.ADMIN_API_URL_IL, US: cfg.ADMIN_API_URL_US }, signer, actor: currentActor, ...(cfg.ADMIN_CLOCK_URL ? { clock: panelClock(cfg.ADMIN_CLOCK_URL) } : {}) });
+  return httpAdminData({ apis: { IL: cfg.ADMIN_API_URL_IL, US: cfg.ADMIN_API_URL_US }, signer, actor: currentActor });
 }

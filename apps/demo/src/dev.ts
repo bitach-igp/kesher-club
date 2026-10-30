@@ -176,21 +176,8 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
       return job.runNow ? job.runNow() : job.run();
     };
 
-    // The panel moved the clock: every job ticks now, in order, as the scheduler would on its next cycle (a daily
-    // job's tick stays idle unless the jump crossed its hour). A failure is logged like the scheduler's own.
-    const onClockAdvanced = async (): Promise<void> => {
-      for (const job of jobs) {
-        const started = Date.now();
-        try {
-          await job.run();
-        } catch (e) {
-          log('job_failed', { job: job.name, ms: Date.now() - started, error: (e as Error).name });
-        }
-      }
-    };
-
     const api = withLoopbackCors(createServer(app), demo.DEMO_WEB_ORIGINS);
-    const panel = createPanel(simulators, { jobs: { names: jobs.map((j) => j.name), run: runJob, onClockAdvanced }, assistant });
+    const panel = createPanel(simulators, { jobs: { names: jobs.map((j) => j.name), run: runJob }, assistant });
     const apiPort = await listen(api, opts.ports?.api ?? config.PORT);
     const panelPort = await listen(panel, opts.ports?.panel ?? demo.SIMULATOR_PORT);
     ports = { api: apiPort, panel: panelPort };
