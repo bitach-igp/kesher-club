@@ -14,7 +14,7 @@ import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { decideKyb, verifiedPayoutAccount } from '../test-institution.ts';
 import { runLoad } from '../wallet/loads.ts';
-import { settleKey } from './service.ts';
+import { runPayout, settleKey } from './service.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -157,3 +157,41 @@ describe('institution payouts (T-0527)', () => {
     expect((await pay(staff.other, '1000', 'po-none-1', none)).body).toMatchObject({ code: 'VALIDATION_FAILED', reason: 'no_verified_account' });
   });
 });
+
+describe('a cooled-off institution payout keeps its requester (T-0628)', () => {
+  // Found recording REC-13 (T-0927): the approval was asked for only after the cool-off, by the worker's sweep,
+  // which rebuilt the requester from an approval that did not exist yet and named the institution instead. The
+  // person who asked could then approve their own withdrawal.
+  it('the requester is recorded at the request: after the 24 hours they still cannot approve, and a second finance member can', async () => {
+    const third = uuidv7(NOW);
+    await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Third', 'IL')`, [third]);
+    await decideKyb(db, third);
+    await verifiedPayoutAccount(db, third, IBAN, 'Yeshivat Third');
+    const [a, b] = [await person('+972501240011', ['org_finance']), await person('+972501240012', ['org_finance'])];
+    await db.query(`insert into org.staff (party_id, institution_id, role) values ($1, $3, 'finance'), ($2, $3, 'finance')`, [a.partyId, b.partyId, third]);
+    const own = await app.services.accounts.institutionAccount(third, 'ILS');
+    const income = await app.services.accounts.systemAccount('partner_settlement', 'ILS');
+    await app.services.ledger.post({ idempotencyKey: 'deposit:third:settle', kind: 'deposit', effectiveAt: NOW, postings: [{ accountId: income, currency: 'ILS', amountMinor: 2_000_000n }, { accountId: own, currency: 'ILS', amountMinor: -2_000_000n }], metadata: { institutionId: third } });
+
+    const r = await pay(a, '600000', 'cool-po-1', third);
+    const id = (r.body as Item).id;
+    // A new account and over ₪2,000: it cools off, and already says who asked.
+    expect(r.body).toMatchObject({ state: 'cooling_off', requestedBy: { displayName: 'Finance •••• 0011' }, requestedByMe: true });
+    // Nobody decides while it cools off, the second member included.
+    const early = await call(b, 'POST', `/v1/payouts/${id}/approve`, undefined, 'cool-approve-early');
+    expect([early.status, (early.body as { detail: string }).detail]).toEqual([409, 'This payout is still cooling off']);
+
+    const later = new Date(NOW.getTime() + 24 * 3_600_000 + 60_000);
+    const t = (await app.services.transfers.get(id))!;
+    const resumed = await runPayout(app.services.payouts, await app.services.payouts.inputFor(t), t.idempotencyKey, later);
+    expect(resumed.waiting).toBe('approval');
+    const one = ((await call(a, 'GET', `/v1/institutions/${third}/payouts`)).body as { items: Item[] }).items.find((x) => x.id === id);
+    expect(one).toMatchObject({ state: 'awaiting_second_approval', requiredApprovals: 2, requestedBy: { displayName: 'Finance •••• 0011' }, approvedBy: [{ displayName: 'Finance •••• 0011' }], requestedByMe: true });
+    const self = await call(a, 'POST', `/v1/payouts/${id}/approve`, undefined, 'cool-approve-self');
+    expect([self.status, (self.body as { code: string }).code]).toEqual([409, 'IDEMPOTENCY_CONFLICT']);
+    const approved = await call(b, 'POST', `/v1/payouts/${id}/approve`, undefined, 'cool-approve-b');
+    expect(approved.body).toMatchObject({ state: 'processing', approvedBy: [{ displayName: 'Finance •••• 0011' }, { displayName: 'Finance •••• 0012' }] });
+    expect((await app.services.accounts.institutionBalance(third, 'ILS')).minor).toBe(1_400_000n);
+  });
+});
+

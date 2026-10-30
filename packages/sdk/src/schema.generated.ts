@@ -2869,7 +2869,7 @@ export interface components {
             readonly requestedBy?: components["schemas"]["StaffName"];
             /** @description True for the payout's requester */
             readonly requestedByMe: boolean;
-            /** @description 0 until the payout asks for its approval (after any cool-off) */
+            /** @description Approvals the payout needs: 1, or 2 above ₪5,000. Known from the request, through any cool-off (T-0628) */
             readonly requiredApprovals: number;
             /** @enum {string} */
             readonly state: "cooling_off" | "awaiting_second_approval" | "submitted" | "processing" | "settled" | "failed" | "reversed" | "rejected";

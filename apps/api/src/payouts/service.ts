@@ -209,6 +209,11 @@ export class PayoutService implements PayoutActivities {
     const t = await this.d.transfers.create({ idempotencyKey: workflowId, kind: 'payout', fromPartyId: input.partyId, amount: input.amount, note: input.reference }, now);
     if (t.kind !== 'payout') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
     await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('payee', $1, 'payee', $2) on conflict do nothing`, [t.id, `${input.payeeId}:${t.id}`]);
+    // An institution payout's approval is asked for now, before any cool-off, so it records who asked (T-0628):
+    // the worker's sweep rebuilds the requester from it, and without it named the institution, which let the
+    // person who asked approve their own withdrawal. The request counts as their approval; a cool-off still
+    // keeps a second approver from deciding until it ends.
+    if (input.source.kind === 'institution') await this.requestApproval(t, input, now);
     return t;
   }
 
@@ -228,10 +233,14 @@ export class PayoutService implements PayoutActivities {
   }
 
   async approved(transfer: Transfer, input: PayoutInput, now: Date): Promise<boolean> {
+    return (await this.requestApproval(transfer, input, now)).status === 'approved';
+  }
+
+  /** The payout's approval request, made once per transfer; a later call finds the first, with its requester. */
+  private requestApproval(transfer: Transfer, input: PayoutInput, now: Date) {
     const requestedBy = input.source.kind === 'institution' ? { partyId: input.source.requestedBy, role: input.source.requesterRole } : { partyId: input.partyId, role: 'member' };
     const scope = input.source.kind === 'institution' ? input.partyId : 'platform';
-    const req = await this.d.approvals.request({ kind: 'payout', subject: transfer.id, scope, requestedBy, amount: input.amount, payload: { payeeLast4: input.payee.iban.slice(-4), reference: input.reference } }, now);
-    return req.status === 'approved';
+    return this.d.approvals.request({ kind: 'payout', subject: transfer.id, scope, requestedBy, amount: input.amount, payload: { payeeLast4: input.payee.iban.slice(-4), reference: input.reference } }, now);
   }
 
   async submit(transfer: Transfer, input: PayoutInput, workflowId: string, now: Date): Promise<{ transfer: Transfer; payout: VendorPayout }> {
@@ -340,8 +349,10 @@ export class PayoutService implements PayoutActivities {
     const t = /^[0-9a-f-]{36}$/i.test(transferId) ? await this.d.transfers.get(transferId) : undefined;
     // Another institution's payout, or a member's, is not found: its existence is not this caller's to confirm.
     if (!t || t.kind !== 'payout' || t.fromPartyId !== institutionId) throw new DomainError('NOT_FOUND', 'Payout not found');
+    // Its approval exists from the start (T-0628), but nobody decides while it cools off.
+    if (t.state === 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This payout is still cooling off');
     const req = await this.d.approvals.find('payout', t.id);
-    if (!req) throw new DomainError('IDEMPOTENCY_CONFLICT', t.state === 'pending_hold' ? 'This payout is still cooling off' : 'This payout is not waiting for an approval');
+    if (!req) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This payout is not waiting for an approval');
     const mine = await this.d.db.query<{ decision: string }>('select decision from ops.approval_decision where request_id = $1 and decided_by = $2', [req.id, by.partyId]);
     if (mine.rows[0] && mine.rows[0].decision === decision && by.partyId !== req.requestedBy) return t;
     if (req.status !== 'awaiting_second_approval') throw new DomainError('IDEMPOTENCY_CONFLICT', `This payout is already ${req.status === 'approved' ? 'approved' : req.status}`);
