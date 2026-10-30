@@ -4,9 +4,14 @@
 // booked result. The console cannot be framed (it answers X-Frame-Options: DENY), so its pane is a
 // capture of the real console page, taken by a second, unrecorded browser signed in as staff.
 // Steps with no member screen are API calls shown as captions ("API: POST …"), never as screens.
+//
+// The institution variant (T-0927) puts the institution console (T-0608) in the left pane instead, with the
+// member app on the right for what members see. That console answers X-Frame-Options: DENY too, and unlike the
+// admin console it is the thing being driven, so a still would not do: the harness frames it through a local
+// pass-through that drops that one header and changes nothing else. Recording only; the console keeps it.
 import { rename } from 'node:fs/promises';
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
+import { createServer, request as httpRequest } from 'node:http';
+import { connect, type AddressInfo } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, type Browser, type BrowserContext, type FrameLocator, type Page } from '@playwright/test';
@@ -20,6 +25,8 @@ export const URLS = {
   panel: 'http://localhost:4010',
   member: 'http://localhost:8081',
   console: 'http://localhost:3100',
+  /** The institution console (T-0608), framed through `framable` in the institution harness. */
+  institution: 'http://localhost:3200',
   /** The recording stack's readiness port (playwright.config.ts PORTS.ready). */
   stack: 'http://127.0.0.1:4099',
 } as const;
@@ -41,19 +48,32 @@ export type Balances = Record<'USD' | 'ILS', { available: bigint; holds: bigint 
 export interface Recording {
   page: Page;
   member: FrameLocator;
+  /** The institution console pane (T-0927); only in a recording opened with `institution: true`. */
+  institution: FrameLocator;
   /** The caption bar: what the viewer is looking at, in words. */
   caption(text: string): Promise<void>;
   /** Customer 360 in the console, captured into the right pane; its balances as the console shows them. */
   console360(partyId: string, note: string): Promise<Balances>;
   /** The right pane as text, for a booked result read through the staff API (see `customerByApi`). */
   consoleText(title: string, lines: readonly string[]): Promise<void>;
+  /** Any admin console page, captured into the right pane, as Customer 360 is (T-0927: an institution's page). */
+  adminPage(pathname: string, note: string): Promise<void>;
   /** Reloads the panel pane, so its clock shows the time the API now runs on. */
   refreshPanel(): Promise<void>;
   /** Closes the recording and names its video `REC-NN-<name>.webm` under out/. */
   finish(): Promise<string>;
 }
 
-const harnessHtml = (title: string, persona: string): string => `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+const panes = {
+  member: (persona: string, width = 'width:420px') => `<section style="${width}"><h2>Member app (T-0033)</h2><iframe id="member" src="${URLS.member}/?persona=${persona}"></iframe></section>`,
+  panel: (width: string) => `<section style="${width}"><h2>Simulator panel: the vendor's side and the clock</h2><iframe id="panel" src="${URLS.panel}/"></iframe></section>`,
+  console: (heading: string, width: string) => `<section style="${width}"><h2>${heading} <span id="note"></span></h2><div id="c360"><pre>Not read yet.</pre></div></section>`,
+  /** T-0927: the institution console, framed through `framable`. */
+  institution: (origin: string) => `<section style="width:600px"><h2>Institution console (T-0608)</h2><iframe id="institution" src="${origin}/sign-in"></iframe></section>`,
+};
+
+/** Member app, panel, Customer 360; or, with an institution console origin, that console, panel, member app and an admin capture. */
+const harnessHtml = (title: string, persona: string, institution?: string): string => `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
 <style>body{margin:0;background:#0f172a;color:#f8fafc;font:15px/1.4 system-ui,sans-serif;height:100vh;display:flex;flex-direction:column}
 #cap{padding:10px 16px;min-height:52px;border-bottom:1px solid #334155}#cap b{color:#fbbf24;margin-right:8px}
 main{flex:1;display:flex;gap:8px;padding:8px;min-height:0}section{display:flex;flex-direction:column;min-width:0}
@@ -61,9 +81,48 @@ h2{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:#94a3b8;ma
 iframe,#c360{flex:1;border:0;border-radius:8px;background:#fff}#c360{overflow:auto;color:#0f172a;padding:0}
 #c360 img{width:100%;display:block}#c360 pre{margin:12px;font:13px/1.5 ui-monospace,monospace;white-space:pre-wrap}</style></head>
 <body><div id="cap"><b>${title}</b><span id="text">Starting…</span></div>
-<main><section style="width:420px"><h2>Member app (T-0033)</h2><iframe id="member" src="${URLS.member}/?persona=${persona}"></iframe></section>
-<section style="flex:1"><h2>Simulator panel: the vendor's side and the clock</h2><iframe id="panel" src="${URLS.panel}/"></iframe></section>
-<section style="width:560px"><h2>Console · Customer 360 (T-0919) <span id="note"></span></h2><div id="c360"><pre>Not read yet.</pre></div></section></main></body></html>`;
+<main>${
+  institution
+    ? [panes.institution(institution), panes.panel('width:260px'), panes.member(persona, 'width:380px'), panes.console('Admin console (T-0919)', 'flex:1')].join('\n')
+    : [panes.member(persona), panes.panel('flex:1'), panes.console('Console · Customer 360 (T-0919)', 'width:560px')].join('\n')
+}</main></body></html>`;
+
+/**
+ * A local pass-through to `target` that drops X-Frame-Options and nothing else, so the institution harness can
+ * frame the institution console. The Host header passes unchanged, so the console's redirects and its server
+ * actions' origin check see the pass-through's own address. WebSocket upgrades (the dev server's reload
+ * channel) pass through as raw sockets.
+ */
+async function framable(target: string): Promise<{ origin: string; close(): Promise<void> }> {
+  const up = new URL(target);
+  const server = createServer((req, res) => {
+    const forward = httpRequest({ host: up.hostname, port: up.port, path: req.url, method: req.method, headers: req.headers }, (r) => {
+      const headers = { ...r.headers };
+      delete headers['x-frame-options'];
+      res.writeHead(r.statusCode ?? 502, headers);
+      r.pipe(res);
+    });
+    forward.on('error', () => res.writeHead(502).end());
+    req.pipe(forward);
+  });
+  server.on('upgrade', (req, socket, head) => {
+    const upstream = connect(Number(up.port), up.hostname, () => {
+      upstream.write(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n${Object.entries(req.headers).map(([k, v]) => `${k}: ${String(v)}`).join('\r\n')}\r\n\r\n`);
+      upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    upstream.on('error', () => socket.destroy());
+    socket.on('error', () => upstream.destroy());
+  });
+  await new Promise<void>((resolve) => server.listen(0, 'localhost', resolve));
+  return {
+    origin: `http://localhost:${(server.address() as AddressInfo).port}`,
+    close: () => new Promise<void>((resolve) => {
+      server.closeAllConnections();
+      server.close(() => resolve());
+    }),
+  };
+}
 
 /**
  * A staff browser (not recorded) signed in to the console through the simulator identity provider. The
@@ -87,11 +146,12 @@ async function staffConsole(browser: Browser): Promise<{ context: BrowserContext
   }
 }
 
-export async function openRecording(browser: Browser, rec: { id: string; name: string; title: string; persona: string }): Promise<Recording> {
+export async function openRecording(browser: Browser, rec: { id: string; name: string; title: string; persona: string; institution?: boolean }): Promise<Recording> {
   const context = await browser.newContext({ viewport: SIZE, recordVideo: { dir: path.join(OUT, 'raw'), size: SIZE }, locale: 'en-US', timezoneId: 'Asia/Jerusalem' });
+  const framed = rec.institution ? await framable(URLS.institution) : undefined;
   // A real local server, not page.route: Chromium counts an intercepted page as public, and its Private
   // Network Access checks then refuse to frame the apps on localhost.
-  const html = harnessHtml(`${rec.id} ${rec.title}`, rec.persona);
+  const html = harnessHtml(`${rec.id} ${rec.title}`, rec.persona, framed?.origin);
   const harness = createServer((_req, res) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(html));
   await new Promise<void>((resolve) => harness.listen(0, 'localhost', resolve));
   const page = await context.newPage();
@@ -104,6 +164,7 @@ export async function openRecording(browser: Browser, rec: { id: string; name: s
   return {
     page,
     member: page.frameLocator('#member'),
+    institution: page.frameLocator('#institution'),
     async caption(text) {
       await page.evaluate((t) => (document.getElementById('text')!.textContent = t), text);
       await page.waitForTimeout(1200); // long enough to read on the video
@@ -133,6 +194,12 @@ export async function openRecording(browser: Browser, rec: { id: string; name: s
       await setPane(`<pre>${esc([title, '', ...lines].join('\n'))}</pre>`, '· staff API');
       await page.waitForTimeout(1500);
     },
+    async adminPage(pathname, note) {
+      await staff.page.goto(`${URLS.console}${pathname}`);
+      const png = await staff.page.locator('main').screenshot();
+      await setPane(`<img alt="Admin console" src="data:image/png;base64,${png.toString('base64')}">`, `· ${note}`);
+      await page.waitForTimeout(1500);
+    },
     async refreshPanel() {
       await page.frameLocator('#panel').locator('body').evaluate(() => location.reload());
     },
@@ -142,12 +209,35 @@ export async function openRecording(browser: Browser, rec: { id: string; name: s
       await context.close();
       await staff.context.close();
       await new Promise((resolve) => harness.close(resolve));
+      await framed?.close();
       if (!video) throw new Error('No video was recorded');
       const target = path.join(OUT, `${rec.id}-${rec.name}.webm`);
       await rename(await video.path(), target);
       return target;
     },
   };
+}
+
+/**
+ * The institution console pane signs in as a staff persona (T-0927), with the seeded passkey its local sign-in
+ * offers, signing out whoever was there first, and waits for the dashboard.
+ */
+export async function signInInstitution(rec: Recording, persona: string): Promise<void> {
+  await openInstitution(rec, '/');
+  const signOut = rec.institution.getByTestId('sign-out');
+  const pick = rec.institution.getByTestId(`persona-${persona}`);
+  await expect(signOut.or(pick)).toBeVisible({ timeout: 120_000 });
+  if (await signOut.isVisible()) await signOut.click();
+  await pick.click({ timeout: 120_000 });
+  await rec.institution.getByTestId('dashboard').waitFor({ timeout: 120_000 });
+}
+
+/** Opens a page of the institution console in its pane, by address; the session cookies stay. */
+export async function openInstitution(rec: Recording, pathname: string): Promise<void> {
+  await rec.page.evaluate((to) => {
+    const f = document.getElementById('institution') as HTMLIFrameElement;
+    f.src = new URL(to, f.src).href;
+  }, pathname);
 }
 
 /** Signs the persona in to the member app with its seeded passkey and waits for Home. */
