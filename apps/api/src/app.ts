@@ -7,6 +7,7 @@ import { ok, requireIdempotencyKey, requirePrincipal, requireRole, route, type H
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
 import { fxAdminHandlers } from './fx/admin.ts';
+import { PriceRules, priceRuleHandlers } from './addons/price-rules.ts';
 import { DisplayNameService, displayNameHandlers } from './me/display-name.ts';
 import { RecipientLookup } from './p2p/recipients.ts';
 import { CimdRegistry, type Fetcher, type Resolver } from './mcp/cimd.ts';
@@ -267,6 +268,7 @@ export function createApp(o: AppOptions): App {
     ...payoutAccountHandlers(s.payoutAccounts),
     ...kybHandlers(s.institutionKyb, new KybChecks({ db: o.db, kyb: s.institutionKyb, flags: s.flags, port: (m) => o.registry.resolve<KybPort>('kyb', m), provider: (m) => o.registry.bindingFor('kyb', m)?.provider ?? 'simulator' })),
     ...fxAdminHandlers(s.rates),
+    ...priceRuleHandlers(new PriceRules(o.db, s.approvals, s.audit)),
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
     ...depositHandlers(new InstitutionDeposits({ db: o.db, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, approvals: s.approvals, audit: s.audit, flags: s.flags, kyb: s.kybGate })),
     ...preferenceHandlers(s.preferences),

@@ -796,6 +796,70 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/price-rules": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Add-on price rules, newest first, with each one's state
+         * @description REQ-MKT-002, REQ-ADM-003 (T-0928). The catalogue sync prices with the active rules only. Staff token.
+         */
+        readonly get: operations["listAdminPriceRules"];
+        readonly put?: never;
+        /**
+         * Propose an add-on price rule; the proposer counts as the first finance approver
+         * @description REQ-MKT-002, REQ-ADM-003 (T-0928). price = max(floor, cost × (1 + margin)), rounded up to .99 when asked; the lowest priority number among matching rules wins. The rule is inactive until a second, different finance member approves it; activation is audited, and the next catalogue sync prices with it. Staff token with the finance role.
+         */
+        readonly post: operations["proposeAdminPriceRule"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/price-rules/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second finance approval of a price rule; it becomes active
+         * @description REQ-ADM-003 (T-0928). A finance member other than the proposer. Staff token with the finance role.
+         */
+        readonly post: operations["approveAdminPriceRule"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/price-rules/{id}/reject": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Withdraw or refuse a proposed price rule; it never activates
+         * @description REQ-ADM-003 (T-0928). Staff token with the finance role, with a reason.
+         */
+        readonly post: operations["rejectAdminPriceRule"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/staff-grants/{id}/approve": {
         readonly parameters: {
             readonly query?: never;
@@ -3322,6 +3386,61 @@ export interface components {
             /** Format: date-time */
             readonly updatedAt?: string;
         };
+        readonly PriceRule: {
+            /** Format: date-time */
+            readonly activatedAt?: string;
+            readonly approval?: {
+                readonly approvals: number;
+                /** Format: uuid */
+                readonly id: string;
+                readonly requestedBy?: string;
+                /** @enum {string} */
+                readonly status: "pending" | "awaiting_second_approval" | "approved" | "rejected" | "expired";
+            };
+            /** Format: date-time */
+            readonly createdAt: string;
+            readonly floor: components["schemas"]["Money"];
+            /** Format: uuid */
+            readonly id: string;
+            /** @enum {string} */
+            readonly kind: "esim" | "insurance" | "concierge";
+            readonly marginBps: number;
+            readonly priority: number;
+            /** @description The proposer's staff subject */
+            readonly proposedBy?: string;
+            readonly provider: string;
+            /** @description Staff-entered text */
+            readonly reason?: string;
+            readonly roundTo99: boolean;
+            readonly skuPattern: string;
+            /** @enum {string} */
+            readonly state: "proposed" | "active" | "rejected";
+        };
+        readonly PriceRuleRequest: {
+            readonly floor: components["schemas"]["Money"];
+            /** @enum {string} */
+            readonly kind: "esim" | "insurance" | "concierge";
+            /** @description Margin on the vendor's cost, in basis points */
+            readonly marginBps: number;
+            /**
+             * @description The lowest number among matching rules wins
+             * @default 100
+             */
+            readonly priority: number;
+            /** @description The bound provider's key, as the catalogue names it */
+            readonly provider: string;
+            readonly reason: string;
+            /**
+             * @description Round the price up to the next amount ending in .99
+             * @default true
+             */
+            readonly roundTo99: boolean;
+            /**
+             * @description A regular expression over the vendor's SKU
+             * @default .*
+             */
+            readonly skuPattern: string;
+        };
         readonly Problem: {
             /** @description INSUFFICIENT_FUNDS on an allowance run: what the institution holds */
             readonly balance?: components["schemas"]["Money"];
@@ -4846,6 +4965,106 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["PayoutAccount"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminPriceRules: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Rules */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["PriceRule"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly proposeAdminPriceRule: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["PriceRuleRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description The proposal, waiting for its second approver */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PriceRule"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveAdminPriceRule: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The rule after the decision */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PriceRule"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly rejectAdminPriceRule: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The rejected rule */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PriceRule"];
                 };
             };
             readonly default: components["responses"]["Problem"];

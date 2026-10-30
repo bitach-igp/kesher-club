@@ -1611,6 +1611,85 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FxRate" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/price-rules:
+    get:
+      operationId: listAdminPriceRules
+      tags: [admin]
+      summary: Add-on price rules, newest first, with each one's state
+      description: REQ-MKT-002, REQ-ADM-003 (T-0928). The catalogue sync prices with the active rules only. Staff token.
+      security: [{ staff: [] }]
+      responses:
+        "200":
+          description: Rules
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/PriceRule" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: proposeAdminPriceRule
+      tags: [admin]
+      summary: Propose an add-on price rule; the proposer counts as the first finance approver
+      description: >-
+        REQ-MKT-002, REQ-ADM-003 (T-0928). price = max(floor, cost × (1 + margin)), rounded up to .99 when asked; the
+        lowest priority number among matching rules wins. The rule is inactive until a second, different finance
+        member approves it; activation is audited, and the next catalogue sync prices with it. Staff token with the
+        finance role.
+      security: [{ staff: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PriceRuleRequest" }
+      responses:
+        "201":
+          description: The proposal, waiting for its second approver
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceRule" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/price-rules/{id}/approve:
+    post:
+      operationId: approveAdminPriceRule
+      tags: [admin]
+      summary: Second finance approval of a price rule; it becomes active
+      description: REQ-ADM-003 (T-0928). A finance member other than the proposer. Staff token with the finance role.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The rule after the decision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceRule" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/price-rules/{id}/reject:
+    post:
+      operationId: rejectAdminPriceRule
+      tags: [admin]
+      summary: Withdraw or refuse a proposed price rule; it never activates
+      description: REQ-ADM-003 (T-0928). Staff token with the finance role, with a reason.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: The rejected rule
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PriceRule" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/flags:
     get:
       operationId: listAdminFlags
@@ -2525,6 +2604,43 @@ components:
         money: { type: boolean }
         changedAt: { type: string, format: date-time }
         pendingFlip: { $ref: "#/components/schemas/ApprovalRequest" }
+    PriceRuleRequest:
+      type: object
+      required: [kind, provider, marginBps, floor, reason]
+      properties:
+        kind: { type: string, enum: [esim, insurance, concierge] }
+        provider: { type: string, pattern: "^[a-z0-9][a-z0-9-]{0,39}$", description: "The bound provider's key, as the catalogue names it" }
+        skuPattern: { type: string, maxLength: 120, default: ".*", description: A regular expression over the vendor's SKU }
+        marginBps: { type: integer, minimum: 0, maximum: 20000, description: "Margin on the vendor's cost, in basis points" }
+        floor: { $ref: "#/components/schemas/Money" }
+        roundTo99: { type: boolean, default: true, description: Round the price up to the next amount ending in .99 }
+        priority: { type: integer, minimum: 1, maximum: 1000, default: 100, description: The lowest number among matching rules wins }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    PriceRule:
+      type: object
+      required: [id, kind, provider, skuPattern, marginBps, floor, roundTo99, priority, state, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [esim, insurance, concierge] }
+        provider: { type: string }
+        skuPattern: { type: string }
+        marginBps: { type: integer }
+        floor: { $ref: "#/components/schemas/Money" }
+        roundTo99: { type: boolean }
+        priority: { type: integer }
+        state: { type: string, enum: [proposed, active, rejected] }
+        proposedBy: { type: string, description: The proposer's staff subject }
+        reason: { type: string, description: Staff-entered text }
+        createdAt: { type: string, format: date-time }
+        activatedAt: { type: string, format: date-time }
+        approval:
+          type: object
+          required: [id, status, approvals]
+          properties:
+            id: { type: string, format: uuid }
+            status: { type: string, enum: [pending, awaiting_second_approval, approved, rejected, expired] }
+            approvals: { type: integer, minimum: 0 }
+            requestedBy: { type: string }
     ApprovalRequest:
       type: object
       required: [id, kind, subject, status, approvals, requestedBy, expiresAt, payload]
