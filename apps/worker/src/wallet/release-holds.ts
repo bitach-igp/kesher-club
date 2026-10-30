@@ -2,11 +2,13 @@
 // hold days; on the release date this job moves it to the wallet, pending → wallet under
 // `{workflowId}:release`, and settles the transfer. Exactly once: the journal key is idempotent and the
 // state machine refuses a second release. Runs every cycle; a hold is late when it is still pending
-// past its date by more than the cycle.
+// past its date by more than the cycle. A US institution's ACH pull (T-0617, a 'deposit' transfer) is held
+// and released the same way, into the institution's own account; a recorded deposit (T-0614) is never held.
 import type { LoadService } from '@kesher/api/wallet/loads';
-import type { TransferService } from '@kesher/api/transfers/service';
+import type { Transfer, TransferService } from '@kesher/api/transfers/service';
 
 export const RELEASE_CYCLE_MS = 5 * 60_000;
+const releasable = (t: Transfer): boolean => t.kind === 'load' || t.kind === 'deposit';
 
 export interface ReleaseReport {
   ranAt: string;
@@ -35,7 +37,7 @@ export class ReleaseHoldsJob {
   async run(): Promise<ReleaseReport> {
     const now = this.clock();
     const report: ReleaseReport = { ranAt: now.toISOString(), attempted: 0, released: 0, errors: [], lagMs: 0, withinSla: true };
-    const due = (await this.transfers.expiredHolds(now)).filter((t) => t.kind === 'load');
+    const due = (await this.transfers.expiredHolds(now)).filter(releasable);
     for (const t of due) {
       report.attempted += 1;
       try {
@@ -45,7 +47,7 @@ export class ReleaseHoldsJob {
         report.errors.push({ transferId: t.id, error: (e as Error).message.slice(0, 200) });
       }
     }
-    const left = (await this.transfers.expiredHolds(now)).filter((t) => t.kind === 'load');
+    const left = (await this.transfers.expiredHolds(now)).filter(releasable);
     report.lagMs = left.reduce((max, t) => Math.max(max, now.getTime() - Date.parse(t.holdReleasesAt!)), 0);
     report.withinSla = report.lagMs <= RELEASE_CYCLE_MS;
     return report;

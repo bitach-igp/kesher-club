@@ -78,6 +78,8 @@ export async function monthlyExport(db: Database, institutionId: string, month: 
        left join lateral (
          select a2.owner_party_id from ledger.posting p2 join ledger.account a2 on a2.id = p2.account_id
           where p2.journal_id = j.id and a2.type in ('wallet', 'pending') and a2.owner_party_id is not null
+            -- An ACH pull's release leaves the institution's own hold account (T-0617): that is no member.
+            and a2.owner_party_id <> $1::uuid
           order by p2.id limit 1
        ) w on true
       where (j.metadata->>'institutionId' = $1::text or (j.kind = 'reversal' and o.metadata->>'institutionId' = $1::text))

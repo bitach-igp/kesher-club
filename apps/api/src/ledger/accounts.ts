@@ -70,6 +70,20 @@ export class AccountService {
     return (await this.ensure(institutionId, 'institution_master', currency)).id;
   }
 
+  /**
+   * The institution's held money (T-0617): an ACH pull waits here, a `pending` account owned by the institution,
+   * until the bank's hold date. It is not the institution's to spend: payouts and allowance runs read
+   * `institution_master` only, so held money is never their headroom.
+   */
+  async institutionHoldAccount(institutionId: string, currency: Currency): Promise<string> {
+    return (await this.ensure(institutionId, 'pending', currency)).id;
+  }
+
+  /** What the institution has on hold in a currency (credit-normal, negated). */
+  async institutionHolds(institutionId: string, currency: Currency): Promise<Money> {
+    return money(-(await this.ledger.balance(await this.institutionHoldAccount(institutionId, currency), currency)), currency);
+  }
+
   /** What the institution holds in a currency: credit-normal, so the ledger balance negated. Below zero, it owes. */
   async institutionBalance(institutionId: string, currency: Currency): Promise<Money> {
     return money(-(await this.ledger.balance(await this.institutionAccount(institutionId, currency), currency)), currency);

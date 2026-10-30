@@ -130,6 +130,7 @@
 | [T-0627](T-0627.md) | INS | Finance creates an allowance schedule in I07 | REQ-INS-003 | 13 |
 | [T-0628](T-0628.md) | PO | An institution payout keeps its requester through a cool-off | REQ-INS-004 | 13 |
 | [T-0629](T-0629.md) | INS | Finance bills a fee to the yeshiva's members in I08 | REQ-INS-006 | 13 |
+| [T-0630](T-0630.md) | INS | Console: US finance pull from the institution's bank by ACH and see what is on hold | REQ-INS-009 | 12 |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |

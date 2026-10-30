@@ -1,7 +1,8 @@
 // ReleaseHoldsJob (T-0502, REQ-WAL-003). TST-WAL-003: a Monday ACH load with a 3-day hold posts to the
 // member's pending purse with holdUntil Thursday and shows on hold until then; the job leaves it alone
 // before Thursday and on Thursday moves it to the wallet exactly once, however often it runs. An ACH
-// return during the hold reverses the hold and settles nothing.
+// return during the hold reverses the hold and settles nothing. A US institution's ACH pull (T-0617) is held
+// in its own hold account and released into its own account the same way.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { BillingSimulator, FundingSimulator, fixedClock } from '@kesher/ports';
@@ -109,6 +110,24 @@ describe('TST-WAL-003', () => {
     now = THURSDAY;
     const report = await job.run();
     expect(report.attempted).toBe(0);
+  });
+
+  it('an institution\'s ACH pull is held in its own hold account and released into its own account on Thursday (T-0617)', async () => {
+    const institution = uuidv7(MONDAY);
+    const key = `ach-pull:${institution}:monday`;
+    now = MONDAY;
+    const pull: LoadInput = { ...ach(institution, 1_000_000n), kind: 'deposit' };
+    const run = await runLoad(loads, pull, key, now);
+    expect(run.transfer).toMatchObject({ kind: 'deposit', state: 'pending_hold', holdReleasesAt: THURSDAY.toISOString() });
+    const held = async () => ({ holds: (await accounts.institutionHolds(institution, 'USD')).minor, available: (await accounts.institutionBalance(institution, 'USD')).minor });
+    expect(await held()).toEqual({ holds: 1_000_000n, available: 0n });
+    now = new Date('2026-11-04T23:59:00Z');
+    expect(await job.run()).toMatchObject({ attempted: 0 });
+    now = THURSDAY;
+    expect(await job.run()).toMatchObject({ attempted: 1, released: 1, errors: [] });
+    expect(await held()).toEqual({ holds: 0n, available: 1_000_000n });
+    const release = (await db.query<{ kind: string; metadata: Record<string, unknown> }>(`select kind, metadata from ledger.journal where idempotency_key = $1`, [releaseKey(key)])).rows[0];
+    expect(release).toMatchObject({ kind: 'deposit', metadata: { institutionId: institution, rail: 'ach' } });
   });
 
   it('a late hold shows as lag over the cycle, and one failing release does not stop the rest', async () => {

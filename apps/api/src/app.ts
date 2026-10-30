@@ -66,6 +66,7 @@ import { AddonOrderService } from './addons/orders.ts';
 import { CreditService } from './addons/credit.ts';
 import { CollectionsService, collectionsHandlers } from './institutions/collections.ts';
 import { FeeBilling, feeBillingHandlers } from './institutions/fee-billing.ts';
+import { achPullHandlers, InstitutionAch, type StaffOf } from './institutions/ach.ts';
 import { allowanceRunHandlers } from './institutions/allowance-runs.ts';
 import { PostgresAllowanceActivities } from './institutions/allowance/activities.ts';
 import { creditHandlers, InstitutionCredit } from './institutions/credit.ts';
@@ -217,6 +218,7 @@ export function createApp(o: AppOptions): App {
   // process injects in-memory evaluation flags; those decide what members see, not what the console shows.
   const flagStore = s.flags instanceof FlagService ? s.flags : new FlagService(o.db, s.approvals, s.audit);
   const staffInstitution = async (partyId: string) => (await o.db.query<{ institution_id: string }>('select institution_id from org.staff where party_id = $1 and active', [partyId])).rows[0]?.institution_id;
+  const staffOf: StaffOf = async (partyId) => (await o.db.query<{ institution_id: string; role: 'staff' | 'finance' | 'admin' }>('select institution_id, role from org.staff where party_id = $1 and active', [partyId])).rows.map((x) => ({ institutionId: x.institution_id, role: x.role }))[0];
   const handlers: HandlerTable = {
     ...authHandlers({ otp: s.otp, passkeys: s.passkeys, recovery: s.recovery, tokens: s.tokens, stepUp: s.stepUp }),
     getCapabilities: capabilitiesHandler({ flags: s.flags, memberships: s.memberships, entitlements: s.entitlements }),
@@ -229,7 +231,7 @@ export function createApp(o: AppOptions): App {
     ...payoutHandlers(s.payouts, s.stepUp, {
       db: o.db,
       identity: s.identity,
-      staffOf: async (partyId) => (await o.db.query<{ institution_id: string; role: 'staff' | 'finance' | 'admin' }>('select institution_id, role from org.staff where party_id = $1 and active', [partyId])).rows.map((x) => ({ institutionId: x.institution_id, role: x.role }))[0],
+      staffOf,
       accounts: s.payoutAccounts,
     }),
     listAccounts: route(async (req) => ok(await s.accounts.listAccountsBody(requirePrincipal(req).partyId))),
@@ -262,6 +264,7 @@ export function createApp(o: AppOptions): App {
     importRoster: importRosterHandler({ roster: s.roster, staffInstitution, onCommitted: (importId, now) => s.invites.fanOut(importId, now) }),
     ...inviteHandlers(s.invites),
     ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
+    ...achPullHandlers(new InstitutionAch({ db: o.db, loads: s.loads, transfers: s.transfers, accounts: s.accounts, flags: s.flags, kyb: s.kybGate, audit: s.audit }), s.stepUp, staffOf),
     ...feeBillingHandlers({ billing: new FeeBilling(o.db), flags: s.flags, staffInstitution }),
     ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.institutionCredit, s.clock.now), credit: s.institutionCredit, flags: s.flags, staffInstitution, db: o.db, identity: s.identity, stepUp: s.stepUp }),
     ...creditHandlers(s.institutionCredit),

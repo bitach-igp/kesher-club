@@ -15,6 +15,11 @@
 // fx_position in both, and the purse in its own currency, so no replay or late webhook ever re-prices it.
 // With no valid club rate the load is refused before the vendor is asked for anything.
 //
+// A US institution's ACH pull (T-0617, REQ-INS-009) is the same workflow with the institution as payer and
+// payee: a transfer of kind 'deposit', held in the institution's own `pending` account and released into its
+// `institution_master`, so the release job, the webhook and a return during the hold all apply unchanged. Its
+// settlement and release journals are kind 'deposit' and carry the institution, as the monthly export reads them.
+//
 // `runLoad` is the deterministic workflow body, pure over `LoadActivities`, so Temporal (ADR-002) can
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
@@ -41,6 +46,8 @@ export const PURSE_CURRENCIES: readonly Currency[] = ['USD', 'ILS'];
 export const LOAD_JOURNAL_KIND = 'load';
 export const HOLD_JOURNAL_KIND = 'load_hold';
 export const RELEASE_JOURNAL_KIND = 'load_release';
+/** An institution's ACH pull lands as a deposit (T-0617), the journal kind T-0614's recorded deposits post. */
+export const INSTITUTION_DEPOSIT_JOURNAL_KIND = 'deposit';
 
 export type LoadState = 'created' | 'requires_action' | 'processing' | 'on_hold' | 'settled' | 'failed';
 
@@ -54,6 +61,8 @@ export interface LoadInput {
   paymentMethodId?: string;
   /** The purse credited; the amount's currency when absent. */
   purse?: Currency;
+  /** An institution's ACH pull (T-0617): payer and payee are the institution, and it lands in its own account. */
+  kind?: 'deposit';
 }
 
 /** The OpenAPI `Load`. */
@@ -175,8 +184,9 @@ export class LoadService implements LoadActivities {
   async begin(input: LoadInput, workflowId: string, now: Date): Promise<Transfer> {
     const found = await this.d.transfers.byKey(workflowId);
     const conversion = found ? undefined : await this.price(input, now);
-    const t = found ?? (await this.d.transfers.create({ idempotencyKey: workflowId, kind: 'load', fromPartyId: input.payerPartyId, toPartyId: input.memberPartyId, amount: input.amount, ...(conversion ? { conversion } : {}) }, now));
-    if (t.kind !== 'load') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
+    const kind = input.kind ?? 'load';
+    const t = found ?? (await this.d.transfers.create({ idempotencyKey: workflowId, kind, fromPartyId: input.payerPartyId, toPartyId: input.memberPartyId, amount: input.amount, ...(conversion ? { conversion } : {}) }, now));
+    if (t.kind !== kind) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
     return t;
   }
 
@@ -201,11 +211,11 @@ export class LoadService implements LoadActivities {
     if (transfer.state === 'pending_hold') return this.release(transfer, now);
     const journal = await this.d.ledger.post({
       idempotencyKey: settleKey(workflowId),
-      kind: LOAD_JOURNAL_KIND,
+      kind: journalKind(transfer, LOAD_JOURNAL_KIND),
       transferId: transfer.id,
       effectiveAt: now,
       postings: await this.legs(transfer, 'wallet'),
-      metadata: { workflowId, method: load.method, provider: this.d.provider, loadId: load.loadId, ...conversionMetadata(transfer) },
+      metadata: { workflowId, method: load.method, provider: this.d.provider, loadId: load.loadId, ...conversionMetadata(transfer), ...institutionMetadata(transfer) },
     });
     return this.d.transfers.apply(transfer.id, 'settle', now, { journalId: journal.id });
   }
@@ -218,7 +228,7 @@ export class LoadService implements LoadActivities {
       transferId: transfer.id,
       effectiveAt: now,
       postings: await this.legs(transfer, 'pending'),
-      metadata: { workflowId, provider: this.d.provider, holdUntil, ...conversionMetadata(transfer) },
+      metadata: { workflowId, provider: this.d.provider, holdUntil, ...conversionMetadata(transfer), ...institutionMetadata(transfer) },
     });
     return this.d.transfers.apply(transfer.id, 'hold', now, { journalId: journal.id, holdReleasesAt: new Date(holdUntil), reason: 'bank hold' });
   }
@@ -228,18 +238,18 @@ export class LoadService implements LoadActivities {
     const workflowId = transfer.idempotencyKey;
     // The hold already converted: the release moves the credited amount within the purse currency.
     const { minor, currency } = credited(transfer);
-    const pending = await this.d.accounts.memberAccount(transfer.toPartyId!, 'pending', currency);
-    const wallet = await this.d.accounts.memberAccount(transfer.toPartyId!, 'wallet', currency);
+    const pending = await this.destination(transfer, 'pending', currency);
+    const wallet = await this.destination(transfer, 'wallet', currency);
     const journal = await this.d.ledger.post({
       idempotencyKey: releaseKey(workflowId),
-      kind: RELEASE_JOURNAL_KIND,
+      kind: journalKind(transfer, RELEASE_JOURNAL_KIND),
       transferId: transfer.id,
       effectiveAt: now,
       postings: [
         { accountId: pending, currency, amountMinor: minor },
         { accountId: wallet, currency, amountMinor: -minor },
       ],
-      metadata: { workflowId, provider: this.d.provider, heldUntil: transfer.holdReleasesAt },
+      metadata: { workflowId, provider: this.d.provider, heldUntil: transfer.holdReleasesAt, ...institutionMetadata(transfer) },
     });
     const released = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold days passed' });
     return this.d.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
@@ -298,8 +308,12 @@ export class LoadService implements LoadActivities {
 
   /** Loads the vendor has not finished: submitted longer than `olderThanMs` ago. The worker asks the vendor about them. */
   async stale(now: Date, olderThanMs: number, limit = 100): Promise<Transfer[]> {
-    // This market's loads only: another market's worker asks its own provider about its own (T-0028).
-    const r = await this.d.db.query<{ id: string }>(`select id from ops.transfer where kind = 'load' and state = 'submitted' and updated_at <= $1 and market = $3 order by updated_at limit $2`, [new Date(now.getTime() - olderThanMs), limit, this.d.transfers.market]);
+    // This market's loads only: another market's worker asks its own provider about its own (T-0028). An
+    // institution's ACH pull is one too (T-0617); a deposit recorded off a statement (T-0614) never met the vendor.
+    const r = await this.d.db.query<{ id: string }>(`select t.id from ops.transfer t
+        where (t.kind = 'load' or (t.kind = 'deposit' and exists (select 1 from ops.external_ref r where r.entity_type = 'transfer' and r.entity_id = t.id and r.provider = $4)))
+          and t.state = 'submitted' and t.updated_at <= $1 and t.market = $3 order by t.updated_at limit $2`,
+      [new Date(now.getTime() - olderThanMs), limit, this.d.transfers.market, this.d.provider]);
     const out: Transfer[] = [];
     for (const row of r.rows) {
       const t = await this.d.transfers.get(row.id);
@@ -348,14 +362,14 @@ export class LoadService implements LoadActivities {
     const partner = await this.d.accounts.systemAccount('partner_settlement', currency);
     const c = transfer.conversion;
     if (!c) {
-      const dest = await this.d.accounts.memberAccount(transfer.toPartyId!, into, currency);
+      const dest = await this.destination(transfer, into, currency);
       return [
         { accountId: partner, currency, amountMinor: minor },
         { accountId: dest, currency, amountMinor: -minor },
       ];
     }
     const to = c.received.currency;
-    const dest = await this.d.accounts.memberAccount(transfer.toPartyId!, into, to);
+    const dest = await this.destination(transfer, into, to);
     const markup = markupOf(transfer, c);
     return [
       { accountId: partner, currency, amountMinor: minor },
@@ -364,6 +378,13 @@ export class LoadService implements LoadActivities {
       { accountId: dest, currency: to, amountMinor: -c.received.minor },
       ...(markup > 0n ? [{ accountId: await this.d.accounts.systemAccount('fee_income', to), currency: to, amountMinor: -markup }] : []),
     ];
+  }
+
+  /** Where a load lands: the member's wallet or pending purse, or for an institution's pull its own account or its hold. */
+  private destination(transfer: Transfer, into: 'wallet' | 'pending', currency: Currency): Promise<string> {
+    const owner = transfer.toPartyId!;
+    if (transfer.kind !== 'deposit') return this.d.accounts.memberAccount(owner, into, currency);
+    return into === 'wallet' ? this.d.accounts.institutionAccount(owner, currency) : this.d.accounts.institutionHoldAccount(owner, currency);
   }
 
   private async parse(payerPartyId: string, body: unknown): Promise<LoadInput> {
@@ -413,6 +434,12 @@ export function loadState(t: Transfer, awaiting?: 'action' | 'vendor'): LoadStat
       return 'failed';
   }
 }
+
+/** A member's load books its own journal kinds; an institution's pull lands as a deposit (T-0617). */
+const journalKind = (t: Transfer, memberKind: string): string => (t.kind === 'deposit' ? INSTITUTION_DEPOSIT_JOURNAL_KIND : memberKind);
+
+/** The institution and the rail on an institution's pull, as the monthly export reads a deposit. */
+const institutionMetadata = (t: Transfer): Record<string, unknown> => (t.kind === 'deposit' ? { institutionId: t.toPartyId, rail: 'ach', description: 'ACH pull from the institution\'s bank' } : {});
 
 /** What the member's purse receives: the conversion's amount, or the load itself. */
 function credited(t: Transfer): Money {
