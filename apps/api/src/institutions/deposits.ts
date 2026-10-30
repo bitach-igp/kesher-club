@@ -12,6 +12,11 @@
 // Anything else (no reference, an unknown or second one, the wrong currency for the rail, an amount that
 // differs from a line recorded by hand, KYB not allowing deposits) opens a `suspense` case for ops and posts
 // nothing: money is never guessed onto an institution, and ops record it through the two-person path once known.
+//
+// From the case (T-0631, REQ-INS-015): finance record a suspense credit against the institution ops identified by
+// naming its `caseId`. The rail, bank reference, amount and value date come from the case, so nothing is retyped
+// (a field given anyway must agree); the credit id is linked through `ops.external_ref`, so the daily statement finds
+// the line recorded; and when the second approver posts it, the case resolves naming the deposit.
 import { createHash } from 'node:crypto';
 import { DomainError, fromWire, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
 import type { Approver, ApprovalService } from '../approvals/service.ts';
@@ -147,7 +152,11 @@ export class InstitutionDeposits {
   async record(institutionId: string, body: unknown, key: string, actor: Approver, now: Date): Promise<InstitutionDeposit> {
     await this.requireOn();
     await this.requireInstitution(institutionId);
-    const input = this.parse(body, now);
+    const fromCase = await this.suspenseCase(body);
+    const input = this.parse(fromCase ? { ...fromCase.fields, ...(body as object) } : body, now);
+    if (fromCase && (input.rail !== fromCase.fields.rail || input.bankReference !== fromCase.fields.bankReference || input.amount.minor !== BigInt(fromCase.fields.amount.minor) || input.amount.currency !== fromCase.fields.amount.currency || input.valueDate !== fromCase.fields.valueDate)) {
+      throw new DomainError('VALIDATION_FAILED', 'The deposit must be the credit the case holds: leave out the rail, bank reference, amount and value date');
+    }
     const replay = await this.byKey(key);
     if (replay) {
       if (replay.institution_id !== institutionId || replay.rail !== input.rail || replay.bank_reference !== input.bankReference || BigInt(replay.amount_minor) !== input.amount.minor || replay.currency !== input.amount.currency) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key recorded a different deposit');
@@ -165,11 +174,30 @@ export class InstitutionDeposits {
       if (raced) return this.view(raced, actor.partyId);
       throw new DomainError('IDEMPOTENCY_CONFLICT', 'This bank reference is already recorded on this rail', { rail: input.rail, bankReference: input.bankReference });
     }
+    if (fromCase) {
+      await this.d.db.query(`update ops.case set payload = payload || jsonb_build_object('depositId', $2::text), status = 'investigating' where id = $1 and status in ('open', 'investigating')`, [fromCase.id, id]);
+      // A recording rejected earlier left the credit linked to its deposit: the link follows the credit to this one.
+      await this.d.db.query(
+        `insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('institution_deposit', $1, $2, $3) on conflict (provider, external_id) do update set entity_id = excluded.entity_id where ops.external_ref.entity_type = 'institution_deposit'`,
+        [id, fromCase.provider, fromCase.creditId],
+      );
+    }
     let approval = await this.d.approvals.request({ kind: 'institution_deposit', subject: `deposit:${id}`, scope: institutionId, requestedBy: actor, amount: input.amount, payload: { institutionId, rail: input.rail, bankReference: input.bankReference, valueDate: input.valueDate } }, now);
     if (approval.approvals === 0) approval = await this.d.approvals.decide(approval.id, actor, 'approve', now, 'recorded');
     await this.d.db.query('update ops.institution_deposit set approval_id = $2 where id = $1', [id, approval.id]);
-    await this.d.audit.record({ actorId: actor.partyId, actorRole: actor.role, action: 'institution.deposit.record', subject: institutionId, reason: `Deposit ${input.rail} ${input.bankReference}`, payload: { depositId: id, amount: toWire(input.amount), rail: input.rail, bankReference: input.bankReference, valueDate: input.valueDate } }, now);
+    await this.d.audit.record({ actorId: actor.partyId, actorRole: actor.role, action: 'institution.deposit.record', subject: institutionId, reason: `Deposit ${input.rail} ${input.bankReference}`, payload: { depositId: id, amount: toWire(input.amount), rail: input.rail, bankReference: input.bankReference, valueDate: input.valueDate, ...(fromCase ? { caseId: fromCase.id } : {}) } }, now);
     return this.view((await this.row(id))!, actor.partyId);
+  }
+
+  /** The open suspense case a `caseId` names, with the credit it holds as a deposit body; none without a `caseId`. */
+  private async suspenseCase(body: unknown): Promise<{ id: string; provider: string; creditId: string; fields: { rail: Rail; bankReference: string; amount: { minor: string; currency: Currency }; valueDate: string } } | undefined> {
+    const caseId = (body as { caseId?: unknown } | null | undefined)?.caseId;
+    if (caseId === undefined) return undefined;
+    type Payload = { provider: string; creditId: string; rail: Rail; bankReference: string; amount: { minor: string; currency: Currency }; valueDate: string };
+    const c = typeof caseId === 'string' && UUID.test(caseId) ? (await this.d.db.query<{ kind: string; status: string; payload: Payload }>('select kind, status, payload from ops.case where id = $1', [caseId])).rows[0] : undefined;
+    if (!c || c.kind !== 'suspense' || (c.status !== 'open' && c.status !== 'investigating')) throw new DomainError('VALIDATION_FAILED', 'caseId must name an open suspense case');
+    const p = c.payload;
+    return { id: caseId as string, provider: p.provider, creditId: p.creditId, fields: { rail: p.rail, bankReference: normalizeReference(p.bankReference).slice(0, 64), amount: p.amount, valueDate: p.valueDate } };
   }
 
   /** The second finance member's approval; the deposit then posts. The recorder's own approval answers 409; a posted one is a no-op. */
@@ -198,6 +226,8 @@ export class InstitutionDeposits {
     if (r.status !== 'pending' || !r.approval_id) throw new DomainError('IDEMPOTENCY_CONFLICT', `This deposit is already ${r.status}`);
     await this.d.approvals.decide(r.approval_id, actor, 'reject', now, why);
     await this.d.db.query(`update ops.institution_deposit set status = 'rejected', decided_at = $2 where id = $1 and status = 'pending'`, [id, now]);
+    // A suspense case recorded through this deposit is open again for the corrected record.
+    await this.d.db.query(`update ops.case set payload = payload - 'depositId' where kind = 'suspense' and payload->>'depositId' = $1 and status in ('open', 'investigating')`, [id]);
     await this.d.audit.record({ actorId: actor.partyId, actorRole: actor.role, action: 'institution.deposit.reject', subject: r.institution_id, reason: why, payload: { depositId: id, bankReference: r.bank_reference } }, now);
     return this.view((await this.row(id))!, actor.partyId);
   }
@@ -331,6 +361,16 @@ export class InstitutionDeposits {
     const updated = await this.d.db.query(`update ops.institution_deposit set status = 'posted', journal_id = $2, decided_at = $3 where id = $1 and status = 'pending'`, [r.id, journal.id, now]);
     if (updated.rowCount > 0) {
       await this.d.audit.record({ actorId: approver.partyId, actorRole: approver.role, action: 'institution.deposit.post', subject: r.institution_id, reason: `Deposit ${r.rail} ${r.bank_reference} approved`, after: { amount: toWire(amount), journalId: journal.id }, payload: { depositId: r.id, recordedBy: r.recorded_by, approvedBy: approver.partyId } }, now);
+    }
+    // The suspense case it was recorded from (T-0631) closes, naming the deposit; keyed by status, so a repeat closes nothing.
+    const resolution = `Recorded as deposit ${r.id}`;
+    const closed = await this.d.db.query<{ id: string }>(
+      `update ops.case set status = 'resolved', decided_by = $2, decided_at = $3, decision_note = $4, resolved_at = $3, resolved_by = $5::uuid, resolution = $4
+        where kind = 'suspense' and payload->>'depositId' = $1 and status in ('open', 'investigating') returning id`,
+      [r.id, approver.partyId, now, resolution, approver.partyId],
+    );
+    for (const c of closed.rows) {
+      await this.d.audit.record({ actorId: approver.partyId, actorRole: approver.role, action: 'case.resolved', subject: c.id, reason: resolution, after: { status: 'resolved' }, payload: { kind: 'suspense', depositId: r.id } }, now);
     }
   }
 
