@@ -212,8 +212,8 @@ describe('the bank feed (T-0618, TST-INS-007)', () => {
     const n = credit(7_000n, paymentReference(INST));
     expect((await deliver(feed, { ...n, headers: { 'x-sim-signature': 'forged' } })).status).toBe(401);
     const before = await balance();
-    // A fresh notification: the store keeps the first delivery of an event id, the forged one included.
-    expect((await deliver(app, host.simulators.bank.notificationFor(n.credit.creditId))).status).toBe(200);
+    // The same notification the forger copied: a refused delivery claims nothing (T-0207).
+    expect((await deliver(app, n)).status).toBe(200);
     expect(await balance()).toBe(before);
     expect(await caseFor(n.credit.creditId)).toBeUndefined();
   });
