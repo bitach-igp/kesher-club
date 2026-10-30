@@ -17,6 +17,8 @@ servers:
 tags:
   - name: admin
     description: Admin console operations (ADR-013). Staff token only; never on the MCP surface.
+  - name: agent
+    description: The MCP authorization server (ADR-009) that assistants discover and are sent through. Never on the MCP surface itself.
 security:
   - bearer: []
 paths:
@@ -205,6 +207,69 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Preferences" }
+        default: { $ref: "#/components/responses/Problem" }
+  /.well-known/oauth-authorization-server:
+    servers: [{ url: "https://api.kesher.example" }]
+    get:
+      operationId: getAuthorizationServerMetadata
+      tags: [agent]
+      summary: Authorization server metadata for assistants (RFC 8414)
+      description: >-
+        REQ-AGT-010 (T-1014, ADR-009). Public, behind `mcp.enabled`. Names the endpoints. Authorization code with S256 PKCE
+        only; public clients identified by their Client ID Metadata Document; the scopes of REQ-AGT-005.
+      security: []
+      responses:
+        "200":
+          description: The metadata
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthorizationServerMetadata" }
+        default: { $ref: "#/components/responses/Problem" }
+  /oauth/jwks:
+    servers: [{ url: "https://api.kesher.example" }]
+    get:
+      operationId: getOAuthJwks
+      tags: [agent]
+      summary: The public keys assistant tokens are signed with
+      description: REQ-AGT-010 (T-1014). Public, behind `mcp.enabled`.
+      security: []
+      responses:
+        "200":
+          description: A JSON Web Key Set
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys: { type: array, items: { type: object, additionalProperties: true } }
+        default: { $ref: "#/components/responses/Problem" }
+  /oauth/authorize:
+    servers: [{ url: "https://api.kesher.example" }]
+    get:
+      operationId: authorizeAgent
+      tags: [agent]
+      summary: An assistant asks for a grant (OAuth 2.1 authorization request)
+      description: >-
+        REQ-AGT-010 (T-1014, ADR-009). Public, behind `mcp.enabled`; the member's browser arrives here from the assistant.
+        A good request is stored for 10 minutes and answers 302 to the member app's consent screen. Until the client and
+        its redirect URI check out, a fault answers 422 VALIDATION_FAILED here; after that it answers 302 back to the client's redirect URI
+        with `error` (invalid_request, unsupported_response_type, invalid_scope or invalid_target) and the `state`.
+      security: []
+      parameters:
+        - { name: response_type, in: query, required: true, schema: { type: string, enum: [code] } }
+        - { name: client_id, in: query, required: true, description: The client's metadata document URL (https), schema: { type: string, format: uri } }
+        - { name: redirect_uri, in: query, required: true, schema: { type: string, format: uri } }
+        - { name: state, in: query, required: true, schema: { type: string, maxLength: 512 } }
+        - { name: scope, in: query, required: true, description: Space-separated scopes from REQ-AGT-005, schema: { type: string } }
+        - { name: code_challenge, in: query, required: true, schema: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" } }
+        - { name: code_challenge_method, in: query, required: true, schema: { type: string, enum: [S256] } }
+        - { name: resource, in: query, required: true, description: The MCP URL (RFC 8707), schema: { type: string, format: uri } }
+      responses:
+        "302":
+          description: To the member app's consent screen, or back to the client with an error
+          headers:
+            Location: { schema: { type: string, format: uri } }
         default: { $ref: "#/components/responses/Problem" }
   /me/display-name:
     get:
@@ -2945,6 +3010,20 @@ components:
             title: { type: string }
             body: { type: string, description: Plain text, shown as written; never a link }
             since: { type: string, format: date-time }
+    AuthorizationServerMetadata:
+      type: object
+      required: [issuer, authorization_endpoint, token_endpoint, jwks_uri, response_types_supported, grant_types_supported, code_challenge_methods_supported]
+      properties:
+        issuer: { type: string, format: uri }
+        authorization_endpoint: { type: string, format: uri }
+        token_endpoint: { type: string, format: uri }
+        jwks_uri: { type: string, format: uri }
+        response_types_supported: { type: array, items: { type: string } }
+        grant_types_supported: { type: array, items: { type: string } }
+        code_challenge_methods_supported: { type: array, items: { type: string, enum: [S256] } }
+        token_endpoint_auth_methods_supported: { type: array, items: { type: string } }
+        client_id_metadata_document_supported: { type: boolean }
+        scopes_supported: { type: array, items: { type: string } }
     ResolvedRecipient:
       type: object
       required: [partyId, canReceive]

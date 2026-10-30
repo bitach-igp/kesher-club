@@ -41,6 +41,9 @@ const shared = {
   }, 'must be a private ES256 JWK (kty EC, crv P-256, with x, y and d)'),
   JWT_SIGNING_KID: z.string().min(1),
   TOKEN_ISSUER: z.string().url(),
+  /** Where the member app is served on the web (T-1014): an assistant's consent request opens {MEMBER_APP_URL}/connect/{id}.
+   *  Unset, it opens the native app's kesher://connect link. */
+  MEMBER_APP_URL: z.string().url().optional(),
   MARKET: z.enum(['US', 'IL']),
   /** Public JWKS of the admin console's staff-token key (ADR-013). Public, so not a secret. */
   STAFF_JWKS: jwksJson,
