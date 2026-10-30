@@ -26,19 +26,22 @@ vendor sandbox, and flip a flag. See `docs/constitution.md` and the live spec.
 | `config/flags.json` | The only flag registry |
 
 ## Status
-- Every task card through T-1007 is implemented with its tests and merged: setup, auth, ledger,
-  billing, card, wallet, P2P, FX, payouts, institutions, marketplace, notifications, admin, agent and
-  monitoring. `pnpm typecheck`, `pnpm test`, `pnpm lint`, `pnpm trace` and `pnpm db:lint` are green at
-  the root; the desktop checker has applied every migration through ledger/0012 on Postgres 16.
-- Decided: ADR-004 (WorkOS for institution SSO and SCIM), ADR-007 (ILS is native: every load, send and
-  receipt names its currency; conversions at the club-published rate) and ADR-013 (the admin console
-  talks to the API), and ADR-014 (pricing and the spec-versus-code calls from the bank-review package). ADR-006's build decision: the money epics run against the simulators; the
-  processor adapter is one later card per port. ADR-001, 002, 003, 005, 008 and 010 carry draft
-  recommendations awaiting Zvi.
-- Next: the currency-choice and club-rate cards T-0512 to T-0518 (ADR-007), and the Sprint 9 cards
-  T-0013, T-0014 and T-0910 to T-0912 (Hebrew/RTL pass, pentest readiness, runbooks and status page,
-  the bank-review package). Switch-on starts with Airalo once a contract and sandbox keys exist
-  (Tab 1 of the live spec); every money flag waits on ADR-006.
+- Every task card through T-0618 is implemented with its tests and merged (plus the setup fixes through
+  T-0036): auth, ledger, billing, card, wallet, P2P, FX, payouts, institutions (deposits, US ACH pulls,
+  the bank feed, KYB, credit lines, allowances, collections), marketplace, notifications, admin, the agent's
+  authorization server and monitoring. All 81 requirements of the first phase have a card and a test.
+- The money flows run end to end against the simulators, and all 18 bank-review walkthroughs record in one
+  run (`docs/bank-review/`). The desktop checker has applied every migration on Postgres 16.
+- Decided: ADR-001 (modular monolith), ADR-002 (Temporal Cloud when the money flags turn on), ADR-003 (our
+  own Postgres sub-ledger), ADR-004 (WorkOS), ADR-005 (the flag registry as built), ADR-007 (native ILS),
+  ADR-008 (in-house webhooks), ADR-009 (our own MCP authorization server), ADR-010 (the house components),
+  ADR-013 to ADR-016. ADR-017 (KYB gates) is built and with the bank for review.
+- Waiting on others: ADR-006 (processor and sponsor bank; every vendor adapter and money flag waits on it),
+  T-0030's AWS steps, and the bank's questions in `docs/bank-review/institution-kyb.md`.
+- Next: the next-phase plan approved on 2026-10-30, sprints 12 to 15. Sprint 12 is the ops queue, the
+  suspense-credit resolution, webhook hardening and the plan catalogue (T-0037, T-0207, T-0631, T-0930 to
+  T-0933); then funder sign-up and the family screens, the rest of the institution console with self-serve
+  KYB, the member app's remaining screens, and launch readiness.
 - Desktop-only steps go through `handoff/` (see `handoff/README.md`).
 
 ## Quick start

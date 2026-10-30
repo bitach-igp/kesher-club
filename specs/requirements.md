@@ -17,6 +17,7 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-LED-002 | P1 | ledger.* rejects UPDATE/DELETE at grant level |
 | REQ-LED-003 | P1 | Same idempotency key returns the original journal |
 | REQ-LED-004 | P1 | Nightly reconciliation opens a case for any break by 06:00 IL |
+| REQ-LED-005 | P1 | A forged webhook never claims a genuine event id; the genuine delivery is processed once |
 | REQ-WAL-001 | P2 | USD and ILS purses; available = settled - holds |
 | REQ-WAL-002 | P2 | Loads by debit card, Apple Pay, Google Pay; ACH when enabled |
 | REQ-WAL-003 | P2 | ACH loads held for the bank's hold days |
@@ -54,6 +55,7 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-INS-012 | P1 | Institution payouts only to the verified own-name account |
 | REQ-INS-013 | P2 | Daily sanctions rescreen; an open match suspends payouts and credit draws |
 | REQ-INS-014 | P2 | KYB refresh every 12/24/36 months by risk; overdue drops to approved with limits |
+| REQ-INS-015 | P2 | A suspense bank credit is resolved only by recording it against an institution through the two-person deposit path, or dismissed with a note |
 | REQ-FX-001 | P2 | Quotes lock 30 s with rate, markup, total |
 | REQ-FX-002 | P2 | Markup from plan config stored on the journal |
 | REQ-FX-003 | P2 | Conversions use the club-published, versioned rate; the version is on the quote and the journal |
@@ -83,5 +85,7 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-ADM-002 | P1 | Two-person money flag flips |
 | REQ-ADM-003 | P2 | Finance publishes club rates through the admin API; manual rates need two finance approvers and an audit entry |
 | REQ-ADM-004 | P2 | Admins onboard institutions and their staff; institution finance and admin roles need a second admin and an audit entry |
+| REQ-ADM-005 | P2 | Ops cases form one queue: filter, assign, resolve or dismiss with a note, audited; support reads only |
+| REQ-ADM-006 | P2 | Plan versions are offered only after a second finance approver; never edited, only superseded |
 | REQ-CMP-001 | P2 | Monitoring alerts with dispositions |
 | REQ-CMP-002 | P1 | Complaint SLA timers and export |
