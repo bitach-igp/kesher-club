@@ -1340,6 +1340,30 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/ach-pulls": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution's ACH pulls, newest first, with what is on hold and what is its own to spend
+         * @description REQ-INS-009 (T-0617). Org finance of this institution only; another institution answers 404. `held` is USD the bank still holds (not spendable); `available` is the institution's own account (T-0613). FEATURE_OFF unless `funding.ach` and `institutions.deposits` are both on. The latest 50.
+         */
+        readonly get: operations["listInstitutionAchPulls"];
+        readonly put?: never;
+        /**
+         * Pull USD from a US institution's bank account by ACH; held until the bank's hold date
+         * @description REQ-INS-009 (T-0617). Org finance of a US institution (422 `not_us_institution` otherwise) whose KYB allows deposits. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). The money posts to the institution's hold account and moves to its own account on `holdUntil`; an ACH return during the hold reverses it. Held money is not a payout's or an allowance run's. Idempotent: the same key is the same pull.
+         */
+        readonly post: operations["createInstitutionAchPull"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/allowance-runs": {
         readonly parameters: {
             readonly query?: never;
@@ -2934,6 +2958,28 @@ export interface components {
                 /** Format: uuid */
                 readonly partyId: string;
             }[];
+        };
+        readonly InstitutionAchPull: {
+            readonly amount: components["schemas"]["Money"];
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** @description Why it failed */
+            readonly failureCode?: string;
+            /**
+             * Format: date
+             * @description While on hold
+             */
+            readonly holdUntil?: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** @enum {string} */
+            readonly state: "created" | "requires_action" | "processing" | "on_hold" | "settled" | "failed";
+        };
+        readonly InstitutionAchPullRequest: {
+            /** @description In USD */
+            readonly amount: components["schemas"]["Money"];
+            /** @description The bank account the institution linked with the provider */
+            readonly paymentMethodId?: string;
         };
         readonly InstitutionDeposit: {
             readonly amount: components["schemas"]["Money"];
@@ -5725,6 +5771,65 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Household"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listInstitutionAchPulls: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description ACH pulls */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly available: components["schemas"]["Money"];
+                        readonly held: components["schemas"]["Money"];
+                        readonly items: readonly components["schemas"]["InstitutionAchPull"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createInstitutionAchPull: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["InstitutionAchPullRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description The pull */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionAchPull"];
                 };
             };
             readonly default: components["responses"]["Problem"];

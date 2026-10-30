@@ -1210,6 +1210,53 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AllowanceRun" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/ach-pulls:
+    get:
+      operationId: listInstitutionAchPulls
+      summary: The institution's ACH pulls, newest first, with what is on hold and what is its own to spend
+      description: >-
+        REQ-INS-009 (T-0617). Org finance of this institution only; another institution answers 404. `held` is USD the
+        bank still holds (not spendable); `available` is the institution's own account (T-0613). FEATURE_OFF unless
+        `funding.ach` and `institutions.deposits` are both on. The latest 50.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+      responses:
+        "200":
+          description: ACH pulls
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, held, available]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/InstitutionAchPull" } }
+                  held: { $ref: "#/components/schemas/Money" }
+                  available: { $ref: "#/components/schemas/Money" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createInstitutionAchPull
+      summary: Pull USD from a US institution's bank account by ACH; held until the bank's hold date
+      description: >-
+        REQ-INS-009 (T-0617). Org finance of a US institution (422 `not_us_institution` otherwise) whose KYB allows
+        deposits. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). The money posts to the institution's
+        hold account and moves to its own account on `holdUntil`; an ACH return during the hold reverses it. Held money
+        is not a payout's or an allowance run's. Idempotent: the same key is the same pull.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InstitutionAchPullRequest" }
+      responses:
+        "201":
+          description: The pull
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionAchPull" }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/payout-account:
     get:
       operationId: getInstitutionPayoutAccount
@@ -3775,6 +3822,22 @@ components:
             ibanMasked: { type: string, example: "IL62 •••• •••• 9999" }
             holderName: { type: string }
         changePending: { type: boolean }
+    InstitutionAchPullRequest:
+      type: object
+      required: [amount]
+      properties:
+        amount: { $ref: "#/components/schemas/Money", description: In USD }
+        paymentMethodId: { type: string, maxLength: 100, description: The bank account the institution linked with the provider }
+    InstitutionAchPull:
+      type: object
+      required: [id, state, amount, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        state: { type: string, enum: [created, requires_action, processing, on_hold, settled, failed] }
+        amount: { $ref: "#/components/schemas/Money" }
+        holdUntil: { type: string, format: date, description: While on hold, the day the money becomes the institution's to spend }
+        failureCode: { type: string, description: Why it failed, such as an ACH return during the hold }
+        createdAt: { type: string, format: date-time }
     InstitutionPayoutRequest:
       type: object
       description: >-
