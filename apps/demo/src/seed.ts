@@ -151,6 +151,10 @@ async function seedPersona(target: SeedTarget, p: Persona): Promise<SeededPerson
   const partyId = partyOf(tokens.accessToken);
   const client = memberClient(target, p, tokens.accessToken);
 
+  // The name others see when they pay this persona (T-0531): "Avi Example" reads "Avi E.". Set once; a rerun writes nothing.
+  const [firstName, ...rest] = p.name.split(' ');
+  if (!(await client.get('/me/display-name')).displayName) await client.patch('/me/display-name', { body: { firstName: firstName!, ...(rest.length ? { lastName: rest.join(' ') } : {}) } });
+
   const kyc = await client.get('/kyc/status');
   if (!(kyc.approvedTier === 'T2' || kyc.approvedTier === p.kyc)) {
     const session = await client.post('/kyc/sessions', { body: { tier: p.kyc }, idempotencyKey: `seed-${p.key}-kyc-${p.kyc}` });

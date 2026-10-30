@@ -2,7 +2,7 @@
 // a second run against the same database writes no transfer and no journal, prints the same table, and
 // every persona can still sign in with its seeded passkey. T-0034: with the console's staff key it also
 // onboards the yeshiva through /admin/*, grants both finance personas with two admins, and imports the
-// roster; a rerun makes no second institution, grant or import. T-0625: its KYB checks run against the
+// roster; a rerun makes no second institution, grant or import. T-0531: every persona has the name others see. T-0625: its KYB checks run against the
 // KybPort simulator, and its own bank account is recorded by one compliance member and approved by another.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, type JWK } from 'jose';
@@ -48,10 +48,15 @@ describe('demo seed (T-0032)', () => {
     expect(byKey(first, 'tamar')).toMatchObject({ kyc: 'T2', usd: 20_000n, card: 'active' });
     expect(byKey(first, 'ruth')).toMatchObject({ kyc: 'T1', usd: 3_000n, ils: 0n, card: 'none' });
     expect(new Set(first.map((r) => r.partyId)).size).toBe(PERSONAS.length);
+    // T-0531: each persona carries the name others see; Avi reads "Avi E.", and a rerun leaves it as it was.
+    const named = await dev.app.services.displayNames.get(byKey(first, 'avi').partyId);
+    expect(named).toMatchObject({ displayName: 'Avi E.' });
 
     const second = await seed(target);
     expect(await count('ops.transfer')).toBe(transfers);
     expect(await count('ledger.journal')).toBe(journals);
+    expect(await dev.app.services.displayNames.get(byKey(first, 'avi').partyId)).toEqual(named);
+    expect(await count('identity.member_display_name')).toBe(PERSONAS.length);
     expect(formatTable(second)).toBe(formatTable({ personas: first, institution: second.institution }));
   }, 120_000);
 

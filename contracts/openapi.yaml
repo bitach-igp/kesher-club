@@ -206,6 +206,46 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Preferences" }
         default: { $ref: "#/components/responses/Problem" }
+  /me/display-name:
+    get:
+      operationId: getDisplayName
+      summary: The name others see when they pay this member
+      description: >-
+        REQ-PAY-008 (T-0531). Bearer only. Empty until the member sets one. Only the first name and the last initial are
+        kept, sealed; `displayName` reads "Avi E.".
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: The name, or nothing yet
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DisplayName" }
+        default: { $ref: "#/components/responses/Problem" }
+    patch:
+      operationId: updateDisplayName
+      summary: Set the name others see when they pay this member
+      description: >-
+        REQ-PAY-008 (T-0531). Bearer only; it moves no money. The first name is 1 to 40 letters in any script, with
+        spaces, hyphens and apostrophes; the last name is optional and only its initial is kept. Anything else answers
+        VALIDATION_FAILED with `field`.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [firstName]
+              properties:
+                firstName: { type: string, minLength: 1, maxLength: 40 }
+                lastName: { type: string, maxLength: 80, description: Only its first letter is kept }
+      responses:
+        "200":
+          description: The name as others will see it
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DisplayName" }
+        default: { $ref: "#/components/responses/Problem" }
   /households/{id}:
     get:
       operationId: getHousehold
@@ -2879,6 +2919,14 @@ components:
             title: { type: string }
             body: { type: string, description: Plain text, shown as written; never a link }
             since: { type: string, format: date-time }
+    DisplayName:
+      type: object
+      description: Member-written text, shown as text. Absent fields mean no name is set yet.
+      properties:
+        displayName: { type: string, example: "Avi E." }
+        firstName: { type: string }
+        lastInitial: { type: string, minLength: 1, maxLength: 1 }
+        updatedAt: { type: string, format: date-time }
     Preferences:
       type: object
       required: [receiveCurrency]

@@ -39,6 +39,7 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-PAY-005 | P2 | Retries never create two transfers |
 | REQ-PAY-006 | P2 | Send from a chosen purse; recipient credited in their receiving currency at the club rate |
 | REQ-PAY-007 | P2 | Receiving currency preference: USD, ILS or as sent |
+| REQ-PAY-008 | P2 | Members set the name others see when paying them; only the first name and last initial are kept, sealed |
 | REQ-INS-001 | P1 | Roster CSV import, all or nothing |
 | REQ-INS-002 | P1 | Invites and onboarding funnel |
 | REQ-INS-003 | P2 | Allowance runs with dry run, one workflow per date |

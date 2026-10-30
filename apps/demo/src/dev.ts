@@ -149,7 +149,7 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
     const now = () => clock.now();
     const { registry, simulators } = createRegistry(config.PROVIDER_MODE_DEFAULT, clock);
     const flags = new StaticFlags(undefined, Object.fromEntries(loadRegistry().map((f) => [f.key, true])));
-    const app = createApp({ db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), staffJwks: config.STAFF_JWKS, clock: now, flags });
+    const app = createApp({ db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), pii, staffJwks: config.STAFF_JWKS, clock: now, flags });
     const jobs: Job[] = buildJobs({ app, db, registry, market: config.MARKET, clock: now, runs: pgRunLog(db), catalogue: loadCatalogueConfig() });
     const scheduler = new Scheduler(jobs, noLock, (event, fields) => log(event, fields));
 

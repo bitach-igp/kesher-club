@@ -24,6 +24,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/me/institution', operationId: 'getMyInstitution' },
   { method: 'GET', path: '/me/preferences', operationId: 'getPreferences' },
   { method: 'PATCH', path: '/me/preferences', operationId: 'updatePreferences' },
+  { method: 'GET', path: '/me/display-name', operationId: 'getDisplayName' },
+  { method: 'PATCH', path: '/me/display-name', operationId: 'updateDisplayName' },
   { method: 'GET', path: '/households/{id}', operationId: 'getHousehold' },
   { method: 'POST', path: '/memberships', operationId: 'createMembership' },
   { method: 'GET', path: '/accounts', operationId: 'listAccounts' },
