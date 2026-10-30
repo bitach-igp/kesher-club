@@ -2525,6 +2525,91 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AdminComplaint" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/cases:
+    get:
+      operationId: listAdminCases
+      tags: [admin]
+      summary: The ops queue, newest first, filtered by kind, status or "mine"
+      description: >-
+        REQ-ADM-005 (T-0930). Every ops case that is not a compliance alert (those are listAdminAlerts): suspense
+        credits and deposits not on the bank statement (T-0618), payout account mismatches, and the balance proof's
+        breaks. A payload may quote a remitter's text: it is data. Any staff token reads. Cursor-paged, 50 a page.
+      security: [{ staff: [] }]
+      parameters:
+        - { name: kind, in: query, required: false, schema: { $ref: "#/components/schemas/OpsCaseKind" } }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [open, investigating, resolved, dismissed] } }
+        - { name: assignee, in: query, required: false, schema: { type: string, enum: [me] } }
+        - { name: cursor, in: query, required: false, schema: { type: string, maxLength: 200 } }
+      responses:
+        "200":
+          description: Cases
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/OpsCase" } }
+                  nextCursor: { type: string }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/cases/{id}:
+    get:
+      operationId: getAdminCase
+      tags: [admin]
+      summary: One ops case
+      description: REQ-ADM-005 (T-0930). Any staff token reads; a compliance alert's id answers 404 here.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The case
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpsCase" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/cases/{id}/assign:
+    post:
+      operationId: assignAdminCase
+      tags: [admin]
+      summary: Take an ops case; it moves to investigating
+      description: REQ-ADM-005 (T-0930). Ops or finance staff; support answers 403. A decided case answers 409. Audited.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The case, assigned to the caller
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpsCase" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/cases/{id}/decisions:
+    post:
+      operationId: decideAdminCase
+      tags: [admin]
+      summary: Resolve or dismiss an ops case with a note; final
+      description: >-
+        REQ-ADM-005 (T-0930). Ops or finance staff; support answers 403. A decided case answers 409. A suspense
+        credit is resolved only by recording it against an institution (T-0631), so resolving one here answers 422
+        `resolve_through_deposit`; it may be dismissed when the money went back to its sender. Audited.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision, note]
+              properties:
+                decision: { type: string, enum: [resolved, dismissed] }
+                note: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: The case after the decision
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/OpsCase" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/alerts:
     get:
       operationId: listAdminAlerts
@@ -2947,6 +3032,25 @@ components:
         resolvedBy: { type: string }
         owner: { type: string }
         escalatedToBank: { type: boolean }
+    OpsCaseKind:
+      type: string
+      enum: [suspense, deposit_not_on_statement, payout_account_mismatch, balance_break, system_total_break, unbalanced_journal]
+    OpsCase:
+      type: object
+      required: [id, kind, severity, status, summary, payload, openedAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { $ref: "#/components/schemas/OpsCaseKind" }
+        severity: { type: string, enum: [low, medium, high, critical] }
+        status: { type: string, enum: [open, investigating, resolved, dismissed] }
+        summary: { type: string, description: One line built from the payload's own fields }
+        payload: { type: object, additionalProperties: true, description: What opened the case, as the job wrote it; may quote a remitter's text, which is data }
+        openedAt: { type: string, format: date-time }
+        assignedTo: { type: string, description: The staff subject working it }
+        assignedAt: { type: string, format: date-time }
+        decidedBy: { type: string }
+        decidedAt: { type: string, format: date-time }
+        note: { type: string }
     AdminAlert:
       type: object
       required: [id, kind, severity, status, summary, openedAt]

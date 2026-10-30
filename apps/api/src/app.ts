@@ -40,6 +40,7 @@ import { KycService } from './kyc/service.ts';
 import { CustomerReadModel } from './admin/customers.ts';
 import { ComplaintService } from './admin/complaints.ts';
 import { AlertService } from './admin/alerts.ts';
+import { caseHandlers, OpsCases } from './admin/cases.ts';
 import { InstitutionAdmin, institutionAdminHandlers } from './admin/institutions.ts';
 import { BANK_PROVIDER, bankCreditVerifier, depositHandlers, InstitutionDeposits, paymentReference } from './institutions/deposits.ts';
 import { StaffTokenVerifier, staffBearerMiddleware } from './admin/staff-token.ts';
@@ -277,6 +278,7 @@ export function createApp(o: AppOptions): App {
     ...priceRuleHandlers(new PriceRules(o.db, s.approvals, s.audit)),
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
     ...depositHandlers(s.deposits),
+    ...caseHandlers(new OpsCases(o.db, s.audit)),
     ...preferenceHandlers(s.preferences),
     ...displayNameHandlers(s.displayNames),
     ...oauthHandlers({ authorize: s.authorize, cfg: s.oauthConfig, jwks: () => s.tokens.jwks(), flags: s.flags }),
