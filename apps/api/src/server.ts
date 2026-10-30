@@ -12,14 +12,16 @@ const MAX_BODY = 2 * 1024 * 1024 + 1024;
 /** OAuth's token endpoint takes a form body (RFC 6749 §3.2, T-1016); every other route stays JSON-only. */
 const FORM_BODY = new Set(['issueAgentToken']);
 
+/** A request's time is the app's clock unless the caller pins one: the demo's shared clock (T-0035) must reach handlers. */
 export async function dispatch(app: App, input: { method: string; url: string; headers: Record<string, string>; rawBody: string; now?: Date }): Promise<HttpResponse> {
+  const now = input.now ?? app.services.clock.now();
   const traceId = input.headers['traceparent']?.split('-')[1] ?? randomUUID();
   const u = new URL(input.url, 'http://api.local');
   const pathname = u.pathname.replace(/^\/v1(?=\/)/, '');
   // /mcp speaks JSON-RPC (T-1013), outside the REST route table and the contract.
   if (app.mcp.owns(pathname)) {
     const headers = Object.fromEntries(Object.entries(input.headers).map(([k, v]) => [k.toLowerCase(), v]));
-    const out = await app.mcp.handle({ method: input.method, pathname, headers, rawBody: input.rawBody, now: input.now ?? new Date() });
+    const out = await app.mcp.handle({ method: input.method, pathname, headers, rawBody: input.rawBody, now });
     return { ...out, headers: { 'content-type': 'application/json', ...out.headers } };
   }
   const found = match(input.method, pathname);
@@ -34,7 +36,7 @@ export async function dispatch(app: App, input: { method: string; url: string; h
       return toProblem(new DomainError('VALIDATION_FAILED', 'Body must be JSON'), traceId);
     }
   }
-  let req: HttpRequest = { method: found.route.method, path: pathname, params: found.params, query: Object.fromEntries(u.searchParams), headers: input.headers, body, rawBody: input.rawBody, traceId, now: input.now ?? new Date() };
+  let req: HttpRequest = { method: found.route.method, path: pathname, params: found.params, query: Object.fromEntries(u.searchParams), headers: input.headers, body, rawBody: input.rawBody, traceId, now };
   try {
     req = await app.authenticate(req);
   } catch (e) {
