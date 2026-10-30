@@ -11,3 +11,12 @@ Steps (from repo root, PowerShell on Windows unless stated):
 8. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with ledger at 24 migrations. Step 5 prints `SET` then `INSERT 0 1`; step 6 `SET` then `UPDATE 1`; step 7 one row: `ops-admin-a | investigating`.
 Report back: the console output of steps 4 to 7.
+
+## Result
+PASS, 2026-10-30 16:10 Asia/Jerusalem, on runner worktree at 717a4f1, Docker 29.8.2, postgres:16 (fresh container).
+- Step 3: `DO`, `DO`, `REVOKE`, `ALTER ROLE` (run with a BOM-less `$OutputEncoding`, see T-0207 result).
+- Step 4: `Migrating to version 0024 (24 migrations in total)` for ledger; `ok` for every schema.
+- Step 5: `SET` / `INSERT 0 1`
+- Step 6: `SET` / `UPDATE 1`
+- Step 7: one row: `ops-admin-a | investigating`
+- Step 8: container removed.
