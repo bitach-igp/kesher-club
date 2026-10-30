@@ -6,7 +6,7 @@ import { money } from '@kesher/domain';
 import { STAFF_AUDIENCE, STAFF_ISSUER, staffSigner } from '../auth/staff-token.ts';
 import { complaintSla, exportForBank } from '../compliance/sla.ts';
 import { customer360 } from '../customers/customer360.ts';
-import { flagState, httpAdminData } from './http.ts';
+import { flagState, httpAdminData, panelClock } from './http.ts';
 
 const NOA = '01932e5a-0000-7000-8000-000000000001';
 const cmp1 = { id: '01932e5a-0000-7000-8000-00000000c001', partyId: NOA, channel: 'phone', category: 'card_decline', summary: 'Card declined at pharmacy twice', status: 'open', openedAt: '2026-10-28T10:00:00Z', loggedBy: 'ops-1', escalatedToBank: false };
@@ -30,7 +30,7 @@ const noa360 = {
   audit: [{ at: '2026-10-30T09:00:00Z', actorId: 'p-ops-1', actorRole: 'admin', action: 'card.unfrozen', reason: 'cleared' }],
 };
 
-async function setup() {
+async function setup(clock?: () => Promise<Date>) {
   const { privateKey, publicKey } = await generateKeyPair('ES256', { extractable: true });
   const signer = await staffSigner(await exportJWK(privateKey), 'admin-1');
   const calls: { host: string; url: string; method: string; auth: string | undefined; body?: unknown }[] = [];
@@ -72,7 +72,7 @@ async function setup() {
     if (url.pathname === '/admin/audit') return Response.json({ items: [{ seq: 1, id: 'e1', at: '2026-11-01T09:00:00Z', actorId: 'p-ops-2', actorRole: 'admin', action: 'flag.flip', subject: url.searchParams.get('subject'), reason: 'go live', payload: {}, hash: 'h', prevHash: 'genesis' }] });
     return new Response('nope', { status: 500 });
   };
-  const data = httpAdminData({ apis: { IL: 'https://api-il.kesher.example/v1', US: 'https://api-us.kesher.example/v1' }, signer, actor: async () => ({ subject: 'zvi', roles: ['ops'] }), fetch: fetchImpl });
+  const data = httpAdminData({ apis: { IL: 'https://api-il.kesher.example/v1', US: 'https://api-us.kesher.example/v1' }, signer, actor: async () => ({ subject: 'zvi', roles: ['ops'] }), fetch: fetchImpl, ...(clock ? { clock } : {}) });
   return { data, calls, publicKey, depositsOff: () => void (depositsOn = false) };
 }
 
@@ -85,6 +85,16 @@ describe('httpAdminData', () => {
     const { payload } = await jwtVerify(auth.slice(7), publicKey, { issuer: STAFF_ISSUER, audience: STAFF_AUDIENCE, algorithms: ['ES256'] });
     expect(payload).toMatchObject({ sub: 'zvi', roles: ['ops'] });
     expect((payload.exp ?? 0) - (payload.iat ?? 0)).toBe(300);
+  });
+
+  it('locally, signs at the demo\'s shared clock read from the panel, so a token stays valid after the clock jumps (T-0923)', async () => {
+    const shared = '2026-11-04T10:15:00.000Z';
+    const panel: typeof globalThis.fetch = async (input) => (String(input) === 'http://localhost:4010/health' ? Response.json({ ok: true, clock: shared }) : new Response('nope', { status: 500 }));
+    const { data, calls } = await setup(panelClock('http://localhost:4010/health', panel));
+    await data.listFlags();
+    const [, body] = (calls[0]?.auth ?? '').slice(7).split('.');
+    expect(JSON.parse(Buffer.from(body!, 'base64url').toString('utf8'))).toMatchObject({ iat: Date.parse(shared) / 1000, exp: Date.parse(shared) / 1000 + 300 });
+    await expect(panelClock('http://localhost:4010/nope', panel)()).rejects.toMatchObject({ code: 'UNAVAILABLE' });
   });
 
   it('maps flags, pending flips, bindings and audit to the console shapes', async () => {

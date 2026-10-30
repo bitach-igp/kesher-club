@@ -22,7 +22,23 @@ export interface HttpAdminDataOptions {
   /** Who is acting on this request (from the proxy's headers). */
   actor: () => Promise<AdminActor>;
   fetch?: typeof fetch | undefined;
+  /** When tokens are signed; the wall clock unless the demo shares its own (`panelClock`, local only). */
+  clock?: (() => Promise<Date>) | undefined;
 }
+
+/**
+ * The demo's shared clock, read from the simulator panel's `/health` (`{ clock }`) before each signature. The API
+ * checks a staff token against that clock, so a console signing at the wall clock would hand it tokens that have
+ * expired the moment the panel moves time forward.
+ */
+export const panelClock =
+  (url: string, fetchImpl: typeof fetch = fetch) =>
+  async (): Promise<Date> => {
+    const res = await fetchImpl(url);
+    const body = (res.ok ? await res.json() : {}) as { clock?: unknown };
+    if (typeof body.clock !== 'string' || Number.isNaN(Date.parse(body.clock))) throw new AdminDataError('UNAVAILABLE', 'The local shared clock did not answer');
+    return new Date(body.clock);
+  };
 
 const notYet = (what: string): never => {
   throw new AdminDataError('UNAVAILABLE', `${what} arrives with the next admin API card`);
@@ -145,7 +161,7 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData & { apiFor(mar
     createClient({
       baseUrl,
       ...(o.fetch ? { fetch: o.fetch } : {}),
-      getAccessToken: async () => o.signer.sign(await o.actor()),
+      getAccessToken: async () => o.signer.sign(await o.actor(), o.clock ? await o.clock() : undefined),
     });
   const clients: Readonly<Record<Market, Client>> = { IL: clientFor(o.apis.IL), US: clientFor(o.apis.US) };
   const client = clients[HOME_MARKET];

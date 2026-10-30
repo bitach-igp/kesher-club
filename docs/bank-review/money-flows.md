@@ -12,28 +12,28 @@ for example ₪500.00 (50,000 agorot).
 
 | # | Flow | SEQ | REQ | Tests | Recording |
 |---|---|---|---|---|---|
-| 1 | Load by card, Apple Pay, Google Pay | SEQ-02 | REQ-WAL-002, REQ-LED-003 | TST-WAL-002 | REC-01 load by card |
-| 2 | ACH load with bank hold and release | SEQ: not in Tab 3 §7 | REQ-WAL-002, REQ-WAL-003 | TST-WAL-003 | REC-02 ACH load hold and release |
-| 3 | Load into the other purse at the club rate | SEQ: not in Tab 3 §7 | REQ-WAL-006, REQ-FX-003, REQ-FX-004 | TST-WAL-006 | REC-03 load into the other purse |
-| 4 | Auto-reload | SEQ: not in Tab 3 §7 | REQ-WAL-004 | TST-WAL-004 | REC-04 auto-reload |
-| 5 | P2P send, same currency | SEQ-06 | REQ-PAY-001, REQ-PAY-002, REQ-PAY-005 | TST-PAY-001, TST-PAY-002, TST-PAY-005 | REC-05 P2P send |
-| 6 | P2P new-counterparty hold, cancel, release | SEQ-06 | REQ-PAY-003 | TST-PAY-003 | REC-06 P2P new-pair hold |
-| 7 | P2P send across currencies | SEQ-06 | REQ-PAY-006, REQ-PAY-007, REQ-FX-002, REQ-FX-003 | TST-PAY-006, TST-PAY-007 | REC-07 P2P cross-currency send |
-| 8 | Payment requests and splits | SEQ: not in Tab 3 §7 | REQ-PAY-004 | TST-PAY-004 | REC-08 requests and splits |
-| 9 | Send or load proposed by an AI assistant | SEQ-04 | REQ-AGT-006 | TST-AGT-006 | REC-09 assistant-proposed send |
-| 10 | FX conversion between purses | SEQ-08 | REQ-FX-001, REQ-FX-002, REQ-FX-003, REQ-FX-004 | TST-FX-001 to TST-FX-004 | REC-10 FX conversion |
-| 11 | Club rates: published rate and two-person manual rate | SEQ: not in Tab 3 §7 | REQ-FX-003, REQ-FX-004, REQ-ADM-003 | TST-FX-003, TST-FX-004, TST-ADM-003 | REC-11 club rates |
-| 12 | Card authorisation (JIT) and settlement | SEQ-01 | REQ-CRD-003, REQ-CRD-004, REQ-CRD-005, REQ-CRD-008 | TST-CRD-003, TST-CRD-004, TST-CRD-008 | REC-12 card authorisation |
-| 13 | Institution withdrawal to its own bank account | SEQ-09 | REQ-PO-001, REQ-PO-002, REQ-INS-004, REQ-INS-012 | TST-PO-001, TST-PO-002 | REC-13 institution withdrawal |
-| 14 | Institution allowance run | SEQ-07 | REQ-INS-003, REQ-INS-004 | TST-INS-003, TST-INS-004 | REC-14 allowance run |
-| 15 | Institution collections (fee payment) | SEQ: not in Tab 3 §7 | REQ-INS-006 | TST-INS-006 | REC-15 collections |
-| 16 | Add-on purchase (eSIM, insurance) | SEQ-10 | REQ-MKT-001, REQ-ESIM-002, REQ-INSR-001 | TST-MKT-001, TST-ESIM-002 | REC-16 add-on purchase |
-| 17 | Account closure refunds | SEQ: not in Tab 3 §7 | REQ-WAL-005 | TST-WAL-005 | REC-17 closure refunds |
-| 18 | Reversals and ledger corrections | SEQ: not in Tab 3 §7 | REQ-LED-001, REQ-LED-002, REQ-LED-003 | TST-LED-001 to TST-LED-003 | REC-18 ledger reversals |
+| 1 | Load by card, Apple Pay, Google Pay | SEQ-02 | REQ-WAL-002, REQ-LED-003 | TST-WAL-002 | [REC-01 load by card](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-01-load-by-card.webm) |
+| 2 | ACH load with bank hold and release | SEQ: not in Tab 3 §7 | REQ-WAL-002, REQ-WAL-003 | TST-WAL-003 | [REC-02 ACH load hold and release](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-02-ach-hold-release.webm) |
+| 3 | Load into the other purse at the club rate | SEQ: not in Tab 3 §7 | REQ-WAL-006, REQ-FX-003, REQ-FX-004 | TST-WAL-006 | [REC-03 load into the other purse](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-03-load-other-purse.webm) |
+| 4 | Auto-reload | SEQ: not in Tab 3 §7 | REQ-WAL-004 | TST-WAL-004 | [REC-04 auto-reload](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-04-auto-reload.webm) |
+| 5 | P2P send, same currency | SEQ-06 | REQ-PAY-001, REQ-PAY-002, REQ-PAY-005 | TST-PAY-001, TST-PAY-002, TST-PAY-005 | [REC-05 P2P send](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-05-p2p-send.webm) |
+| 6 | P2P new-counterparty hold, cancel, release | SEQ-06 | REQ-PAY-003 | TST-PAY-003 | [REC-06 P2P new-pair hold](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-06-p2p-new-pair-hold.webm) |
+| 7 | P2P send across currencies | SEQ-06 | REQ-PAY-006, REQ-PAY-007, REQ-FX-002, REQ-FX-003 | TST-PAY-006, TST-PAY-007 | [REC-07 P2P cross-currency send](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-07-p2p-cross-currency.webm) |
+| 8 | Payment requests and splits | SEQ: not in Tab 3 §7 | REQ-PAY-004 | TST-PAY-004 | [REC-08 requests and splits](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-08-requests-splits.webm) |
+| 9 | Send or load proposed by an AI assistant | SEQ-04 | REQ-AGT-006 | TST-AGT-006 | [REC-09 assistant-proposed send](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-09-assistant-send.webm) |
+| 10 | FX conversion between purses | SEQ-08 | REQ-FX-001, REQ-FX-002, REQ-FX-003, REQ-FX-004 | TST-FX-001 to TST-FX-004 | [REC-10 FX conversion](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-10-fx-conversion.webm) |
+| 11 | Club rates: published rate and two-person manual rate | SEQ: not in Tab 3 §7 | REQ-FX-003, REQ-FX-004, REQ-ADM-003 | TST-FX-003, TST-FX-004, TST-ADM-003 | [REC-11 club rates](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-11-club-rates.webm) |
+| 12 | Card authorisation (JIT) and settlement | SEQ-01 | REQ-CRD-003, REQ-CRD-004, REQ-CRD-005, REQ-CRD-008 | TST-CRD-003, TST-CRD-004, TST-CRD-008 | [REC-12 card authorisation](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-12-card-authorisation.webm) |
+| 13 | Institution withdrawal to its own bank account | SEQ-09 | REQ-PO-001, REQ-PO-002, REQ-INS-004, REQ-INS-012 | TST-PO-001, TST-PO-002 | [REC-13 institution withdrawal](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-13-institution-withdrawal.webm) |
+| 14 | Institution allowance run | SEQ-07 | REQ-INS-003, REQ-INS-004 | TST-INS-003, TST-INS-004 | [REC-14 allowance run](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-14-allowance-run.webm) |
+| 15 | Institution collections (fee payment) | SEQ: not in Tab 3 §7 | REQ-INS-006 | TST-INS-006 | [REC-15 collections](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-15-collections.webm) |
+| 16 | Add-on purchase (eSIM, insurance) | SEQ-10 | REQ-MKT-001, REQ-ESIM-002, REQ-INSR-001 | TST-MKT-001, TST-ESIM-002 | [REC-16 add-on purchase](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-16-addon-purchase.webm) |
+| 17 | Account closure refunds | SEQ: not in Tab 3 §7 | REQ-WAL-005 | TST-WAL-005 | [REC-17 closure refunds](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-17-closure-refunds.webm) |
+| 18 | Reversals and ledger corrections | SEQ: not in Tab 3 §7 | REQ-LED-001, REQ-LED-002, REQ-LED-003 | TST-LED-001 to TST-LED-003 | [REC-18 ledger reversals](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-18-ledger-reversals.webm) |
 
 SEQ-03 (card push provisioning) and SEQ-05 (onboarding and KYC) move no money and are not listed.
-The recordings are of the test suites named under each flow running against the local simulators;
-the request explains why (no mobile build or running API exists yet).
+Each recording is a product walkthrough of the running product on the simulators, asserting this document's
+worked examples; README.md (Recordings) says what each pane shows and which steps are API calls.
 
 ## How every flow is booked
 
@@ -94,7 +94,7 @@ lands only when the provider confirms the payment.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-02 | REQ-WAL-002, REQ-LED-003 | `wallet.enabled` (`apps/api/src/wallet/loads.ts:163`) | REC-01 load by card |
+| SEQ-02 | REQ-WAL-002, REQ-LED-003 | `wallet.enabled` (`apps/api/src/wallet/loads.ts:163`) | [REC-01 load by card](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-01-load-by-card.webm) |
 
 Steps as coded:
 - Methods: card, Apple Pay, Google Pay (`apps/api/src/wallet/loads.ts:38`). A funder may load only a
@@ -135,7 +135,7 @@ date, then it moves to the spendable purse.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ: not in Tab 3 §7 | REQ-WAL-002, REQ-WAL-003 | `funding.ach` (`apps/api/src/wallet/loads.ts:368`) | REC-02 ACH load hold and release |
+| SEQ: not in Tab 3 §7 | REQ-WAL-002, REQ-WAL-003 | `funding.ach` (`apps/api/src/wallet/loads.ts:368`) | [REC-02 ACH load hold and release](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-02-ach-hold-release.webm) |
 
 - The provider answers `on_hold` with a release date. The simulator holds 3 business days, Monday to
   Friday (`packages/ports/src/funding.simulator.ts:11-23`, `:48`).
@@ -167,7 +167,7 @@ club rate less the purse owner's plan markup, like every conversion (ADR-014, de
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ: not in Tab 3 §7 | REQ-WAL-006, REQ-FX-002, REQ-FX-003, REQ-FX-004 | `wallet.enabled` | REC-03 load into the other purse |
+| SEQ: not in Tab 3 §7 | REQ-WAL-006, REQ-FX-002, REQ-FX-003, REQ-FX-004 | `wallet.enabled` | [REC-03 load into the other purse](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-03-load-other-purse.webm) |
 
 - Price: the club rate for the pair, less the purse owner's plan markup in basis points
   (`apps/api/src/wallet/loads.ts:324-333`). With no valid club rate the load is refused with
@@ -196,7 +196,7 @@ falls below the threshold, the worker loads the difference to the target, at mos
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ: not in Tab 3 §7 | REQ-WAL-004 | `wallet.enabled` (`apps/api/src/wallet/auto-reload.ts:89`) | REC-04 auto-reload |
+| SEQ: not in Tab 3 §7 | REQ-WAL-004 | `wallet.enabled` (`apps/api/src/wallet/auto-reload.ts:89`) | [REC-04 auto-reload](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-04-auto-reload.webm) |
 
 - Setting the rule needs a fresh step-up (`apps/api/src/wallet/handlers.ts:29`).
 - The worker runs every 15 minutes (`apps/worker/src/wallet/auto-reload-job.ts:7`). Below the threshold
@@ -221,7 +221,7 @@ A verified member sends money to another verified member.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-06 | REQ-PAY-001, REQ-PAY-002, REQ-PAY-005 | `p2p.enabled` (`apps/api/src/p2p/handlers.ts:14`, `:60`) | REC-05 P2P send |
+| SEQ-06 | REQ-PAY-001, REQ-PAY-002, REQ-PAY-005 | `p2p.enabled` (`apps/api/src/p2p/handlers.ts:14`, `:60`) | [REC-05 P2P send](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-05-p2p-send.webm) |
 
 - Both sides must hold an active account with identity verification approved
   (`apps/api/src/p2p/send.ts:151-159`).
@@ -268,7 +268,7 @@ sender can cancel.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-06 (the hold check step) | REQ-PAY-003 | `p2p.enabled` | REC-06 P2P new-pair hold |
+| SEQ-06 (the hold check step) | REQ-PAY-003 | `p2p.enabled` | [REC-06 P2P new-pair hold](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-06-p2p-new-pair-hold.webm) |
 
 - Threshold: above ₪500.00 (50,000 agorot) or $150.00 (15,000 cents) (`apps/api/src/p2p/holds.ts:13-14`).
   "New" means no settled send from this sender to this recipient in any currency
@@ -302,7 +302,7 @@ rate, and the recipient's plan markup is taken from the received amount.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-06 | REQ-PAY-006, REQ-PAY-007, REQ-FX-002, REQ-FX-003 | `p2p.enabled` | REC-07 P2P cross-currency send |
+| SEQ-06 | REQ-PAY-006, REQ-PAY-007, REQ-FX-002, REQ-FX-003 | `p2p.enabled` | [REC-07 P2P cross-currency send](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-07-p2p-cross-currency.webm) |
 
 - The recipient's receiving currency (USD, ILS or as sent) decides the purse credited
   (`apps/api/src/p2p/send.ts:185-186`; TST-PAY-007, `apps/api/src/me/preferences.test.ts:27`).
@@ -332,7 +332,7 @@ share. Paying a request runs the ordinary send.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ: not in Tab 3 §7 | REQ-PAY-004 | `p2p.enabled` (`apps/api/src/p2p/handlers.ts:17-19`) | REC-08 requests and splits |
+| SEQ: not in Tab 3 §7 | REQ-PAY-004 | `p2p.enabled` (`apps/api/src/p2p/handlers.ts:17-19`) | [REC-08 requests and splits](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-08-requests-splits.webm) |
 
 - A split gives equal shares to everyone but the requester, who covers the remainder; up to 20
   participants (`apps/api/src/p2p/requests.ts:13`, `:69-73`). Example: ₪200.00 four ways is three
@@ -358,7 +358,7 @@ or load (flows 1 to 3) the member would start in the app, keyed `intent:{intentI
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-04 | REQ-AGT-006 | `mcp.money.propose` (`config/flags.json:178-182`); approving a send also needs `p2p.enabled`, a load `wallet.enabled` (`apps/api/src/intents/service.ts:246`, `:241`) | REC-09 assistant-proposed send |
+| SEQ-04 | REQ-AGT-006 | `mcp.money.propose` (`config/flags.json:178-182`); approving a send also needs `p2p.enabled`, a load `wallet.enabled` (`apps/api/src/intents/service.ts:246`, `:241`) | [REC-09 assistant-proposed send](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-09-assistant-send.webm) |
 
 - Proposing creates an intent that expires in 24 hours; no journal and no transfer
   (`apps/api/src/intents/service.ts:1-2`, `:24`, `:112-123`).
@@ -405,7 +405,7 @@ A member converts between their own USD and ILS purses at a quote that holds for
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-08 | REQ-FX-001, REQ-FX-002, REQ-FX-003, REQ-FX-004 | `fx.enabled` (`apps/api/src/fx/service.ts:91`, `:107`) | REC-10 FX conversion |
+| SEQ-08 | REQ-FX-001, REQ-FX-002, REQ-FX-003, REQ-FX-004 | `fx.enabled` (`apps/api/src/fx/service.ts:91`, `:107`) | [REC-10 FX conversion](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-10-fx-conversion.webm) |
 
 - Quote: the club rate gives the gross; the plan markup (75 basis points by default) is taken from it;
   total = gross − markup; it expires after 30 seconds (`apps/api/src/fx/service.ts:27`, `:92-97`).
@@ -450,7 +450,7 @@ No money moves here, but every conversion above prices from this rate.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ: not in Tab 3 §7 | REQ-FX-003, REQ-FX-004, REQ-ADM-003 | none in code | REC-11 club rates |
+| SEQ: not in Tab 3 §7 | REQ-FX-003, REQ-FX-004, REQ-ADM-003 | none in code | [REC-11 club rates](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-11-club-rates.webm) |
 
 - One active rate per pair, versioned; the reverse direction is derived from the same row
   (`apps/api/src/fx/rates.ts:1-7`, `:101-106`).
@@ -472,7 +472,7 @@ approval reserves the money.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-01 | REQ-CRD-003, REQ-CRD-004, REQ-CRD-005, REQ-CRD-008 | cards are issued only while `card.virtual` is on (`apps/api/src/cards/service.ts:14`); agent purchases also need `card.agentic` (`apps/api/src/cards/jit.ts:31`) | REC-12 card authorisation |
+| SEQ-01 | REQ-CRD-003, REQ-CRD-004, REQ-CRD-005, REQ-CRD-008 | cards are issued only while `card.virtual` is on (`apps/api/src/cards/service.ts:14`); agent purchases also need `card.agentic` (`apps/api/src/cards/jit.ts:31`) | [REC-12 card authorisation](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-12-card-authorisation.webm) |
 
 - The processor's request is signature-checked by the card port (`apps/api/src/cards/jit.ts:82-92`).
 - Checks, cheapest refusal first: card and token status, controls (channel, merchant category,
@@ -522,7 +522,7 @@ the API's member payout, which no recording shows.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-09 | REQ-PO-001, REQ-PO-002, REQ-INS-004, REQ-INS-012 | `payouts.nium`, `institutions.money` | REC-13 institution withdrawal |
+| SEQ-09 | REQ-PO-001, REQ-PO-002, REQ-INS-004, REQ-INS-012 | `payouts.nium`, `institutions.money` | [REC-13 institution withdrawal](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-13-institution-withdrawal.webm) |
 
 - The institution's own finance staff ask in I09, with a passkey step-up
   (`apps/api/src/payouts/handlers.ts:91-93`). The payee is never in the request: it is the institution's
@@ -572,7 +572,7 @@ An institution's finance user pays a scheduled allowance to every member on a da
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-07 | REQ-INS-003, REQ-INS-004 | `institutions.money` | REC-14 allowance run |
+| SEQ-07 | REQ-INS-003, REQ-INS-004 | `institutions.money` | [REC-14 allowance run](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-14-allowance-run.webm) |
 
 - `POST /institutions/{id}/allowance-runs` is for the institution's own finance staff, behind
   `institutions.money` (`apps/api/src/institutions/allowance-runs.ts:42-51`); another institution's
@@ -620,7 +620,7 @@ A member pays a fee the institution has billed them, from their purse.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ: not in Tab 3 §7 | REQ-INS-006 | `institutions.money` (`apps/api/src/institutions/collections.ts:19`, `:104`) | REC-15 collections |
+| SEQ: not in Tab 3 §7 | REQ-INS-006 | `institutions.money` (`apps/api/src/institutions/collections.ts:19`, `:104`) | [REC-15 collections](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-15-collections.webm) |
 
 - The purse must cover the fee (`apps/api/src/institutions/collections.ts:113-114`). Paying needs a
   step-up and an Idempotency-Key header (`apps/api/src/institutions/collections.ts:190-194`), but the
@@ -645,7 +645,7 @@ A member buys an add-on from the club catalogue with their purse.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ-10 | REQ-MKT-001, REQ-ESIM-002, REQ-INSR-001 | none in the order path (see Open) | REC-16 add-on purchase |
+| SEQ-10 | REQ-MKT-001, REQ-ESIM-002, REQ-INSR-001 | none in the order path (see Open) | [REC-16 add-on purchase](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-16-addon-purchase.webm) |
 
 - The order is keyed by the member's Idempotency-Key (`apps/api/src/addons/orders.ts:93-114`;
   `apps/api/src/app.ts:184-190`).
@@ -676,7 +676,7 @@ A member closes their account. Whatever remains is refunded to where it came fro
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ: not in Tab 3 §7 | REQ-WAL-005 | none | REC-17 closure refunds |
+| SEQ: not in Tab 3 §7 | REQ-WAL-005 | none | [REC-17 closure refunds](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-17-closure-refunds.webm) |
 
 - Closing is refused while holds are outstanding or a purse is overdrawn
   (`apps/api/src/wallet/closure.ts:57-58`). Auto-reload is switched off (`apps/api/src/wallet/closure.ts:59`).
@@ -726,7 +726,7 @@ Mistakes are fixed by a new reversing journal, never by editing one.
 
 | SEQ | REQ | Flag | Recording |
 |---|---|---|---|
-| SEQ: not in Tab 3 §7 | REQ-LED-001, REQ-LED-002, REQ-LED-003 | none | REC-18 ledger reversals |
+| SEQ: not in Tab 3 §7 | REQ-LED-001, REQ-LED-002, REQ-LED-003 | none | [REC-18 ledger reversals](https://github.com/bitach-igp/kesher-club/releases/download/bank-review-recordings-2026-10-30/REC-18-ledger-reversals.webm) |
 
 - `reverse()` posts the original postings negated, kind `reversal`, once per journal
   (`apps/api/src/ledger/post.ts:89-94`; `db/migrations/ledger/0001_init.sql:24`).
