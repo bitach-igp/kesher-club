@@ -6,7 +6,7 @@
 import { applyBps, money as m } from '@kesher/domain';
 import { expect, test } from '@playwright/test';
 import { PERSONAS } from '../personas.ts';
-import { backToHome, cardSpend, homeAvailable, minorOf, money, openPath, openRecording, panel, partyByPhone, signInMember, staffApi, type Recording } from './flows.ts';
+import { backToHome, cardSpend, homeAvailable, minorOf, money, openPath, openRecording, panel, partyByPhone, reopenMember, signInMember, staffApi, type Recording } from './flows.ts';
 
 const phone = (key: string) => PERSONAS.find((p) => p.key === key)!.phone;
 const units = (minor: bigint): string => minor.toLocaleString('en-US');
@@ -108,7 +108,9 @@ test('REC-12 card authorisation and its hold', async ({ browser }) => {
   await rec.caption('Approved inside the time budget. In Israel the shekel purse pays first, but hers is empty, so the dollar purse pays the $18.00 in its own currency. Journal kind auth_hold: Dr Tamar\'s wallet USD 1,800; Cr Tamar\'s pending USD 1,800.');
   const held = await rec.console360(tamar, 'Tamar after the tap');
   expect([before.USD.available - held.USD.available, held.USD.holds - before.USD.holds]).toEqual([1_800n, 1_800n]);
-  await backToHome(rec);
+  // The tap happened at the till while Home sat open: she opens the app again to see it.
+  await rec.caption('Tamar opens the app again.');
+  await reopenMember(rec);
   await expect.poll(() => homeAvailable(rec, 'USD')).toBe(held.USD.available);
   const holdRow = rec.member.getByTestId('home-holds-USD');
   await holdRow.waitFor({ timeout: 30_000 });
