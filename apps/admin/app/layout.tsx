@@ -1,4 +1,4 @@
-// Admin shell (T-0901, T-0615): the nine areas in the side nav, environment banner, signed-in admin.
+// Admin shell (T-0901, T-0615, T-0931): the areas in the side nav, environment banner, signed-in admin.
 import type { ReactNode } from 'react';
 import { theme } from '@kesher/tokens';
 import { getConfig } from '../src/config.ts';
@@ -19,6 +19,7 @@ const AREAS = [
   ['A07', 'Providers and flags', '/providers'],
   ['A08', 'CMS and legal', '/legal'],
   ['A09', 'Institutions', '/institutions'],
+  ['A12', 'Ops queue', '/ops'],
 ] as const;
 
 export default async function RootLayout({ children }: { children: ReactNode }) {

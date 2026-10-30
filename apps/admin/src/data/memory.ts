@@ -3,7 +3,7 @@ import { money } from '@kesher/domain';
 import { PORTS } from '@kesher/ports';
 import flagsRegistry from '../../../../config/flags.json' with { type: 'json' };
 import { evaluateFlip, gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type Deposit, type FlagState, type InstitutionDetail, type KybView, type PriceRuleRow, type ProviderBinding } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type Deposit, type FlagState, type InstitutionDetail, type KybView, type OpsCase, type PriceRuleRow, type ProviderBinding } from './types.ts';
 
 type AuditRow = { at: string; actor: string; action: string; subject: string; detail?: string | undefined };
 
@@ -97,6 +97,23 @@ export function memoryAdminData(): AdminData {
   const priceRules: PriceRuleRow[] = [];
   const yeshiva: InstitutionDetail = { id: '01932e5a-0000-7000-8000-0000000000f1', name: 'Yeshivat Example', market: 'IL', activeStaff: 2, createdAt: T0, paymentReference: 'KC-7M4QX2HD', balances: [money(0n, 'ILS'), money(0n, 'USD')], deposits: [], depositsOff: false, staff: [], pendingGrants: 0 };
   const recorders = new Map<string, string>();
+  // The ops queue (T-0931): a shekel credit the bank feed could not place, and a balance break. A suspense case
+  // recorded as a deposit notes it and resolves when the deposit posts, as the API does (T-0631).
+  const opsCases: OpsCase[] = [
+    { id: '01932e5a-0000-7000-8000-0000000c5001', kind: 'suspense', severity: 'high', status: 'open', summary: 'ILS 5,000.00 by masav, no payment reference', payload: { reason: 'no_reference', provider: 'bank', creditId: 'sim-credit-1', rail: 'masav', amount: { minor: '500000', currency: 'ILS' }, bankReference: 'MSV-26110', valueDate: '2026-10-29', remitterReference: 'Tuition, see email' }, openedAt: '2026-10-30T06:00:00Z' },
+    { id: '01932e5a-0000-7000-8000-0000000c5002', kind: 'balance_break', severity: 'high', status: 'open', summary: 'Balance differs from postings by ILS 0.01', payload: { accountId: 'acc-ils', difference: { minor: '1', currency: 'ILS' } }, openedAt: '2026-10-30T02:00:00Z' },
+  ];
+  const opsCase = (id: string): OpsCase => {
+    const c = opsCases.find((x) => x.id === id);
+    if (!c) throw new AdminDataError('NOT_FOUND', 'Case not found');
+    return c;
+  };
+  const requireCaseWorker = (by: AdminActor) => {
+    if (!by.roles.includes('ops') && !by.roles.includes('finance')) throw new AdminDataError('FORBIDDEN', 'Only Kesher ops or finance work cases');
+  };
+  const caseOpen = (c: OpsCase) => {
+    if (c.status === 'resolved' || c.status === 'dismissed') throw new AdminDataError('CONFLICT', `This case is already ${c.status}`);
+  };
   const depositView = (d: Deposit, by: AdminActor): Deposit => ({ ...d, recordedByMe: recorders.get(d.id) === by.subject });
   // Its KYB record (T-0926): the checks are clear but for one open hit on a board member, and Rivka, its control
   // person, has passed T1 only, so an approval is refused until both are dealt with. The blocking reasons are
@@ -223,9 +240,12 @@ export function memoryAdminData(): AdminData {
       if (!by.roles.includes('finance')) throw new AdminDataError('FORBIDDEN', 'Only Kesher finance records deposits');
       const same = yeshiva.deposits.find((d) => d.rail === input.rail && d.bankReference === input.bankReference && d.status !== 'rejected');
       if (same) throw new AdminDataError('CONFLICT', 'This bank reference is already recorded on this rail');
+      const from = input.caseId ? opsCases.find((c) => c.id === input.caseId) : undefined;
+      if (input.caseId && (!from || from.kind !== 'suspense' || from.status === 'resolved' || from.status === 'dismissed')) throw new AdminDataError('INVALID', 'caseId must name an open suspense case');
       const d: Deposit = { id: `dep-${yeshiva.deposits.length + 1}`, amount: input.amount, rail: input.rail, bankReference: input.bankReference, valueDate: input.valueDate, ...(input.note ? { note: input.note } : {}), status: 'pending', approvals: 1, recordedByMe: true, createdAt: now.toISOString() };
       recorders.set(d.id, by.subject);
       yeshiva.deposits.unshift(d);
+      if (from) Object.assign(from, { status: 'investigating', payload: { ...from.payload, depositId: d.id } });
       log(by, 'institution.deposit.record', institutionId, now, `${input.rail} ${input.bankReference}`);
       return depositView(d, by);
     },
@@ -241,6 +261,12 @@ export function memoryAdminData(): AdminData {
       } else {
         Object.assign(d, { status: 'posted', approvals: 2, decidedAt: now.toISOString() });
         yeshiva.balances = yeshiva.balances.map((b) => (b.currency === d.amount.currency ? money(b.minor + d.amount.minor, b.currency) : b));
+      }
+      for (const c of opsCases.filter((x) => x.kind === 'suspense' && x.payload['depositId'] === d.id && (x.status === 'open' || x.status === 'investigating'))) {
+        if (decision === 'reject') {
+          const { depositId: _dropped, ...rest } = c.payload;
+          c.payload = rest;
+        } else Object.assign(c, { status: 'resolved', decidedBy: by.subject, decidedAt: now.toISOString(), note: `Recorded as deposit ${d.id}` });
       }
       log(by, `institution.deposit.${decision}`, yeshiva.id, now, reason);
       return depositView(d, by);
@@ -266,6 +292,32 @@ export function memoryAdminData(): AdminData {
       Object.assign(r, decision === 'approve' ? { state: 'active', activatedAt: now.toISOString() } : { state: 'rejected' });
       log(by, `price_rule.${decision}`, `${r.kind}:${r.provider}`, now, reason);
       return structuredClone(r);
+    },
+
+    async listOpsCases(filter, by) {
+      return structuredClone(opsCases.filter((c) => (!filter.kind || c.kind === filter.kind) && (!filter.status || c.status === filter.status) && (!filter.mine || c.assignedTo === by.subject)));
+    },
+    async getOpsCase(id) {
+      const c = opsCases.find((x) => x.id === id);
+      return c ? structuredClone(c) : undefined;
+    },
+    async assignOpsCase(id, by, now) {
+      requireCaseWorker(by);
+      const c = opsCase(id);
+      caseOpen(c);
+      Object.assign(c, { status: 'investigating', assignedTo: by.subject, assignedAt: now.toISOString() });
+      log(by, 'case.assign', id, now, by.subject);
+      return structuredClone(c);
+    },
+    async decideOpsCase(id, decision, note, by, now) {
+      requireCaseWorker(by);
+      const c = opsCase(id);
+      caseOpen(c);
+      if (decision === 'resolved' && c.kind === 'suspense') throw new AdminDataError('INVALID', 'A suspense credit is resolved by recording it against an institution');
+      if (!note.trim() || note.trim().length > 500) throw new AdminDataError('INVALID', 'A note of 1 to 500 characters is required');
+      Object.assign(c, { status: decision, decidedBy: by.subject, decidedAt: now.toISOString(), note: note.trim() });
+      log(by, `case.${decision}`, id, now, note.trim());
+      return structuredClone(c);
     },
 
     async getKyb(id, by) {

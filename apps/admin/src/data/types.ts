@@ -129,6 +129,34 @@ export interface DepositInput {
   note?: string | undefined;
   /** The form's attempt key: a double submit records once. */
   key: string;
+  /** Recorded from this suspense case (T-0631): the fields are the case's credit, and the case closes when it posts. */
+  caseId?: string | undefined;
+}
+
+/** The ops queue (A12, T-0930/T-0931): every ops case that is not a compliance alert. */
+export type OpsCaseKind = 'suspense' | 'deposit_not_on_statement' | 'payout_account_mismatch' | 'balance_break' | 'system_total_break' | 'unbalanced_journal';
+export type OpsCaseStatus = 'open' | 'investigating' | 'resolved' | 'dismissed';
+export interface OpsCase {
+  id: string;
+  kind: OpsCaseKind;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  status: OpsCaseStatus;
+  /** Built from the payload's own fields by the API. */
+  summary: string;
+  /** What opened the case, as the job wrote it; may quote a remitter's text, which is data. */
+  payload: Record<string, unknown>;
+  openedAt: string;
+  assignedTo?: string | undefined;
+  assignedAt?: string | undefined;
+  decidedBy?: string | undefined;
+  decidedAt?: string | undefined;
+  note?: string | undefined;
+}
+export interface OpsCaseFilter {
+  kind?: OpsCaseKind | undefined;
+  status?: OpsCaseStatus | undefined;
+  /** Only the cases assigned to the acting admin. */
+  mine?: boolean | undefined;
 }
 
 export type KybStatus = 'needs_more_info' | 'approved_with_limits' | 'approved' | 'rejected';
@@ -232,6 +260,14 @@ export interface AdminData {
   recordDeposit(institutionId: string, input: DepositInput, by: AdminActor, now: Date): Promise<Deposit>;
   /** A different finance member approves (it posts) or rejects (with a reason). */
   decideDeposit(id: string, decision: 'approve' | 'reject', by: AdminActor, reason: string | undefined, now: Date): Promise<Deposit>;
+
+  /** A12 (T-0931): the ops queue, newest first, as filtered; `by` answers "mine". */
+  listOpsCases(filter: OpsCaseFilter, by: AdminActor): Promise<OpsCase[]>;
+  getOpsCase(id: string): Promise<OpsCase | undefined>;
+  /** Ops or finance take a case; it moves to investigating. */
+  assignOpsCase(id: string, by: AdminActor, now: Date): Promise<OpsCase>;
+  /** Resolved or dismissed with a note, final. A suspense credit resolves only through its deposit (T-0631). */
+  decideOpsCase(id: string, decision: 'resolved' | 'dismissed', note: string, by: AdminActor, now: Date): Promise<OpsCase>;
 
   /** An institution's KYB record (T-0926); `by` decides whether they proposed the pending high-risk approval. */
   getKyb(institutionId: string, by: AdminActor): Promise<KybView | undefined>;

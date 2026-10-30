@@ -9,7 +9,7 @@ import { ApiError, createClient, type Client, type Schemas } from '@kesher/sdk';
 import type { StaffSigner } from '../auth/staff-token.ts';
 import type { Market } from '@kesher/ports';
 import { gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type Deposit, type FlagState, type InstitutionDetail, type InstitutionRow, type KybStatus, type KybView, type PriceRuleRow, type ProviderBinding, type Risk } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type Deposit, type FlagState, type InstitutionDetail, type InstitutionRow, type KybStatus, type KybView, type OpsCase, type PriceRuleRow, type ProviderBinding, type Risk } from './types.ts';
 
 export const MARKETS: readonly Market[] = ['IL', 'US'];
 /** Club-wide reads and writes go here; any market's API serves them from the shared database, so the choice is fixed. */
@@ -112,6 +112,24 @@ export const deposit = (d: Schemas['InstitutionDeposit']): Deposit => ({
   createdAt: d.createdAt,
   decidedAt: d.decidedAt,
 });
+
+/** An ops case (T-0930) as the queue reads it; the payload is kept as the job wrote it, to be shown as text. */
+export const opsCase = (c: Schemas['OpsCase']): OpsCase => ({
+  id: c.id,
+  kind: c.kind,
+  severity: c.severity,
+  status: c.status,
+  summary: c.summary,
+  payload: { ...c.payload },
+  openedAt: c.openedAt,
+  assignedTo: c.assignedTo,
+  assignedAt: c.assignedAt,
+  decidedBy: c.decidedBy,
+  decidedAt: c.decidedAt,
+  note: c.note,
+});
+/** The queue reads at most this many pages of 50: a longer queue is narrowed with the filters. */
+const CASE_PAGES = 4;
 
 /** The record as the API answers it, with the pending high-risk approval's outcome read off its payload. */
 export const kybView = (r: Schemas['KybRecord']): KybView => {
@@ -263,12 +281,39 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData & { apiFor(mar
       return detail;
     },
     async recordDeposit(institutionId, input) {
-      const body = { amount: { minor: input.amount.minor.toString(), currency: input.amount.currency }, rail: input.rail, bankReference: input.bankReference, valueDate: input.valueDate, ...(input.note ? { note: input.note } : {}) };
+      const body = { amount: { minor: input.amount.minor.toString(), currency: input.amount.currency }, rail: input.rail, bankReference: input.bankReference, valueDate: input.valueDate, ...(input.note ? { note: input.note } : {}), ...(input.caseId ? { caseId: input.caseId } : {}) };
       return deposit(await run(() => client.post('/admin/institutions/{id}/deposits', { path: { id: institutionId }, body, idempotencyKey: input.key })));
     },
     async decideDeposit(id, decision, _by, reason) {
       if (decision === 'approve') return deposit(await run(() => client.post('/admin/deposits/{id}/approve', { path: { id } })));
       return deposit(await run(() => client.post('/admin/deposits/{id}/reject', { path: { id }, body: { reason: reason ?? '' } })));
+    },
+    async listOpsCases(filter) {
+      const query = { ...(filter.kind ? { kind: filter.kind } : {}), ...(filter.status ? { status: filter.status } : {}), ...(filter.mine ? { assignee: 'me' as const } : {}) };
+      const out: OpsCase[] = [];
+      let cursor: string | undefined;
+      for (let page = 0; page < CASE_PAGES; page++) {
+        const after = cursor;
+        const r = await run(() => client.get('/admin/cases', { query: { ...query, ...(after ? { cursor: after } : {}) } }));
+        out.push(...r.items.map(opsCase));
+        if (!r.nextCursor) break;
+        cursor = r.nextCursor;
+      }
+      return out;
+    },
+    async getOpsCase(id) {
+      try {
+        return opsCase(await client.get('/admin/cases/{id}', { path: { id } }));
+      } catch (e) {
+        if (e instanceof ApiError && e.problem.code === 'NOT_FOUND') return undefined;
+        return mapError(e);
+      }
+    },
+    async assignOpsCase(id) {
+      return opsCase(await run(() => client.post('/admin/cases/{id}/assign', { path: { id } })));
+    },
+    async decideOpsCase(id, decision, note) {
+      return opsCase(await run(() => client.post('/admin/cases/{id}/decisions', { path: { id }, body: { decision, note } })));
     },
     async listPriceRules() {
       return (await run(() => client.get('/admin/price-rules'))).items.map(priceRule);

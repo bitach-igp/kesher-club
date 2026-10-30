@@ -15,6 +15,8 @@ const alert1 = { id: '01932e5a-0000-7000-8000-00000000a001', kind: 'structuring'
 const YESHIVA = '01932e5a-0000-7000-8000-0000000000f1';
 const dep1 = { id: '01932e5a-0000-7000-8000-00000000d001', institutionId: YESHIVA, amount: { minor: '9007199254740993', currency: 'ILS' }, rail: 'masav', bankReference: 'FT2611-ABC', valueDate: '2026-11-09', status: 'pending', approvals: 1, recordedByMe: true, createdAt: '2026-11-10T09:00:00Z' };
 const rule1 = { id: '01932e5a-0000-7000-8000-00000000e001', kind: 'esim', provider: 'simulator', skuPattern: '^IL-', marginBps: 2500, floor: { minor: '0', currency: 'USD' }, roundTo99: true, priority: 10, state: 'proposed', proposedBy: 'zvi', reason: 'Launch margin', createdAt: '2026-11-10T09:00:00Z' };
+const case1 = { id: '01932e5a-0000-7000-8000-0000000c5001', kind: 'suspense', severity: 'high', status: 'open', summary: 'ILS 5,000.00 by masav, no payment reference', payload: { reason: 'no_reference', rail: 'masav', amount: { minor: '500000', currency: 'ILS' }, bankReference: 'MSV-1', valueDate: '2026-11-09', remitterReference: 'see email' }, openedAt: '2026-11-10T06:00:00Z' };
+const case2 = { ...case1, id: '01932e5a-0000-7000-8000-0000000c5002', kind: 'balance_break', summary: 'Balance differs', payload: {} };
 const problemOf = (status: number, code: string, detail: string) => Response.json({ type: 'about:blank', title: code, status, code, detail }, { status, headers: { 'content-type': 'application/problem+json' } });
 const noaSummary = { partyId: NOA, displayName: 'Noa Example', phoneMasked: '•••• 4567', status: 'active', locale: 'he', mode: 'member', createdAt: '2026-10-01T09:00:00Z' };
 const noa360 = {
@@ -65,6 +67,13 @@ async function setup(clock?: () => Promise<Date>) {
     if (url.pathname === `/admin/institutions/${YESHIVA}/deposits`) return depositsOn ? Response.json({ paymentReference: 'KC-7M4QX2HD', balances: [{ minor: '2000000', currency: 'ILS' }], items: [dep1] }) : problemOf(404, 'FEATURE_OFF', 'institutions.deposits is off');
     if (url.pathname === `/admin/deposits/${dep1.id}/approve`) return problemOf(409, 'IDEMPOTENCY_CONFLICT', 'The recorder cannot approve');
     if (url.pathname === `/admin/deposits/${dep1.id}/reject`) return Response.json({ ...dep1, status: 'rejected', recordedByMe: false, decidedAt: '2026-11-10T10:00:00Z' });
+    // The queue answers two pages: the first names a cursor, the second does not.
+    if (url.pathname === '/admin/cases') return Response.json(url.searchParams.get('cursor') === 'p2' ? { items: [case2] } : { items: [case1], nextCursor: 'p2' });
+    if (url.pathname === `/admin/cases/${case1.id}`) return Response.json(case1);
+    if (url.pathname === `/admin/cases/${case1.id}/assign`) return Response.json({ ...case1, status: 'investigating', assignedTo: 'zvi', assignedAt: '2026-11-10T09:00:00Z' });
+    if (url.pathname === `/admin/cases/${case1.id}/decisions`) return problemOf(422, 'VALIDATION_FAILED', 'resolve_through_deposit');
+    if (url.pathname === `/admin/cases/${case2.id}/decisions`) return Response.json({ ...case2, status: 'resolved', decidedBy: 'zvi', decidedAt: '2026-11-10T09:00:00Z', note: 'Fixed' });
+    if (url.pathname.startsWith('/admin/cases/')) return problemOf(404, 'NOT_FOUND', 'Case not found');
     if (url.pathname === '/admin/price-rules' && init?.method === 'POST') return Response.json(rule1, { status: 201 });
     if (url.pathname === '/admin/price-rules') return Response.json({ items: [rule1] });
     if (url.pathname === `/admin/price-rules/${rule1.id}/approve`) return problemOf(409, 'IDEMPOTENCY_CONFLICT', 'The proposer cannot approve');
@@ -217,5 +226,24 @@ describe('httpAdminData', () => {
     expect(await data.decidePriceRule(rule1.id, 'reject', zvi, 'Too high', new Date())).toMatchObject({ state: 'rejected' });
     expect(calls.at(-1)).toMatchObject({ body: { reason: 'Too high' } });
   });
-});
 
+  it('reads the ops queue through every page with the filter as query, assigns and decides, and records a suspense credit with its caseId (T-0931)', async () => {
+    const { data, calls } = await setup();
+    const zvi = { subject: 'zvi', roles: ['ops', 'finance'] };
+    const now = new Date();
+    const cases = await data.listOpsCases({ kind: 'suspense', status: 'open', mine: true }, zvi);
+    expect(cases.map((c) => c.id)).toEqual([case1.id, case2.id]);
+    expect(cases[0]).toMatchObject({ kind: 'suspense', payload: { remitterReference: 'see email' } });
+    expect(calls.map((c) => c.url)).toEqual(['/admin/cases?kind=suspense&status=open&assignee=me', '/admin/cases?kind=suspense&status=open&assignee=me&cursor=p2']);
+    expect(await data.getOpsCase(case1.id)).toMatchObject({ id: case1.id, summary: case1.summary });
+    expect(await data.getOpsCase('01932e5a-0000-7000-8000-0000000c5999')).toBeUndefined();
+    expect(await data.assignOpsCase(case1.id, zvi, now)).toMatchObject({ status: 'investigating', assignedTo: 'zvi' });
+    await expect(data.decideOpsCase(case1.id, 'resolved', 'theirs', zvi, now)).rejects.toMatchObject({ code: 'INVALID' });
+    calls.length = 0;
+    expect(await data.decideOpsCase(case2.id, 'resolved', 'Fixed', zvi, now)).toMatchObject({ status: 'resolved', note: 'Fixed' });
+    expect(calls[0]).toMatchObject({ method: 'POST', url: `/admin/cases/${case2.id}/decisions`, body: { decision: 'resolved', note: 'Fixed' } });
+    calls.length = 0;
+    await data.recordDeposit(YESHIVA, { amount: money(500_000n, 'ILS'), rail: 'masav', bankReference: 'MSV-1', valueDate: '2026-11-09', key: 'form-key-1', caseId: case1.id }, zvi, now);
+    expect(calls[0]).toMatchObject({ method: 'POST', body: { caseId: case1.id, amount: { minor: '500000', currency: 'ILS' }, rail: 'masav', bankReference: 'MSV-1', valueDate: '2026-11-09' } });
+  });
+});
