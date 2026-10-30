@@ -67,10 +67,14 @@ describe('M26 plans', () => {
     expect(s.status).toBe('ready');
   });
 
-  it('a phone without eSIM support sees the not-capable state and no buy button', async () => {
+  it('a phone without eSIM support is warned, and still lists the plans to buy for another device (T-0731)', async () => {
     const { model } = setup({}, fakeDevice({ esimCapable: false }));
     await model.loadPlans();
-    expect(model.store.get().status).toBe('notCapable');
+    expect(model.store.get()).toMatchObject({ status: 'ready', notCapable: true });
+    expect(model.store.get().plans.map((p) => p.sku)).toEqual(['esim-il-5gb-30d', 'esim-il-20gb-30d']);
+    const capable = setup();
+    await capable.model.loadPlans();
+    expect(capable.model.store.get().notCapable).toBe(false);
   });
 
   it('empty and outage states are distinct', async () => {

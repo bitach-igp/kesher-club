@@ -136,6 +136,7 @@
 | [T-0713](T-0713.md) | MKT | Screens M25-M28 | REQ-ESIM-001 | 7 |
 | [T-0720](T-0720.md) | MKT | Cover Genius adapter + disclosure checkout | REQ-INSR-001 | 7 |
 | [T-0730](T-0730.md) | MKT | Concierge bridge + emergency flow M31-M32 | — | 7 |
+| [T-0731](T-0731.md) | MKT | M26 on a phone without eSIM support lists the plans to buy for another device | REQ-ESIM-001 | 13 |
 | [T-0801](T-0801.md) | NOT | NotifyPort with preferences + quiet hours | REQ-NOT-001 | 6 |
 | [T-0802](T-0802.md) | NOT | Expo push + Postmark + Twilio adapters | — | 6 |
 | [T-0803](T-0803.md) | NOT | Standard Webhooks outbound + replay UI | REQ-NOT-002 | 8 |

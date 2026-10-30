@@ -50,10 +50,15 @@ export interface UsageView {
   expired: boolean;
 }
 
-export type EsimStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'notCapable' | 'error';
+export type EsimStatus = 'idle' | 'loading' | 'ready' | 'empty' | 'error';
 
 export interface EsimState {
   status: EsimStatus;
+  /**
+   * This phone cannot hold an eSIM (T-0731). The plans still list, under a warning, because a member can buy one
+   * for another device, as the warning says; installing on this phone is what it cannot do.
+   */
+  notCapable?: boolean;
   plans: PlanRow[];
   credit?: { remaining: number; unit: string };
   checkout?: Checkout | undefined;
@@ -139,8 +144,7 @@ export function createEsimModel(deps: EsimDeps): EsimModel {
     store,
 
     async loadPlans() {
-      if (!deps.device.info.esimCapable) return store.patch({ status: 'notCapable', plans: [] });
-      store.patch({ status: 'loading', error: undefined });
+      store.patch({ status: 'loading', error: undefined, notCapable: !deps.device.info.esimCapable });
       try {
         const [page, caps] = await Promise.all([deps.club.listCatalogue(), deps.club.getCapabilities().catch(() => undefined)]);
         const plans = page.items.filter((i) => i.kind === 'esim').map(planRow);
