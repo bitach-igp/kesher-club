@@ -31,13 +31,6 @@ describe('SimulatorHost', () => {
     expect((await billing.get(s.subscriptionId)).status).toBe('past_due');
   });
 
-  it('a job run from the panel answers JSON even when the job is not due and returns its marker symbol (T-0923)', async () => {
-    const host = new SimulatorHost();
-    const idle = Symbol('idle');
-    const res = await handle(host, 'POST', '/jobs/nightly/run', '', { jobs: { names: ['nightly'], run: async () => idle } });
-    expect(res).toMatchObject({ status: 200, body: { ok: true, job: 'nightly', result: 'idle' } });
-  });
-
   it('one shared clock: advancing it expires FX quotes everywhere', async () => {
     const host = new SimulatorHost();
     const fx = host.registry.resolve<FxPort>('fx', 'IL');

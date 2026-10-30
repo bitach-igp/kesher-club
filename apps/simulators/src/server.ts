@@ -103,12 +103,9 @@ export function createServer(host: SimulatorHost, opts: { jobs?: PanelJobs; assi
   });
 }
 
-/**
- * bigint-safe JSON for hook and job results (Money.minor is a bigint). A symbol, such as a daily job's "not due
- * yet" marker, goes out as its description; JSON has no symbol (T-0923).
- */
+/** bigint-safe JSON for hook results (Money.minor is a bigint). */
 function serialisable(v: unknown): Json {
-  return JSON.parse(JSON.stringify(v ?? null, (_k, x: unknown) => (typeof x === 'bigint' ? x.toString() : typeof x === 'symbol' ? (x.description ?? 'symbol') : x))) as Json;
+  return JSON.parse(JSON.stringify(v ?? null, (_k, x: unknown) => (typeof x === 'bigint' ? x.toString() : x))) as Json;
 }
 
 function panelHtml(host: SimulatorHost): string {

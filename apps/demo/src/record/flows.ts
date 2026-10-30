@@ -16,9 +16,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, type Browser, type BrowserContext, type FrameLocator, type Page } from '@playwright/test';
 import { importJWK, SignJWT, type JWK } from 'jose';
-import type { PasskeyAuthenticationOptions } from '@kesher/ports';
-import { createClient } from '@kesher/sdk';
-import { deviceIdOf, passkeyOf, PERSONAS } from '../personas.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const OUT = path.resolve(here, '../../out');
@@ -236,18 +233,10 @@ export async function openRecording(browser: Browser, rec: { id: string; name: s
  * offers, signing out whoever was there first, and waits for the dashboard.
  */
 export async function signInInstitution(rec: Recording, persona: string): Promise<void> {
+  await openInstitution(rec, '/');
   const signOut = rec.institution.getByTestId('sign-out');
   const pick = rec.institution.getByTestId(`persona-${persona}`);
-  // Under `next dev` a page can come up blank while a route compiles under load; open it again, up to three times.
-  for (let attempt = 1; ; attempt++) {
-    await openInstitution(rec, '/');
-    try {
-      await expect(signOut.or(pick)).toBeVisible({ timeout: 60_000 });
-      break;
-    } catch (e) {
-      if (attempt === 3) throw e;
-    }
-  }
+  await expect(signOut.or(pick)).toBeVisible({ timeout: 120_000 });
   if (await signOut.isVisible()) await signOut.click();
   await pick.click({ timeout: 120_000 });
   try {
@@ -269,24 +258,6 @@ export async function openInstitution(rec: Recording, pathname: string): Promise
     f.src = new URL(to, f.src).href;
   }, pathname);
   await rec.institution.locator('body:not([data-leaving])').waitFor({ timeout: 120_000 });
-}
-
-/**
- * Fills a form's fields by test id once React has hydrated them, and returns once they still hold their values a
- * moment later. Under `next dev` a page can render well before it hydrates, and hydration resets what was typed
- * into a field before it (T-0923). React marks each element it hydrates with a `__reactProps$…` key.
- */
-export async function fillSteady(frame: FrameLocator, fields: Readonly<Record<string, string>>): Promise<void> {
-  for (const id of Object.keys(fields)) {
-    await expect.poll(() => frame.getByTestId(id).evaluate((el) => Object.keys(el).some((k) => k.startsWith('__reactProps'))), { timeout: 120_000 }).toBe(true);
-  }
-  for (let attempt = 0; attempt < 10; attempt++) {
-    for (const [id, value] of Object.entries(fields)) await frame.getByTestId(id).fill(value);
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    const held = await Promise.all(Object.entries(fields).map(async ([id, value]) => (await frame.getByTestId(id).inputValue()) === value));
-    if (held.every(Boolean)) return;
-  }
-  throw new Error(`The form would not keep its values: ${Object.keys(fields).join(', ')}`);
 }
 
 /** Signs the persona in to the member app with its seeded passkey and waits for Home. */
@@ -321,13 +292,10 @@ export async function backToHome(rec: Recording): Promise<void> {
  * the browser's real clock, would not know to refresh it. Signs in again if the app asks.
  */
 export async function reopenMember(rec: Recording): Promise<void> {
-  // Mark the page being left, so the old Home is not taken for the reopened one (T-0923).
-  await rec.member.locator('body').evaluate((b) => b.setAttribute('data-leaving', '1')).catch(() => undefined);
   await rec.page.evaluate(() => {
     const f = document.getElementById('member') as HTMLIFrameElement;
     f.src = f.getAttribute('src')!;
   });
-  await rec.member.locator('body:not([data-leaving])').waitFor({ timeout: 60_000 });
   const signIn = rec.member.getByText('Sign in with passkey');
   const home = rec.member.getByTestId('home-purse-USD');
   await expect(signIn.or(home)).toBeVisible({ timeout: 60_000 });
@@ -474,40 +442,3 @@ export async function assistantPropose(input: { partyId: string; toPartyId: stri
   if (!res.ok || !json.intentId) throw new Error(`The stack's propose answered ${res.status}: ${JSON.stringify(json)}`);
   return { intentId: json.intentId, assistant: json.assistant! };
 }
-
-/**
- * A persona's own API client, signed in with their seeded passkey, for a member step that has no screen (T-0923:
- * paying a fee item, which Tab 2 gives no member screen). Each money call gets a fresh passkey step-up, as the
- * app would ask for one. Captions say these are API calls. The passkey's counter follows the wall clock, so the
- * app and this client can both use it.
- */
-export async function memberApi(key: string): Promise<ReturnType<typeof createClient>> {
-  const persona = PERSONAS.find((p) => p.key === key);
-  if (!persona) throw new Error(`No persona ${key}`);
-  const wire = (r: object) => r as Record<string, never>;
-  const anon = createClient({ baseUrl: URLS.api });
-  const deviceId = deviceIdOf(persona);
-  const { options } = await anon.post('/auth/passkeys/authenticate', { body: { deviceId } });
-  const { tokens } = await anon.post('/auth/passkeys/authenticate', { body: { deviceId, response: wire(await (await passkeyOf(persona)).authenticate(options as unknown as PasskeyAuthenticationOptions)) } });
-  if (!tokens) throw new Error(`${key} could not sign in`);
-  const client: ReturnType<typeof createClient> = createClient({
-    baseUrl: URLS.api,
-    getAccessToken: () => tokens.accessToken,
-    getStepUpToken: async () => {
-      const begun = await client.post('/auth/step-up', { body: {} });
-      const done = await client.post('/auth/step-up', { body: { response: wire(await (await passkeyOf(persona)).authenticate(begun.options as unknown as PasskeyAuthenticationOptions)) } });
-      if (!done.stepUpToken) throw new Error(`Step-up for ${key} returned no token`);
-      return done.stepUpToken;
-    },
-    newIdempotencyKey: () => `rec-${key}-${Date.now()}`,
-  });
-  return client;
-}
-
-/** The vendor's id for a transfer (a payout at the rail, a load at the funding provider), for a panel hook (T-0927). */
-export async function vendorIdOf(transferId: string): Promise<string> {
-  const r = (await (await fetch(`${URLS.stack}/?vendorOf=${transferId}`)).json()) as { vendorId?: string };
-  if (!r.vendorId) throw new Error(`No vendor id for ${transferId}`);
-  return r.vendorId;
-}
-

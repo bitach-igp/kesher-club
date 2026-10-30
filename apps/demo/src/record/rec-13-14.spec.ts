@@ -9,7 +9,7 @@
 // Every amount is asserted against docs/bank-review/money-flows.md §13 and §14 in minor units.
 import { expect, test } from '@playwright/test';
 import { INSTITUTION, PERSONAS } from '../personas.ts';
-import { customerByApi, fillSteady, homeAvailable, minorOf, money, openInstitution, openRecording, panel, partyByPhone, reopenMember, signInInstitution, signInMember, staffApi, switchMember, URLS, vendorIdOf, type Recording } from './flows.ts';
+import { customerByApi, homeAvailable, minorOf, money, openInstitution, openRecording, panel, partyByPhone, reopenMember, signInInstitution, signInMember, staffApi, switchMember, URLS, type Recording } from './flows.ts';
 
 const phone = (key: string) => PERSONAS.find((p) => p.key === key)!.phone;
 const units = (minor: bigint): string => minor.toLocaleString('en-US');
@@ -68,7 +68,8 @@ test('REC-13 institution withdrawal to its own account', async ({ browser }) => 
   await rec.caption(`Rivka, the yeshiva's finance lead, opens Payouts (I09): ${money(start + 2_000_000n, 'ILS')} available. A withdrawal goes only to the yeshiva's own verified account, so the form asks for an amount and a reference.`);
   await rec.institution.getByTestId('payouts-new').click();
   await rec.institution.getByTestId('payout-destination').waitFor({ timeout: 120_000 });
-  await fillSteady(rec.institution, { 'payout-amountText': '6,000', 'payout-reference': 'Withdrawal to the yeshiva bank account' });
+  await rec.institution.getByTestId('payout-amountText').fill('6,000');
+  await rec.institution.getByTestId('payout-reference').fill('Withdrawal to the yeshiva bank account');
   await rec.caption('She withdraws ₪6,000.00 (600,000 agorot) and confirms with her passkey.');
   await rec.institution.getByTestId('payout-submit').click();
   await rec.institution.getByTestId('payouts-available').waitFor({ timeout: 120_000 });
@@ -95,7 +96,9 @@ test('REC-13 institution withdrawal to its own account', async ({ browser }) => 
   expect(await yeshivaBalance(yeshiva)).toBe(start + 1_400_000n);
   await rec.caption(`Journal payout: Dr the yeshiva's account ILS 600,000; Cr partner_settlement ILS 600,000. The yeshiva holds ${money(start + 1_400_000n, 'ILS')}.`);
 
-  const signed = (await panel.hook('payout', 'nextWebhook', { payoutId: await vendorIdOf(first.id) })).result as { headers: Record<string, string>; rawBody: string };
+  const rail = (await (await fetch(`${URLS.stack}/?payoutOf=${first.id}`)).json()) as { payoutId?: string };
+  if (!rail.payoutId) throw new Error(`The rail has no payout for ${first.id}`);
+  const signed = (await panel.hook('payout', 'nextWebhook', { payoutId: rail.payoutId })).result as { headers: Record<string, string>; rawBody: string };
   const hook = await fetch(`${URLS.api}/hooks/payout`, { method: 'POST', headers: { 'content-type': 'application/json', ...signed.headers }, body: signed.rawBody });
   expect(hook.ok).toBe(true);
   await openInstitution(rec, '/payouts');
@@ -122,7 +125,8 @@ test('REC-14 institution allowance run', async ({ browser }) => {
   await signInInstitution(rec, 'rivka');
   await openInstitution(rec, '/allowances/new');
   await rec.institution.getByTestId('schedule-submit').waitFor({ timeout: 120_000 });
-  await fillSteady(rec.institution, { 'schedule-name': 'Weekly pocket money', 'schedule-amountText': '2,000' });
+  await rec.institution.getByTestId('schedule-name').fill('Weekly pocket money');
+  await rec.institution.getByTestId('schedule-amountText').fill('2,000');
   await rec.institution.getByTestId('schedule-cadence').selectOption('weekly');
   await rec.caption('Rivka creates a schedule in Allowances (I07): ₪2,000.00 a member, weekly, every active member. The form shows when it would run.');
   await rec.institution.getByTestId('schedule-submit').click();
