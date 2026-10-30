@@ -15,3 +15,13 @@ Steps (from repo root, PowerShell on Windows unless stated):
 12. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with org at 7 migrations. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`, and so do steps 7 and 8 (each after `SET`). Step 9 fails with a foreign key violation on `fee_item_batch_fk` (no such batch). Step 10 fails with a check constraint violation (the key's length). Step 11 fails with `permission denied for table fee_batch`.
 Report back: the console output of steps 4 to 11.
+
+## Result
+PASS (2026-10-30 11:08 Asia/Jerusalem, desktop checker; runner at 92c0f7e, which contains fccedcb, Docker 29.8.2, postgres:16).
+- Step 4: `ok` for all 9 schemas; org migrated to 0007 (7).
+- Step 5: "No migration files to execute"; `ok` for all 9.
+- Step 6: `INSERT 0 1`. Step 7: `SET` / `INSERT 0 1`. Step 8: `SET` / `INSERT 0 1`.
+- Step 9: `ERROR: insert or update on table "fee_item" violates foreign key constraint "fee_item_batch_fk"` (Key (batch_id)=(...0629ff) is not present in table "fee_batch").
+- Step 10: `ERROR: new row for relation "fee_batch" violates check constraint "fee_batch_idempotency_key_check"`.
+- Step 11: `ERROR: permission denied for table fee_batch`.
+- Step 12: container removed.
