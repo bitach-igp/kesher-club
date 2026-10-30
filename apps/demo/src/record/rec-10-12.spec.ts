@@ -104,7 +104,7 @@ test('REC-12 card authorisation and its hold', async ({ browser }) => {
   await signInMember(rec);
   const before = await rec.console360(tamar, 'Tamar before');
   const approved = await cardSpend(tamar, 1_800n);
-  expect(approved.result).toBe('approved');
+  expect(approved.result).toBe('APPROVED');
   await rec.caption('Approved inside the time budget. In Israel the shekel purse pays first, but hers is empty, so the dollar purse pays the $18.00 in its own currency. Journal kind auth_hold: Dr Tamar\'s wallet USD 1,800; Cr Tamar\'s pending USD 1,800.');
   const held = await rec.console360(tamar, 'Tamar after the tap');
   expect([before.USD.available - held.USD.available, held.USD.holds - before.USD.holds]).toEqual([1_800n, 1_800n]);
@@ -117,7 +117,7 @@ test('REC-12 card authorisation and its hold', async ({ browser }) => {
 
   const tooMuch = held.USD.available + 100n;
   const declined = await cardSpend(tamar, tooMuch);
-  expect(declined).toMatchObject({ result: 'declined', reason: 'INSUFFICIENT_FUNDS' });
+  expect(declined).toMatchObject({ result: 'DECLINED', reason: 'INSUFFICIENT_FUNDS' });
   await rec.caption(`A second tap for ${money(tooMuch, 'USD')}, a dollar more than she has, is declined: INSUFFICIENT_FUNDS. A decline holds nothing.`);
   const after = await rec.console360(tamar, 'Tamar after the decline');
   expect([after.USD.available, after.USD.holds]).toEqual([held.USD.available, held.USD.holds]);
