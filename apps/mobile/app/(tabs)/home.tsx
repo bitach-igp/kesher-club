@@ -16,7 +16,7 @@ export function useHomeModel(): HomeModel {
   const router = useRouter();
   const now = useNow();
   const locale = useLocale();
-  return useMemo(() => createHomeModel({ wallet: api.wallet, kyc: api.kyc, cards: api.cards, status: api.status, proposals: api.proposals, router, now, locale }), [api, router, now, locale]);
+  return useMemo(() => createHomeModel({ wallet: api.wallet, kyc: api.kyc, cards: api.cards, status: api.status, proposals: api.proposals, displayName: api.displayName, router, now, locale }), [api, router, now, locale]);
 }
 
 export default function HomeScreen() {
@@ -71,7 +71,9 @@ export function HomeView({ model }: { model: HomeModel }) {
         </Card>
       ))}
       <Card testID="home-settings">
-        <ListRow title={t('home.receiveIn', locale)} onPress={model.goReceiveIn} last testID="home-receive-in" />
+        <ListRow title={t('home.receiveIn', locale)} onPress={model.goReceiveIn} testID="home-receive-in" />
+        {/* Member text, shown as written. */}
+        <ListRow title={t('home.yourName', locale)} subtitle={s.displayName ?? t('home.yourName.notSet', locale)} onPress={model.goName} last testID="home-your-name" />
       </Card>
       {actions.length ? (
         <Card testID="home-quick">
