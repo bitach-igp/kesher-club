@@ -100,6 +100,7 @@
 | [T-0530](T-0530.md) | PAY | Confirm sheet names the recipient as resolved, never by party id | REQ-PAY-001 | 12 |
 | [T-0531](T-0531.md) | PAY | Members set the name others see: first name and last initial, sealed; API and demo seed | REQ-PAY-008 | 12 |
 | [T-0532](T-0532.md) | PAY | The member app's "Your name" screen, reached from Home | REQ-PAY-008 | 12 |
+| [T-0533](T-0533.md) | FX | The rate lock counts down on the quote's own clock, not the phone's | REQ-FX-001 | 12 |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |

@@ -40,6 +40,8 @@ export interface FxQuoteView {
   rate: string;
   /** The club rate version the quote was priced from (REQ-FX-003). */
   rateVersion: number;
+  /** When the server priced it (T-0533): a client times the lock as expiresAt − quotedAt, never against its own clock. */
+  quotedAt: string;
   expiresAt: string;
 }
 
@@ -57,6 +59,7 @@ interface HeldQuote {
   quote: FxQuote;
   rateId: string;
   rateVersion: number;
+  quotedAt: string;
   /** The Idempotency-Key of the conversion that claimed it, if one has. */
   spentKey?: string;
 }
@@ -74,6 +77,7 @@ interface QuoteRow {
   rate_id: string;
   rate_version: number;
   expires_at: string | Date;
+  created_at: string | Date;
   spent_key: string | null;
 }
 
@@ -274,7 +278,7 @@ function toHeld(r: QuoteRow | undefined): HeldQuote | undefined {
     markup: money(BigInt(r.markup_minor), r.to_currency),
     expiresAt: new Date(r.expires_at).toISOString(),
   };
-  return { partyId: r.party_id, quote, rateId: r.rate_id, rateVersion: r.rate_version, ...(r.spent_key ? { spentKey: r.spent_key } : {}) };
+  return { partyId: r.party_id, quote, rateId: r.rate_id, rateVersion: r.rate_version, quotedAt: new Date(r.created_at).toISOString(), ...(r.spent_key ? { spentKey: r.spent_key } : {}) };
 }
 
 function parse(body: unknown): { from: Money; to: Currency } {
@@ -293,7 +297,7 @@ function parse(body: unknown): { from: Money; to: Currency } {
 
 function view(h: HeldQuote): FxQuoteView {
   const q = h.quote;
-  return { quoteId: q.quoteId, from: toWire(q.from), total: toWire(q.total), markup: toWire(q.markup), markupBps: Number(q.markupBps), rate: rateString(q.rateScaled), rateVersion: h.rateVersion, expiresAt: q.expiresAt };
+  return { quoteId: q.quoteId, from: toWire(q.from), total: toWire(q.total), markup: toWire(q.markup), markupBps: Number(q.markupBps), rate: rateString(q.rateScaled), rateVersion: h.rateVersion, quotedAt: h.quotedAt, expiresAt: q.expiresAt };
 }
 
 /** A replay of a conversion that already failed answers as the first attempt did. */

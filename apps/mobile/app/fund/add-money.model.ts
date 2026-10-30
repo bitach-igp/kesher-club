@@ -4,9 +4,10 @@
 // on, and says the money is held until a date. One Idempotency-Key per attempt, kept through the passkey
 // step-up and a retry after a network error, so a double tap or a flaky link is one load.
 import { format, fromWire, money, toWire, type Currency, type Money } from '@kesher/domain';
-import { errorIs, type FundApi, type FundMember, type FxApi, type FxQuote, type Load } from '../../src/api.ts';
+import { errorIs, type FundApi, type FundMember, type FxApi, type Load } from '../../src/api.ts';
 import { intlLocale, type CopyKey, type Locale } from '../../src/i18n.ts';
 import { createStore, type Store } from '../../src/model.ts';
+import { hold, secondsLeft, type HeldQuote } from '../../src/quote-lock.ts';
 
 export type Method = 'card' | 'apple_pay' | 'google_pay' | 'ach';
 export const METHODS: readonly Method[] = ['card', 'apple_pay', 'google_pay', 'ach'];
@@ -41,7 +42,7 @@ export interface AddMoneyState {
   purse: Currency;
   method: Method;
   achEnabled: boolean;
-  quote?: FxQuote | undefined;
+  quote?: HeldQuote | undefined;
   secondsLeft: number;
   /** The Idempotency-Key of the attempt in flight or being retried; a changed input starts a new attempt. */
   attemptKey?: string | undefined;
@@ -71,7 +72,6 @@ export function parseAmount(text: string, currency: Currency): { amount: Money }
 }
 
 export const crossCurrency = (s: Pick<AddMoneyState, 'currency' | 'purse'>): boolean => s.currency !== s.purse;
-export const secondsLeft = (quote: FxQuote | undefined, now: Date): number => (quote ? Math.max(0, Math.ceil((Date.parse(quote.expiresAt) - now.getTime()) / 1000)) : 0);
 export const fmt = (m: Money, locale: Locale): string => format(m, intlLocale(locale));
 export const methodsFor = (achEnabled: boolean): readonly Method[] => METHODS.filter((m) => m !== 'ach' || achEnabled);
 
@@ -118,7 +118,8 @@ export function createAddMoneyModel(deps: AddMoneyDeps): AddMoneyModel {
     store.patch({ busy: true, error: undefined });
     try {
       const quote = await deps.fx.quote({ from: toWire(parsed.amount), to: s.purse }, deps.newKey());
-      store.patch({ busy: false, quote, secondsLeft: secondsLeft(quote, deps.now()) });
+      const held = hold(quote, deps.now());
+      store.patch({ busy: false, quote: held, secondsLeft: secondsLeft(held, deps.now()) });
       return true;
     } catch (e) {
       const p = problemFor(e);

@@ -17,7 +17,7 @@ class Problem extends Error {
   }
 }
 
-const quoteFor = (fromMinor: string, totalMinor: string, expiresInS = 30): FxQuote => ({ quoteId: 'q1', from: { minor: fromMinor, currency: 'USD' }, total: { minor: totalMinor, currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' }, markupBps: 75, rate: '3.7000', rateVersion: 12, expiresAt: new Date(NOW.getTime() + expiresInS * 1000).toISOString() });
+const quoteFor = (fromMinor: string, totalMinor: string, expiresInS = 30): FxQuote => ({ quoteId: 'q1', from: { minor: fromMinor, currency: 'USD' }, total: { minor: totalMinor, currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' }, markupBps: 75, rate: '3.7000', rateVersion: 12, quotedAt: NOW.toISOString(), expiresAt: new Date(NOW.getTime() + expiresInS * 1000).toISOString() });
 
 function setup(opts: { ach?: boolean; loads?: (Load | Error)[]; quotes?: (FxQuote | Error)[]; sheet?: 'completed' | 'cancelled'; now?: () => Date } = {}) {
   const loads: { input: Parameters<FundApi['createLoad']>[0]; key: string }[] = [];

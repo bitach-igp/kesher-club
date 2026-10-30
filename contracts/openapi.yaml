@@ -3274,7 +3274,7 @@ components:
         to: { type: string, enum: [USD, ILS] }
     FxQuote:
       type: object
-      required: [quoteId, from, total, markup, markupBps, rate, expiresAt]
+      required: [quoteId, from, total, markup, markupBps, rate, quotedAt, expiresAt]
       properties:
         quoteId: { type: string }
         from: { $ref: "#/components/schemas/Money" }
@@ -3283,6 +3283,12 @@ components:
         markupBps: { type: integer }
         rate: { type: string, description: Decimal string for display only }
         rateVersion: { type: integer, minimum: 1, description: The club rate version the quote was priced from (REQ-FX-003) }
+        quotedAt:
+          type: string
+          format: date-time
+          description: >-
+            When the server priced the quote (T-0533). The lock lasts expiresAt − quotedAt; a client counts that down from
+            when the quote arrived, never against its own clock, which may be off by any amount.
         expiresAt: { type: string, format: date-time }
     FxConversion:
       type: object

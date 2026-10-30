@@ -18,7 +18,7 @@ function mount(load: Load, opts: { ach?: boolean; locale?: Locale } = {}) {
   const fund: FundApi = { members: async () => [{ partyId: 'p1', self: true }], createLoad: async () => load };
   const model = createAddMoneyModel({
     fund,
-    fx: { quote: async (i) => ({ quoteId: 'q', from: i.from, total: { minor: '37000', currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' }, markupBps: 75, rate: '3.7000', rateVersion: 12, expiresAt: new Date(NOW.getTime() + 30_000).toISOString() }) },
+    fx: { quote: async (i) => ({ quoteId: 'q', from: i.from, total: { minor: '37000', currency: 'ILS' }, markup: { minor: '278', currency: 'ILS' }, markupBps: 75, rate: '3.7000', rateVersion: 12, quotedAt: NOW.toISOString(), expiresAt: new Date(NOW.getTime() + 30_000).toISOString() }) },
     capabilities: async () => ({ features: { 'funding.ach': opts.ach ?? false } }),
     paymentSheet: { present: async () => 'completed' },
     newKey: () => 'k',

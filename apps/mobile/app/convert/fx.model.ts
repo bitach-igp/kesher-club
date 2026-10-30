@@ -3,9 +3,10 @@
 // fetches a fresh one on its own. The convert key is minted per quote, so a retry at the same quote is
 // one conversion and a fresh quote is a fresh key.
 import { format, fromWire, money, toWire, type Currency, type Money } from '@kesher/domain';
-import { errorIs, type Account, type FxApi, type FxConversion, type FxQuote } from '../../src/api.ts';
+import { errorIs, type Account, type FxApi, type FxConversion } from '../../src/api.ts';
 import { intlLocale, type CopyKey, type Locale } from '../../src/i18n.ts';
 import { createStore, type Store } from '../../src/model.ts';
+import { hold, secondsLeft, type HeldQuote } from '../../src/quote-lock.ts';
 
 export interface Problem {
   key: CopyKey;
@@ -17,7 +18,7 @@ export interface FxState {
   accounts: Account[];
   from: Currency;
   amountText: string;
-  quote?: FxQuote | undefined;
+  quote?: HeldQuote | undefined;
   /** The Idempotency-Key for converting at the current quote; new quote, new key. */
   convertKey?: string | undefined;
   secondsLeft: number;
@@ -46,8 +47,6 @@ export function parseAmount(text: string, currency: Currency): { amount: Money }
   if (minor <= 0n) return { problem: 'fx.amount.zero' };
   return { amount: money(minor, currency) };
 }
-
-export const secondsLeft = (quote: FxQuote | undefined, now: Date): number => (quote ? Math.max(0, Math.ceil((Date.parse(quote.expiresAt) - now.getTime()) / 1000)) : 0);
 
 export function available(accounts: readonly Account[], currency: Currency): Money {
   const a = accounts.find((x) => x.currency === currency);
@@ -104,7 +103,8 @@ export function createFxModel(deps: FxDeps): FxModel {
     store.patch({ busy: true, error: undefined });
     try {
       const quote = await deps.fx.quote({ from: toWire(r.amount), to: other(s.from) }, deps.newKey());
-      store.patch({ busy: false, quote, convertKey: deps.newKey(), secondsLeft: secondsLeft(quote, deps.now()), result: undefined });
+      const held = hold(quote, deps.now());
+      store.patch({ busy: false, quote: held, convertKey: deps.newKey(), secondsLeft: secondsLeft(held, deps.now()), result: undefined });
       return true;
     } catch (e) {
       const p = problemFor(e, locale);
