@@ -9,7 +9,7 @@
 // Every amount is asserted against docs/bank-review/money-flows.md §13 and §14 in minor units.
 import { expect, test } from '@playwright/test';
 import { INSTITUTION, PERSONAS } from '../personas.ts';
-import { customerByApi, homeAvailable, minorOf, money, openInstitution, openRecording, panel, partyByPhone, signInInstitution, signInMember, staffApi, switchMember, URLS, type Recording } from './flows.ts';
+import { customerByApi, homeAvailable, minorOf, money, openInstitution, openRecording, panel, partyByPhone, reopenMember, signInInstitution, signInMember, staffApi, switchMember, URLS, type Recording } from './flows.ts';
 
 const phone = (key: string) => PERSONAS.find((p) => p.key === key)!.phone;
 const units = (minor: bigint): string => minor.toLocaleString('en-US');
@@ -50,14 +50,14 @@ async function latestPayout(rec: Recording): Promise<{ id: string; state: string
 }
 
 test('REC-13 institution withdrawal to its own account', async ({ browser }) => {
-  const rec = await openRecording(browser, { id: 'REC-13', name: 'institution-withdrawal', title: 'The yeshiva withdraws to its own bank account (money-flows §13)', persona: 'rivka', institution: true });
+  const rec = await openRecording(browser, { id: 'REC-13', name: 'institution-withdrawal', title: 'The yeshiva withdraws to its own bank account (money-flows §13)', persona: 'rivka', institution: true, memberPane: false });
   const yeshiva = await yeshivaId();
   const start = await yeshivaBalance(yeshiva);
 
   await rec.caption('The yeshiva pays ₪20,000.00 into Kesher by Masav, quoting its payment reference. Kesher finance records it; a second finance member approves it; only then does it post.');
   await deposit(yeshiva, 2_000_000n, 'MASAV-REC13-0001');
   expect(await yeshivaBalance(yeshiva)).toBe(start + 2_000_000n);
-  await rec.adminPage(`/institutions/${yeshiva}`, 'the yeshiva after the deposit');
+  await rec.adminPage(`/institutions/${yeshiva}`, 'the yeshiva after the deposit', '.card:has(h2:text-is("Money"))');
   await rec.caption(`API: POST /admin/institutions/{id}/deposits, then /admin/deposits/{id}/approve by a different finance member. Journal deposit: Dr partner_settlement ILS 2,000,000; Cr the yeshiva's account ILS 2,000,000.`);
 
   await signInInstitution(rec, 'rivka');
@@ -167,8 +167,9 @@ test('REC-14 institution allowance run', async ({ browser }) => {
   await rec.caption(`Journal allowance, one per member: Dr the yeshiva's account ILS 200,000; Cr the member's wallet ILS 200,000. The yeshiva goes from ${money(yeshivaBefore, 'ILS')} to ${money(yeshivaBefore - 600_000n, 'ILS')}.`);
 
   for (const k of STUDENTS) {
-    if (k !== 'noa') await switchMember(rec, k);
-    else await rec.member.getByTestId('home-purse-ILS').waitFor({ timeout: 60_000 });
+    // Noa signed in before the run, and Home reads her purses when it opens: she opens the app again.
+    if (k === 'noa') await reopenMember(rec);
+    else await switchMember(rec, k);
     await expect.poll(() => homeAvailable(rec, 'ILS'), { timeout: 60_000 }).toBe(after[k]!);
     await rec.caption(`${k[0]!.toUpperCase()}${k.slice(1)}'s Home: the shekel purse shows ${money(after[k]!, 'ILS')}, ${units(200_000n)} agorot more than before the run.`);
   }

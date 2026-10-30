@@ -56,8 +56,8 @@ export interface Recording {
   console360(partyId: string, note: string): Promise<Balances>;
   /** The right pane as text, for a booked result read through the staff API (see `customerByApi`). */
   consoleText(title: string, lines: readonly string[]): Promise<void>;
-  /** Any admin console page, captured into the right pane, as Customer 360 is (T-0927: an institution's page). */
-  adminPage(pathname: string, note: string): Promise<void>;
+  /** An admin console page, or the part `selector` names, captured into the right pane as Customer 360 is (T-0927). */
+  adminPage(pathname: string, note: string, selector?: string): Promise<void>;
   /** Reloads the panel pane, so its clock shows the time the API now runs on. */
   refreshPanel(): Promise<void>;
   /** Closes the recording and names its video `REC-NN-<name>.webm` under out/. */
@@ -72,8 +72,11 @@ const panes = {
   institution: (origin: string) => `<section style="width:600px"><h2>Institution console (T-0608)</h2><iframe id="institution" src="${origin}/sign-in"></iframe></section>`,
 };
 
-/** Member app, panel, Customer 360; or, with an institution console origin, that console, panel, member app and an admin capture. */
-const harnessHtml = (title: string, persona: string, institution?: string): string => `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
+/**
+ * Member app, panel, Customer 360; or, with an institution console origin, that console, the panel, the member app
+ * (unless the recording has no member in it) and an admin capture.
+ */
+const harnessHtml = (title: string, persona: string, institution?: string, memberPane = true): string => `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
 <style>body{margin:0;background:#0f172a;color:#f8fafc;font:15px/1.4 system-ui,sans-serif;height:100vh;display:flex;flex-direction:column}
 #cap{padding:10px 16px;min-height:52px;border-bottom:1px solid #334155}#cap b{color:#fbbf24;margin-right:8px}
 main{flex:1;display:flex;gap:8px;padding:8px;min-height:0}section{display:flex;flex-direction:column;min-width:0}
@@ -83,7 +86,7 @@ iframe,#c360{flex:1;border:0;border-radius:8px;background:#fff}#c360{overflow:au
 <body><div id="cap"><b>${title}</b><span id="text">Starting…</span></div>
 <main>${
   institution
-    ? [panes.institution(institution), panes.panel('width:260px'), panes.member(persona, 'width:380px'), panes.console('Admin console (T-0919)', 'flex:1')].join('\n')
+    ? [panes.institution(institution), panes.panel('width:260px'), ...(memberPane ? [panes.member(persona, 'width:380px')] : []), panes.console('Admin console (T-0919)', 'flex:1')].join('\n')
     : [panes.member(persona), panes.panel('flex:1'), panes.console('Console · Customer 360 (T-0919)', 'width:560px')].join('\n')
 }</main></body></html>`;
 
@@ -146,12 +149,19 @@ async function staffConsole(browser: Browser): Promise<{ context: BrowserContext
   }
 }
 
-export async function openRecording(browser: Browser, rec: { id: string; name: string; title: string; persona: string; institution?: boolean }): Promise<Recording> {
+export async function openRecording(browser: Browser, rec: { id: string; name: string; title: string; persona: string; institution?: boolean; memberPane?: boolean }): Promise<Recording> {
   const context = await browser.newContext({ viewport: SIZE, recordVideo: { dir: path.join(OUT, 'raw'), size: SIZE }, locale: 'en-US', timezoneId: 'Asia/Jerusalem' });
   const framed = rec.institution ? await framable(URLS.institution) : undefined;
+  // The console's dev server adds its own badge to every page; it is not part of the console, so the video leaves it out.
+  if (framed) {
+    await context.addInitScript((origin) => {
+      if (location.origin !== origin) return;
+      document.addEventListener('DOMContentLoaded', () => document.head.insertAdjacentHTML('beforeend', '<style>nextjs-portal{display:none!important}</style>'));
+    }, framed.origin);
+  }
   // A real local server, not page.route: Chromium counts an intercepted page as public, and its Private
   // Network Access checks then refuse to frame the apps on localhost.
-  const html = harnessHtml(`${rec.id} ${rec.title}`, rec.persona, framed?.origin);
+  const html = harnessHtml(`${rec.id} ${rec.title}`, rec.persona, framed?.origin, rec.memberPane ?? true);
   const harness = createServer((_req, res) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(html));
   await new Promise<void>((resolve) => harness.listen(0, 'localhost', resolve));
   const page = await context.newPage();
@@ -194,9 +204,9 @@ export async function openRecording(browser: Browser, rec: { id: string; name: s
       await setPane(`<pre>${esc([title, '', ...lines].join('\n'))}</pre>`, '· staff API');
       await page.waitForTimeout(1500);
     },
-    async adminPage(pathname, note) {
+    async adminPage(pathname, note, selector = 'main') {
       await staff.page.goto(`${URLS.console}${pathname}`);
-      const png = await staff.page.locator('main').screenshot();
+      const png = await staff.page.locator(selector).first().screenshot();
       await setPane(`<img alt="Admin console" src="data:image/png;base64,${png.toString('base64')}">`, `· ${note}`);
       await page.waitForTimeout(1500);
     },
@@ -229,15 +239,25 @@ export async function signInInstitution(rec: Recording, persona: string): Promis
   await expect(signOut.or(pick)).toBeVisible({ timeout: 120_000 });
   if (await signOut.isVisible()) await signOut.click();
   await pick.click({ timeout: 120_000 });
-  await rec.institution.getByTestId('dashboard').waitFor({ timeout: 120_000 });
+  try {
+    await rec.institution.getByTestId('dashboard').waitFor({ timeout: 120_000 });
+  } catch {
+    throw new Error(`${persona} did not reach the dashboard; the institution pane reads: ${(await rec.institution.locator('body').innerText()).slice(0, 400)}`);
+  }
 }
 
-/** Opens a page of the institution console in its pane, by address; the session cookies stay. */
+/**
+ * Opens a page of the institution console in its pane, by address; the session cookies stay. Returns once the
+ * new document is there: the old one is marked first, so a click cannot land on the page being left (a click on
+ * the old sign-in page loses its sign-in to the navigation).
+ */
 export async function openInstitution(rec: Recording, pathname: string): Promise<void> {
+  await rec.institution.locator('body').evaluate((b) => b.setAttribute('data-leaving', '1')).catch(() => undefined);
   await rec.page.evaluate((to) => {
     const f = document.getElementById('institution') as HTMLIFrameElement;
     f.src = new URL(to, f.src).href;
   }, pathname);
+  await rec.institution.locator('body:not([data-leaving])').waitFor({ timeout: 120_000 });
 }
 
 /** Signs the persona in to the member app with its seeded passkey and waits for Home. */

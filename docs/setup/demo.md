@@ -62,14 +62,14 @@ prints the same table. The table holds no token.
 |---|---|---|---|---|---|---|
 | `dana` | Dana Example | US | +1 555 555 0101 | T2, virtual card open | $500.00 | REC-01, 02, 04, 05, 07, 09, 16 |
 | `avi` | Avi Example | US | +1 555 555 0102 | T1 | nothing | REC-05 (Dana pays him), REC-08 |
-| `noa` | Noa Example | IL | +1 555 555 0103 | T2, virtual card open | ₪5,000.00 and $100.00 | REC-03, 07, 08, 10, 13 |
-| `maya` | Maya Example | IL | +1 555 555 0104 | T1 | ₪1,000.00 | REC-06 (sender) |
-| `eli` | Eli Example | IL | +1 555 555 0105 | T1 | nothing | REC-06 (recipient; never paid by Maya) |
+| `noa` | Noa Example | IL | +1 555 555 0103 | T2, virtual card open | ₪5,000.00 and $100.00 | REC-03, 07, 08, 10, 14 (a yeshiva student) |
+| `maya` | Maya Example | IL | +1 555 555 0104 | T1 | ₪1,000.00 | REC-06 (sender), REC-14 (a yeshiva student) |
+| `eli` | Eli Example | IL | +1 555 555 0105 | T1 | nothing | REC-06 (recipient; never paid by Maya), REC-14 (a yeshiva student) |
 | `tamar` | Tamar Example | US | +1 555 555 0106 | T2, virtual card open | $200.00 | REC-12 |
 | `ruth` | Ruth Example | US | +1 555 555 0107 | T1 | $30.00 by card | REC-17 (ready to close: no holds, every dollar refundable) |
 | `ben` | Ben Example | US | +1 555 555 0108 | T1 | nothing | REC-01 funder mode, once the link below exists |
-| `rivka` | Rivka Example | IL | +1 555 555 0109 | T2 | nothing | REC-14, REC-15: yeshiva finance, imports the roster; the yeshiva's KYB control person (T-0621) |
-| `shimon` | Shimon Example | IL | +1 555 555 0110 | T1 | nothing | REC-14: yeshiva finance, the second approver |
+| `rivka` | Rivka Example | IL | +1 555 555 0109 | T2 | nothing | REC-13, REC-14, REC-15: yeshiva finance, imports the roster, asks for withdrawals and runs; the yeshiva's KYB control person (T-0621) |
+| `shimon` | Shimon Example | IL | +1 555 555 0110 | T1 | nothing | REC-13, REC-14: yeshiva finance, the second approver |
 
 Market is the market whose walkthroughs use the persona. The party itself has no market, since every
 member holds both purses; a transfer takes the market of the process that wrote it. Seed and record the
@@ -227,7 +227,12 @@ clock), and the console's Customer 360. Every spec asserts that the amounts on s
 equal the worked example in `docs/bank-review/money-flows.md`, in minor units, so a recording cannot pass while
 showing a wrong number. The videos land in `apps/demo/out/REC-NN-<name>.webm`, which git ignores.
 
-- Ports 3000, 3100, 4010, 4099 and 8081 must be free: the run starts its own servers and never reuses one.
+- Ports 3000, 3100, 3200, 4010, 4099 and 8081 must be free: the run starts its own servers and never reuses one.
+- REC-13 (withdrawal) and REC-14 (allowance run) use the institution variant (T-0927): the institution console
+  (port 3200, local persona sign-in) on the left, driven as Rivka and Shimon, then the panel, the member app
+  (REC-14 only) and the admin console. That console refuses to be framed, so the harness frames it through a
+  local pass-through that drops `X-Frame-Options` and nothing else; the console itself keeps the header. Each
+  can run alone: REC-14 funds the yeshiva with a recorded deposit when it holds less than the run.
 - The run makes its own staff key pair; nothing from `.env.local-staff` is read.
 - A step with no member screen is shown as an API caption ("API: POST …"), never as a screen.
 - The panel's `POST /jobs/{name}/run` runs one of the stack's jobs now, at the panel clock, so a recording
