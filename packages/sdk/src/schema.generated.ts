@@ -639,7 +639,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Record a bank transfer in against the institution; a second finance member approves it before it posts
-         * @description REQ-INS-007 (T-0614). Kesher finance (staff role `finance`). The recorder's own approval is the first of two. Masav carries ILS, ACH USD, a wire either. A rail and bank reference already recorded (and not rejected) answers 409. The value date cannot be in the future. Idempotent. Behind `institutions.deposits`.
+         * @description REQ-INS-007 (T-0614). Kesher finance (staff role `finance`). The recorder's own approval is the first of two. Masav carries ILS, ACH USD, a wire either. A rail and bank reference already recorded (and not rejected) answers 409. The value date cannot be in the future. Idempotent. Behind `institutions.deposits`. From a suspense case (REQ-INS-015, T-0631): `caseId` names an open `suspense` case and the rail, bank reference, amount and value date come from the credit it holds (any given must agree, else 422; another kind of case or a closed one answers 422). The case notes the deposit and resolves, naming it, when the deposit posts. Without `caseId`, amount, rail, bankReference and valueDate are required (422).
          */
         readonly post: operations["recordAdminInstitutionDeposit"];
         readonly delete?: never;
@@ -4809,14 +4809,19 @@ export interface operations {
         readonly requestBody: {
             readonly content: {
                 readonly "application/json": {
-                    readonly amount: components["schemas"]["Money"];
+                    readonly amount?: components["schemas"]["Money"];
                     /** @description The statement line's reference; compared without spaces */
-                    readonly bankReference: string;
+                    readonly bankReference?: string;
+                    /**
+                     * Format: uuid
+                     * @description An open suspense case whose credit this records
+                     */
+                    readonly caseId?: string;
                     readonly note?: string;
                     /** @enum {string} */
-                    readonly rail: "masav" | "wire" | "ach";
+                    readonly rail?: "masav" | "wire" | "ach";
                     /** Format: date */
-                    readonly valueDate: string;
+                    readonly valueDate?: string;
                 };
             };
         };

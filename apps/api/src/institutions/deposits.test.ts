@@ -8,6 +8,9 @@
 // the bank says so; a line already recorded by hand does not post twice; a credit naming no institution, an unknown
 // or a second one, in the wrong currency for its rail, or for an institution KYB blocks opens a suspense case and
 // posts nothing; a forged notification is refused; with the feed off nothing happens.
+// T-0631 (TST-INS-015, REQ-INS-015): a suspense credit is recorded against the institution from its case, nothing
+// retyped; it posts on the second approval and the case resolves naming the deposit; the same credit cannot be
+// recorded twice; the next reconciliation finds it recorded; only an open suspense case can be recorded this way.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { money, uuidv7 } from '@kesher/domain';
@@ -20,7 +23,7 @@ import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { decideKyb } from '../test-institution.ts';
-import { paymentReference, type InstitutionDeposit } from './deposits.ts';
+import { normalizeReference, paymentReference, type InstitutionDeposit } from './deposits.ts';
 import { monthlyExport } from './export.ts';
 
 let db: TestDatabase;
@@ -43,6 +46,12 @@ const B = { sub: 'finance-b', roles: ['finance'] };
 const SUPPORT = { sub: 'support-1', roles: ['support'] };
 const record = (who: typeof A, inst: string, body: Record<string, unknown>, key: string) => call(app, who, 'POST', `/v1/admin/institutions/${inst}/deposits`, { amount: { minor: '2000000', currency: 'ILS' }, rail: 'masav', bankReference: 'ft 2611-abc', valueDate: '2026-11-09', ...body }, key);
 const balance = async (inst = INST, currency: 'ILS' | 'USD' = 'ILS') => (await app.services.accounts.institutionBalance(inst, currency)).minor;
+type Hook = { headers: Record<string, string>; rawBody: string };
+const deliver = (a: App, n: Hook) => dispatch(a, { method: 'POST', url: '/v1/hooks/bank', headers: n.headers, rawBody: n.rawBody, now: NOW });
+const credit = (minor: bigint, remitterReference: string, over: { rail?: BankRail; currency?: 'ILS' | 'USD'; bankReference?: string } = {}) =>
+  host.simulators.bank.credit({ rail: over.rail ?? 'masav', amount: money(minor, over.currency ?? 'ILS'), remitterReference, valueDate: '2026-11-09', ...(over.bankReference ? { bankReference: over.bankReference } : {}) });
+const journals = async (inst: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where kind = 'deposit' and metadata->>'institutionId' = $1`, [inst])).rows[0]!.n;
+const caseFor = async (creditId: string) => (await db.query<{ kind: string; payload: { reason: string } }>(`select kind, payload from ops.case where dedupe_key = $1`, [`bank-credit:bank:${creditId}`])).rows[0];
 
 beforeAll(async () => {
   db = await createTestDatabase();
@@ -156,12 +165,6 @@ describe('institution deposits (T-0614, TST-INS-007)', () => {
 });
 
 describe('the bank feed (T-0618, TST-INS-007)', () => {
-  type Hook = { headers: Record<string, string>; rawBody: string };
-  const deliver = (a: App, n: Hook) => dispatch(a, { method: 'POST', url: '/v1/hooks/bank', headers: n.headers, rawBody: n.rawBody, now: NOW });
-  const credit = (minor: bigint, remitterReference: string, over: { rail?: BankRail; currency?: 'ILS' | 'USD'; bankReference?: string } = {}) =>
-    host.simulators.bank.credit({ rail: over.rail ?? 'masav', amount: money(minor, over.currency ?? 'ILS'), remitterReference, valueDate: '2026-11-09', ...(over.bankReference ? { bankReference: over.bankReference } : {}) });
-  const journals = async (inst: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where kind = 'deposit' and metadata->>'institutionId' = $1`, [inst])).rows[0]!.n;
-  const caseFor = async (creditId: string) => (await db.query<{ kind: string; payload: { reason: string } }>(`select kind, payload from ops.case where dedupe_key = $1`, [`bank-credit:bank:${creditId}`])).rows[0];
 
   it('a ₪1,200.00 credit quoting the yeshiva\'s reference posts at once, once, however often the bank says so', async () => {
     const before = await balance();
@@ -219,3 +222,56 @@ describe('the bank feed (T-0618, TST-INS-007)', () => {
   });
 });
 
+describe('a suspense credit recorded from its case (T-0631, TST-INS-015)', () => {
+  const fromCase = (who: typeof A, inst: string, body: Record<string, unknown>, key: string) => call(app, who, 'POST', `/v1/admin/institutions/${inst}/deposits`, body, key);
+  const caseRow = async (id: string) => (await db.query<{ status: string; resolution: string | null; payload: Record<string, unknown> }>('select status, resolution, payload from ops.case where id = $1', [id])).rows[0]!;
+  const openCase = async (minor: bigint, remitter: string) => {
+    const n = credit(minor, remitter);
+    expect((await deliver(feed, n)).status).toBe(200);
+    const id = (await db.query<{ id: string }>('select id from ops.case where dedupe_key = $1', [`bank-credit:bank:${n.credit.creditId}`])).rows[0]!.id;
+    return { n, id };
+  };
+
+  it('a ₪5,000.00 Masav credit with no reference: A records it from the case, B approves, the account rises by 500,000 agorot and the case resolves naming the deposit; it cannot be recorded twice and the next reconciliation finds it recorded', async () => {
+    const { n, id } = await openCase(500_000n, 'Tuition, see email');
+    const before = await balance();
+    const r = await fromCase(A, INST, { caseId: id, note: 'The parent emailed: Yeshivat Example tuition' }, 'dep-case-1');
+    expect(r.status).toBe(201);
+    const dep = r.body as InstitutionDeposit;
+    expect(dep).toMatchObject({ institutionId: INST, amount: { minor: '500000', currency: 'ILS' }, rail: 'masav', bankReference: normalizeReference(n.credit.bankReference), valueDate: '2026-11-09', status: 'pending', approvals: 1 });
+    expect(await caseRow(id)).toMatchObject({ status: 'investigating', payload: { depositId: dep.id, reason: 'no_reference' } });
+    expect((await db.query<{ entity_id: string }>(`select entity_id from ops.external_ref where provider = 'bank' and external_id = $1`, [n.credit.creditId])).rows).toEqual([{ entity_id: dep.id }]);
+    expect(await balance()).toBe(before);
+
+    // The same credit again, from the case or typed by hand, for this institution or another: one statement line, one deposit.
+    expect((await fromCase(A, OTHER, { caseId: id }, 'dep-case-2')).status).toBe(409);
+    expect((await record(B, INST, { amount: { minor: '500000', currency: 'ILS' }, bankReference: n.credit.bankReference }, 'dep-case-3')).status).toBe(409);
+
+    expect((await call(app, B, 'POST', `/v1/admin/deposits/${dep.id}/approve`)).body).toMatchObject({ status: 'posted', approvals: 2 });
+    expect(await balance()).toBe(before + 500_000n);
+    expect(await caseRow(id)).toMatchObject({ status: 'resolved', resolution: `Recorded as deposit ${dep.id}` });
+    expect((await fromCase(A, INST, { caseId: id }, 'dep-case-4')).status).toBe(422);
+
+    // The daily statement still carries the credit: it is the deposit already recorded, and opens nothing new.
+    expect(await feed.services.deposits.applyBankCredit(n.credit, 'bank', NOW)).toEqual({ kind: 'already_recorded', depositId: dep.id });
+    expect(await balance()).toBe(before + 500_000n);
+    expect((await db.query<{ n: number }>(`select count(*)::int as n from ops.case where payload->>'creditId' = $1`, [n.credit.creditId])).rows[0]!.n).toBe(1);
+  });
+
+  it('only an open suspense case can be recorded this way, and only as the credit it holds; a rejected recording frees the case', async () => {
+    const other = uuidv7(NOW);
+    await db.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'balance_break', $2, 'high', 'open', '{}', $3)`, [other, `t-0631:${other}`, NOW]);
+    for (const caseId of [other, uuidv7(NOW), 'not-a-case']) {
+      const r = await fromCase(A, INST, { caseId }, `dep-case-bad-${caseId}`);
+      expect([r.status, (r.body as { code: string }).code], caseId).toEqual([422, 'VALIDATION_FAILED']);
+    }
+    const { id } = await openCase(30_000n, 'no reference here');
+    expect((await fromCase(A, INST, { caseId: id, amount: { minor: '3000', currency: 'ILS' } }, 'dep-case-typo')).status).toBe(422);
+    const dep = (await fromCase(A, INST, { caseId: id }, 'dep-case-5')).body as InstitutionDeposit;
+    expect((await call(app, B, 'POST', `/v1/admin/deposits/${dep.id}/reject`, { reason: 'Wrong institution' })).body).toMatchObject({ status: 'rejected' });
+    expect((await caseRow(id)).payload).not.toHaveProperty('depositId');
+    const right = (await fromCase(A, OTHER, { caseId: id }, 'dep-case-6')).body as InstitutionDeposit;
+    expect(right).toMatchObject({ institutionId: OTHER, status: 'pending' });
+    expect(await caseRow(id)).toMatchObject({ status: 'investigating', payload: { depositId: right.id } });
+  });
+});

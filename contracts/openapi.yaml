@@ -1876,6 +1876,10 @@ paths:
         REQ-INS-007 (T-0614). Kesher finance (staff role `finance`). The recorder's own approval is the first of two.
         Masav carries ILS, ACH USD, a wire either. A rail and bank reference already recorded (and not rejected) answers 409.
         The value date cannot be in the future. Idempotent. Behind `institutions.deposits`.
+        From a suspense case (REQ-INS-015, T-0631): `caseId` names an open `suspense` case and the rail, bank reference,
+        amount and value date come from the credit it holds (any given must agree, else 422; another kind of case or a
+        closed one answers 422). The case notes the deposit and resolves, naming it, when the deposit posts.
+        Without `caseId`, amount, rail, bankReference and valueDate are required (422).
       security: [{ staff: [] }]
       parameters:
         - { $ref: "#/components/parameters/Id" }
@@ -1886,8 +1890,8 @@ paths:
           application/json:
             schema:
               type: object
-              required: [amount, rail, bankReference, valueDate]
               properties:
+                caseId: { type: string, format: uuid, description: An open suspense case whose credit this records }
                 amount: { $ref: "#/components/schemas/Money" }
                 rail: { type: string, enum: [masav, wire, ach] }
                 bankReference: { type: string, minLength: 1, maxLength: 64, description: The statement line's reference; compared without spaces, upper case }
