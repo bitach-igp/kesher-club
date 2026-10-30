@@ -208,6 +208,86 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/cases": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The ops queue, newest first, filtered by kind, status or "mine"
+         * @description REQ-ADM-005 (T-0930). Every ops case that is not a compliance alert (those are listAdminAlerts): suspense credits and deposits not on the bank statement (T-0618), payout account mismatches, and the balance proof's breaks. A payload may quote a remitter's text: it is data. Any staff token reads. Cursor-paged, 50 a page.
+         */
+        readonly get: operations["listAdminCases"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/cases/{id}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * One ops case
+         * @description REQ-ADM-005 (T-0930). Any staff token reads; a compliance alert's id answers 404 here.
+         */
+        readonly get: operations["getAdminCase"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/cases/{id}/assign": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Take an ops case; it moves to investigating
+         * @description REQ-ADM-005 (T-0930). Ops or finance staff; support answers 403. A decided case answers 409. Audited.
+         */
+        readonly post: operations["assignAdminCase"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/cases/{id}/decisions": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Resolve or dismiss an ops case with a note; final
+         * @description REQ-ADM-005 (T-0930). Ops or finance staff; support answers 403. A decided case answers 409. A suspense credit is resolved only by recording it against an institution (T-0631), so resolving one here answers 422 `resolve_through_deposit`; it may be dismissed when the money went back to its sender. Audited.
+         */
+        readonly post: operations["decideAdminCase"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/complaints": {
         readonly parameters: {
             readonly query?: never;
@@ -3299,6 +3379,33 @@ export interface components {
             readonly error: "invalid_request" | "invalid_grant" | "unsupported_grant_type" | "invalid_target";
             readonly error_description?: string;
         };
+        readonly OpsCase: {
+            /** Format: date-time */
+            readonly assignedAt?: string;
+            /** @description The staff subject working it */
+            readonly assignedTo?: string;
+            /** Format: date-time */
+            readonly decidedAt?: string;
+            readonly decidedBy?: string;
+            /** Format: uuid */
+            readonly id: string;
+            readonly kind: components["schemas"]["OpsCaseKind"];
+            readonly note?: string;
+            /** Format: date-time */
+            readonly openedAt: string;
+            /** @description What opened the case */
+            readonly payload: {
+                readonly [key: string]: unknown;
+            };
+            /** @enum {string} */
+            readonly severity: "low" | "medium" | "high" | "critical";
+            /** @enum {string} */
+            readonly status: "open" | "investigating" | "resolved" | "dismissed";
+            /** @description One line built from the payload's own fields */
+            readonly summary: string;
+        };
+        /** @enum {string} */
+        readonly OpsCaseKind: "suspense" | "deposit_not_on_statement" | "payout_account_mismatch" | "balance_break" | "system_total_break" | "unbalanced_journal";
         readonly OtpStart: {
             readonly attemptsAllowed: number;
             /** Format: date-time */
@@ -4004,6 +4111,112 @@ export interface operations {
                     readonly "application/json": {
                         readonly items: readonly components["schemas"]["ProviderBinding"][];
                     };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listAdminCases: {
+        readonly parameters: {
+            readonly query?: {
+                readonly assignee?: "me";
+                readonly cursor?: string;
+                readonly kind?: components["schemas"]["OpsCaseKind"];
+                readonly status?: "open" | "investigating" | "resolved" | "dismissed";
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Cases */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["OpsCase"][];
+                        readonly nextCursor?: string;
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getAdminCase: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The case */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["OpsCase"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly assignAdminCase: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The case, assigned to the caller */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["OpsCase"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly decideAdminCase: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @enum {string} */
+                    readonly decision: "resolved" | "dismissed";
+                    readonly note: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The case after the decision */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["OpsCase"];
                 };
             };
             readonly default: components["responses"]["Problem"];

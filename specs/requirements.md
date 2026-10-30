@@ -85,7 +85,7 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-ADM-002 | P1 | Two-person money flag flips |
 | REQ-ADM-003 | P2 | Finance publishes club rates through the admin API; manual rates need two finance approvers and an audit entry |
 | REQ-ADM-004 | P2 | Admins onboard institutions and their staff; institution finance and admin roles need a second admin and an audit entry |
-| REQ-ADM-005 | P2 | Ops cases form one queue: filter, assign, resolve or dismiss with a note, audited; support reads only |
+| REQ-ADM-005 | P2 | Ops cases (all but the compliance alerts) form one queue: filter, assign, resolve or dismiss with a note, audited; support reads only |
 | REQ-ADM-006 | P2 | Plan versions are offered only after a second finance approver; never edited, only superseded |
 | REQ-CMP-001 | P2 | Monitoring alerts with dispositions |
 | REQ-CMP-002 | P1 | Complaint SLA timers and export |
