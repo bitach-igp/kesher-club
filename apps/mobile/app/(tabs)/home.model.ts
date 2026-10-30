@@ -6,9 +6,10 @@
 // status names each money capability ok, degraded or off; a degraded one shows the incident banner (plain
 // text, never a link) and its quick action is hidden, as are actions for anything not ok. T-0529: Home reaches
 // M12 (requests and splits) and M33 (the receiving currency), and the identity card says only what the
-// member's tier still lacks: a T1 member is told about the card, never that payments are locked.
+// member's tier still lacks: a T1 member is told about the card, never that payments are locked. T-0532: a
+// "Your name" row reads the name others see, or "Not set", and opens the screen that sets it.
 import { format, fromWire, money, type Currency, type Money } from '@kesher/domain';
-import { errorIs, type Account, type Card, type CardsApi, type KycApi, type KycStatus, type ProposalsApi, type ServiceStatus, type StatusApi, type Transaction, type WalletApi } from '../../src/api.ts';
+import { errorIs, type Account, type Card, type CardsApi, type DisplayNameApi, type KycApi, type KycStatus, type ProposalsApi, type ServiceStatus, type StatusApi, type Transaction, type WalletApi } from '../../src/api.ts';
 import { intlLocale, type CopyKey, type Locale } from '../../src/i18n.ts';
 import { createStore, type Store } from '../../src/model.ts';
 import type { Router } from '../../src/navigation.ts';
@@ -54,6 +55,8 @@ export interface HomeState {
   service?: ServiceStatus | undefined;
   /** Assistant proposals waiting for this member (T-1012); 0 when none or unknown. */
   proposalsWaiting: number;
+  /** The name others see when they pay the member (T-0532): "Avi E.", or undefined while none is set or unknown. */
+  displayName?: string | undefined;
 }
 
 export interface HomeDeps {
@@ -62,6 +65,7 @@ export interface HomeDeps {
   cards: CardsApi;
   status?: StatusApi;
   proposals?: Pick<ProposalsApi, 'list'>;
+  displayName?: Pick<DisplayNameApi, 'get'>;
   router: Router;
   now: () => Date;
   locale?: Locale;
@@ -70,6 +74,7 @@ export interface HomeDeps {
   walletHref?: string;
   proposalsHref?: string;
   receiveInHref?: string;
+  nameHref?: string;
 }
 
 // ---- pure views -------------------------------------------------------------------------------
@@ -202,6 +207,8 @@ export interface HomeModel {
   goVerify(): void;
   /** M33: which currency money sent to the member lands in. A preference, so it shows whatever the service status. */
   goReceiveIn(): void;
+  /** "Your name": the name others see when they pay the member. */
+  goName(): void;
   goCard(): void;
   goWallet(accountId: string): void;
   goProposals(): void;
@@ -232,9 +239,11 @@ export function createHomeModel(deps: HomeDeps): HomeModel {
         const service = deps.status ? await deps.status.get().catch(() => undefined) : undefined;
         // An outage of the proposals endpoint must not cost the member their balances: none waiting, as far as home knows.
         const waiting = deps.proposals ? await deps.proposals.list('pending').then((r) => r.items.length).catch(() => 0) : 0;
+        // Likewise the name: unknown reads as not set, and the balances still show.
+        const displayName = deps.displayName ? await deps.displayName.get().then((d) => d.displayName).catch(() => undefined) : undefined;
         const rows = purseRows(accounts.items);
         const selected = store.get().selectedAccountId ?? rows[0]?.accountId;
-        store.patch({ mode: 'ready', accounts: [...accounts.items], kyc, cards: [...cards.items], selectedAccountId: selected, service, proposalsWaiting: waiting });
+        store.patch({ mode: 'ready', accounts: [...accounts.items], kyc, cards: [...cards.items], selectedAccountId: selected, service, proposalsWaiting: waiting, displayName });
         if (selected) await page(selected);
       } catch (e) {
         store.patch({ mode: 'error', error: errorIs(e, { status: 503 }) ? 'common.error.unavailable' : 'common.error.generic' });
@@ -303,6 +312,9 @@ export function createHomeModel(deps: HomeDeps): HomeModel {
     },
     goReceiveIn() {
       deps.router.push(deps.receiveInHref ?? '/settings/currency');
+    },
+    goName() {
+      deps.router.push(deps.nameHref ?? '/settings/name');
     },
     goCard() {
       deps.router.push(deps.cardHref ?? '/card');

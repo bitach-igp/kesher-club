@@ -24,6 +24,7 @@ export type Account = Schemas['Account'];
 export type Transfer = Schemas['Transfer'];
 export type TransferPreview = Schemas['TransferPreview'];
 export type Preferences = Schemas['Preferences'];
+export type DisplayName = Schemas['DisplayName'];
 export type Closure = Schemas['Closure'];
 export type ServiceStatus = Schemas['ServiceStatus'];
 export type CapabilityState = Schemas['CapabilityState'];
@@ -102,6 +103,12 @@ export interface PayApi {
 /** The public status of each money capability and the incident while one is switched off (T-0911). */
 export interface StatusApi {
   get(): Promise<ServiceStatus>;
+}
+
+/** The name others see when they pay the member (T-0531): "Avi E.". Only the first name and last initial are kept. */
+export interface DisplayNameApi {
+  get(): Promise<DisplayName>;
+  set(firstName: string, lastName?: string): Promise<DisplayName>;
 }
 
 /** M33 receiving currency (T-0514): which purse money sent to the member lands in. */
@@ -201,6 +208,7 @@ export interface Api {
   cards: CardsApi;
   pay: PayApi;
   preferences: PreferencesApi;
+  displayName: DisplayNameApi;
   status: StatusApi;
   wallet: WalletApi;
   fx: FxApi;
@@ -281,6 +289,10 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
     preferences: {
       get: () => client.get('/me/preferences'),
       set: (receiveCurrency) => client.patch('/me/preferences', { body: { receiveCurrency } }),
+    },
+    displayName: {
+      get: () => client.get('/me/display-name'),
+      set: (firstName, lastName) => client.patch('/me/display-name', { body: { firstName, ...(lastName ? { lastName } : {}) } }),
     },
     wallet: {
       listAccounts: () => client.get('/accounts'),

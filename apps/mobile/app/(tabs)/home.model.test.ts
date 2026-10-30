@@ -2,7 +2,8 @@
 // verification is unfinished, the frozen-card banner, transactions grouped by day with filter and
 // search, a declined purchase's reason copy, and merchant text treated as data. T-0911: the incident
 // banner and the quick actions from the public status. T-0529 (TST-PAY-004, TST-PAY-007 screen rows): Home reaches
-// M12 and M33, and a T1 member's identity card names only the card, never payments.
+// M12 and M33, and a T1 member's identity card names only the card, never payments. T-0532: the "Your name" row
+// reads the name others see, or nothing when it is unset or unknown, and the balances never wait on it.
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
 import type { Account, CapabilityState, Card, CardsApi, KycApi, KycStatus, ServiceStatus, Transaction, WalletApi } from '../../src/api.ts';
@@ -144,6 +145,8 @@ describe('the model', () => {
     expect(router.current()).toBe('/card');
     m.goReceiveIn();
     expect(router.current()).toBe('/settings/currency');
+    m.goName();
+    expect(router.current()).toBe('/settings/name');
     m.goWallet('a-ils');
     expect(router.current()).toBe('/wallet?account=a-ils');
   });
@@ -236,3 +239,16 @@ describe('proposals waiting (T-1012)', () => {
   });
 });
 
+describe('Your name on Home (T-0532)', () => {
+  it('reads the name others see; unset or unreachable reads as not set, and the balances still load', async () => {
+    const named = createHomeModel({ ...fakes(), displayName: { get: async () => ({ displayName: 'Avi E.', firstName: 'Avi', lastInitial: 'E' }) }, router: memoryRouter(), now: () => NOW });
+    await named.load();
+    expect(named.store.get()).toMatchObject({ mode: 'ready', displayName: 'Avi E.' });
+    const unset = createHomeModel({ ...fakes(), displayName: { get: async () => ({}) }, router: memoryRouter(), now: () => NOW });
+    await unset.load();
+    expect(unset.store.get().displayName).toBeUndefined();
+    const down = createHomeModel({ ...fakes(), displayName: { get: () => Promise.reject(new Error('503')) }, router: memoryRouter(), now: () => NOW });
+    await down.load();
+    expect(down.store.get()).toMatchObject({ mode: 'ready', displayName: undefined });
+  });
+});
