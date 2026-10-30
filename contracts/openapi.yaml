@@ -3646,7 +3646,7 @@ components:
         coolOffEndsAt: { type: string, format: date-time, description: Set while a new payee over ₪2,000 cools off }
         requestedBy: { $ref: "#/components/schemas/StaffName" }
         approvedBy: { type: array, items: { $ref: "#/components/schemas/StaffName" } }
-        requiredApprovals: { type: integer, minimum: 0, description: 0 until the payout asks for its approval (after any cool-off) }
+        requiredApprovals: { type: integer, minimum: 0, description: "Approvals the payout needs: 1, or 2 above ₪5,000. Known from the request, through any cool-off (T-0628)" }
         requestedByMe: { type: boolean, description: True for the payout's requester, who cannot approve it }
         failureCode: { type: string }
     AgentGrant:
