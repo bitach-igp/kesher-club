@@ -174,4 +174,8 @@
 | [T-1011](T-1011.md) | AGT | A member can read the proposals waiting for them | REQ-AGT-006 | 11 |
 | [T-1012](T-1012.md) | AGT | Approve or decline an assistant's proposal in the app | REQ-AGT-006 | 11 |
 | [T-1013](T-1013.md) | AGT | Mount the MCP gateway on the API | REQ-AGT-001, REQ-AGT-002, REQ-AGT-006 | 12 |
+| [T-1014](T-1014.md) | AGT | Authorization server 1: discovery, JWKS, the authorization request | REQ-AGT-010 | 13 |
+| [T-1015](T-1015.md) | AGT | Authorization server 2: passkey consent creates the grant and a one-time code | REQ-AGT-010 | 13 |
+| [T-1016](T-1016.md) | AGT | Authorization server 3: token endpoint, PKCE, rotating refresh tokens | REQ-AGT-011 | 13 |
+| [T-1017](T-1017.md) | AGT | App consent screen and a demo assistant client | REQ-AGT-010 | 13 |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.

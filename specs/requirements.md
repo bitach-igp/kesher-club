@@ -75,6 +75,8 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-AGT-007 | P3 | Untrusted text never treated as instructions |
 | REQ-AGT-008 | P3 | Visible grants, one-tap revoke in 60 s |
 | REQ-AGT-009 | P3 | 60 calls/min per grant, audited |
+| REQ-AGT-010 | P3 | Assistants get a grant only through OAuth code + PKCE and the member's passkey consent |
+| REQ-AGT-011 | P3 | 10-minute access tokens; rotating refresh tokens, and a replayed one revokes the grant |
 | REQ-NOT-001 | P1 | Channel preferences and quiet hours |
 | REQ-NOT-002 | P1 | Standard Webhooks outbound with retries |
 | REQ-ADM-001 | P1 | Hash-chained admin audit |
