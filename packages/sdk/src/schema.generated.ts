@@ -1725,7 +1725,7 @@ export interface paths {
         };
         /**
          * An assistant asks for a grant (OAuth 2.1 authorization request)
-         * @description REQ-AGT-010 (T-1014, ADR-009). Public, behind `mcp.enabled`; the member's browser arrives here from the assistant. A good request is stored for 10 minutes and answers 302 to the member app's consent screen. Until the client and its redirect URI check out, a fault answers 400 here; after that it answers 302 back to the client's redirect URI with `error` (invalid_request, unsupported_response_type, invalid_scope or invalid_target) and the `state`.
+         * @description REQ-AGT-010 (T-1014, ADR-009). Public, behind `mcp.enabled`; the member's browser arrives here from the assistant. A good request is stored for 10 minutes and answers 302 to the member app's consent screen. Until the client and its redirect URI check out, a fault answers 422 VALIDATION_FAILED here; after that it answers 302 back to the client's redirect URI with `error` (invalid_request, unsupported_response_type, invalid_scope or invalid_target) and the `state`.
          */
         readonly get: operations["authorizeAgent"];
         readonly put?: never;
@@ -1750,6 +1750,66 @@ export interface paths {
         readonly get: operations["getOAuthJwks"];
         readonly put?: never;
         readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/oauth/requests/{id}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The consent screen's view of an assistant's authorization request
+         * @description REQ-AGT-010 (T-1015, ADR-009). The member's bearer, behind `mcp.enabled`. The first member to open a pending request claims it; anyone else gets NOT_FOUND. A decided or expired request answers IDEMPOTENCY_CONFLICT. The client's name and home page come from its own metadata document: shown as text.
+         */
+        readonly get: operations["getAgentConsent"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/oauth/requests/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * The member approves, with the scopes they kept
+         * @description REQ-AGT-010, REQ-AGT-008 (T-1015). Needs a fresh step-up. The scopes must be a non-empty subset of those asked. Creates the grant, or replaces the scopes of the member's active grant for that client, and answers the client's redirect URI with a one-time `code` (60 seconds, stored only as a hash), the `state` and `iss`. Decided once.
+         */
+        readonly post: operations["approveAgentConsent"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/oauth/requests/{id}/deny": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * The member says no
+         * @description REQ-AGT-010 (T-1015). Answers the client's redirect URI with `error=access_denied`, the `state` and `iss`. Decided once.
+         */
+        readonly post: operations["denyAgentConsent"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -2233,6 +2293,32 @@ export interface components {
             /** @enum {string} */
             readonly market: "US" | "IL";
             readonly name: string;
+        };
+        readonly AgentConsent: {
+            /** @description From the client's own metadata document; shown as text, never followed without the member's tap. */
+            readonly client: {
+                /** Format: uri */
+                readonly id: string;
+                readonly name: string;
+                /** Format: uri */
+                readonly uri?: string;
+            };
+            /** Format: date-time */
+            readonly expiresAt: string;
+            /** Format: uuid */
+            readonly id: string;
+            readonly scopes: readonly {
+                readonly scope: string;
+                /** @enum {string} */
+                readonly tier: "T0" | "T1" | "T2";
+            }[];
+        };
+        readonly AgentConsentRedirect: {
+            /**
+             * Format: uri
+             * @description The client's redirect URI with code or error
+             */
+            readonly redirect: string;
         };
         readonly AgentGrant: {
             /** Format: uri */
@@ -5991,6 +6077,84 @@ export interface operations {
                             readonly [key: string]: unknown;
                         }[];
                     };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getAgentConsent: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The request */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AgentConsent"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveAgentConsent: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly scopes: readonly string[];
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Where to send the browser */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AgentConsentRedirect"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly denyAgentConsent: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Where to send the browser */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AgentConsentRedirect"];
                 };
             };
             readonly default: components["responses"]["Problem"];

@@ -11,6 +11,7 @@ import { DisplayNameService, displayNameHandlers } from './me/display-name.ts';
 import { RecipientLookup } from './p2p/recipients.ts';
 import { CimdRegistry, type Fetcher, type Resolver } from './mcp/cimd.ts';
 import { AuthorizeService, oauthHandlers, type OAuthConfig } from './oauth/authorize.ts';
+import { ConsentService, consentHandlers } from './oauth/consent.ts';
 import { lookup } from 'node:dns/promises';
 import { PreferenceService, preferenceHandlers } from './me/preferences.ts';
 import { RateService } from './fx/rates.ts';
@@ -180,6 +181,7 @@ function buildServices(o: AppOptions) {
   const oauthConfig: OAuthConfig = { issuer: o.issuer, resource: o.oauth?.resource ?? `${o.issuer.replace(/\/$/, '')}/mcp`, consentUrl: o.oauth?.consentUrl ?? 'kesher://connect' };
   const cimd = new CimdRegistry(o.db, o.cimd?.resolve ?? (async (host) => (await lookup(host, { all: true })).map((a) => a.address)), o.cimd?.fetch ?? ((url, init) => fetch(url, init)), clock.now);
   const authorize = new AuthorizeService(o.db, cimd, oauthConfig);
+  const consent = new ConsentService(o.db, audit, oauthConfig);
   // A send to a member who receives in the other currency prices at the club rate with their plan's markup (REQ-PAY-006).
   const p2p = new P2pSendService({ db: o.db, ledger, accounts, transfers, limits: p2pLimits, holds: p2pHolds, kyc, identity, notify: notifyPort, preferences, rates, markups: fx });
   // An approved agent intent runs the member's own send or load (T-1008, T-1009), so the intents come after them, and the JIT after the intents.
@@ -193,7 +195,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, institutionCredit, institutionKyb, kybGate, payoutAccounts };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, institutionCredit, institutionKyb, kybGate, payoutAccounts };
 }
 
 export function createApp(o: AppOptions): App {
@@ -256,6 +258,7 @@ export function createApp(o: AppOptions): App {
     ...preferenceHandlers(s.preferences),
     ...displayNameHandlers(s.displayNames),
     ...oauthHandlers({ authorize: s.authorize, cfg: s.oauthConfig, jwks: () => s.tokens.jwks(), flags: s.flags }),
+    ...consentHandlers({ consent: s.consent, stepUp: s.stepUp, flags: s.flags }),
     exportCollections: exportHandler(o.db, staffInstitution),
     // The member's own view of what their assistants proposed (T-1011): member tokens only; never an MCP tool.
     listIntents: route(async (req) => {
