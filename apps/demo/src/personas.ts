@@ -36,7 +36,7 @@ export const PERSONAS: readonly Persona[] = [
   { key: 'eli', name: 'Eli Example', phone: '+15555550105', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-06', 'REC-14'], role: 'new pair, recipient; has never been paid by Maya' },
   { key: 'tamar', name: 'Tamar Example', phone: '+15555550106', market: 'US', kyc: 'T2', loads: [{ currency: 'USD', minor: 20_000n }], recs: ['REC-12'], role: 'member with an open virtual card' },
   { key: 'ruth', name: 'Ruth Example', phone: '+15555550107', market: 'US', kyc: 'T1', loads: [{ currency: 'USD', minor: 3_000n }], recs: ['REC-17'], role: 'ready to close: card-loaded money only, no holds' },
-  { key: 'ben', name: 'Ben Example', phone: '+15555550108', market: 'US', kyc: 'T1', loads: [], recs: ['REC-01'], role: 'funder; the link to a member is missing (see docs/setup/demo.md)' },
+  { key: 'ben', name: 'Ben Example', phone: '+15555550108', market: 'US', kyc: 'T1', loads: [], recs: ['REC-01'], role: "funder: pays Dana's demo membership (T-0933)" },
   { key: 'rivka', name: 'Rivka Example', phone: '+15555550109', market: 'IL', kyc: 'T2', loads: [], recs: ['REC-13', 'REC-14', 'REC-15'], role: 'yeshiva finance: imports the roster, requests runs and payouts; the yeshiva\'s KYB control person', staff: 'finance' },
   { key: 'shimon', name: 'Shimon Example', phone: '+15555550110', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-13', 'REC-14'], role: 'yeshiva finance: the second approver', staff: 'finance' },
 ];
@@ -95,10 +95,26 @@ export const DEMO_PRICE_RULE = {
   approver: 'staff-finance-2',
 } as const;
 
+/**
+ * The demo's plans (T-0933), one per market in its own currency, proposed and approved through the admin API by two
+ * Kesher finance staff as production would (T-0932). The codes and names say demo and the prices are placeholders:
+ * the real prices are Kesher finance's to enter in A13 (decision 5). No P2P limit is named, so members keep the
+ * platform's own.
+ */
+export const DEMO_PLANS = [
+  { planCode: 'demo-club-il', name: 'Demo Club Israel (demo price)', market: 'IL', price: { minor: '18000', currency: 'ILS' }, termMonths: 10 },
+  { planCode: 'demo-club-us', name: 'Demo Club US (demo price)', market: 'US', price: { minor: '4900', currency: 'USD' }, termMonths: 10 },
+].map((p) => ({
+  ...p,
+  entitlements: { 'esim.dataGb': { limit: '5', unit: 'gb', period: 'month' }, 'concierge.calls': { limit: '3', unit: 'calls', period: 'term' } },
+  reason: 'Demo seed: a placeholder price, not a real one (decision 5)',
+})) as readonly { planCode: string; name: string; market: 'IL' | 'US'; price: { minor: string; currency: 'ILS' | 'USD' }; termMonths: number; entitlements: Record<string, { limit: string; unit: 'gb' | 'calls'; period: 'month' | 'term' }>; reason: string }[];
+
+/** Ben funds Dana's membership on the US demo plan (REC-01, REC-04). */
+export const FUNDING = { funder: 'ben', member: 'dana', planCode: 'demo-club-us' } as const;
+
 /** Personas the contract cannot make yet. Listed, never created through SQL. */
-export const MISSING: readonly { who: string; recs: readonly string[]; why: string }[] = [
-  { who: 'Funder linked to a member (Ben to Dana)', recs: ['REC-01', 'REC-04'], why: 'POST /memberships needs a plan in billing.plan_version, and no endpoint or migration creates one' },
-];
+export const MISSING: readonly { who: string; recs: readonly string[]; why: string }[] = [];
 
 /** The yeshiva's roster file: one row per student persona, under the persona's own name. */
 export const rosterCsv = (): string =>

@@ -7,7 +7,8 @@
 //
 // With a staff signing key (ADMIN_API_SIGNING_KEY, the console's key from .env.local-staff) it also onboards
 // the demo yeshiva through /admin/* as two staff admins, grants its finance personas (one admin proposes,
-// the other approves), and imports its roster as the first finance persona (T-0034).
+// the other approves), and imports its roster as the first finance persona (T-0034). T-0933: two finance staff
+// propose and approve a demo plan per market, and Ben then funds Dana's membership on the US one.
 //
 //   pnpm --filter @kesher/demo seed     (DEMO_API_URL and DEMO_PANEL_URL default to the dev ports)
 import { pathToFileURL } from 'node:url';
@@ -17,7 +18,7 @@ import { SIM_OTP_CODE, type PasskeyAuthenticationOptions, type PasskeyRegistrati
 import { ApiError, createClient, type Schemas } from '@kesher/sdk';
 import { z } from 'zod';
 import { DEFAULT_PORT, DEFAULT_SIMULATOR_PORT } from './dev.ts';
-import { DEMO_PRICE_RULE, deviceIdOf, INSTITUTION, MISSING, passkeyOf, PERSONAS, rosterCsv, type Persona } from './personas.ts';
+import { DEMO_PLANS, DEMO_PRICE_RULE, deviceIdOf, FUNDING, INSTITUTION, MISSING, passkeyOf, PERSONAS, rosterCsv, type Persona } from './personas.ts';
 
 export interface SeedTarget {
   /** The API's base URL, with or without /v1. */
@@ -44,6 +45,10 @@ export interface SeedResult {
   institution?: SeededInstitution | undefined;
   /** The demo's eSIM price rule and the plans the catalogue sync priced with it (T-0929); needs the staff key. */
   catalogue?: { rule: string; esimPlans: number } | undefined;
+  /** The demo plans as finance left them (T-0933); needs the staff key. */
+  plans?: { planCode: string; version: number; state: string }[] | undefined;
+  /** Ben's membership for Dana on the US demo plan (REC-01, REC-04). */
+  funding?: { funder: string; member: string; planCode: string; planVersion: number; status: string } | undefined;
 }
 
 export interface SeededPersona {
@@ -68,7 +73,40 @@ export async function seed(target: SeedTarget): Promise<SeedResult> {
   const personas: SeededPersona[] = [];
   for (const persona of PERSONAS) personas.push(await seedPersona(target, persona));
   if (!target.staffKey) return { personas };
-  return { personas, institution: await seedInstitution(target, target.staffKey, personas), catalogue: await seedCatalogue(target, target.staffKey) };
+  const institution = await seedInstitution(target, target.staffKey, personas);
+  const catalogue = await seedCatalogue(target, target.staffKey);
+  const plans = await seedPlans(target, target.staffKey);
+  return { personas, institution, catalogue, plans, funding: await seedFunding(target, personas) };
+}
+
+/**
+ * The demo plans (T-0933) the way Kesher finance makes a plan version (T-0932): proposed by one finance member through
+ * the admin API and approved by another, so a member can join on it. A rerun finds each version active and proposes
+ * nothing; a version someone rejected is passed over and proposed again.
+ */
+async function seedPlans(target: SeedTarget, key: { jwk: JWK; kid: string }): Promise<{ planCode: string; version: number; state: string }[]> {
+  const [proposer, approver] = await Promise.all([staffClient(target, key, DEMO_PRICE_RULE.proposer, ['finance']), staffClient(target, key, DEMO_PRICE_RULE.approver, ['finance'])]);
+  const { items } = await proposer.get('/admin/plans');
+  const out: { planCode: string; version: number; state: string }[] = [];
+  for (const plan of DEMO_PLANS) {
+    let v = items.filter((i) => i.planCode === plan.planCode && i.state !== 'rejected').sort((a, b) => b.version - a.version)[0];
+    v ??= await proposer.post('/admin/plans', { body: { ...plan, price: { ...plan.price }, entitlements: { ...plan.entitlements } } });
+    if (v.state === 'proposed') v = await approver.post('/admin/plans/{code}/versions/{version}/approve', { path: { code: plan.planCode, version: v.version } });
+    if (v.state !== 'active') throw new Error(`The demo plan ${plan.planCode} is ${v.state} after a second finance approval`);
+    out.push({ planCode: v.planCode, version: v.version, state: v.state });
+  }
+  return out;
+}
+
+/** Ben, signed in, starts Dana's membership on the US demo plan and pays for it; the key makes a rerun the same membership. */
+async function seedFunding(target: SeedTarget, personas: readonly SeededPersona[]): Promise<NonNullable<SeedResult['funding']>> {
+  const funder = personas.find((p) => p.persona.key === FUNDING.funder);
+  const member = personas.find((p) => p.persona.key === FUNDING.member);
+  if (!funder || !member) throw new Error(`No ${FUNDING.funder} or ${FUNDING.member} persona to link`);
+  const tokens = await signIn(target, funder.persona);
+  if (!tokens) throw new Error(`${FUNDING.funder} cannot sign in to fund ${FUNDING.member}`);
+  const m = await memberClient(target, funder.persona, tokens.accessToken).post('/memberships', { body: { memberPartyId: member.partyId, planCode: FUNDING.planCode, termMonths: DEMO_PLANS.find((p) => p.planCode === FUNDING.planCode)!.termMonths }, idempotencyKey: `seed-${FUNDING.funder}-funds-${FUNDING.member}` });
+  return { funder: FUNDING.funder, member: FUNDING.member, planCode: m.planCode, planVersion: m.planVersion ?? 0, status: m.status };
 }
 
 /**
@@ -315,10 +353,13 @@ export function formatTable(result: SeedResult): string {
   const i = result.institution;
   const institution = i
     ? ['', `Institution: ${i.name} (${INSTITUTION.market}) ${i.id}`, `- finance staff: ${i.finance.join(', ') || 'none'}`, `- roster: ${i.rosterStatus}, ${i.rosterRows} members`, ...i.students.map((st) => `- student ${st.key}: ${st.status}`)]
-    : ['', 'Institution: not seeded; set ADMIN_API_SIGNING_KEY and ADMIN_API_SIGNING_KID from .env.local-staff (docs/setup/demo.md)'];
+    : ['', 'Institution, plans and funding: not seeded; set ADMIN_API_SIGNING_KEY and ADMIN_API_SIGNING_KID from .env.local-staff (docs/setup/demo.md)'];
   const catalogue = result.catalogue ? [`Catalogue: eSIM price rule ${result.catalogue.rule}, ${result.catalogue.esimPlans} plans priced`] : [];
-  const missing = MISSING.map((m) => `- ${m.who} (${m.recs.join(', ')}): ${m.why}`);
-  return [line(head), ...body.map(line), ...institution, ...catalogue, '', 'Not seeded (the contract cannot make them yet):', ...missing].join('\n');
+  const plans = result.plans ? [`Plans (demo prices): ${result.plans.map((p) => `${p.planCode} v${p.version} ${p.state}`).join(', ')}`] : [];
+  const f = result.funding;
+  const funding = f ? [`Funding: ${f.funder} pays ${f.member}'s ${f.planCode} v${f.planVersion} membership (${f.status})`] : [];
+  const missing = MISSING.length ? ['', 'Not seeded (the contract cannot make them yet):', ...MISSING.map((m) => `- ${m.who} (${m.recs.join(', ')}): ${m.why}`)] : ['', 'Not seeded: nothing; the contract makes every persona the recordings need.'];
+  return [line(head), ...body.map(line), ...institution, ...catalogue, ...plans, ...funding, ...missing].join('\n');
 }
 
 const seedConfigSchema = z.object({

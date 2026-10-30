@@ -3,7 +3,7 @@ import { money } from '@kesher/domain';
 import { PORTS } from '@kesher/ports';
 import flagsRegistry from '../../../../config/flags.json' with { type: 'json' };
 import { evaluateFlip, gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type Deposit, type FlagState, type InstitutionDetail, type KybView, type OpsCase, type PriceRuleRow, type ProviderBinding } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type Deposit, type FlagState, type InstitutionDetail, type KybView, type OpsCase, type PlanVersionRow, type PriceRuleRow, type ProviderBinding } from './types.ts';
 
 type AuditRow = { at: string; actor: string; action: string; subject: string; detail?: string | undefined };
 
@@ -95,6 +95,15 @@ export function memoryAdminData(): AdminData {
   };
   // One seeded yeshiva (T-0615); its deposits follow the API's two-person rule so the screens behave alike.
   const priceRules: PriceRuleRow[] = [];
+  // A13 (T-0933): one plan already offered, so the screen has something to supersede. Placeholder price (decision 5).
+  const planVersions: PlanVersionRow[] = [
+    { planCode: 'demo-club-il', name: 'Demo Club Israel (demo price)', version: 1, market: 'IL', price: money(18_000n, 'ILS'), termMonths: 10, entitlements: { 'esim.dataGb': { limit: '5', unit: 'gb', period: 'month' } }, fxMarkupBps: 75, effectiveFrom: T0, state: 'active', offered: true, proposedBy: 'staff-finance-1', reason: 'Demo seed', createdAt: T0, decidedAt: T0 },
+  ];
+  /** As the API works it out: the latest active version in force is the one offered. */
+  const reoffer = (planCode: string, now: Date) => {
+    const live = planVersions.filter((v) => v.planCode === planCode && v.state === 'active' && v.effectiveFrom <= now.toISOString()).sort((a, b) => b.version - a.version)[0];
+    for (const v of planVersions.filter((x) => x.planCode === planCode)) v.offered = v === live;
+  };
   const yeshiva: InstitutionDetail = { id: '01932e5a-0000-7000-8000-0000000000f1', name: 'Yeshivat Example', market: 'IL', activeStaff: 2, createdAt: T0, paymentReference: 'KC-7M4QX2HD', balances: [money(0n, 'ILS'), money(0n, 'USD')], deposits: [], depositsOff: false, staff: [], pendingGrants: 0 };
   const recorders = new Map<string, string>();
   // The ops queue (T-0931): a shekel credit the bank feed could not place, and a balance break. A suspense case
@@ -272,6 +281,29 @@ export function memoryAdminData(): AdminData {
       return depositView(d, by);
     },
 
+    async listPlanVersions() {
+      return structuredClone(planVersions);
+    },
+    async proposePlanVersion(input, by, now) {
+      if (!by.roles.includes('finance')) throw new AdminDataError('FORBIDDEN', 'Only Kesher finance proposes plan versions');
+      const same = planVersions.filter((v) => v.planCode === input.planCode);
+      const v: PlanVersionRow = { planCode: input.planCode, name: same[0]?.name ?? input.name, version: same.length + 1, market: input.market, price: input.price, termMonths: input.termMonths, entitlements: input.entitlements, fxMarkupBps: input.fxMarkupBps, effectiveFrom: input.effectiveFrom ?? now.toISOString(), state: 'proposed', offered: false, proposedBy: by.subject, reason: input.reason, createdAt: now.toISOString() };
+      planVersions.unshift(v);
+      log(by, 'plan_version.propose', `${v.planCode}:${v.version}`, now, input.reason);
+      return structuredClone(v);
+    },
+    async decidePlanVersion(planCode, version, decision, by, reason, now) {
+      const v = planVersions.find((x) => x.planCode === planCode && x.version === version);
+      if (!v) throw new AdminDataError('NOT_FOUND', 'Plan version not found');
+      if (!by.roles.includes('finance')) throw new AdminDataError('FORBIDDEN', 'Only Kesher finance decides plan versions');
+      if (v.state !== 'proposed') throw new AdminDataError('CONFLICT', `This version is already ${v.state}`);
+      if (decision === 'approve' && v.proposedBy === by.subject) throw new AdminDataError('SAME_APPROVER', 'The proposer cannot approve their own version');
+      if (decision === 'reject' && !reason?.trim()) throw new AdminDataError('INVALID', 'A reason is required');
+      Object.assign(v, { state: decision === 'approve' ? 'active' : 'rejected', decidedAt: now.toISOString() });
+      reoffer(planCode, now);
+      log(by, `plan_version.${decision}`, `${planCode}:${version}`, now, reason);
+      return structuredClone(v);
+    },
     async listPriceRules() {
       return structuredClone(priceRules);
     },

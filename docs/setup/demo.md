@@ -67,7 +67,7 @@ prints the same table. The table holds no token.
 | `eli` | Eli Example | IL | +1 555 555 0105 | T1 | nothing | REC-06 (recipient; never paid by Maya), REC-14 (a yeshiva student) |
 | `tamar` | Tamar Example | US | +1 555 555 0106 | T2, virtual card open | $200.00 | REC-12 |
 | `ruth` | Ruth Example | US | +1 555 555 0107 | T1 | $30.00 by card | REC-17 (ready to close: no holds, every dollar refundable) |
-| `ben` | Ben Example | US | +1 555 555 0108 | T1 | nothing | REC-01 funder mode, once the link below exists |
+| `ben` | Ben Example | US | +1 555 555 0108 | T1 | nothing | REC-01 funder mode: pays Dana's demo membership (step 9 below) |
 | `rivka` | Rivka Example | IL | +1 555 555 0109 | T2 | nothing | REC-13, REC-14, REC-15: yeshiva finance, imports the roster, asks for withdrawals and runs; the yeshiva's KYB control person (T-0621) |
 | `shimon` | Shimon Example | IL | +1 555 555 0110 | T1 | nothing | REC-13, REC-14: yeshiva finance, the second approver |
 
@@ -106,6 +106,12 @@ would (REQ-ADM-004):
    through `/admin/price-rules`, and Fern Finance (`staff-finance-2`) approves it. The seed then runs the nightly
    catalogue sync from the panel, so the club lists the plans ($11.99, $20.99, $32.99). The margin is illustrative;
    the real one is set in the admin console's A05 Catalogue and pricing.
+8. Kesher finance makes a demo plan per market the way production would (T-0932, T-0933): Finn Finance
+   proposes `demo-club-il` (₪180.00 for 10 months) and `demo-club-us` ($49.00 for 10 months) through
+   `/admin/plans`, and Fern Finance approves each, so members can join on them. The names say demo and the prices
+   are placeholders; the real ones are Kesher finance's to enter in the admin console's A13 Plans (decision 5).
+9. Ben, signed in, starts Dana's membership on `demo-club-us` and pays for it (`POST /memberships`, key
+   `seed-ben-funds-dana`), so REC-01 and REC-04 have a funder linked to a member.
 
 ```sh
 set -a; . ./.env.local-staff; set +a   # ADMIN_API_SIGNING_KEY; the stack must run with the matching STAFF_JWKS
@@ -123,11 +129,10 @@ secret store.
 The yeshiva starts with no allowance schedule: a finance persona makes one in the console under
 Allowances → New schedule (T-0627), as REC-14 does on camera.
 
-### Not seeded: the contract cannot make these yet
+### Not seeded
 
-| Who | Recordings | Why |
-|---|---|---|
-| Funder linked to a member (Ben to Dana) | REC-01 funder mode, REC-04 | `POST /memberships` needs a plan in `billing.plan_version`, and no endpoint or migration creates one |
+Nothing: since T-0933 the contract makes every persona and link the recordings need. Without the staff key the
+seed still makes the members only, and the table says how to add the yeshiva, the plans and Ben's funding.
 
 ## Connect an assistant (T-1017)
 

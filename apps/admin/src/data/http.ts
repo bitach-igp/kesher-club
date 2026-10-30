@@ -9,7 +9,7 @@ import { ApiError, createClient, type Client, type Schemas } from '@kesher/sdk';
 import type { StaffSigner } from '../auth/staff-token.ts';
 import type { Market } from '@kesher/ports';
 import { gatesFor } from '../providers/release-gates.ts';
-import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type Deposit, type FlagState, type InstitutionDetail, type InstitutionRow, type KybStatus, type KybView, type OpsCase, type PriceRuleRow, type ProviderBinding, type Risk } from './types.ts';
+import { AdminDataError, type AdminActor, type AdminData, type Alert, type Complaint, type CustomerRecord, type CustomerSummary, type Deposit, type FlagState, type InstitutionDetail, type InstitutionRow, type KybStatus, type KybView, type OpsCase, type PlanVersionRow, type PriceRuleRow, type ProviderBinding, type Risk } from './types.ts';
 
 export const MARKETS: readonly Market[] = ['IL', 'US'];
 /** Club-wide reads and writes go here; any market's API serves them from the shared database, so the choice is fixed. */
@@ -128,6 +128,25 @@ export const opsCase = (c: Schemas['OpsCase']): OpsCase => ({
   decidedAt: c.decidedAt,
   note: c.note,
 });
+/** A plan version (T-0932) as A13 reads it, the price in bigint. */
+export const planVersion = (v: Schemas['PlanVersion']): PlanVersionRow => ({
+  planCode: v.planCode,
+  name: v.name,
+  version: v.version,
+  market: v.market,
+  price: fromWire(v.price),
+  termMonths: v.termMonths,
+  entitlements: Object.fromEntries(Object.entries(v.entitlements).map(([k, e]) => [k, { limit: e.limit, unit: e.unit, period: e.period }])),
+  fxMarkupBps: v.fxMarkupBps,
+  effectiveFrom: v.effectiveFrom,
+  state: v.state,
+  offered: v.offered,
+  proposedBy: v.proposedBy,
+  reason: v.reason,
+  createdAt: v.createdAt,
+  decidedAt: v.decidedAt,
+});
+
 /** The queue reads at most this many pages of 50: a longer queue is narrowed with the filters. */
 const CASE_PAGES = 4;
 
@@ -314,6 +333,18 @@ export function httpAdminData(o: HttpAdminDataOptions): AdminData & { apiFor(mar
     },
     async decideOpsCase(id, decision, note) {
       return opsCase(await run(() => client.post('/admin/cases/{id}/decisions', { path: { id }, body: { decision, note } })));
+    },
+    async listPlanVersions() {
+      return (await run(() => client.get('/admin/plans'))).items.map(planVersion);
+    },
+    async proposePlanVersion(input) {
+      const body = { planCode: input.planCode, name: input.name, market: input.market, price: { minor: input.price.minor.toString(), currency: input.price.currency }, termMonths: input.termMonths, entitlements: input.entitlements, fxMarkupBps: input.fxMarkupBps, ...(input.effectiveFrom ? { effectiveFrom: input.effectiveFrom } : {}), reason: input.reason };
+      return planVersion(await run(() => client.post('/admin/plans', { body })));
+    },
+    async decidePlanVersion(planCode, version, decision, _by, reason) {
+      const path = { code: planCode, version };
+      if (decision === 'approve') return planVersion(await run(() => client.post('/admin/plans/{code}/versions/{version}/approve', { path })));
+      return planVersion(await run(() => client.post('/admin/plans/{code}/versions/{version}/reject', { path, body: { reason: reason ?? '' } })));
     },
     async listPriceRules() {
       return (await run(() => client.get('/admin/price-rules'))).items.map(priceRule);
