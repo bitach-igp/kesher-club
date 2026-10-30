@@ -197,19 +197,13 @@ export interface ConciergeApi {
   ): Promise<EmergencyCase>;
 }
 
-export type InviteStatus = 'open' | 'expired' | 'accepted';
-export interface InvitePreview {
-  funderName: string;
-  institutionName?: string;
-  planCode: string;
-  planName: string;
-  status: InviteStatus;
-}
+export type InvitePreview = Schemas['InvitePreview'];
+export type InviteStatus = InvitePreview['status'];
 
-/** Invite links (M04). The contract has no public invite path yet (T-0603 keeps it institution-side), so it is an extra. */
+/** Roster invite links (M04, T-0626): the preview is public, the accept needs the member signed in. */
 export interface InvitesApi {
   preview(token: string): Promise<InvitePreview>;
-  accept(token: string, idempotencyKey: string): Promise<{ membershipId: string }>;
+  accept(token: string, idempotencyKey: string): Promise<Schemas['InviteAcceptance']>;
 }
 
 export interface Api {
@@ -255,7 +249,7 @@ export function subjectOf(accessToken: string | undefined): string | undefined {
 }
 
 /** Binds the generated SDK client. `extras` cover operations the contract does not expose yet. */
-export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsageApi; concierge: ConciergeApi; invites: InvitesApi; paymentMethods?: () => Promise<readonly SavedPaymentMethod[]> }): Api {
+export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsageApi; concierge: ConciergeApi; paymentMethods?: () => Promise<readonly SavedPaymentMethod[]> }): Api {
   return {
     auth: {
       startOtp: ({ phone, locale }) => client.post('/auth/otp', { body: { phone, locale } }),
@@ -350,7 +344,10 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
       revokeAgentGrant: (id) => client.delete('/agent-grants/{id}', { path: { id } }),
     },
     concierge: extras.concierge,
-    invites: extras.invites,
+    invites: {
+      preview: (token) => client.get('/invites/{token}', { path: { token } }),
+      accept: (token, idempotencyKey) => client.post('/invites/{token}/accept', { path: { token }, idempotencyKey }),
+    },
   };
 }
 

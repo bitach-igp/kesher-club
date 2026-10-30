@@ -975,6 +975,44 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/AddonOrder" }
         default: { $ref: "#/components/responses/Problem" }
+  /invites/{token}:
+    get:
+      operationId: getInvite
+      summary: Preview a roster invite from its link
+      description: >-
+        REQ-INS-002. Public on purpose: the invite link is opened before the student has an account. The
+        token is the link's secret (24 random bytes, 30 days); an unknown token answers 404, and a used or
+        superseded one says so instead of naming anyone new. Institution and roster names are institution
+        text, shown as text.
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/InviteToken" }
+      responses:
+        "200":
+          description: The invite
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InvitePreview" }
+        default: { $ref: "#/components/responses/Problem" }
+  /invites/{token}/accept:
+    post:
+      operationId: acceptInvite
+      summary: Join the institution's roster as the invited student
+      description: >-
+        REQ-INS-002. The signed-in member becomes the roster member: active at once when their identity is
+        verified at T1 or above, otherwise verified until that approval lands. Replaying an accept already
+        made by the same member returns its result; an expired, used or unknown token answers 404, and a
+        member already on that institution's roster answers 409.
+      parameters:
+        - { $ref: "#/components/parameters/InviteToken" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "200":
+          description: Joined
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InviteAcceptance" }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/rosters:
     post:
       operationId: importRoster
@@ -2379,6 +2417,11 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    InviteToken:
+      name: token
+      in: path
+      required: true
+      schema: { type: string, minLength: 20, maxLength: 64, pattern: "^[A-Za-z0-9_-]+$" }
     Cursor:
       name: cursor
       in: query
@@ -3353,6 +3396,20 @@ components:
               row: { type: integer }
               column: { type: string }
               message: { type: string }
+    InvitePreview:
+      type: object
+      required: [institutionName, memberName, status]
+      properties:
+        institutionName: { type: string, description: Institution text, shown as text }
+        memberName: { type: string, description: The name on the roster row this invite is for. Institution text, shown as text. }
+        programme: { type: string, description: The roster row's programme, when the roster has one }
+        status: { type: string, enum: [open, expired, accepted] }
+    InviteAcceptance:
+      type: object
+      required: [memberId, status]
+      properties:
+        memberId: { type: string, format: uuid }
+        status: { type: string, enum: [verified, active], description: Active once the member's identity is verified at T1 or above }
     AllowanceRunRequest:
       type: object
       required: [scheduleId, date, dryRun]

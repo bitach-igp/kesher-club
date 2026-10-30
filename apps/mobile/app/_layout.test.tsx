@@ -64,6 +64,22 @@ describe('routing on the session', () => {
     rerender(<RootLayoutView deps={deps} router={router} segments={['(auth)', 'sign-in']} />);
     expect(router.current()).toBe('/(tabs)/home');
   });
+
+  it('a roster invite is read signed out, comes back after sign-in, and keeps the signed-in member (T-0626)', async () => {
+    const { RootLayoutView, createRootDeps, guard, resumable } = await layoutFor('preview');
+    expect(resumable(['(auth)', 'invite'], { token: 'tok/1' })).toBe('/(auth)/invite?token=tok%2F1');
+    expect([resumable(['(auth)', 'invite'], {}), resumable(['(auth)', 'sign-in'], { token: 'x' })]).toEqual([undefined, undefined]);
+    expect([guard(false, ['(auth)', 'invite']), guard(true, ['(auth)', 'invite'])]).toEqual([undefined, undefined]);
+    const deps = createRootDeps(config);
+    const router = memoryRouter('/(auth)/invite?token=tok-1');
+    const { rerender } = render(<RootLayoutView deps={deps} router={router} segments={['(auth)', 'invite']} params={{ token: 'tok-1' }} />);
+    expect(router.current()).toBe('/(auth)/invite?token=tok-1');
+    router.push('/(auth)/sign-in');
+    rerender(<RootLayoutView deps={deps} router={router} segments={['(auth)', 'sign-in']} />);
+    deps.session.signIn({ accessToken: 'at', refreshToken: 'rt', accessExpiresAt: '2026-11-01T09:10:00Z' });
+    rerender(<RootLayoutView deps={deps} router={router} segments={['(auth)', 'sign-in']} />);
+    expect(router.current()).toBe('/(auth)/invite?token=tok-1');
+  });
 });
 
 describe('the device reaches every screen (T-0528)', () => {

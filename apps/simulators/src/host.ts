@@ -139,6 +139,10 @@ export class SimulatorHost {
       concierge: {
         resolve: { describe: 'Partner replies and resolves a case', args: ['caseId', 'reply'], run: (id, reply) => s.concierge.resolve(id, reply) },
       },
+      notify: {
+        // What a member would find in their inbox, so the HTTP-only demo seed can follow an invite link (T-0626).
+        outbox: { describe: 'Messages sent to one address, newest first (template, data)', args: ['to'], run: (to) => s.notify.sent.filter((m) => m.to === to).reverse().map((m) => ({ messageId: m.messageId, template: m.template, data: m.data })) },
+      },
       events: {
         runRetries: { describe: 'Run every due webhook retry', args: [], run: () => s.events.runRetries() },
       },

@@ -64,6 +64,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/cards/{id}/provisioning/{wallet}', operationId: 'startPushProvisioning' },
   { method: 'GET', path: '/catalogue', operationId: 'listCatalogue' },
   { method: 'POST', path: '/addon-orders', operationId: 'createAddonOrder' },
+  { method: 'GET', path: '/invites/{token}', operationId: 'getInvite', public: true },
+  { method: 'POST', path: '/invites/{token}/accept', operationId: 'acceptInvite' },
   { method: 'POST', path: '/institutions/{id}/rosters', operationId: 'importRoster' },
   { method: 'GET', path: '/institutions/{id}/collections', operationId: 'listCollections' },
   { method: 'GET', path: '/institutions/{id}/collections/export', operationId: 'exportCollections' },

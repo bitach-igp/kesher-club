@@ -141,18 +141,22 @@ export class KycService {
     };
   }
 
-  /** Applies a verified decision event. Idempotent: the same event id applied twice changes nothing. */
-  async applyDecision(event: InboundEvent): Promise<void> {
+  /**
+   * Applies a verified decision event. Idempotent: the same event id applied twice changes nothing. Returns the
+   * session's party and its standing decision either way, so what follows an approval (a roster member's
+   * activation, T-0626) still runs when a replay retries an event whose decision was already applied.
+   */
+  async applyDecision(event: InboundEvent): Promise<{ partyId: string; tier: KycTier; status: Exclude<KycState, 'none'> }> {
     const d = event.payload as KycDecision & { eventId: string };
     if (!d || typeof d.sessionId !== 'string' || typeof d.status !== 'string') throw new DomainError('VALIDATION_FAILED', 'Decision payload incomplete');
-    const r = await this.db.query(
+    await this.db.query(
       `update identity.kyc_session set status = $2, reasons = $3, decided_at = coalesce($4, decided_at), last_event_id = $5, updated_at = now()
         where session_id = $1 and (last_event_id is distinct from $5)`,
       [d.sessionId, d.status, [...(d.reasons ?? [])], d.decidedAt ? new Date(d.decidedAt) : null, d.eventId],
     );
-    if (r.rowCount === 0) {
-      const exists = await this.db.query('select 1 from identity.kyc_session where session_id = $1', [d.sessionId]);
-      if (exists.rows.length === 0) throw new DomainError('NOT_FOUND', 'Decision for an unknown session');
-    }
+    const after = await this.db.query<Pick<Row, 'party_id' | 'tier' | 'status'>>('select party_id, tier, status from identity.kyc_session where session_id = $1', [d.sessionId]);
+    const row = after.rows[0];
+    if (!row) throw new DomainError('NOT_FOUND', 'Decision for an unknown session');
+    return { partyId: row.party_id, tier: row.tier, status: row.status };
   }
 }
