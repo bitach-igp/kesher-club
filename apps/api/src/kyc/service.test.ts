@@ -87,8 +87,10 @@ describe('decisions through /hooks/kyc', () => {
     expect(dup.status).toBe(200);
     expect(dup.body).toEqual({ eventId: 'evt-1', duplicate: true });
     expect((await status(noaToken)).status).toBe('approved');
-    // The forged attempt and evt-1 are stored once each; the replay is the same (provider, event id) row.
-    expect((await db.query<{ n: number }>(`select count(*)::int as n from ops.inbound_event where provider = 'kyc'`)).rows[0]!.n).toBe(2);
+    // evt-1 is stored once, the replay being the same (provider, event id) row; the forged attempt is set aside for
+    // forensics and claims no event id (T-0207).
+    expect((await db.query<{ n: number }>(`select count(*)::int as n from ops.inbound_event where provider = 'kyc'`)).rows[0]!.n).toBe(1);
+    expect((await db.query<{ n: number }>(`select count(*)::int as n from ops.inbound_rejected where provider = 'kyc'`)).rows[0]!.n).toBe(1);
   });
 
   it('an approved tier cannot be started again, and a lower tier is covered by the higher one', async () => {
@@ -118,8 +120,9 @@ describe('decisions through /hooks/kyc', () => {
   it('a decision for a session we never opened is refused and recorded', async () => {
     const r = await webhook({ eventId: 'evt-ghost', sessionId: 'kyc_999', status: 'approved' });
     expect(r.status).toBe(401);
-    const stored = await db.query<{ signature_ok: boolean }>(`select signature_ok from ops.inbound_event where provider = 'kyc' and event_id = 'evt-ghost'`);
-    expect(stored.rows[0]).toEqual({ signature_ok: false });
+    // Recorded for forensics, and holding no claim on the event id (T-0207).
+    expect((await db.query(`select 1 from ops.inbound_rejected where provider = 'kyc' and event_id = 'evt-ghost'`)).rowCount).toBe(1);
+    expect((await db.query(`select 1 from ops.inbound_event where provider = 'kyc' and event_id = 'evt-ghost'`)).rowCount).toBe(0);
   });
 });
 

@@ -1,6 +1,7 @@
 // TST-LED-003: a replayed webhook, processed twice, yields exactly one journal. Plus THR-02:
 // forged signatures never credit a wallet, timestamps outside tolerance are refused, and the
-// replay tool re-drives events whose processing failed.
+// replay tool re-drives events whose processing failed. TST-LED-005 (T-0207): a forged delivery claims nothing,
+// so the provider's genuine delivery of the same event id is still verified and processed once.
 import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
@@ -65,17 +66,29 @@ describe('providerWebhook', () => {
     expect(await ledger.balance(wallet, 'USD')).toBe(-10_000n);
   });
 
-  it('a forged signature is stored for forensics, answered 401, and never processed (THR-02)', async () => {
+  it('a forged signature is kept for forensics, answered 401, and never processed (THR-02)', async () => {
     const before = processed;
     const res = await post('simulator', { 'x-sim-signature': 'forged' }, { eventId: 'evt-forged', amountMinor: '99999999' });
     expect(res.status).toBe(401);
     expect(processed).toBe(before);
-    const stored = await store.get('simulator', 'evt-forged');
-    expect(stored?.signatureOk).toBe(false);
+    // Set aside, not stored as an event: it holds no claim on the provider's id.
+    expect(await store.get('simulator', 'evt-forged')).toBeUndefined();
+    const kept = await db.query<{ payload: { amountMinor: string } }>(`select payload from ops.inbound_rejected where provider = 'simulator' and event_id = 'evt-forged'`);
+    expect(kept.rows.map((r) => r.payload.amountMinor)).toEqual(['99999999']);
     expect(await ledger.balance(wallet, 'USD')).toBe(-10_000n);
-    // A later, correctly signed delivery of the same id is still refused: the stored row wins and it was unverified.
-    const again = await post('simulator', { 'x-sim-signature': 'sim' }, { eventId: 'evt-forged', amountMinor: '1' });
-    expect(again.status).toBe(401);
+  });
+
+  it('a forged delivery first, even twice, never blocks the genuine one: verified, processed once, then a duplicate (TST-LED-005)', async () => {
+    const before = processed;
+    const balance = await ledger.balance(wallet, 'USD');
+    for (let i = 0; i < 2; i += 1) expect((await post('simulator', { 'x-sim-signature': 'forged' }, { eventId: 'evt-raced', amountMinor: '99999999' })).status).toBe(401);
+    const genuine = await post('simulator', { 'x-sim-signature': 'sim' }, { eventId: 'evt-raced', amountMinor: '2500' });
+    expect([genuine.status, genuine.body]).toEqual([200, { eventId: 'evt-raced', duplicate: false }]);
+    expect(processed).toBe(before + 1);
+    expect(await ledger.balance(wallet, 'USD')).toBe(balance - 2_500n);
+    expect((await post('simulator', { 'x-sim-signature': 'sim' }, { eventId: 'evt-raced', amountMinor: '2500' })).body).toEqual({ eventId: 'evt-raced', duplicate: true });
+    expect(processed).toBe(before + 1);
+    expect((await db.query(`select 1 from ops.inbound_rejected where event_id = 'evt-raced'`)).rowCount).toBe(2);
   });
 
   it('Stripe-style signatures verify with the secret and fail with the wrong one', async () => {

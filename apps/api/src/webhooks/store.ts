@@ -1,6 +1,11 @@
 // Inbound event store (T-0204, REQ-LED-003) over ops.inbound_event: every provider webhook is
 // written first, keyed by (provider, event_id), with the raw payload and whether its signature
 // verified. Processing happens after the write and is idempotent, so replay is always safe.
+//
+// A delivery whose signature fails claims nothing (T-0207, REQ-LED-005): it is kept for forensics in
+// ops.inbound_rejected, keyed by an id of ours, never by the provider's event id. Were it stored here, a forged
+// delivery that arrived first would hold the genuine event's key and get the genuine delivery refused for good.
+import { uuidv7 } from '@kesher/domain';
 import type { Market } from '@kesher/ports';
 import { isPgError, PG, type Database } from '../db.ts';
 
@@ -33,8 +38,15 @@ export class InboundEventStore {
     this.market = market;
   }
 
-  /** Returns `duplicate: true` when the (provider, eventId) pair was already stored; the stored row wins. */
+  /**
+   * Returns `duplicate: true` when the verified (provider, eventId) pair was already stored; the stored row wins.
+   * A refused delivery is set aside and answered as refused; it never stands in a genuine one's way.
+   */
   async record(e: { provider: string; eventId: string; signatureOk: boolean; payload: unknown; receivedAt: Date }): Promise<{ duplicate: boolean; event: InboundEvent }> {
+    if (!e.signatureOk) {
+      await this.db.query('insert into ops.inbound_rejected (id, provider, event_id, received_at, payload, market) values ($1, $2, $3, $4, $5, $6)', [uuidv7(e.receivedAt), e.provider, e.eventId, e.receivedAt, JSON.stringify(e.payload), this.market]);
+      return { duplicate: false, event: { provider: e.provider, eventId: e.eventId, receivedAt: e.receivedAt.toISOString(), signatureOk: false, payload: e.payload } };
+    }
     try {
       await this.db.query('insert into ops.inbound_event (provider, event_id, received_at, signature_ok, payload, market) values ($1, $2, $3, $4, $5, $6)', [e.provider, e.eventId, e.receivedAt, e.signatureOk, JSON.stringify(e.payload), this.market]);
       return { duplicate: false, event: (await this.get(e.provider, e.eventId))! };
