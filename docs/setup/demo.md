@@ -94,8 +94,13 @@ would (REQ-ADM-004):
 4. Cleo records the yeshiva's own bank account (`IL62 0108 0000 0009 9999 999`, fictional) in the
    registered name, and Carl Compliance (`staff-compliance-2`) approves it (T-0623). Every withdrawal
    in the console goes to that account, shown as •••• 9999 (T-0625).
-5. `rivka` signs in again, so her token carries `org_finance`, and imports a three-row roster of
-   fictional students (`example.test` funder addresses). They become invited members.
+5. `rivka` signs in again, so her token carries `org_finance`, and imports a three-row roster: `noa`,
+   `maya` and `eli` under their persona names, with fictional `example.test` funder addresses. The
+   committed import sends each row its invite (T-0626).
+6. Each student finds their link in the panel's `notify/outbox` hook (the invite went to the funder
+   address on their row), signs in and accepts it (`POST /invites/{token}/accept`). All three already
+   passed KYC, so they are active members at once; one who had not would stay verified until their T1
+   approval lands.
 
 ```sh
 set -a; . ./.env.local-staff; set +a   # ADMIN_API_SIGNING_KEY; the stack must run with the matching STAFF_JWKS
@@ -104,7 +109,9 @@ pnpm --filter @kesher/demo seed
 
 `ADMIN_API_SIGNING_KID` defaults to `local-staff-1`. Without `ADMIN_API_SIGNING_KEY`, the seed makes the
 members only and says how to add the yeshiva. The keys are `seed-yeshiva-…`: a rerun finds the
-institution, skips staff who are already active and replays the roster import, so it makes nothing new.
+institution, skips staff who are already active and replays the roster import and the accepts, so it
+makes nothing new. The outbox lives in the dev process's memory: after a restart, a rerun cannot see a
+link sent before it, and the table says so for that student instead of guessing.
 The seed signs staff tokens with the local pair only. A deployed console's key never leaves its
 secret store.
 
@@ -113,7 +120,6 @@ secret store.
 | Who | Recordings | Why |
 |---|---|---|
 | Funder linked to a member (Ben to Dana) | REC-01 funder mode, REC-04 | `POST /memberships` needs a plan in `billing.plan_version`, and no endpoint or migration creates one |
-| Active roster members | REC-14, REC-15 | A roster import makes invited members, and nothing over HTTP activates them |
 | Allowance schedule | REC-14 | No endpoint creates `org.allowance_schedule` |
 
 ## Connect an assistant (T-1017)

@@ -17,7 +17,7 @@ import { SIM_OTP_CODE, type PasskeyAuthenticationOptions, type PasskeyRegistrati
 import { ApiError, createClient, type Schemas } from '@kesher/sdk';
 import { z } from 'zod';
 import { DEFAULT_PORT, DEFAULT_SIMULATOR_PORT } from './dev.ts';
-import { deviceIdOf, INSTITUTION, MISSING, passkeyOf, PERSONAS, type Persona } from './personas.ts';
+import { deviceIdOf, INSTITUTION, MISSING, passkeyOf, PERSONAS, rosterCsv, type Persona } from './personas.ts';
 
 export interface SeedTarget {
   /** The API's base URL, with or without /v1. */
@@ -35,6 +35,8 @@ export interface SeededInstitution {
   finance: string[];
   rosterStatus: string;
   rosterRows: number;
+  /** Each student persona and where their roster row stands after they accept its invite (T-0626). */
+  students: { key: string; status: string }[];
 }
 
 export interface SeedResult {
@@ -88,11 +90,38 @@ async function seedInstitution(target: SeedTarget, key: { jwk: JWK; kid: string 
   if (!importer) throw new Error('No finance persona to import the roster');
   const tokens = await signIn(target, importer.persona);
   if (!tokens) throw new Error(`${importer.persona.key} cannot sign in to import the roster`);
-  const roster = await memberClient(target, importer.persona, tokens.accessToken).post('/institutions/{id}/rosters', { path: { id: yeshiva.id }, body: { csv: INSTITUTION.roster.csv, mapping: { ...INSTITUTION.roster.mapping }, commit: true }, idempotencyKey: `seed-${INSTITUTION.key}-roster-1` });
+  const roster = await memberClient(target, importer.persona, tokens.accessToken).post('/institutions/{id}/rosters', { path: { id: yeshiva.id }, body: { csv: rosterCsv(), mapping: { ...INSTITUTION.roster.mapping }, commit: true }, idempotencyKey: `seed-${INSTITUTION.key}-roster-2` });
   if (roster.status !== 'committed') throw new Error(`The roster import is ${roster.status}: ${JSON.stringify(roster.errors)}`);
+  const students = await seedStudents(target, personas);
   const { items } = await proposer!.get('/admin/institutions/{id}/staff', { path: { id: yeshiva.id } });
   const active = new Set(items.filter((s) => s.active && s.role === 'finance').map((s) => s.partyId));
-  return { id: yeshiva.id, name: yeshiva.name, finance: finance.filter((f) => active.has(f.partyId)).map((f) => f.persona.key), rosterStatus: roster.status, rosterRows: roster.rowCount };
+  return { id: yeshiva.id, name: yeshiva.name, finance: finance.filter((f) => active.has(f.partyId)).map((f) => f.persona.key), rosterStatus: roster.status, rosterRows: roster.rowCount, students };
+}
+
+/**
+ * Each student persona follows the invite their roster row sent (T-0626), as they would from their inbox: the
+ * panel's notify outbox has the link, and they accept it signed in. A rerun replays the same accept and gets
+ * the same answer. The outbox lives in the dev process's memory, so after a restart a link sent before it is
+ * gone; the table says so rather than guessing.
+ */
+async function seedStudents(target: SeedTarget, personas: readonly SeededPersona[]): Promise<{ key: string; status: string }[]> {
+  const out: { key: string; status: string }[] = [];
+  for (const row of INSTITUTION.roster.students) {
+    const student = personas.find((p) => p.persona.key === row.persona);
+    if (!student) throw new Error(`No persona ${row.persona} for the roster`);
+    const outbox = (await panelHook(target, 'notify', 'outbox', { to: row.funderEmail })) as { template: string; data: Record<string, string> }[];
+    const link = outbox.find((m) => m.template === 'institution.invite' || m.template === 'institution.invite_reminder')?.data['inviteUrl'];
+    const token = link ? new URL(link).searchParams.get('token') : undefined;
+    if (!token) {
+      out.push({ key: row.persona, status: 'link not in the panel outbox (sent before a restart)' });
+      continue;
+    }
+    const tokens = await signIn(target, student.persona);
+    if (!tokens) throw new Error(`${row.persona} cannot sign in to accept the invite`);
+    const joined = await memberClient(target, student.persona, tokens.accessToken).post('/invites/{token}/accept', { path: { token }, idempotencyKey: `seed-${INSTITUTION.key}-join-${row.persona}` });
+    out.push({ key: row.persona, status: joined.status });
+  }
+  return out;
 }
 
 /**
@@ -258,7 +287,7 @@ export function formatTable(result: SeedResult): string {
   const line = (cells: readonly string[]): string => cells.map((c, i) => c.padEnd(widths[i]!)).join('  ').trimEnd();
   const i = result.institution;
   const institution = i
-    ? ['', `Institution: ${i.name} (${INSTITUTION.market}) ${i.id}`, `- finance staff: ${i.finance.join(', ') || 'none'}`, `- roster: ${i.rosterStatus}, ${i.rosterRows} invited members`]
+    ? ['', `Institution: ${i.name} (${INSTITUTION.market}) ${i.id}`, `- finance staff: ${i.finance.join(', ') || 'none'}`, `- roster: ${i.rosterStatus}, ${i.rosterRows} members`, ...i.students.map((st) => `- student ${st.key}: ${st.status}`)]
     : ['', 'Institution: not seeded; set ADMIN_API_SIGNING_KEY and ADMIN_API_SIGNING_KID from .env.local-staff (docs/setup/demo.md)'];
   const missing = MISSING.map((m) => `- ${m.who} (${m.recs.join(', ')}): ${m.why}`);
   return [line(head), ...body.map(line), ...institution, '', 'Not seeded (the contract cannot make them yet):', ...missing].join('\n');

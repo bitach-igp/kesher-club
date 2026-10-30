@@ -166,13 +166,16 @@ function validateRows(rows: string[][], col: Record<keyof Mapping, number | unde
 }
 
 /** POST /institutions/{id}/rosters */
-export function importRosterHandler(deps: { roster: RosterService; staffInstitution: (partyId: string) => Promise<string | undefined> }): Handler {
+/** `onCommitted` runs after a committed import, and again on its replay; the invite fan-out it drives is idempotent (T-0626). */
+export function importRosterHandler(deps: { roster: RosterService; staffInstitution: (partyId: string) => Promise<string | undefined>; onCommitted?: (importId: string, now: Date) => Promise<unknown> }): Handler {
   return route(async (req) => {
     const principal = requireRole(req, 'org_staff', 'org_admin', 'org_finance');
     const institutionId = req.params['id'] ?? '';
     if ((await deps.staffInstitution(principal.partyId)) !== institutionId) throw new DomainError('FORBIDDEN', 'Not staff of this institution');
     const key = requireIdempotencyKey(req);
     const body = req.body as { csv: string; mapping: Mapping; commit: boolean };
-    return ok(await deps.roster.import({ idempotencyKey: key, institutionId, csv: body.csv, mapping: body.mapping, commit: Boolean(body.commit), createdBy: principal.partyId }, req.now));
+    const result = await deps.roster.import({ idempotencyKey: key, institutionId, csv: body.csv, mapping: body.mapping, commit: Boolean(body.commit), createdBy: principal.partyId }, req.now);
+    if (result.status === 'committed') await deps.onCommitted?.(result.importId, req.now);
+    return ok(result);
   });
 }

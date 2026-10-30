@@ -14,7 +14,7 @@ function bound() {
     return new Response(JSON.stringify({ options: { challenge: 'c' } }), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof globalThis.fetch;
   const client = createClient({ baseUrl: 'http://localhost:3000/v1', fetch });
-  const api = sdkApi(client, memorySession('install-7f3a'), { esim: { usage: unused }, concierge: { start: unused }, invites: { accept: unused } } as unknown as Parameters<typeof sdkApi>[2]);
+  const api = sdkApi(client, memorySession('install-7f3a'), { esim: { usage: unused }, concierge: { start: unused } } as unknown as Parameters<typeof sdkApi>[2]);
   return { api, bodies };
 }
 

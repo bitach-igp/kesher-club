@@ -31,9 +31,9 @@ export interface Persona {
 export const PERSONAS: readonly Persona[] = [
   { key: 'dana', name: 'Dana Example', phone: '+15555550101', market: 'US', kyc: 'T2', loads: [{ currency: 'USD', minor: 50_000n }], recs: ['REC-01', 'REC-02', 'REC-04', 'REC-05', 'REC-07', 'REC-09', 'REC-16'], role: 'US member, sender' },
   { key: 'avi', name: 'Avi Example', phone: '+15555550102', market: 'US', kyc: 'T1', loads: [], recs: ['REC-05', 'REC-08'], role: 'US member, Dana pays him' },
-  { key: 'noa', name: 'Noa Example', phone: '+15555550103', market: 'IL', kyc: 'T2', loads: [{ currency: 'ILS', minor: 500_000n }, { currency: 'USD', minor: 10_000n }], recs: ['REC-03', 'REC-07', 'REC-08', 'REC-10', 'REC-13'], role: 'IL member, both purses' },
-  { key: 'maya', name: 'Maya Example', phone: '+15555550104', market: 'IL', kyc: 'T1', loads: [{ currency: 'ILS', minor: 100_000n }], recs: ['REC-06'], role: 'new pair, sender' },
-  { key: 'eli', name: 'Eli Example', phone: '+15555550105', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-06'], role: 'new pair, recipient; has never been paid by Maya' },
+  { key: 'noa', name: 'Noa Example', phone: '+15555550103', market: 'IL', kyc: 'T2', loads: [{ currency: 'ILS', minor: 500_000n }, { currency: 'USD', minor: 10_000n }], recs: ['REC-03', 'REC-07', 'REC-08', 'REC-10', 'REC-13', 'REC-14'], role: 'IL member, both purses' },
+  { key: 'maya', name: 'Maya Example', phone: '+15555550104', market: 'IL', kyc: 'T1', loads: [{ currency: 'ILS', minor: 100_000n }], recs: ['REC-06', 'REC-14'], role: 'new pair, sender' },
+  { key: 'eli', name: 'Eli Example', phone: '+15555550105', market: 'IL', kyc: 'T1', loads: [], recs: ['REC-06', 'REC-14'], role: 'new pair, recipient; has never been paid by Maya' },
   { key: 'tamar', name: 'Tamar Example', phone: '+15555550106', market: 'US', kyc: 'T2', loads: [{ currency: 'USD', minor: 20_000n }], recs: ['REC-12'], role: 'member with an open virtual card' },
   { key: 'ruth', name: 'Ruth Example', phone: '+15555550107', market: 'US', kyc: 'T1', loads: [{ currency: 'USD', minor: 3_000n }], recs: ['REC-17'], role: 'ready to close: card-loaded money only, no holds' },
   { key: 'ben', name: 'Ben Example', phone: '+15555550108', market: 'US', kyc: 'T1', loads: [], recs: ['REC-01'], role: 'funder; the link to a member is missing (see docs/setup/demo.md)' },
@@ -63,7 +63,15 @@ export const INSTITUTION = {
   identifier: '580123456',
   payoutIban: 'IL620108000000099999999',
   roster: {
-    csv: ['name,funder_email,programme', 'Student One Example,funder.one@example.test,Shiur Alef', 'Student Two Example,funder.two@example.test,Shiur Alef', 'Student Three Example,funder.three@example.test,Shiur Bet'].join('\n'),
+    /**
+     * Three IL personas study at the yeshiva (T-0626): each accepts the invite their row sent and, verified at
+     * T1 or above already, is active at once, so the yeshiva's allowance runs have someone to pay.
+     */
+    students: [
+      { persona: 'noa', funderEmail: 'funder.noa@example.test', programme: 'Shiur Alef' },
+      { persona: 'maya', funderEmail: 'funder.maya@example.test', programme: 'Shiur Alef' },
+      { persona: 'eli', funderEmail: 'funder.eli@example.test', programme: 'Shiur Bet' },
+    ],
     mapping: { memberName: 'name', funderEmail: 'funder_email', programme: 'programme' },
   },
 } as const;
@@ -71,9 +79,12 @@ export const INSTITUTION = {
 /** Personas the contract cannot make yet. Listed, never created through SQL. */
 export const MISSING: readonly { who: string; recs: readonly string[]; why: string }[] = [
   { who: 'Funder linked to a member (Ben to Dana)', recs: ['REC-01', 'REC-04'], why: 'POST /memberships needs a plan in billing.plan_version, and no endpoint or migration creates one' },
-  { who: 'Active roster members', recs: ['REC-14', 'REC-15'], why: 'a roster import makes invited members, and nothing over HTTP activates them' },
   { who: 'Allowance schedule', recs: ['REC-14'], why: 'no endpoint creates org.allowance_schedule' },
 ];
+
+/** The yeshiva's roster file: one row per student persona, under the persona's own name. */
+export const rosterCsv = (): string =>
+  ['name,funder_email,programme', ...INSTITUTION.roster.students.map((r) => `${PERSONAS.find((p) => p.key === r.persona)!.name},${r.funderEmail},${r.programme}`)].join('\n');
 
 export const deviceIdOf = (p: Persona): string => `demo-${p.key}`;
 

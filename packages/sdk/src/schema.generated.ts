@@ -1504,6 +1504,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/invites/{token}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Preview a roster invite from its link
+         * @description REQ-INS-002. Public on purpose: the invite link is opened before the student has an account. The token is the link's secret (24 random bytes, 30 days); an unknown token answers 404, and a used or superseded one says so instead of naming anyone new. Institution and roster names are institution text, shown as text.
+         */
+        readonly get: operations["getInvite"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/invites/{token}/accept": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Join the institution's roster as the invited student
+         * @description REQ-INS-002. The signed-in member becomes the roster member: active at once when their identity is verified at T1 or above, otherwise verified until that approval lands. Replaying an accept already made by the same member returns its result; an expired, used or unknown token answers 404, and a member already on that institution's roster answers 409.
+         */
+        readonly post: operations["acceptInvite"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/jit/card-authorizations": {
         readonly parameters: {
             readonly query?: never;
@@ -2855,6 +2895,25 @@ export interface components {
              */
             readonly purseCurrency?: "USD" | "ILS";
         };
+        readonly InviteAcceptance: {
+            /** Format: uuid */
+            readonly memberId: string;
+            /**
+             * @description Active once the member's identity is verified at T1 or above
+             * @enum {string}
+             */
+            readonly status: "verified" | "active";
+        };
+        readonly InvitePreview: {
+            /** @description Institution text */
+            readonly institutionName: string;
+            /** @description The name on the roster row this invite is for. Institution text */
+            readonly memberName: string;
+            /** @description The roster row's programme */
+            readonly programme?: string;
+            /** @enum {string} */
+            readonly status: "open" | "expired" | "accepted";
+        };
         readonly KybCheck: {
             /** Format: date-time */
             readonly checkedAt: string;
@@ -3430,6 +3489,7 @@ export interface components {
         readonly Id: string;
         /** @description Client-generated key; replays return the original response for 24 h. */
         readonly IdempotencyKey: string;
+        readonly InviteToken: string;
         readonly Limit: number;
         /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
         readonly StepUp: string;
@@ -5733,6 +5793,55 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["MemberIntent"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getInvite: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly token: components["parameters"]["InviteToken"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The invite */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InvitePreview"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly acceptInvite: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly token: components["parameters"]["InviteToken"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Joined */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InviteAcceptance"];
                 };
             };
             readonly default: components["responses"]["Problem"];

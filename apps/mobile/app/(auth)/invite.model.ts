@@ -1,5 +1,6 @@
-// M04 invite accept (T-0113): a funder or institution invite link opens here. Names and plan come
-// from the invite preview; the member accepts once (idempotent by invite token).
+// M04 invite accept (T-0113, T-0626): a roster invite link opens here. The preview is public and names the
+// institution and the roster row; accepting needs the member signed in, so a signed-out tap goes to sign-in
+// and the layout brings them back here. The member accepts once (idempotent by invite token).
 import { errorIs, type InvitePreview, type InvitesApi } from '../../src/api.ts';
 import type { CopyKey } from '../../src/i18n.ts';
 import { createStore, type Store } from '../../src/model.ts';
@@ -21,7 +22,7 @@ export interface InviteModel {
   accept(): Promise<void>;
 }
 
-export function createInviteModel(deps: { api: InvitesApi; router: Router; token: string | undefined; homeHref?: string }): InviteModel {
+export function createInviteModel(deps: { api: InvitesApi; router: Router; token: string | undefined; signedIn: () => boolean; homeHref?: string }): InviteModel {
   const store = createStore<InviteState>({ mode: deps.token ? 'loading' : 'error', token: deps.token ?? '', busy: false, ...(deps.token ? {} : { error: 'invite.invalid' as CopyKey }) });
   return {
     store,
@@ -38,6 +39,7 @@ export function createInviteModel(deps: { api: InvitesApi; router: Router; token
     async accept() {
       const s = store.get();
       if (s.mode !== 'open') return;
+      if (!deps.signedIn()) return deps.router.push('/sign-in');
       store.patch({ busy: true, error: undefined });
       try {
         // The token itself is the idempotency key: a double tap or retry accepts once.
@@ -46,7 +48,8 @@ export function createInviteModel(deps: { api: InvitesApi; router: Router; token
         deps.router.replace(deps.homeHref ?? '/');
       } catch (e) {
         if (errorIs(e, { code: 'IDEMPOTENCY_CONFLICT' }) || errorIs(e, { status: 409 })) return store.patch({ mode: 'accepted', busy: false });
-        if (errorIs(e, { status: 410 })) return store.patch({ mode: 'expired', busy: false });
+        // Expired, or taken by someone else since the preview: the link is no use either way.
+        if (errorIs(e, { code: 'NOT_FOUND' })) return store.patch({ mode: 'expired', busy: false });
         store.patch({ busy: false, error: 'common.error.generic' });
       }
     },

@@ -73,6 +73,7 @@ import { KybGate } from './institutions/kyb-gate.ts';
 import { KybChecks } from './institutions/kyb-checks.ts';
 import { PayoutAccounts, payoutAccountHandlers } from './institutions/payout-account.ts';
 import { exportHandler } from './institutions/export.ts';
+import { InviteService, inviteHandlers } from './institutions/invites.ts';
 import { RosterService, importRosterHandler } from './institutions/roster.ts';
 import { ApprovalService } from './approvals/service.ts';
 import { AuditService } from './audit/service.ts';
@@ -167,11 +168,14 @@ function buildServices(o: AppOptions) {
   // The KYC provider's decisions arrive on /hooks/kyc; the port verifies and parses, the service applies,
   // and a T2 approval issues the virtual card while card.virtual is on (REQ-CRD-001). A processor failure
   // leaves the event unprocessed so replay retries it; both steps are idempotent.
+  // A roster member who accepted their invite before passing KYC becomes active on that approval (T-0626).
+  const invites = new InviteService(o.db, notifyPort, kyc);
   webhooks.bind('kyc', {
     verifier: kyc.webhookVerifier(),
     process: async (e) => {
-      await kyc.applyDecision(e);
+      const decision = await kyc.applyDecision(e);
       await cards.onKycDecision(e, clock.now());
+      if (decision.status === 'approved') await invites.onIdentityApproved(decision.partyId, clock.now());
     },
   });
   // Loads (REQ-WAL-002): the vendor's payment events land on /hooks/funding; the port verifies and parses,
@@ -202,7 +206,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, payoutAccounts };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, payoutAccounts };
 }
 
 export function createApp(o: AppOptions): App {
@@ -253,7 +257,8 @@ export function createApp(o: AppOptions): App {
       const order = await s.orders.create({ idempotencyKey: requireIdempotencyKey(req), memberPartyId: p.partyId, membership, sku: b.sku, ...(b.quantity ? { quantity: b.quantity } : {}), ...(b.disclosuresAcknowledged !== undefined ? { disclosuresAcknowledged: b.disclosuresAcknowledged } : {}) }, req.now);
       return { status: 201, body: { id: order.id, sku: order.sku, state: order.state, price: toWire(order.price), creditApplied: toWire(order.credit), ...(order.fulfilment ? { fulfilment: order.fulfilment } : {}) } };
     }),
-    importRoster: importRosterHandler({ roster: s.roster, staffInstitution }),
+    importRoster: importRosterHandler({ roster: s.roster, staffInstitution, onCommitted: (importId, now) => s.invites.fanOut(importId, now) }),
+    ...inviteHandlers(s.invites),
     ...collectionsHandlers(s.collections, s.stepUp, staffInstitution),
     ...allowanceRunHandlers({ activities: new PostgresAllowanceActivities(o.db, s.ledger, s.accounts, s.approvals, s.transfers, s.institutionCredit, s.clock.now), credit: s.institutionCredit, flags: s.flags, staffInstitution, db: o.db, identity: s.identity, stepUp: s.stepUp }),
     ...creditHandlers(s.institutionCredit),

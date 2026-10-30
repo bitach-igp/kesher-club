@@ -4,6 +4,7 @@
 // onboards the yeshiva through /admin/*, grants both finance personas with two admins, and imports the
 // roster; a rerun makes no second institution, grant or import. T-0531: every persona has the name others see. T-0625: its KYB checks run against the
 // KybPort simulator, and its own bank account is recorded by one compliance member and approved by another.
+// T-0626: three student personas accept their roster invites from the panel's outbox and are active at once.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, type JWK } from 'jose';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
@@ -89,6 +90,11 @@ describe('demo yeshiva (T-0034)', () => {
     expect(await count('org.roster_import')).toBe(1);
     expect(await count("ops.approval_request where kind = 'staff_grant' and status = 'approved'")).toBe(2);
     expect(await count('org.member')).toBe(3);
+    // Each student followed their invite and, already past T1, is active on the roster as themself (T-0626).
+    expect(institution!.students).toEqual([{ key: 'noa', status: 'active' }, { key: 'maya', status: 'active' }, { key: 'eli', status: 'active' }]);
+    const members = await db.query<{ member_party_id: string; status: string }>('select member_party_id, status from org.member order by row_number');
+    expect(members.rows).toEqual(['noa', 'maya', 'eli'].map((k) => ({ member_party_id: byKey(personas, k).partyId, status: 'active' })));
+    expect(await dev.app.services.invites.funnel(institution!.id)).toEqual({ invited: 0, verified: 0, active: 3, declined: 0, total: 3 });
     const rivka = byKey(personas, 'rivka').partyId;
     expect((await dev.app.services.identity.findUser(rivka))!.roles).toEqual(['member', 'org_finance']);
     const grants = await dev.app.services.audit.list(rivka, 10);
@@ -108,6 +114,7 @@ describe('demo yeshiva (T-0034)', () => {
     expect(await count('org.kyb_decision')).toBe(1);
     expect(await count('org.payout_account')).toBe(1);
     expect(await count('org.kyb_check')).toBe(7);
+    expect(await count("org.invite where status = 'accepted'")).toBe(3);
     expect(formatTable(await seed(target))).toContain(`Institution: ${INSTITUTION.name} (IL) ${institution!.id}`);
   }, 120_000);
 
