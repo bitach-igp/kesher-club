@@ -76,6 +76,25 @@ export const INSTITUTION = {
   },
 } as const;
 
+/**
+ * The demo's add-on price rule (T-0929), set through the admin API by two Kesher finance staff, as production would:
+ * 25% on the eSIM vendor's cost for the simulator's Israel plans, rounded up to .99. Illustrative only; the real
+ * margin is Kesher finance's to set in A05.
+ */
+export const DEMO_PRICE_RULE = {
+  kind: 'esim',
+  provider: 'simulator',
+  skuPattern: '^IL-[0-9]',
+  marginBps: 2500,
+  floor: { minor: '0', currency: 'USD' },
+  roundTo99: true,
+  priority: 100,
+  reason: 'Demo: 25% on cost for the simulator\'s Israel eSIM plans (illustrative; not a real margin)',
+  /** Kesher's two finance staff in the simulator identity provider (apps/simulators/src/oidc.ts). */
+  proposer: 'staff-finance-1',
+  approver: 'staff-finance-2',
+} as const;
+
 /** Personas the contract cannot make yet. Listed, never created through SQL. */
 export const MISSING: readonly { who: string; recs: readonly string[]; why: string }[] = [
   { who: 'Funder linked to a member (Ben to Dana)', recs: ['REC-01', 'REC-04'], why: 'POST /memberships needs a plan in billing.plan_version, and no endpoint or migration creates one' },

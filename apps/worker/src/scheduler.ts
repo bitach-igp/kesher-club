@@ -22,6 +22,11 @@ export interface Job {
   /** Time from the end of one run to the start of the next. */
   everyMs: number;
   run(): Promise<unknown>;
+  /**
+   * A person asking for the job now (the simulator panel, T-0929): a daily job's once-a-day guard is for its own
+   * timer, not for them, so this runs the body whatever the hour or today's record, and records the run.
+   */
+  runNow?(): Promise<unknown>;
 }
 
 export interface JobLock {
@@ -142,6 +147,12 @@ export function daily(job: DailyJob, runs: RunLog, clock: () => Date): Job {
       if (time < job.at || (await runs.ranOn(job.name, day))) return IDLE;
       const value = await job.run(started);
       await runs.record(job.name, day, started, clock());
+      return value;
+    },
+    runNow: async () => {
+      const started = clock();
+      const value = await job.run(started);
+      await runs.record(job.name, israelClock(started).day, started, clock());
       return value;
     },
   };

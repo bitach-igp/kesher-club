@@ -101,6 +101,11 @@ would (REQ-ADM-004):
    address on their row), signs in and accepts it (`POST /invites/{token}/accept`). All three already
    passed KYC, so they are active members at once; one who had not would stay verified until their T1
    approval lands.
+7. Kesher finance sets the demo's eSIM price rule the way production would (T-0929): Finn Finance
+   (`staff-finance-1`) proposes 25% on the vendor's cost for the simulator's Israel plans, rounded up to .99,
+   through `/admin/price-rules`, and Fern Finance (`staff-finance-2`) approves it. The seed then runs the nightly
+   catalogue sync from the panel, so the club lists the plans ($11.99, $20.99, $32.99). The margin is illustrative;
+   the real one is set in the admin console's A05 Catalogue and pricing.
 
 ```sh
 set -a; . ./.env.local-staff; set +a   # ADMIN_API_SIGNING_KEY; the stack must run with the matching STAFF_JWKS
