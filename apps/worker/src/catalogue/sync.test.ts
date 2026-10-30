@@ -75,7 +75,9 @@ describe('catalogue sync (REQ-MKT-002)', () => {
     expect(row.rows[0]!.attributes.disclosures.licensedEntity).toContain('XCover');
   });
 
-  it('the app role cannot write price rules', async () => {
+  it('the app role cannot change a rule\'s pricing terms or delete a rule; it may only move its state (T-0928)', async () => {
     await db.asRole('club_app', async (app) => expect(app.query(`update addons.price_rule set margin_bps = 0`)).rejects.toMatchObject({ code: '42501' }));
+    await db.asRole('club_app', async (app) => expect(app.query(`delete from addons.price_rule`)).rejects.toMatchObject({ code: '42501' }));
+    await db.asRole('club_app', async (app) => expect(app.query(`update addons.price_rule set active = active`)).resolves.toBeDefined());
   });
 });
