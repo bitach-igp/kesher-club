@@ -12,3 +12,13 @@ Steps (from repo root, PowerShell on Windows unless stated):
 9. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with addons at 3 migrations and ledger at 22. Step 5 prints `SET` then `INSERT 0 1`; step 6 `SET` then `UPDATE 1`. Step 7 fails with `permission denied for table price_rule` (pricing terms are not the app's to change), and so does step 8.
 Report back: the console output of steps 4 to 8.
+
+## Result
+PASS, 2026-10-30 12:20 (Asia/Jerusalem), Kesher desktop checker on the Windows PC, runner worktree at e08dc3c, Docker 29.8.2, postgres:16.
+- Step 3: roles applied (ALTER ROLE).
+- Step 4: `ok` for all nine schemas (ledger, identity, org, billing, legal, addons, notify, audit, agent); ledger 22 migrations, identity 4, org 7, addons 3, agent 2.
+- Step 5: `SET` / `INSERT 0 1`.
+- Step 6: `SET` / `UPDATE 1`.
+- Step 7: `SET` / `ERROR:  permission denied for table price_rule`.
+- Step 8: `SET` / `ERROR:  permission denied for table price_rule`.
+- Step 9: container removed.

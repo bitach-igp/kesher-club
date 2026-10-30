@@ -35,6 +35,7 @@
 | [T-0032](T-0032.md) | SETUP | Demo seed: the personas the eighteen money flows need | — | 10 |
 | [T-0033](T-0033.md) | SETUP | The member app runs in a browser (Expo web) against the local stack | — | 10 |
 | [T-0034](T-0034.md) | SETUP | The demo seed onboards the yeshiva, its finance pair and a roster through the admin API | REQ-ADM-004 | 11 |
+| [T-0035](T-0035.md) | SETUP | The demo's shared clock reaches every API request | REQ-ADM-004 | 11 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
