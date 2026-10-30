@@ -10,7 +10,7 @@
 import { format, fromWire, money, toWire, type Currency, type Money } from '@kesher/domain';
 import { errorIs, type Account, type MoneyWire, type PayApi, type PaymentRequest, type Split, type Transfer, type TransferPreview } from '../../src/api.ts';
 import type { Camera, Contacts } from '../../src/device.ts';
-import { intlLocale, type CopyKey, type Locale } from '../../src/i18n.ts';
+import { intlLocale, t, type CopyKey, type Locale } from '../../src/i18n.ts';
 import { createStore, type Store } from '../../src/model.ts';
 import { href, type Router } from '../../src/navigation.ts';
 
@@ -26,6 +26,8 @@ export interface PayState {
   requests: PaymentRequest[];
   currency: Currency;
   recipient: string;
+  /** M15 (T-0530): the name the recipient set, "Avi E.", as the API resolved it; undefined until resolved or when they set none. */
+  recipientName?: string | undefined;
   amountText: string;
   note: string;
   busy: boolean;
@@ -51,7 +53,7 @@ export interface PayDeps {
   me: string;
   camera?: Camera | undefined;
   contacts?: Contacts | undefined;
-  /** Resolves a picked contact to a member id (the API's lookup, when the contract gains one); none → unresolved. */
+  /** Resolves a picked contact to a member id; defaults to the API's lookup (T-0530). None → unresolved. */
   resolveContact?: (phone: string) => Promise<string | undefined>;
   locale?: Locale;
 }
@@ -73,6 +75,14 @@ export function parseAmount(text: string, currency: Currency): { amount: Money }
 }
 
 export const isMemberId = (v: string): boolean => UUID.test(v.trim());
+/** A phone in international form, spaces and dashes allowed: "+972 50-123-4567". */
+export const isPhone = (v: string): boolean => /^\+[1-9]\d{7,14}$/.test(v.replace(/[\s()-]/g, ''));
+
+/**
+ * Who M15 names: the name the recipient set, else "a Kesher member". Never the id: a uuid on the sheet says
+ * nothing to the payer and invites a typo nobody would catch (found recording REC-05 and REC-06).
+ */
+export const recipientLabel = (s: Pick<PayState, 'recipientName'>, locale: Locale): string => s.recipientName ?? t('pay.confirm.aMember', locale);
 
 /**
  * The signed-in member's party id, read from the access token's `sub` for display and "yourself" checks
@@ -200,7 +210,10 @@ export interface PayModel {
   /** M19 (scanner side): a code with the recipient and maybe an amount. */
   scan(): Promise<void>;
   /** M13 → M14 → M15: validates the step and moves on with the flow in the URL. */
-  goAmount(): void;
+  /** M13 → M14; a typed phone number is resolved to the member first (T-0530). */
+  goAmount(): Promise<void>;
+  /** M15: asks the API who the recipient is, for the name on the sheet and whether they can receive (T-0530). */
+  resolveRecipient(): Promise<void>;
   goConfirm(): void;
   /** M15: mints the confirm key once; a second call while the sheet is open keeps it. */
   openConfirm(): string;
@@ -271,6 +284,8 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
     const s = store.get();
     return { to: s.recipient.trim(), amount: s.amountText, currency: s.currency, ...(s.note ? { note: s.note } : {}) };
   };
+  /** A phone book number to a member id through the API's lookup; anything but a member → undefined. */
+  const byPhone = (phone: string): Promise<string | undefined> => deps.pay.resolveRecipient({ phone: phone.replace(/[\s()-]/g, '') }).then((r) => r.partyId, () => undefined);
   // An explicit currency (the URL, a scanned code, the member's tap) is kept; otherwise M14 picks a purse with money.
   let pinned = initial.currency !== undefined;
   const refreshRequests = async () => {
@@ -311,7 +326,7 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
       const r = await deps.contacts.pickOne();
       if (r.status === 'denied') return store.patch({ error: { key: 'pay.recipient.contactsDenied' } });
       if (r.status === 'cancelled') return;
-      const id = deps.resolveContact ? await deps.resolveContact(r.contact.phone) : undefined;
+      const id = await (deps.resolveContact ?? byPhone)(r.contact.phone);
       if (!id) return store.patch({ error: { key: 'pay.recipient.contactUnresolved' } });
       store.patch({ recipient: id });
     },
@@ -328,9 +343,29 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
       store.patch({ recipient: parsed.to, ...(parsed.amount ? { amountText: (Number(parsed.amount.minor) / 100).toFixed(2), currency: parsed.amount.currency } : {}) });
       deps.router.push(href('/pay/amount', flowParams()));
     },
-    goAmount() {
+    async goAmount() {
       clear();
+      const typed = store.get().recipient.trim();
+      if (isPhone(typed)) {
+        try {
+          const r = await deps.pay.resolveRecipient({ phone: typed.replace(/[\s()-]/g, '') });
+          store.patch({ recipient: r.partyId, recipientName: r.displayName });
+        } catch (e) {
+          return store.patch({ error: errorIs(e, { code: 'NOT_FOUND' }) ? { key: 'pay.recipient.notMember' } : errorIs(e, { code: 'RATE_LIMITED' }) ? { key: 'pay.recipient.tooMany' } : { key: 'common.error.generic' } });
+        }
+      }
       if (recipientOk()) deps.router.push(href('/pay/amount', flowParams()));
+    },
+    async resolveRecipient() {
+      const id = store.get().recipient.trim();
+      if (!isMemberId(id)) return;
+      try {
+        const r = await deps.pay.resolveRecipient({ memberId: id });
+        store.patch({ recipientName: r.displayName, ...(r.canReceive ? {} : { error: { key: 'pay.confirm.unverified' } }) });
+      } catch (e) {
+        // The sheet still names nobody by id: "a Kesher member", and the send meets the same refusal.
+        store.patch({ recipientName: undefined, ...(errorIs(e, { code: 'NOT_FOUND' }) ? { error: { key: 'pay.confirm.recipientGone' } } : {}) });
+      }
     },
     goConfirm() {
       clear();

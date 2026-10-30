@@ -37,6 +37,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/loads', operationId: 'createLoad' },
   { method: 'POST', path: '/transfers', operationId: 'createTransfer' },
   { method: 'POST', path: '/transfers/preview', operationId: 'previewTransfer' },
+  { method: 'POST', path: '/p2p/recipients/resolve', operationId: 'resolveRecipient' },
   { method: 'POST', path: '/transfers/{id}/cancel', operationId: 'cancelTransfer' },
   { method: 'GET', path: '/requests', operationId: 'listPaymentRequests' },
   { method: 'POST', path: '/requests', operationId: 'createPaymentRequest' },
