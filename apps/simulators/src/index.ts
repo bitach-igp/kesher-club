@@ -9,6 +9,7 @@ import { pathToFileURL } from 'node:url';
 export { SimulatorHost, SIM_PROVIDER } from './host.ts';
 export type { Simulators, Hook, Fixture } from './host.ts';
 export { createServer, handle } from './server.ts';
+export { DemoAssistant, DEMO_ASSISTANT_CLIENT_ID, DEMO_ASSISTANT_HOST, DEMO_ASSISTANT_SCOPE } from './assistant.ts';
 
 const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {

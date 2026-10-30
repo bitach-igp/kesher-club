@@ -24,7 +24,8 @@ import { createRegistry, systemClock } from '@kesher/api/registry';
 import { createServer } from '@kesher/api/server';
 import { ConfigError, loadConfig } from '@kesher/domain';
 import type { AdvanceableClock } from '@kesher/ports';
-import { createServer as createPanel, type SimulatorHost } from '@kesher/simulators';
+import { lookup } from 'node:dns/promises';
+import { createServer as createPanel, DemoAssistant, DEMO_ASSISTANT_CLIENT_ID, DEMO_ASSISTANT_HOST, type SimulatorHost } from '@kesher/simulators';
 import { z } from 'zod';
 import { buildJobs, loadCatalogueConfig, pgRunLog } from '@kesher/worker/jobs';
 import { noLock, Scheduler, type Job } from '@kesher/worker/scheduler';
@@ -65,6 +66,8 @@ export interface RunningDev {
   jobs: string[];
   /** Runs one job now, by name, on the shared clock. */
   runJob(name: string): Promise<unknown>;
+  /** The demo assistant on the panel (T-1017): connect a persona at /assistant/start, then call /mcp with its token. */
+  assistant: DemoAssistant;
   shutdown(): Promise<void>;
 }
 
@@ -149,7 +152,20 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
     const now = () => clock.now();
     const { registry, simulators } = createRegistry(config.PROVIDER_MODE_DEFAULT, clock);
     const flags = new StaticFlags(undefined, Object.fromEntries(loadRegistry().map((f) => [f.key, true])));
-    const app = createApp({ db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), pii, staffJwks: config.STAFF_JWKS, clock: now, flags });
+    // The demo assistant (T-1017): an OAuth client on the panel. Its client id sits on a reserved .test host that
+    // this process answers itself, so the API's SSRF guard (T-1003) stays as strict as anywhere else: it sees a
+    // public address and an https document, and no other host is answered this way. Development only.
+    let ports = { api: 0, panel: 0 };
+    const assistant = new DemoAssistant({ apiUrl: () => `http://localhost:${ports.api}`, issuer: () => config.TOKEN_ISSUER, panelUrl: () => `http://localhost:${ports.panel}` });
+    const cimd = {
+      resolve: async (host: string) => (host === DEMO_ASSISTANT_HOST ? ['93.184.216.34'] : (await lookup(host, { all: true })).map((a) => a.address)),
+      fetch: async (url: string, init: { signal: AbortSignal; redirect: 'manual' }) => {
+        if (url !== DEMO_ASSISTANT_CLIENT_ID) return fetch(url, init);
+        const body = JSON.stringify(assistant.document());
+        return { status: 200, headers: { get: (h: string) => (h.toLowerCase() === 'content-length' ? String(Buffer.byteLength(body)) : null) }, text: async () => body };
+      },
+    };
+    const app = createApp({ db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), pii, staffJwks: config.STAFF_JWKS, clock: now, flags, cimd, oauth: { consentUrl: `${demo.DEMO_WEB_ORIGINS[0]}/connect` } });
     const jobs: Job[] = buildJobs({ app, db, registry, market: config.MARKET, clock: now, runs: pgRunLog(db), catalogue: loadCatalogueConfig() });
     const scheduler = new Scheduler(jobs, noLock, (event, fields) => log(event, fields));
 
@@ -160,9 +176,10 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
     };
 
     const api = withLoopbackCors(createServer(app), demo.DEMO_WEB_ORIGINS);
-    const panel = createPanel(simulators, { jobs: { names: jobs.map((j) => j.name), run: runJob } });
+    const panel = createPanel(simulators, { jobs: { names: jobs.map((j) => j.name), run: runJob }, assistant });
     const apiPort = await listen(api, opts.ports?.api ?? config.PORT);
     const panelPort = await listen(panel, opts.ports?.panel ?? demo.SIMULATOR_PORT);
+    ports = { api: apiPort, panel: panelPort };
     if (opts.schedule !== false) scheduler.start();
     log('listening', { api: apiPort, panel: panelPort, market: config.MARKET, jobs: jobs.length, flags: 'all on' });
 
@@ -175,6 +192,7 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
       clock,
       jobs: jobs.map((j) => j.name),
       runJob,
+      assistant,
       shutdown: () =>
         (closing ??= (async () => {
           await scheduler.stop();

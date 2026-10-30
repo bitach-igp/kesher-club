@@ -13,6 +13,7 @@ export type PasskeyAuthenticateResult = Schemas['PasskeyAuthenticateResult'];
 export type CatalogueItem = Schemas['CatalogueItem'];
 export type AddonOrder = Schemas['AddonOrder'];
 export type AgentGrant = Schemas['AgentGrant'];
+export type AgentConsent = Schemas['AgentConsent'];
 export type Capabilities = Schemas['Capabilities'];
 export type Card = Schemas['Card'];
 export type CardControlsPatch = Schemas['CardControlsPatch'];
@@ -62,6 +63,13 @@ export interface ClubApi {
 /** Usage has no public endpoint yet (T-0710 exposes it through the gateway); the port's shape is reused. */
 export interface EsimUsageApi {
   getUsage(iccid: string): Promise<EsimUsage>;
+}
+
+/** "Connect an assistant" (T-1017, ADR-009): the consent screen's three calls. Approve takes the passkey step-up. */
+export interface AgentApi {
+  consent(id: string): Promise<AgentConsent>;
+  approveConsent(id: string, scopes: readonly string[]): Promise<{ redirect: string }>;
+  denyConsent(id: string): Promise<{ redirect: string }>;
 }
 
 export interface GrantsApi {
@@ -205,6 +213,7 @@ export interface InvitesApi {
 }
 
 export interface Api {
+  agent: AgentApi;
   auth: AuthApi;
   club: ClubApi;
   kyc: KycApi;
@@ -331,6 +340,11 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
       close: (idempotencyKey) => client.post('/me/closure', { idempotencyKey }),
     },
     esim: extras.esim,
+    agent: {
+      consent: (id) => client.get('/oauth/requests/{id}', { path: { id } }),
+      approveConsent: (id, scopes) => client.post('/oauth/requests/{id}/approve', { path: { id }, body: { scopes: [...scopes] } }),
+      denyConsent: (id) => client.post('/oauth/requests/{id}/deny', { path: { id } }),
+    },
     grants: {
       listAgentGrants: () => client.get('/agent-grants'),
       revokeAgentGrant: (id) => client.delete('/agent-grants/{id}', { path: { id } }),

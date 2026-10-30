@@ -3,6 +3,7 @@
 import http from 'node:http';
 import type { SimulatorHost} from './host.ts';
 import { type Simulators } from './host.ts';
+import { assistantRoute, type DemoAssistant } from './assistant.ts';
 import { OidcIssuer } from './oidc.ts';
 
 type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
@@ -25,6 +26,8 @@ export interface PanelContext {
   oidc?: OidcIssuer | undefined;
   headers?: Readonly<Record<string, string | string[] | undefined>>;
   jobs?: PanelJobs | undefined;
+  /** The demo assistant (T-1017), an OAuth client of the API's authorization server. */
+  assistant?: DemoAssistant | undefined;
 }
 
 const json = (status: number, body: Json): PanelResponse => ({ status, body });
@@ -38,6 +41,10 @@ export async function handle(host: SimulatorHost, method: string, url: string, r
     const hostHeader = ctx.headers?.['host'];
     const r = await ctx.oidc.handle(method, u.pathname.slice('/oidc'.length), u.searchParams, rawBody, typeof hostHeader === 'string' ? hostHeader : undefined);
     return { status: r.status, body: r.body, contentType: r.contentType, ...(r.headers ? { headers: r.headers } : {}) };
+  }
+  if (parts[0] === 'assistant' && ctx.assistant) {
+    const r = await assistantRoute(ctx.assistant, method, u.pathname.slice('/assistant'.length), u.searchParams);
+    if (r) return { status: r.status, body: r.body as Json, ...(r.contentType ? { contentType: r.contentType } : {}), ...(r.headers ? { headers: r.headers } : {}) };
   }
   const body = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
 
@@ -79,7 +86,7 @@ export async function handle(host: SimulatorHost, method: string, url: string, r
   return json(404, { error: 'not_found' });
 }
 
-export function createServer(host: SimulatorHost, opts: { jobs?: PanelJobs } = {}): http.Server {
+export function createServer(host: SimulatorHost, opts: { jobs?: PanelJobs; assistant?: DemoAssistant } = {}): http.Server {
   const oidc = OidcIssuer.create();
   return http.createServer(async (req, res) => {
     let raw = '';
@@ -87,7 +94,7 @@ export function createServer(host: SimulatorHost, opts: { jobs?: PanelJobs } = {
     for await (const chunk of req) raw += chunk;
     let out: PanelResponse;
     try {
-      out = await handle(host, req.method ?? 'GET', req.url ?? '/', raw, { oidc: await oidc, headers: req.headers, jobs: opts.jobs });
+      out = await handle(host, req.method ?? 'GET', req.url ?? '/', raw, { oidc: await oidc, headers: req.headers, jobs: opts.jobs, assistant: opts.assistant });
     } catch (e) {
       out = json(400, { error: 'bad_request', detail: (e as Error).message });
     }

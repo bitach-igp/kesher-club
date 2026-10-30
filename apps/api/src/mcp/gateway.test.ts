@@ -15,7 +15,7 @@ import { IntentService } from '../intents/service.ts';
 import { TransferService } from '../transfers/service.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { McpTokenValidator } from './auth.ts';
-import { CimdRegistry, isPublicAddress } from './cimd.ts';
+import { allowedRedirectUri, CimdRegistry, isPublicAddress } from './cimd.ts';
 import { McpGateway } from './gateway.ts';
 import { metadataHandler, metadataUrl } from './metadata.ts';
 import type { ToolContext } from './tools/registry.ts';
@@ -176,6 +176,11 @@ describe('CIMD registration with SSRF guard (TST-AGT-003)', () => {
     await expect(new CimdRegistry(db, async () => ['93.184.216.34'], fetcher({ [url]: { body: doc(url) + ' '.repeat(6000) } })).register(url)).rejects.toMatchObject({ code: 'AGENT_NOT_ALLOWED' });
     await expect(new CimdRegistry(db, async () => ['93.184.216.34'], fetcher({ [url]: { body: doc('https://someone-else.example/client') } })).register(url)).rejects.toMatchObject({ code: 'AGENT_NOT_ALLOWED' });
     await expect(new CimdRegistry(db, async () => ['93.184.216.34'], fetcher({ [url]: { body: JSON.stringify({ client_id: url, client_name: 'x', redirect_uris: ['http://insecure'] }) } })).register(url)).rejects.toMatchObject({ code: 'AGENT_NOT_ALLOWED' });
+  });
+
+  it('accepts https and loopback http redirect URIs, as native clients use (RFC 8252, T-1017), and nothing else', () => {
+    expect(['https://a.example/cb', 'http://127.0.0.1:53123/callback', 'http://localhost:4010/cb', 'http://[::1]:8080/cb'].map(allowedRedirectUri)).toEqual([true, true, true, true]);
+    expect(['http://insecure', 'http://10.0.0.1/cb', 'http://localhost.evil.example/cb', 'https://a.example/cb#frag', 'https://u:p@a.example/cb', 'javascript:alert(1)', 42].map(allowedRedirectUri)).toEqual([false, false, false, false, false, false, false]);
   });
 
   it('times out after 1 s', async () => {

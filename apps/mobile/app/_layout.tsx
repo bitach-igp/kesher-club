@@ -49,19 +49,34 @@ export interface RootDeps {
   personas?: PersonaPicker | undefined;
 }
 
-/** Where the member belongs for these segments, or undefined to stay. */
-export function guard(signedIn: boolean, segments: readonly string[]): string | undefined {
+/** Where the member belongs for these segments, or undefined to stay; `resume` replaces Home after sign-in. */
+export function guard(signedIn: boolean, segments: readonly string[], resume?: string): string | undefined {
   const inAuth = segments[0] === '(auth)';
   if (!signedIn) return inAuth ? undefined : SIGN_IN_HREF;
   const nowhere = segments.length === 0 || segments[0]!.startsWith('+') || segments[0]!.startsWith('[');
-  return inAuth || nowhere ? HOME_HREF : undefined;
+  return inAuth || nowhere ? (resume ?? HOME_HREF) : undefined;
+}
+
+/**
+ * A screen worth coming back to after sign-in (T-1017): an assistant's consent request, which arrives from
+ * outside the app, often before the member has signed in on that browser. Anything else starts at Home.
+ */
+export function resumable(segments: readonly string[], params: Readonly<Record<string, string | undefined>>): string | undefined {
+  const id = params['id'];
+  return segments[0] === 'connect' && id ? `/connect/${encodeURIComponent(id)}` : undefined;
 }
 
 export function RootLayoutView({ deps, router, segments, params = {}, ready = true, children }: { deps: RootDeps; router: Router; segments: readonly string[]; params?: Readonly<Record<string, string | undefined>>; ready?: boolean; children?: ReactNode }) {
-  const target = guard(deps.session.accessToken() !== undefined, segments);
+  const signedIn = deps.session.accessToken() !== undefined;
+  // Remembered while signed out, used once after sign-in.
+  const resume = useRef<string | undefined>(undefined);
+  if (!signedIn) resume.current = resumable(segments, params) ?? resume.current;
+  const target = guard(signedIn, segments, resume.current);
   // expo-router refuses to navigate before its root navigator has mounted.
   useEffect(() => {
-    if (ready && target) router.replace(target);
+    if (!ready || !target) return;
+    if (target === resume.current) resume.current = undefined;
+    router.replace(target);
   }, [ready, target, router]);
   return (
     <LocaleProvider value={deps.locale}>
