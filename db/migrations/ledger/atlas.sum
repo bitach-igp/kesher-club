@@ -1,4 +1,4 @@
-h1:nCi7NBy2Egt3kdR4oLvgTFqGxAbgLqvyPwburlAcc7Y=
+h1:FtkdrnqfWgDs/Sr7rcc144OUUw5WsvPlJCTpHslJ+gk=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
@@ -23,3 +23,4 @@ h1:nCi7NBy2Egt3kdR4oLvgTFqGxAbgLqvyPwburlAcc7Y=
 0022_price_rule_approval.sql h1:/4GP2FzoaHkKX4v0dSq6gOUXp9Z/rkklmToJ4DSGUCo=
 0023_inbound_rejected.sql h1:VbGhFWI63TzSPnBCUHB3vV59ENX3p2oDY7wI3H4STI8=
 0024_case_assignment.sql h1:QYSbT/Vo69+Rmm/IsQ/c+e3ofgXptT0mo7Q4RPh+L+Y=
+0025_plan_version_approval_kind.sql h1:j2xjD7tHuUDT8qdzB39f9TbamEskUDKcUy5eeKiEfm8=

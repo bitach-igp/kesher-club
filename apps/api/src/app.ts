@@ -54,6 +54,7 @@ import { TokenService, type SigningKey } from './auth/tokens.ts';
 import { AccountService } from './ledger/accounts.ts';
 import { PostgresLedger } from './ledger/post.ts';
 import { PlanService } from './billing/plans.ts';
+import { PlanCatalogue, planCatalogueHandlers } from './billing/plan-catalogue.ts';
 import { EntitlementService } from './billing/entitlements.ts';
 import { MembershipService } from './billing/memberships.ts';
 import { capabilitiesHandler, type FeatureFlags } from './billing/capabilities.ts';
@@ -276,6 +277,7 @@ export function createApp(o: AppOptions): App {
     ...kybHandlers(s.institutionKyb, new KybChecks({ db: o.db, kyb: s.institutionKyb, flags: s.flags, port: (m) => o.registry.resolve<KybPort>('kyb', m), provider: (m) => o.registry.bindingFor('kyb', m)?.provider ?? 'simulator' })),
     ...fxAdminHandlers(s.rates),
     ...priceRuleHandlers(new PriceRules(o.db, s.approvals, s.audit)),
+    ...planCatalogueHandlers(new PlanCatalogue(o.db, s.plans, s.approvals, s.audit)),
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
     ...depositHandlers(s.deposits),
     ...caseHandlers(new OpsCases(o.db, s.audit)),
