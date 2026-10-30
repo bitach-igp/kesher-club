@@ -271,6 +271,65 @@ paths:
           headers:
             Location: { schema: { type: string, format: uri } }
         default: { $ref: "#/components/responses/Problem" }
+  /oauth/requests/{id}:
+    get:
+      operationId: getAgentConsent
+      tags: [agent]
+      summary: The consent screen's view of an assistant's authorization request
+      description: >-
+        REQ-AGT-010 (T-1015, ADR-009). The member's bearer, behind `mcp.enabled`. The first member to open a pending request
+        claims it; anyone else gets NOT_FOUND. A decided or expired request answers IDEMPOTENCY_CONFLICT. The client's name
+        and home page come from its own metadata document: shown as text.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentConsent" }
+        default: { $ref: "#/components/responses/Problem" }
+  /oauth/requests/{id}/approve:
+    post:
+      operationId: approveAgentConsent
+      tags: [agent]
+      summary: The member approves, with the scopes they kept
+      description: >-
+        REQ-AGT-010, REQ-AGT-008 (T-1015). Needs a fresh step-up. The scopes must be a non-empty subset of those asked.
+        Creates the grant, or replaces the scopes of the member's active grant for that client, and answers the client's
+        redirect URI with a one-time `code` (60 seconds, stored only as a hash), the `state` and `iss`. Decided once.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [scopes]
+              properties:
+                scopes: { type: array, minItems: 1, items: { type: string } }
+      responses:
+        "200":
+          description: Where to send the browser
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentConsentRedirect" }
+        default: { $ref: "#/components/responses/Problem" }
+  /oauth/requests/{id}/deny:
+    post:
+      operationId: denyAgentConsent
+      tags: [agent]
+      summary: The member says no
+      description: REQ-AGT-010 (T-1015). Answers the client's redirect URI with `error=access_denied`, the `state` and `iss`. Decided once.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Where to send the browser
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentConsentRedirect" }
+        default: { $ref: "#/components/responses/Problem" }
   /me/display-name:
     get:
       operationId: getDisplayName
@@ -3010,6 +3069,33 @@ components:
             title: { type: string }
             body: { type: string, description: Plain text, shown as written; never a link }
             since: { type: string, format: date-time }
+    AgentConsent:
+      type: object
+      required: [id, client, scopes, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        client:
+          type: object
+          description: From the client's own metadata document; shown as text, never followed without the member's tap.
+          required: [id, name]
+          properties:
+            id: { type: string, format: uri }
+            name: { type: string }
+            uri: { type: string, format: uri }
+        scopes:
+          type: array
+          items:
+            type: object
+            required: [scope, tier]
+            properties:
+              scope: { type: string }
+              tier: { type: string, enum: [T0, T1, T2] }
+        expiresAt: { type: string, format: date-time }
+    AgentConsentRedirect:
+      type: object
+      required: [redirect]
+      properties:
+        redirect: { type: string, format: uri, description: The client's redirect URI with code or error, state and iss }
     AuthorizationServerMetadata:
       type: object
       required: [issuer, authorization_endpoint, token_endpoint, jwks_uri, response_types_supported, grant_types_supported, code_challenge_methods_supported]
