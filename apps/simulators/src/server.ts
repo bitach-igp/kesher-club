@@ -19,6 +19,8 @@ export interface PanelResponse {
 export interface PanelJobs {
   names: readonly string[];
   run(name: string): Promise<unknown>;
+  /** After the clock moves (T-0923): the host's jobs tick once, as its timers would on their next cycle. Never throws. */
+  onClockAdvanced?(): Promise<void>;
 }
 
 /** What the socket binding adds: the OIDC issuer (T-0919), the request's headers, and the host's jobs (T-0920). */
@@ -78,7 +80,11 @@ export async function handle(host: SimulatorHost, method: string, url: string, r
   }
   if (method === 'POST' && parts[0] === 'clock' && parts[1] === 'advance') {
     try {
-      return json(200, { now: host.advanceClock(Number(body['ms'])) });
+      const now = host.advanceClock(Number(body['ms']));
+      // The clock jumps days, the timers run on real time: without this, a rate published for the next 15
+      // minutes reads as stale until the next real tick, and every quote after the jump refuses.
+      await ctx.jobs?.onClockAdvanced?.();
+      return json(200, { now });
     } catch (e) {
       return json(422, { error: (e as Error).message });
     }

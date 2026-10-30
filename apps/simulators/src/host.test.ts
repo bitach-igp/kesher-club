@@ -38,6 +38,17 @@ describe('SimulatorHost', () => {
     expect(res).toMatchObject({ status: 200, body: { ok: true, job: 'nightly', result: 'idle' } });
   });
 
+  it('advancing the clock ticks the host\'s jobs once, after the clock moved, so a rate valid for 15 minutes catches up (T-0923)', async () => {
+    const host = new SimulatorHost();
+    const before = host.clock.now().getTime();
+    const seen: number[] = [];
+    const jobs = { names: [], run: async () => undefined, onClockAdvanced: async () => void seen.push(host.clock.now().getTime()) };
+    expect((await handle(host, 'POST', '/clock/advance', JSON.stringify({ ms: 86_400_000 }), { jobs })).status).toBe(200);
+    expect(seen).toEqual([before + 86_400_000]);
+    expect((await handle(host, 'POST', '/clock/advance', JSON.stringify({ ms: -1 }), { jobs })).status).toBe(422);
+    expect(seen).toHaveLength(1);
+  });
+
   it('one shared clock: advancing it expires FX quotes everywhere', async () => {
     const host = new SimulatorHost();
     const fx = host.registry.resolve<FxPort>('fx', 'IL');
