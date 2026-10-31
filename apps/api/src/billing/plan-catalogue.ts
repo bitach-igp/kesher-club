@@ -3,12 +3,13 @@
 // waits `proposed`, offered to no one; a second, different finance member approves it and it is offered from its
 // effective date, which is audited; either may reject it with a reason, and then it never is. A version is never
 // edited: a newer one supersedes it for new members, and a member keeps the version they joined on (PlanService).
+// T-0305 (REQ-BIL-001): members list what is offered in their market, the same pick, with none of the staff fields.
 import { DomainError, money, toWire, type Currency } from '@kesher/domain';
 import { requireStaff } from '../admin/staff-token.ts';
 import type { ApprovalRequest, ApprovalService, Approver } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import type { Database } from '../db.ts';
-import { created, ok, route, type Handler } from '../http.ts';
+import { created, ok, requirePrincipal, route, type Handler } from '../http.ts';
 import { DEFAULT_FX_MARKUP_BPS, type EntitlementTemplates, type PlanService } from './plans.ts';
 
 export type VersionState = 'proposed' | 'active' | 'rejected';
@@ -86,6 +87,23 @@ const SELECT = `select v.*, p.name,
     (v.state = 'active' and v.effective_from <= $1 and v.version = (select max(w.version) from billing.plan_version w where w.plan_code = v.plan_code and w.state = 'active' and w.effective_from <= $1)) as offered
   from billing.plan_version v join billing.plan p on p.code = v.plan_code`;
 
+/** What a member sees of an offered version (T-0305, REQ-BIL-001): no staff fields. */
+export interface OfferedPlan {
+  planCode: string;
+  name: string;
+  version: number;
+  market: Market;
+  price: ReturnType<typeof toWire>;
+  termMonths: number;
+  /** The term's price a month, rounded up to the minor unit. */
+  monthlyPrice: ReturnType<typeof toWire>;
+  entitlements: EntitlementTemplates;
+  fxMarkupBps: number;
+}
+
+/** A version made before T-0932 names no market; its currency says which one it was priced for. */
+const MARKET_OF = `coalesce(v.market, case v.currency when 'ILS' then 'IL' else 'US' end)`;
+
 export interface VersionInput {
   planCode: string;
   name: string;
@@ -156,6 +174,17 @@ export class PlanCatalogue {
     return r.rows.map(view);
   }
 
+  /** The versions a new member of each plan joins on now, in one market, by plan code. */
+  async offered(market: Market, now: Date): Promise<OfferedPlan[]> {
+    const r = await this.db.query<Row>(`select * from (${SELECT}) v where v.offered and ${MARKET_OF} = $2 order by v.plan_code`, [now, market]);
+    return r.rows.map((row) => {
+      const v = view(row);
+      const months = BigInt(v.termMonths);
+      const minor = BigInt(v.price.minor);
+      return { planCode: v.planCode, name: v.name, version: v.version, market, price: v.price, termMonths: v.termMonths, monthlyPrice: { minor: ((minor + months - 1n) / months).toString(), currency: v.price.currency }, entitlements: v.entitlements, fxMarkupBps: v.fxMarkupBps };
+    });
+  }
+
   async get(planCode: string, version: number, now: Date): Promise<PlanVersionView | undefined> {
     const r = await this.db.query<Row>(`${SELECT} where v.plan_code = $2 and v.version = $3`, [now, planCode, version]);
     return r.rows[0] ? view(r.rows[0]) : undefined;
@@ -221,6 +250,12 @@ function target(params: Record<string, string>): { planCode: string; version: nu
 
 export function planCatalogueHandlers(catalogue: PlanCatalogue): Record<string, Handler> {
   return {
+    listPlans: route(async (req) => {
+      requirePrincipal(req);
+      const market = req.query['market'];
+      if (market !== 'IL' && market !== 'US') throw new DomainError('VALIDATION_FAILED', 'market must be IL or US');
+      return ok({ items: await catalogue.offered(market, req.now) });
+    }),
     listAdminPlans: route(async (req) => {
       requireStaff(req);
       return ok({ items: await catalogue.list(req.now) });
