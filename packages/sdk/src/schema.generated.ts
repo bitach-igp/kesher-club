@@ -1904,6 +1904,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/members/{memberId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * One student for staff, with spend only under the student's live consent
+         * @description REQ-INS-005, REQ-INS-019 (T-0641). Any active staff role of this institution; another institution's staff, or a member of another roster, get 404. The roster row, the latest 20 allowances paid to the student and their fee items. `spend` is present only while the student's spend_detail consent to this institution is live; without it the key is absent, not empty. Merchant names are untrusted text.
+         */
+        readonly get: operations["getInstitutionMember"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/payout-account": {
         readonly parameters: {
             readonly query?: never;
@@ -3740,6 +3760,36 @@ export interface components {
             readonly phoneMasked?: string;
             /** @enum {string} */
             readonly role: "staff" | "finance" | "admin";
+        };
+        readonly InstitutionStudent: {
+            readonly allowances: readonly {
+                readonly amount: components["schemas"]["Money"];
+                /** Format: date */
+                readonly date: string;
+                /** @enum {string} */
+                readonly status: "pending" | "paid" | "failed";
+            }[];
+            readonly fees: readonly {
+                readonly amount: components["schemas"]["Money"];
+                /** @description As finance wrote it */
+                readonly description: string;
+                /** Format: date */
+                readonly dueAt: string;
+                /** Format: uuid */
+                readonly id: string;
+                /** @enum {string} */
+                readonly status: "due" | "paid" | "waived";
+            }[];
+            readonly member: components["schemas"]["RosterMember"];
+            /** @description Only while the student's consent is live (REQ-INS-005) */
+            readonly spend?: readonly {
+                readonly amount: components["schemas"]["Money"];
+                /** Format: date-time */
+                readonly at: string;
+                readonly mcc: string;
+                /** @description Untrusted text from the card network */
+                readonly merchant: string;
+            }[];
         };
         /** @description How an approved load intent is paid; required for load intents, ignored for the others. */
         readonly IntentApprovalRequest: {
@@ -7483,6 +7533,30 @@ export interface operations {
                         readonly items: readonly components["schemas"]["RosterMember"][];
                         readonly nextCursor?: string;
                     };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getInstitutionMember: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+                readonly memberId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The student */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionStudent"];
                 };
             };
             readonly default: components["responses"]["Problem"];

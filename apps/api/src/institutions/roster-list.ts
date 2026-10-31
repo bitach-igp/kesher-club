@@ -57,7 +57,7 @@ export class RosterList {
     this.db = db;
   }
 
-  async page(institutionId: string, filter: { status?: string | undefined; cohort?: string | undefined; cursor?: string | undefined }): Promise<{ items: RosterRow[]; nextCursor?: string }> {
+  async page(institutionId: string, filter: { status?: string | undefined; cohort?: string | undefined; cursor?: string | undefined; memberId?: string | undefined }): Promise<{ items: RosterRow[]; nextCursor?: string }> {
     if (filter.status !== undefined && !(STATUSES as readonly string[]).includes(filter.status)) throw new DomainError('VALIDATION_FAILED', `status must be one of ${STATUSES.join(', ')}`);
     if (filter.cohort !== undefined && !UUID.test(filter.cohort)) throw new DomainError('VALIDATION_FAILED', 'cohort must be a cohort id');
     const after = decodeCursor(filter.cursor);
@@ -67,9 +67,10 @@ export class RosterList {
          from org.member m left join cur on cur.member_id = m.id left join org.cohort c on c.id = cur.cohort_id
         where m.institution_id = $1 and ($2::text is null or m.status = $2) and ($3::uuid is null or c.id = $3)
           and ($4::text is null or (m.member_name, m.id) > ($4::text, $5::uuid))
+          and ($7::uuid is null or m.id = $7)
         order by m.member_name, m.id
         limit $6`,
-      [institutionId, filter.status ?? null, filter.cohort ?? null, after?.[0] ?? null, after?.[1] ?? null, PAGE + 1],
+      [institutionId, filter.status ?? null, filter.cohort ?? null, after?.[0] ?? null, after?.[1] ?? null, PAGE + 1, filter.memberId ?? null],
     );
     const rows = r.rows.slice(0, PAGE);
     const parties = rows.map((x) => x.member_party_id).filter((x): x is string => !!x);
@@ -89,6 +90,12 @@ export class RosterList {
     });
     const last = rows.at(-1);
     return { items, ...(r.rows.length > PAGE && last ? { nextCursor: encodeCursor(last.member_name, last.id) } : {}) };
+  }
+
+  /** One member's roster row, for the student page (T-0641); another institution's member reads as none. */
+  async one(institutionId: string, memberId: string): Promise<RosterRow | undefined> {
+    if (!UUID.test(memberId)) return undefined;
+    return (await this.page(institutionId, { memberId })).items[0];
   }
 
   private async cards(parties: string[]): Promise<Map<string, CardState>> {

@@ -1500,6 +1500,25 @@ paths:
                   items: { type: array, items: { $ref: "#/components/schemas/RosterMember" } }
                   nextCursor: { type: string }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/members/{memberId}:
+    get:
+      operationId: getInstitutionMember
+      summary: One student for staff, with spend only under the student's live consent
+      description: >-
+        REQ-INS-005, REQ-INS-019 (T-0641). Any active staff role of this institution; another institution's staff,
+        or a member of another roster, get 404. The roster row, the latest 20 allowances paid to the student and their
+        fee items. `spend` is present only while the student's spend_detail consent to this institution is live;
+        without it the key is absent, not empty. Merchant names are untrusted text.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: memberId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The student
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionStudent" }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/collections:
     get:
       operationId: listCollections
@@ -3808,6 +3827,42 @@ components:
         refreshToken: { type: string }
         accessExpiresAt: { type: string, format: date-time }
         restrictedUntil: { type: string, format: date-time, description: Set during the 24 h recovery hold (REQ-AUTH-003) }
+    InstitutionStudent:
+      type: object
+      required: [member, allowances, fees]
+      properties:
+        member: { $ref: "#/components/schemas/RosterMember" }
+        allowances:
+          type: array
+          items:
+            type: object
+            required: [date, amount, status]
+            properties:
+              date: { type: string, format: date }
+              amount: { $ref: "#/components/schemas/Money" }
+              status: { type: string, enum: [pending, paid, failed] }
+        fees:
+          type: array
+          items:
+            type: object
+            required: [id, description, amount, dueAt, status]
+            properties:
+              id: { type: string, format: uuid }
+              description: { type: string, description: As finance wrote it }
+              amount: { $ref: "#/components/schemas/Money" }
+              dueAt: { type: string, format: date }
+              status: { type: string, enum: [due, paid, waived] }
+        spend:
+          type: array
+          description: Only while the student's consent is live (REQ-INS-005)
+          items:
+            type: object
+            required: [merchant, mcc, amount, at]
+            properties:
+              merchant: { type: string, description: Untrusted text from the card network }
+              mcc: { type: string }
+              amount: { $ref: "#/components/schemas/Money" }
+              at: { type: string, format: date-time }
     RosterMember:
       type: object
       required: [id, name, status, card, balances]
