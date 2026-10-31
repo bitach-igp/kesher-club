@@ -147,6 +147,13 @@
     "turnOnTrigger": "wallet.enabled + institution agreement"
   },
   {
+    "key": "institutions.selfServe",
+    "defaultProd": false,
+    "owner": "Ezra",
+    "gates": "Organisations apply on their own in the institution console (I01): entity, signatories, own-name account, then KYB review",
+    "turnOnTrigger": "institutions.kyb.checks + compliance staffing the KYB queue"
+  },
+  {
     "key": "institutions.kyb.checks",
     "defaultProd": false,
     "owner": "Ezra",
