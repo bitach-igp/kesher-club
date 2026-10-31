@@ -174,6 +174,112 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/MyInstitution" }
         default: { $ref: "#/components/responses/Problem" }
+  /me/institution-application:
+    get:
+      operationId: getMyInstitutionApplication
+      summary: The caller's own self-serve institution application
+      description: REQ-INS-016 (T-0632). 404 when the caller has not applied.
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: The application
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionApplication" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institution-applications:
+    post:
+      operationId: createInstitutionApplication
+      summary: Apply for an organisation, becoming its first admin
+      description: >-
+        REQ-INS-016 (T-0632), behind `institutions.selfServe`. Creates the institution, its application and the
+        applicant's admin role. No money moves for the institution until a KYB decision approves it (REQ-INS-010).
+        Someone already staff of an institution, or who has applied before, answers 409.
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InstitutionApplicationRequest" }
+      responses:
+        "201":
+          description: The application, a draft
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionApplication" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institution-applications/{id}/signatories:
+    post:
+      operationId: addApplicationSignatory
+      summary: Add a signatory, board member or control person to a draft application
+      description: REQ-INS-016 (T-0632). Only while a draft or sent back for more information; otherwise 409.
+      security: [{ bearer: [] }]
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fullName, roles]
+              properties:
+                fullName: { type: string, maxLength: 200 }
+                roles: { type: array, minItems: 1, items: { type: string, enum: [board, control, signatory] } }
+                self: { type: boolean, description: The applicant themselves, linked to their member identity }
+      responses:
+        "200":
+          description: The application
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionApplication" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institution-applications/{id}/account:
+    post:
+      operationId: proposeApplicationAccount
+      summary: Propose the organisation's own-name bank account
+      description: >-
+        REQ-INS-016, REQ-INS-012 (T-0632). IL takes an Israeli IBAN, US a routing and account number. The holder must
+        be the organisation's registered name. The latest proposal stands; compliance records the verified account.
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [holderName]
+              properties:
+                holderName: { type: string, maxLength: 200 }
+                iban: { type: string, description: IL }
+                routingNumber: { type: string, pattern: "^\\d{9}$", description: US }
+                accountNumber: { type: string, pattern: "^\\d{4,17}$", description: US }
+      responses:
+        "200":
+          description: The application
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionApplication" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institution-applications/{id}/submit:
+    post:
+      operationId: submitInstitutionApplication
+      summary: Send the application to compliance for KYB review
+      description: >-
+        REQ-INS-016 (T-0632). Needs a signatory and the proposed account (422 names what is missing). Opens a
+        `kyb_application` case in the ops queue. Submitting a submitted application answers it unchanged.
+      security: [{ bearer: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The application, submitted
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionApplication" }
+        default: { $ref: "#/components/responses/Problem" }
   /me/preferences:
     get:
       operationId: getPreferences
@@ -3432,7 +3538,7 @@ components:
         escalatedToBank: { type: boolean }
     OpsCaseKind:
       type: string
-      enum: [suspense, deposit_not_on_statement, payout_account_mismatch, balance_break, system_total_break, unbalanced_journal]
+      enum: [suspense, deposit_not_on_statement, payout_account_mismatch, balance_break, system_total_break, unbalanced_journal, kyb_application]
     OpsCase:
       type: object
       required: [id, kind, severity, status, summary, payload, openedAt]
@@ -3587,6 +3693,53 @@ components:
         refreshToken: { type: string }
         accessExpiresAt: { type: string, format: date-time }
         restrictedUntil: { type: string, format: date-time, description: Set during the 24 h recovery hold (REQ-AUTH-003) }
+    InstitutionApplicationRequest:
+      type: object
+      required: [legalName, market, registrationNumber, address]
+      properties:
+        legalName: { type: string, maxLength: 200 }
+        market: { type: string, enum: [IL, US] }
+        registrationNumber: { type: string, maxLength: 40, description: IL nine digits; US EIN NN-NNNNNNN }
+        address: { $ref: "#/components/schemas/ApplicationAddress" }
+    ApplicationAddress:
+      type: object
+      required: [line1, city, postalCode]
+      properties:
+        line1: { type: string, maxLength: 120 }
+        city: { type: string, maxLength: 80 }
+        postalCode: { type: string, maxLength: 10 }
+    InstitutionApplication:
+      type: object
+      required: [id, institutionId, legalName, market, registrationNumber, address, status, editable, signatories, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        institutionId: { type: string, format: uuid }
+        legalName: { type: string }
+        market: { type: string, enum: [IL, US] }
+        registrationNumber: { type: string }
+        address: { $ref: "#/components/schemas/ApplicationAddress" }
+        status: { type: string, enum: [draft, submitted, needs_more_info, approved_with_limits, approved, rejected] }
+        editable: { type: boolean, description: A draft, or sent back for more information }
+        signatories:
+          type: array
+          items:
+            type: object
+            required: [id, fullName, roles, self]
+            properties:
+              id: { type: string, format: uuid }
+              fullName: { type: string }
+              roles: { type: array, items: { type: string, enum: [board, control, signatory] } }
+              self: { type: boolean }
+        account:
+          type: object
+          required: [currency, holderName, masked]
+          properties:
+            currency: { type: string, enum: [USD, ILS] }
+            holderName: { type: string }
+            masked: { type: string, description: The last four digits only }
+        reviewerNote: { type: array, items: { type: string }, description: The reviewer's reasons when sent back }
+        submittedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
     MyInstitution:
       type: object
       required: [institution, role, paymentReference]
