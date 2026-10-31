@@ -89,6 +89,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/institutions/{id}/cohorts', operationId: 'createCohort' },
   { method: 'POST', path: '/institutions/{id}/cohorts/{cohortId}/members', operationId: 'placeCohortMembers' },
   { method: 'GET', path: '/institutions/{id}/members', operationId: 'listInstitutionMembers' },
+  { method: 'GET', path: '/institutions/{id}/members/{memberId}', operationId: 'getInstitutionMember' },
   { method: 'GET', path: '/institutions/{id}/collections', operationId: 'listCollections' },
   { method: 'GET', path: '/institutions/{id}/collections/export', operationId: 'exportCollections' },
   { method: 'GET', path: '/fee-items', operationId: 'listFeeItems' },

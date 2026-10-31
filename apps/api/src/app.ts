@@ -46,6 +46,7 @@ import { InstitutionApplications, applicationHandlers } from './institutions/app
 import { dashboardHandlers, InstitutionDashboard } from './institutions/dashboard.ts';
 import { cohortHandlers, Cohorts } from './institutions/cohorts.ts';
 import { RosterList, rosterListHandlers } from './institutions/roster-list.ts';
+import { StudentDetail, studentHandlers } from './institutions/student.ts';
 import { BANK_PROVIDER, bankCreditVerifier, depositHandlers, InstitutionDeposits, paymentReference } from './institutions/deposits.ts';
 import { StaffTokenVerifier, staffBearerMiddleware } from './admin/staff-token.ts';
 import type { JWK } from 'jose';
@@ -316,6 +317,7 @@ export function createApp(o: AppOptions): App {
     ...dashboardHandlers(new InstitutionDashboard({ db: o.db, accounts: s.accounts, staffOf })),
     ...cohortHandlers(new Cohorts(o.db), staffOf),
     ...rosterListHandlers(new RosterList(o.db), staffOf),
+    ...studentHandlers(new StudentDetail(o.db, new RosterList(o.db)), staffOf),
     ...depositHandlers(s.deposits),
     ...caseHandlers(new OpsCases(o.db, s.audit)),
     ...preferenceHandlers(s.preferences),
