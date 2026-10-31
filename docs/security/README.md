@@ -28,12 +28,14 @@ shows them as skipped.
 
 `pnpm.auditConfig.ignoreGhsas` in `package.json` lists each advisory the audit job accepts. Each one sits
 in developer tooling that never reaches an app bundle or a server, and has no patched release on the line
-that tooling uses. An entry comes out once its tool ships a fix.
+that tooling uses. An entry comes out once its tool ships a fix. Where a patched release exists but the tool's own
+range has not reached it, `pnpm.overrides` pins the patched line instead (2026-10-31: `node-forge` ^1.4.1, through
+`@expo/cli`, for GHSA-7wch-p9px-956x, -jc66-7q78-782g, -8hrf-8g6f-7xwp, -hqq3-7jhf-c5jx, -5x38-2vff-x55p and the
+earlier -86w9-cpqp-85rv).
 
 | Advisory | Package, and who brings it | Why it is accepted | Added |
 |---|---|---|---|
 | GHSA-vfj7-8cjw-p6xm | `braces`, through Metro's file watching | Build tooling on the developer's machine | T-0002 |
-| GHSA-86w9-cpqp-85rv | `node-forge`, through `@expo/cli` | Used only for local dev certificates | T-0033 |
 | GHSA-mrhx-c7xc-m3w5 (high, memory exhaustion validating oversized collections) | `zod` 3.25.76, through `@expo/cli` 58.x (the latest still declares `zod ^3.25.76`); no 3.x release is patched | It validates the CLI's own config and manifests on the developer's machine. The app and the API use `zod` 4.6.7, which is patched | 2026-10-30, accepted by Zvi |
 
 ## Rules the code already enforces
