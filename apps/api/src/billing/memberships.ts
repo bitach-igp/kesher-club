@@ -1,5 +1,7 @@
 // Memberships (T-0302): createMembership starts a subscription at the BillingPort (vendor ref in
 // ops.external_ref) and pins the plan version. Status mirrors the vendor via webhooks (T-0303).
+// T-0310 (REQ-BIL-004): the funder lists the memberships they pay for and cancels one at the end of the paid period;
+// until then it stays active and reads as ending on `cancelAt`, and the member keeps every unit of money loaded.
 import { DomainError, uuidv7, type Currency, type Money } from '@kesher/domain';
 import { BillingError, type BillingPort } from '@kesher/ports';
 import { isPgError, PG, type Database } from '../db.ts';
@@ -11,6 +13,8 @@ export interface Membership extends MembershipRef {
   funderPartyId: string;
   price: Money;
   currentPeriodEnd?: string;
+  /** Set once the funder cancelled: the membership ends on this date, the end of the paid period. */
+  cancelAt?: string;
   dunningAttempts: number;
 }
 
@@ -25,6 +29,7 @@ interface Row {
   price_minor: string;
   currency: Currency;
   current_period_end: string | Date | null;
+  cancel_at: string | Date | null;
   dunning_attempts: number;
   created_at: string | Date;
 }
@@ -107,6 +112,34 @@ export class MembershipService {
     );
   }
 
+  /** The memberships the party pays for and the one they hold, newest first; none still being set up. */
+  async forParty(partyId: string): Promise<(Membership & { role: 'funder' | 'member' })[]> {
+    const r = await this.db.query<Row>(`select * from billing.membership where (funder_party_id = $1 or member_party_id = $1) and status <> 'incomplete' order by created_at desc, id desc limit 50`, [partyId]);
+    return r.rows.map((x) => ({ ...toMembership(x), role: x.funder_party_id === partyId ? ('funder' as const) : ('member' as const) }));
+  }
+
+  /**
+   * The funder cancels at the end of the paid period, once: the vendor is told with the caller's key, so a retry is the
+   * same cancel. The member cannot cancel what someone else pays for (403); anyone else's membership answers 404.
+   */
+  async cancel(id: string, callerPartyId: string, idempotencyKey: string): Promise<Membership> {
+    const m = /^[0-9a-f-]{36}$/i.test(id) ? await this.get(id) : undefined;
+    if (!m || (m.funderPartyId !== callerPartyId && m.memberPartyId !== callerPartyId)) throw new DomainError('NOT_FOUND', 'Membership not found');
+    if (m.funderPartyId !== callerPartyId) throw new DomainError('FORBIDDEN', 'Only the person who pays for a membership can cancel it');
+    if (m.status === 'cancelled') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This membership is already cancelled');
+    if (m.cancelAt) return m;
+    const subscriptionId = await this.externalRef('membership', id, 'stripe');
+    if (!subscriptionId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This membership has no subscription to cancel');
+    let cancelAt: string | undefined;
+    try {
+      cancelAt = (await this.billing.cancel(subscriptionId, 'period_end', idempotencyKey)).cancelAt;
+    } catch (e) {
+      throw mapBillingError(e);
+    }
+    await this.db.query('update billing.membership set cancel_at = $2, updated_at = now() where id = $1 and cancel_at is null', [id, cancelAt ?? null]);
+    return (await this.get(id))!;
+  }
+
   /** The payer's customer at the billing vendor, made once (keyed by the party); the vendor holds their cards. */
   async ensureCustomer(partyId: string, email: string): Promise<string> {
     const known = await this.customerOf(partyId);
@@ -137,6 +170,7 @@ function mapBillingError(e: unknown): Error {
     if (e.code === 'CARD_DECLINED') return new DomainError('VALIDATION_FAILED', 'The card was declined; try another payment method');
     if (e.code === 'PROVIDER_UNAVAILABLE') return new DomainError('PROVIDER_UNAVAILABLE', 'Billing is temporarily unavailable');
     if (e.code === 'UNKNOWN_PLAN') return new DomainError('NOT_FOUND', 'Plan not found');
+    if (e.code === 'INVALID_STATE') return new DomainError('IDEMPOTENCY_CONFLICT', 'The billing provider already ended this subscription');
   }
   return e as Error;
 }
@@ -152,6 +186,7 @@ function toMembership(r: Row): Membership {
     termMonths: r.term_months,
     price: { minor: BigInt(r.price_minor), currency: r.currency },
     ...(r.current_period_end ? { currentPeriodEnd: new Date(r.current_period_end).toISOString() } : {}),
+    ...(r.cancel_at ? { cancelAt: new Date(r.cancel_at).toISOString() } : {}),
     dunningAttempts: r.dunning_attempts,
     createdAt: new Date(r.created_at).toISOString(),
   };

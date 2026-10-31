@@ -598,6 +598,31 @@ paths:
               schema: { $ref: "#/components/schemas/HouseholdMemberActivity" }
         default: { $ref: "#/components/responses/Problem" }
   /memberships:
+    get:
+      operationId: listMemberships
+      summary: The memberships the caller pays for, and the one they hold
+      description: REQ-BIL-004 (T-0310). Newest first; none still being set up. A funder's rows name the member.
+      responses:
+        "200":
+          description: Memberships
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      allOf:
+                        - { $ref: "#/components/schemas/Membership" }
+                        - type: object
+                          required: [role, memberPartyId]
+                          properties:
+                            role: { type: string, enum: [funder, member] }
+                            memberPartyId: { type: string, format: uuid }
+                            memberName: { type: string, description: The member's display name, on a funder's rows }
+        default: { $ref: "#/components/responses/Problem" }
     post:
       operationId: createMembership
       summary: Start a membership (plan + member) billed to the funder
@@ -611,6 +636,24 @@ paths:
       responses:
         "201":
           description: Membership created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Membership" }
+        default: { $ref: "#/components/responses/Problem" }
+  /memberships/{id}/cancel:
+    post:
+      operationId: cancelMembership
+      summary: Cancel a membership the caller pays for, at the end of the paid period
+      description: >-
+        REQ-BIL-004 (T-0310). The funder only: the member answers 403, anyone else 404. The billing vendor ends the
+        subscription at the end of the paid period, and until then the membership stays active with `cancelAt` set. The
+        member keeps the money loaded. Idempotent; cancelling an ended membership answers 409.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "200":
+          description: The membership, ending on `cancelAt`
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Membership" }
@@ -3651,6 +3694,7 @@ components:
         status: { type: string, enum: [incomplete, active, past_due, paused, cancelled] }
         price: { $ref: "#/components/schemas/Money" }
         currentPeriodEnd: { type: string, format: date-time }
+        cancelAt: { type: string, format: date-time, description: Set once the funder cancelled; the membership ends on this date (REQ-BIL-004) }
     Account:
       type: object
       required: [id, currency, settled, holds, available]
