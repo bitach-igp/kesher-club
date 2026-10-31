@@ -5,7 +5,7 @@
 // - the API answers 401: refresh once with the device's refresh token, then try again; a second 401 or a
 //   failed refresh signs out and clears the cookies;
 // - the API answers 403 (no org role on the token, or no active staff row): "no institution access",
-//   never data;
+//   never institution data; the person's own token still reaches the page, for I01's application (T-0633);
 // - otherwise the institution and role the API names, and only that institution.
 import { statusOf, type ConsoleApi, type MyInstitution, type TokenPair } from './api.ts';
 
@@ -47,7 +47,8 @@ export async function resolveSession(api: ConsoleApi, cookies: SessionCookies, r
 
   const first = cookies.access ? await attempt(api, cookies.access) : 401;
   if (typeof first === 'object') return { landing: land(first), access: cookies.access! };
-  if (first === 403) return { landing: { kind: 'no_access' } };
+  // No institution: the person may still be applying for one (I01, T-0633), as themselves.
+  if (first === 403) return { landing: { kind: 'no_access' }, access: cookies.access! };
   if (first !== 401 || !cookies.refresh || !cookies.device) return signedOut;
 
   let pair: TokenPair;
@@ -59,7 +60,7 @@ export async function resolveSession(api: ConsoleApi, cookies: SessionCookies, r
   }
   const second = await attempt(api, pair.accessToken);
   if (typeof second === 'object') return { landing: land(second), write: pair, access: pair.accessToken };
-  if (second === 403) return { landing: { kind: 'no_access' }, write: pair };
+  if (second === 403) return { landing: { kind: 'no_access' }, write: pair, access: pair.accessToken };
   return signedOut;
 }
 

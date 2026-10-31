@@ -39,9 +39,10 @@ describe('console session (T-0608, TST-INS-004)', () => {
     expect(calls.me).toEqual([]);
   });
 
-  it('a member token lands on no institution access, never data, and keeps its cookies', async () => {
+  it('a member token lands on no institution access, never data, and keeps its cookies and its own token for I01', async () => {
     const { api } = fakeApi({ 'member-access': 403 });
-    expect(await resolveSession(api, { access: 'member-access', refresh: 'r', device: 'd' })).toEqual({ landing: { kind: 'no_access' } });
+    // The token travels so the person can apply for an organisation as themselves (T-0633); the landing holds no institution.
+    expect(await resolveSession(api, { access: 'member-access', refresh: 'r', device: 'd' })).toEqual({ landing: { kind: 'no_access' }, access: 'member-access' });
   });
 
   it('an org_finance token reaches the dashboard of its own institution only', async () => {
