@@ -60,6 +60,11 @@
 | [T-0302](T-0302.md) | BIL | Plans, versions, entitlement templates, can() + /me/capabilities | — | 3 |
 | [T-0303](T-0303.md) | BIL | Dunning, pause/resume, 10-month term | — | 3 |
 | [T-0304](T-0304.md) | BIL | Legal CMS: versions, consent, re-accept | — | 3 |
+| [T-0305](T-0305.md) | BIL | Members see the plans offered in their market | REQ-BIL-001 | 13 |
+| [T-0306](T-0306.md) | BIL | A funder invites a member onto a plan they pay for | REQ-BIL-002 | 13 |
+| [T-0307](T-0307.md) | BIL | Accepting a funder's invite starts the membership, once | REQ-BIL-003 | 13 |
+| [T-0308](T-0308.md) | BIL | Funder mode in the app: choose a plan, pay, invite your child (P01–P04) | REQ-BIL-001 | 13 |
+| [T-0309](T-0309.md) | BIL | M04 accepts a funder's invite | REQ-BIL-003 | 13 |
 | [T-0401](T-0401.md) | CRD | KYC sessions and tiers over KycPort (simulator) | — | 4 |
 | [T-0402](T-0402.md) | CRD | Virtual card issue within 60 s of T2 approval; details token only | REQ-CRD-001, REQ-CRD-002 | 5 |
 | [T-0403](T-0403.md) | CRD | JIT authorisation decision, fail closed, p99 < 300 ms | REQ-CRD-003 | 5 |
@@ -104,6 +109,8 @@
 | [T-0531](T-0531.md) | PAY | Members set the name others see: first name and last initial, sealed; API and demo seed | REQ-PAY-008 | 12 |
 | [T-0532](T-0532.md) | PAY | The member app's "Your name" screen, reached from Home | REQ-PAY-008 | 12 |
 | [T-0533](T-0533.md) | FX | The rate lock counts down on the quote's own clock, not the phone's | REQ-FX-001 | 12 |
+| [T-0534](T-0534.md) | WAL | The funder's household: each member they fund, with balances and last spend | REQ-WAL-007 | 13 |
+| [T-0535](T-0535.md) | WAL | P05 family dashboard in funder mode | REQ-WAL-007 | 13 |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |

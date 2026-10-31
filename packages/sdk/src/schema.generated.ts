@@ -2212,6 +2212,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/plans": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The plan versions a new member joins on now, in one market
+         * @description REQ-BIL-001 (T-0305). Per plan, the latest approved version in force (as finance set it, T-0932), with its price per term, term, the monthly price rounded up and what it includes; never a proposed or rejected version. Any signed-in member. A market other than IL or US answers 422.
+         */
+        readonly get: operations["listPlans"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/requests": {
         readonly parameters: {
             readonly query?: never;
@@ -3452,6 +3472,18 @@ export interface components {
             /** @enum {string} */
             readonly error: "invalid_request" | "invalid_grant" | "unsupported_grant_type" | "invalid_target";
             readonly error_description?: string;
+        };
+        readonly OfferedPlan: {
+            readonly entitlements: components["schemas"]["EntitlementTemplates"];
+            readonly fxMarkupBps: number;
+            /** @enum {string} */
+            readonly market: "IL" | "US";
+            readonly monthlyPrice: components["schemas"]["Money"];
+            readonly name: string;
+            readonly planCode: string;
+            readonly price: components["schemas"]["Money"];
+            readonly termMonths: number;
+            readonly version: number;
         };
         readonly OpsCase: {
             /** Format: date-time */
@@ -7362,6 +7394,31 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["InstitutionPayout"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listPlans: {
+        readonly parameters: {
+            readonly query: {
+                readonly market: "IL" | "US";
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Offered plans, by plan code */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["OfferedPlan"][];
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];

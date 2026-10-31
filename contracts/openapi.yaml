@@ -422,6 +422,27 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Household" }
         default: { $ref: "#/components/responses/Problem" }
+  /plans:
+    get:
+      operationId: listPlans
+      summary: The plan versions a new member joins on now, in one market
+      description: >-
+        REQ-BIL-001 (T-0305). Per plan, the latest approved version in force (as finance set it, T-0932), with its price
+        per term, term, the monthly price rounded up and what it includes; never a proposed or rejected version. Any
+        signed-in member. A market other than IL or US answers 422.
+      parameters:
+        - { name: market, in: query, required: true, schema: { type: string, enum: [IL, US] } }
+      responses:
+        "200":
+          description: Offered plans, by plan code
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/OfferedPlan" } }
+        default: { $ref: "#/components/responses/Problem" }
   /memberships:
     post:
       operationId: createMembership
@@ -2884,6 +2905,19 @@ components:
           limit: { type: string, pattern: "^[0-9]{1,19}$" }
           unit: { type: string, enum: [gb, calls, minor, count] }
           period: { type: string, enum: [month, term, none] }
+    OfferedPlan:
+      type: object
+      required: [planCode, name, version, market, price, termMonths, monthlyPrice, entitlements, fxMarkupBps]
+      properties:
+        planCode: { type: string }
+        name: { type: string }
+        version: { type: integer, minimum: 1 }
+        market: { type: string, enum: [IL, US] }
+        price: { $ref: "#/components/schemas/Money" }
+        termMonths: { type: integer, minimum: 1, maximum: 12 }
+        monthlyPrice: { $ref: "#/components/schemas/Money" }
+        entitlements: { $ref: "#/components/schemas/EntitlementTemplates" }
+        fxMarkupBps: { type: integer }
     PlanVersion:
       type: object
       required: [planCode, name, version, price, termMonths, entitlements, fxMarkupBps, effectiveFrom, state, offered, createdAt]

@@ -13,6 +13,9 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-AUTH-007 | P1 | 10-min access, rotating refresh, family revocation on reuse |
 | REQ-AUTH-008 | P2 | Institution staff SSO with SCIM deprovisioning in 15 min |
 | REQ-AUTH-009 | P1 | Admin via SSO + phishing-resistant MFA, VPN only |
+| REQ-BIL-001 | P1 | Members see the plan versions offered in their market, with price per term, term and monthly price; never a proposed or rejected one |
+| REQ-BIL-002 | P1 | A T1-verified funder invites a member onto a plan with a saved payment method; the invite expires in 7 days and charges nothing until accepted |
+| REQ-BIL-003 | P1 | Accepting a funder's invite starts one active membership on the invite's plan version, charged once however often it is retried |
 | REQ-LED-001 | P1 | Every journal sums to zero per currency |
 | REQ-LED-002 | P1 | ledger.* rejects UPDATE/DELETE at grant level |
 | REQ-LED-003 | P1 | Same idempotency key returns the original journal |
@@ -24,6 +27,7 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-WAL-004 | P2 | Auto-reload to target, at most once per 24 h |
 | REQ-WAL-005 | P1 | Balance withdrawn or refunded on closure |
 | REQ-WAL-006 | P2 | Loads credit the chosen purse; cross-currency loads convert at the club rate |
+| REQ-WAL-007 | P2 | A funder sees each member they fund and each open invite, with balances and last spend, and no one else's |
 | REQ-CRD-001 | P2 | Virtual card within 60 s of T2 approval |
 | REQ-CRD-002 | P2 | PAN/CVV only via the processor PCI component |
 | REQ-CRD-003 | P2 | JIT decision under 300 ms p99 |

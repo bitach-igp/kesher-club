@@ -13,3 +13,14 @@ Steps (from repo root, PowerShell on Windows unless stated):
 10. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with ledger at 25 migrations and billing at 2. Steps 5 and 6 print `SET` then `INSERT 0 1`; step 7 `SET` then `UPDATE 1`; step 8 one row: `t0932-check | 1 | active | IL`. Step 9 prints `SET` then `ERROR:  permission denied for table plan_version`.
 Report back: the console output of steps 4 to 9.
+
+## Result
+PASS, 2026-10-30 17:15 Asia/Jerusalem, on runner worktree at 53face1, Docker 29.8.2, postgres:16 (fresh container; run twice, the second time with stderr merged so step 9's error line shows).
+- Step 3: `DO`, `DO`, `REVOKE`, `ALTER ROLE`, `ALTER DEFAULT PRIVILEGES`, `ALTER ROLE` x6 (BOM-less `$OutputEncoding`).
+- Step 4: `Migrating to version 0025 (25 migrations in total)` for ledger, `Migrating to version 0002` for billing; `ok` for all 9 schemas.
+- Step 5: `SET` / `INSERT 0 1`
+- Step 6: `SET` / `INSERT 0 1`
+- Step 7: `SET` / `UPDATE 1`
+- Step 8: one row: `t0932-check | 1 | active | IL`
+- Step 9: `SET` / `ERROR:  permission denied for table plan_version` (exit 1; price_minor still 18000).
+- Step 10: container removed.
