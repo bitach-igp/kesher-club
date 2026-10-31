@@ -20,3 +20,8 @@ POST /auth/token/refresh the 'deviceId' request property's minLength was increas
 
 # T-0610 (REQ-AUTH-006, REQ-INS-004): an allowance run moves institution money, so a run that pays (dryRun false) now needs a step-up like every other money action; a preview ignores the header. The institution console, the only client, sends it in the same change.
 POST /institutions/{id}/allowance-runs added the new required 'header' request parameter 'X-Step-Up'
+# T-0632 (REQ-INS-016): a self-serve application opens a kyb_application case in the ops queue. OpsCase is read only by the admin console, which is ours (ADR-013), ships with the API and gains the kind's words in the same change.
+GET /admin/cases added the new `kyb_application` enum value to the `items/items/kind` response property for the response status `200`
+GET /admin/cases/{id} added the new `kyb_application` enum value to the `kind` response property for the response status `200`
+POST /admin/cases/{id}/assign added the new `kyb_application` enum value to the `kind` response property for the response status `200`
+POST /admin/cases/{id}/decisions added the new `kyb_application` enum value to the `kind` response property for the response status `200`
