@@ -578,6 +578,25 @@ paths:
                   invite: { $ref: "#/components/schemas/FunderInvite" }
                   membership: { $ref: "#/components/schemas/Membership" }
         default: { $ref: "#/components/responses/Problem" }
+  /households/{id}/members/{partyId}:
+    get:
+      operationId: getHouseholdMember
+      summary: "One member the caller funds: transactions, this month's spend by category, and cards"
+      description: >-
+        REQ-WAL-009 (T-0537). Only a member the caller funds, in the caller's own household; any other answers 404
+        (THR-09). The latest 50 transactions across both purses (no P2P names or notes: the rows carry none), this
+        calendar month's card spend (held or cleared, not released) by category per currency, and the member's cards
+        with the controls the funder set. Behind wallet.enabled.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: partyId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The member's activity
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/HouseholdMemberActivity" }
+        default: { $ref: "#/components/responses/Problem" }
   /memberships:
     post:
       operationId: createMembership
@@ -3589,6 +3608,32 @@ components:
               membershipStatus: { type: string, enum: [invited] }
               planCode: { type: string }
               expiresAt: { type: string, format: date-time }
+    HouseholdMemberActivity:
+      type: object
+      required: [partyId, displayName, transactions, spendByCategory, cards]
+      properties:
+        partyId: { type: string, format: uuid }
+        displayName: { type: string }
+        transactions: { type: array, items: { $ref: "#/components/schemas/Transaction" } }
+        spendByCategory:
+          type: array
+          items:
+            type: object
+            required: [category, amount]
+            properties:
+              category: { type: string, enum: [food_drink, groceries, transport, shopping, travel, entertainment, other] }
+              amount: { $ref: "#/components/schemas/Money" }
+        cards:
+          type: array
+          items:
+            type: object
+            required: [id, type, status, last4, lockedByFunder]
+            properties:
+              id: { type: string, format: uuid }
+              type: { type: string, enum: [virtual, physical] }
+              status: { type: string }
+              last4: { type: string }
+              lockedByFunder: { type: array, items: { type: string } }
     MembershipRequest:
       type: object
       required: [memberPartyId, planCode]

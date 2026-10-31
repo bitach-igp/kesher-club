@@ -1588,6 +1588,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/households/{id}/members/{partyId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * One member the caller funds: transactions, this month's spend by category, and cards
+         * @description REQ-WAL-009 (T-0537). Only a member the caller funds, in the caller's own household; any other answers 404 (THR-09). The latest 50 transactions across both purses (no P2P names or notes: the rows carry none), this calendar month's card spend (held or cleared, not released) by category per currency, and the member's cards with the controls the funder set. Behind wallet.enabled.
+         */
+        readonly get: operations["getHouseholdMember"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/ach-pulls": {
         readonly parameters: {
             readonly query?: never;
@@ -3309,6 +3329,26 @@ export interface components {
                 readonly partyId: string;
                 readonly planCode?: string;
             }[];
+        };
+        readonly HouseholdMemberActivity: {
+            readonly cards: readonly {
+                /** Format: uuid */
+                readonly id: string;
+                readonly last4: string;
+                readonly lockedByFunder: readonly string[];
+                readonly status: string;
+                /** @enum {string} */
+                readonly type: "virtual" | "physical";
+            }[];
+            readonly displayName: string;
+            /** Format: uuid */
+            readonly partyId: string;
+            readonly spendByCategory: readonly {
+                readonly amount: components["schemas"]["Money"];
+                /** @enum {string} */
+                readonly category: "food_drink" | "groceries" | "transport" | "shopping" | "travel" | "entertainment" | "other";
+            }[];
+            readonly transactions: readonly components["schemas"]["Transaction"][];
         };
         readonly InstitutionAchPull: {
             readonly amount: components["schemas"]["Money"];
@@ -6583,6 +6623,30 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Household"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getHouseholdMember: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+                readonly partyId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The member's activity */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HouseholdMemberActivity"];
                 };
             };
             readonly default: components["responses"]["Problem"];
