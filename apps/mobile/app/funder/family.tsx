@@ -60,6 +60,7 @@ export function FamilyView({ model }: { model: FamilyModel }) {
             {status ? <Txt tone="secondary">{t(status, locale)}</Txt> : null}
             <Txt tone="secondary">{m.lastSpend ? t('family.lastSpend', locale, { amount: fmt(m.lastSpend.amount, locale), date: new Date(m.lastSpend.at).toLocaleDateString(locale === 'he' ? 'he-IL' : 'en-US', { day: 'numeric', month: 'short' }) }) : t('family.noSpend', locale)}</Txt>
             <Button label={t('family.addMoney', locale)} onPress={() => model.addMoney(m.partyId)} testID={`family-add-${m.partyId}`} />
+            <Button label={t('family.open', locale)} variant="tertiary" onPress={() => model.open(m.partyId)} testID={`family-open-${m.partyId}`} />
           </Card>
         );
       })}
