@@ -1385,6 +1385,21 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FeeBatch" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/dashboard:
+    get:
+      operationId: getInstitutionDashboard
+      summary: The institution's dashboard for its staff
+      description: >-
+        REQ-INS-017 (T-0634). Any active staff role of this institution; another institution's staff get 404. The
+        roster by status, the master balances, the next three allowance runs and fees due: counts and sums only.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The dashboard
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionDashboard" }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/collections:
     get:
       operationId: listCollections
@@ -3693,6 +3708,31 @@ components:
         refreshToken: { type: string }
         accessExpiresAt: { type: string, format: date-time }
         restrictedUntil: { type: string, format: date-time, description: Set during the 24 h recovery hold (REQ-AUTH-003) }
+    InstitutionDashboard:
+      type: object
+      required: [roster, balances, upcomingRuns, feesDue]
+      properties:
+        roster:
+          type: object
+          required: [invited, verified, active]
+          properties:
+            invited: { type: integer, minimum: 0 }
+            verified: { type: integer, minimum: 0 }
+            active: { type: integer, minimum: 0 }
+        balances: { type: array, items: { $ref: "#/components/schemas/Money" }, description: The master account per currency }
+        upcomingRuns:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            required: [scheduleId, name, date, amount, memberCount]
+            properties:
+              scheduleId: { type: string, format: uuid }
+              name: { type: string, description: The schedule's name, as staff wrote it }
+              date: { type: string, format: date }
+              amount: { $ref: "#/components/schemas/Money" }
+              memberCount: { type: integer, minimum: 0 }
+        feesDue: { type: array, items: { $ref: "#/components/schemas/Money" }, description: Fee items still due, per currency }
     InstitutionApplicationRequest:
       type: object
       required: [legalName, market, registrationNumber, address]
