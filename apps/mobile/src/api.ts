@@ -222,7 +222,13 @@ export interface FunderApi {
   /** M04 for a funder's invite (T-0309): read and accepted signed in. */
   joinPreview(token: string): Promise<FunderInvitePreview>;
   joinAccept(token: string, idempotencyKey: string): Promise<{ invite: FunderInvite; membership: Schemas['Membership'] }>;
+  /** P13 (T-0311): the memberships the signed-in funder pays for, and the one they hold. */
+  memberships(): Promise<{ items: readonly MembershipRow[] }>;
+  /** P13: ends a membership at the end of its paid period; idempotent by key. */
+  cancelMembership(id: string, idempotencyKey: string): Promise<Schemas['Membership']>;
 }
+
+export type MembershipRow = Schemas['Membership'] & { role: 'funder' | 'member'; memberPartyId: string; memberName?: string };
 
 /** Roster invite links (M04, T-0626): the preview is public, the accept needs the member signed in. */
 export interface InvitesApi {
@@ -390,6 +396,8 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
       },
       joinPreview: (token) => client.get('/funder-invites/{token}', { path: { token } }),
       joinAccept: (token, idempotencyKey) => client.post('/funder-invites/{token}/accept', { path: { token }, idempotencyKey }),
+      memberships: () => client.get('/memberships'),
+      cancelMembership: (id, idempotencyKey) => client.post('/memberships/{id}/cancel', { path: { id }, idempotencyKey }),
     },
     invites: {
       preview: (token) => client.get('/invites/{token}', { path: { token } }),
