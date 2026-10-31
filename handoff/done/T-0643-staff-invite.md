@@ -13,3 +13,13 @@ Steps (from repo root, PowerShell on Windows unless stated):
 10. docker rm -f kesher-pg
 Expected: step 5 prints `ok` for every schema, with org at 10 migrations. Step 6 prints `INSERT 0 1`, then `SET` and `INSERT 0 1` twice. Step 7 prints `SET` and an error: duplicate key value violates unique constraint `staff_invite_acceptance_pkey`. Step 8 prints `SET` and `ERROR: permission denied for table staff_invite`. Step 9 prints one row: `finance | 00000000-0000-7000-8000-0000000643b0`.
 Report back: the console output of steps 5 to 9.
+
+## Result
+PASS · 2026-11-01 00:10 Asia/Jerusalem · runner worktree at 214a070, Docker 29.8.2, postgres:16, fresh container, removed after.
+- Step 4 (roles.sql): DO, DO, REVOKE, ALTER ROLE, ALTER DEFAULT PRIVILEGES, ALTER ROLE x6.
+- Step 5: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent; org at 10 migrations.
+- Step 6: INSERT 0 1, SET, INSERT 0 1, SET, INSERT 0 1.
+- Step 7: SET; ERROR: duplicate key value violates unique constraint "staff_invite_acceptance_pkey" (exit 1).
+- Step 8: ERROR: permission denied for table staff_invite (exit 1).
+- Step 9: `finance | 00000000-0000-7000-8000-0000000643b0` (1 row).
+- Step 10: container removed.
