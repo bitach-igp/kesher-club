@@ -1475,6 +1475,31 @@ paths:
                   cohort: { $ref: "#/components/schemas/Cohort" }
                   placed: { type: integer, minimum: 0 }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/members:
+    get:
+      operationId: listInstitutionMembers
+      summary: The roster for staff, by status and cohort, 50 a page
+      description: >-
+        REQ-INS-019 (T-0638). Any active staff role of this institution; another institution's staff get 404. Each row
+        has the name as the roster holds it (untrusted text), status, cohort, card state, wallet balances per currency
+        and plan. A row never carries merchant-level spend (REQ-INS-005).
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: status, in: query, required: false, schema: { type: string, enum: [invited, verified, active, declined, removed] } }
+        - { name: cohort, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: cursor, in: query, required: false, schema: { type: string } }
+      responses:
+        "200":
+          description: A page of the roster
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/RosterMember" } }
+                  nextCursor: { type: string }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/collections:
     get:
       operationId: listCollections
@@ -3783,6 +3808,23 @@ components:
         refreshToken: { type: string }
         accessExpiresAt: { type: string, format: date-time }
         restrictedUntil: { type: string, format: date-time, description: Set during the 24 h recovery hold (REQ-AUTH-003) }
+    RosterMember:
+      type: object
+      required: [id, name, status, card, balances]
+      additionalProperties: false
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, description: As the roster holds it; untrusted text }
+        status: { type: string, enum: [invited, verified, active, declined, removed] }
+        cohort:
+          type: object
+          required: [id, name]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+        card: { type: string, enum: [none, inactive, active, frozen] }
+        balances: { type: array, items: { $ref: "#/components/schemas/Money" }, description: Wallet balances per currency; empty before the member joined }
+        planCode: { type: string }
     Cohort:
       type: object
       required: [id, name, startsOn, endsOn, memberCount]
