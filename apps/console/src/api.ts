@@ -63,5 +63,34 @@ export function institutionApi(baseUrl: string, accessToken: string, stepUpToken
   };
 }
 
+/**
+ * The API as the signed-in person themselves, for I01 (T-0633): someone with no institution yet applies with
+ * their member token. Nothing here reaches institution data.
+ */
+export function memberApi(baseUrl: string, accessToken: string) {
+  const c = createClient({
+    baseUrl,
+    getAccessToken: () => accessToken,
+    newIdempotencyKey: () => {
+      throw new Error('Every console call that takes an idempotency key names it');
+    },
+  });
+  return {
+    capabilities: () => c.get('/me/capabilities'),
+    myApplication: () => c.get('/me/institution-application'),
+    createApplication: (body: Schemas['InstitutionApplicationRequest'], idempotencyKey: string) => c.post('/institution-applications', { body, idempotencyKey }),
+    addSignatory: (id: string, body: { fullName: string; roles: ('board' | 'control' | 'signatory')[]; self?: boolean }, idempotencyKey: string) => c.post('/institution-applications/{id}/signatories', { path: { id }, body, idempotencyKey }),
+    proposeAccount: (id: string, body: { holderName: string; iban?: string; routingNumber?: string; accountNumber?: string }) => c.post('/institution-applications/{id}/account', { path: { id }, body }),
+    submitApplication: (id: string) => c.post('/institution-applications/{id}/submit', { path: { id } }),
+  };
+}
+
+/** The problem's `problems` list, when the API named what was wrong (an account, a missing step). */
+export const problemsOf = (e: unknown): string[] | undefined => {
+  if (!(e instanceof ApiError)) return undefined;
+  const p = (e.problem as unknown as Record<string, unknown>)['problems'] ?? (e.problem as unknown as Record<string, unknown>)['missing'];
+  return Array.isArray(p) ? p.filter((x): x is string => typeof x === 'string') : undefined;
+};
+
 /** The API's error code, for a server action to hand back; undefined for anything that is not an API answer. */
 export const codeOf = (e: unknown): string | undefined => (e instanceof ApiError ? String(e.code ?? e.status) : undefined);
