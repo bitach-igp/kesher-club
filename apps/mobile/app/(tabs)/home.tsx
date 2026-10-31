@@ -75,6 +75,10 @@ export function HomeView({ model }: { model: HomeModel }) {
         {/* Member text, shown as written. */}
         <ListRow title={t('home.yourName', locale)} subtitle={s.displayName ?? t('home.yourName.notSet', locale)} onPress={model.goName} last testID="home-your-name" />
       </Card>
+      {/* Funder mode (decision 1): any signed-in adult may pay for someone's membership (T-0308). */}
+      <Card testID="home-funder">
+        <ListRow title={t('funder.entry', locale)} onPress={() => router.push('/funder/plans')} last testID="home-funder-entry" />
+      </Card>
       {actions.length ? (
         <Card testID="home-quick">
           <Txt variant="headline">{t('home.quick.title', locale)}</Txt>
