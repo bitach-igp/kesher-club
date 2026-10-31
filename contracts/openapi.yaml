@@ -1400,6 +1400,81 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/InstitutionDashboard" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/cohorts:
+    get:
+      operationId: listCohorts
+      summary: The institution's cohorts, newest start first, with how many members each holds
+      description: REQ-INS-018 (T-0636). Any active staff role of this institution; another institution's staff get 404.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Cohorts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Cohort" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createCohort
+      summary: Create a cohort with its start and end dates
+      description: REQ-INS-018 (T-0636). The end must be after the start (422). A retry with the same key answers the same cohort.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, startsOn, endsOn]
+              properties:
+                name: { type: string, maxLength: 120 }
+                startsOn: { type: string, format: date }
+                endsOn: { type: string, format: date }
+      responses:
+        "201":
+          description: The cohort
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Cohort" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/cohorts/{cohortId}/members:
+    post:
+      operationId: placeCohortMembers
+      summary: Place roster members in a cohort, all or none
+      description: >-
+        REQ-INS-018 (T-0636). Up to 500 roster member ids. A member's cohort is their latest placement; earlier ones
+        stay as history. A member or cohort of another institution answers 404 and places nobody; a retried batch
+        places nobody twice.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: cohortId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [memberIds]
+              properties:
+                memberIds: { type: array, minItems: 1, maxItems: 500, items: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The cohort and how many placements this call made
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [cohort, placed]
+                properties:
+                  cohort: { $ref: "#/components/schemas/Cohort" }
+                  placed: { type: integer, minimum: 0 }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/collections:
     get:
       operationId: listCollections
@@ -3708,6 +3783,15 @@ components:
         refreshToken: { type: string }
         accessExpiresAt: { type: string, format: date-time }
         restrictedUntil: { type: string, format: date-time, description: Set during the 24 h recovery hold (REQ-AUTH-003) }
+    Cohort:
+      type: object
+      required: [id, name, startsOn, endsOn, memberCount]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string, description: As staff wrote it }
+        startsOn: { type: string, format: date }
+        endsOn: { type: string, format: date }
+        memberCount: { type: integer, minimum: 0, description: Members whose latest placement is this cohort }
     InstitutionDashboard:
       type: object
       required: [roster, balances, upcomingRuns, feesDue]

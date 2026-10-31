@@ -1,4 +1,4 @@
-h1:PJqU66h3H3rkYi0F/33EGYADXS8EIPMrULYi3xXEiOI=
+h1:wsAce3xs61V/l9Wrko3Ct9i0zndDxvUGK/2Yll0IxaE=
 0001_init.sql h1:JG6O+KzBGryTso9G88hAhZ0xHkiUIAq9t3nVJkY5ix8=
 0002_allowance.sql h1:Q+8fviRxwHwnDpVGRKk3reSjfT6v/TF0R74S5bL6XFo=
 0003_institution_onboarding.sql h1:jtM6a6UzbbLc5HUeWMz3mpmg+eUhtCj1KKsyyr6oBVA=
@@ -7,3 +7,4 @@ h1:PJqU66h3H3rkYi0F/33EGYADXS8EIPMrULYi3xXEiOI=
 0006_allowance_schedule_request.sql h1:5PeFD3y+sANuqxCyP6o/jAqoYE84GczmNrSHWC8u3xU=
 0007_fee_batch.sql h1:Vjz/97Fis65X/14Jnc8ip9dgYIfo2D8PSnJ7QB1Zum8=
 0008_institution_application.sql h1:zfAwkhL+MnsX8UvbiK7oyBzCzvsS2X4t3rQ1ze5aGUo=
+0009_cohort.sql h1:sjmB96gJfkgrPGvPyMU5zZ1HlpT4q/Rn9vOY/cI57sA=
