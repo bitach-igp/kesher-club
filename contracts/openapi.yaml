@@ -616,7 +616,10 @@ paths:
     get:
       operationId: listTransactions
       summary: Transactions on a purse, newest first
-      description: REQ-WAL-001. Merchant text sits in `untrusted` fields.
+      description: >-
+        REQ-WAL-001, REQ-WAL-008 (T-0536). The caller's own purse only; another's answers 404. Read from the ledger: a card
+        authorisation is one row, pending until it clears (settled) or is released (reversed). A card spend carries its
+        merchant category and country. Merchant text sits in `untrusted` fields. Behind wallet.enabled.
       parameters:
         - { $ref: "#/components/parameters/Id" }
         - { $ref: "#/components/parameters/Cursor" }
@@ -3625,6 +3628,8 @@ components:
         amount: { $ref: "#/components/schemas/Money" }
         at: { type: string, format: date-time }
         state: { type: string, enum: [pending, settled, reversed] }
+        mcc: { type: string, description: A card spend's merchant category code (REQ-WAL-008) }
+        country: { type: string, description: A card spend's merchant country }
         counterparty: { type: string, description: Untrusted display text (merchant or member) }
         untrusted:
           type: object

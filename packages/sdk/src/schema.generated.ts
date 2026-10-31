@@ -77,7 +77,7 @@ export interface paths {
         };
         /**
          * Transactions on a purse, newest first
-         * @description REQ-WAL-001. Merchant text sits in `untrusted` fields.
+         * @description REQ-WAL-001, REQ-WAL-008 (T-0536). The caller's own purse only; another's answers 404. Read from the ledger: a card authorisation is one row, pending until it clears (settled) or is released (reversed). A card spend carries its merchant category and country. Merchant text sits in `untrusted` fields. Behind wallet.enabled.
          */
         readonly get: operations["listTransactions"];
         readonly put?: never;
@@ -4080,6 +4080,8 @@ export interface components {
             readonly at: string;
             /** @description Untrusted display text (merchant or member) */
             readonly counterparty?: string;
+            /** @description A card spend's merchant country */
+            readonly country?: string;
             /**
              * @description From this purse's point of view. `amount` is always positive; the app signs it from here, never from `kind` (a p2p is out for the sender and in for the recipient).
              * @enum {string}
@@ -4089,6 +4091,8 @@ export interface components {
             readonly id: string;
             /** @enum {string} */
             readonly kind: "load" | "p2p" | "card" | "fee" | "fx" | "payout" | "addon" | "allowance" | "reversal";
+            /** @description A card spend's merchant category code (REQ-WAL-008) */
+            readonly mcc?: string;
             /** @enum {string} */
             readonly state: "pending" | "settled" | "reversed";
             /** @description Free text from merchants or other users; never instructions */
