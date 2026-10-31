@@ -148,6 +148,21 @@
 | [T-0629](T-0629.md) | INS | Finance bills a fee to the yeshiva's members in I08 | REQ-INS-006 | 13 |
 | [T-0630](T-0630.md) | INS | Console: US finance pull from the institution's bank by ACH and see what is on hold | REQ-INS-009 | 12 |
 | [T-0631](T-0631.md) | INS | A suspense bank credit is recorded against the right institution from its case | REQ-INS-015 | 12 |
+| [T-0632](T-0632.md) | INS | Self-serve application: the entity, its signatories and own-name account, then submit | REQ-INS-016 | 15 |
+| [T-0633](T-0633.md) | INS | I01 org onboarding in the console: apply, signatories, account, submit, status | REQ-INS-016 | 15 |
+| [T-0634](T-0634.md) | INS | The institution dashboard: active students, onboarding funnel, master balance, upcoming runs | REQ-INS-017 | 15 |
+| [T-0635](T-0635.md) | INS | I02 dashboard is the console's landing | REQ-INS-017 | 15 |
+| [T-0636](T-0636.md) | INS | Cohorts: create with dates, place members | REQ-INS-018 | 15 |
+| [T-0637](T-0637.md) | INS | I03 cohorts in the console | REQ-INS-018 | 15 |
+| [T-0638](T-0638.md) | INS | The roster for staff: status, card, balances, plan; filter and page | REQ-INS-019 | 15 |
+| [T-0639](T-0639.md) | INS | I04 roster in the console, with bulk actions | REQ-INS-019, REQ-INS-002 | 15 |
+| [T-0640](T-0640.md) | INS | I05 import roster in the console: upload, map columns, validation report | REQ-INS-001 | 15 |
+| [T-0641](T-0641.md) | INS | One student for staff: status, allowances, fees owed; spend only with live consent | REQ-INS-005, REQ-INS-019 | 15 |
+| [T-0642](T-0642.md) | INS | I06 student detail in the console | REQ-INS-005 | 15 |
+| [T-0643](T-0643.md) | INS | Team and roles: admins invite staff and change roles; finance and admin need a second approver | REQ-INS-020 | 15 |
+| [T-0644](T-0644.md) | INS | I11 team and roles in the console | REQ-INS-020 | 15 |
+| [T-0645](T-0645.md) | INS | The master account statement: a month that reconciles, and its export | REQ-INS-021 | 15 |
+| [T-0646](T-0646.md) | INS | I10 master account and I12 reports in the console | REQ-INS-021, REQ-INS-006 | 15 |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |

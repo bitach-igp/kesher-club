@@ -63,6 +63,12 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-INS-013 | P2 | Daily sanctions rescreen; an open match suspends payouts and credit draws |
 | REQ-INS-014 | P2 | KYB refresh every 12/24/36 months by risk; overdue drops to approved with limits |
 | REQ-INS-015 | P2 | A suspense bank credit is resolved only by recording it against an institution through the two-person deposit path, or dismissed with a note |
+| REQ-INS-016 | P1 | An organisation applies on its own: entity, signatories, own-name account; submitting opens KYB review, and no money moves until approved |
+| REQ-INS-017 | P2 | Staff see their institution's dashboard: active students, onboarding funnel, master balance, upcoming runs |
+| REQ-INS-018 | P2 | Cohorts with start and end dates; members placed in one cohort of their own institution |
+| REQ-INS-019 | P2 | Staff list the roster by status and cohort: name, status, card, balances, plan; never merchant-level spend |
+| REQ-INS-020 | P2 | Institution admins invite staff and change roles; finance and admin roles need a second approver; removal ends access at once |
+| REQ-INS-021 | P2 | A month's master account statement reconciles opening to closing, and its export equals it |
 | REQ-FX-001 | P2 | Quotes lock 30 s with rate, markup, total |
 | REQ-FX-002 | P2 | Markup from plan config stored on the journal |
 | REQ-FX-003 | P2 | Conversions use the club-published, versioned rate; the version is on the quote and the journal |
