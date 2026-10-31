@@ -1564,6 +1564,109 @@ paths:
                   opening: { $ref: "#/components/schemas/Money" }
                   closing: { $ref: "#/components/schemas/Money" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/team:
+    get:
+      operationId: getInstitutionTeam
+      summary: The institution's staff, open invites, and roles waiting for a second admin
+      description: REQ-INS-020 (T-0643). Any active staff role of this institution reads it; another institution's staff get 404.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The team
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/InstitutionTeam" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/staff-invites:
+    post:
+      operationId: createStaffInvite
+      summary: Invite someone to the institution's staff by email or phone
+      description: >-
+        REQ-INS-020 (T-0643). Institution admins only (403 for other staff). The address and the link's token are kept
+        only as hashes. A finance or admin invite lands as staff on acceptance and opens a grant the inviter proposed.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { type: string, enum: [staff, finance, admin] }
+                email: { type: string, maxLength: 254 }
+                phone: { type: string, pattern: "^\\+[1-9]\\d{7,14}$" }
+      responses:
+        "201":
+          description: The invite
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffInvite" }
+        default: { $ref: "#/components/responses/Problem" }
+  /staff-invites/{token}/accept:
+    post:
+      operationId: acceptStaffInvite
+      summary: Accept a staff invite, signed in
+      description: >-
+        REQ-INS-020 (T-0643). Joins as staff at once; a finance or admin invite also opens the grant its inviter
+        proposed, which a second admin approves. Expired, taken by someone else, or staff of another institution: 409.
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      responses:
+        "200":
+          description: The new staff member, and the grant when the role needs a second admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffChange" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/team/{partyId}:
+    patch:
+      operationId: updateInstitutionStaff
+      summary: Change a staff member's role, or remove them
+      description: >-
+        REQ-INS-020 (T-0643). Institution admins only. `staff` applies at once; `finance` or `admin` opens a grant a
+        second admin approves; `active: false` removes them, and their next call is refused. The last active admin
+        cannot be removed or demoted (409); nobody raises their own role (403).
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: partyId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string, enum: [staff, finance, admin] }
+                active: { type: boolean, enum: [false] }
+      responses:
+        "200":
+          description: The staff member, and the grant when the role needs a second admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffChange" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/staff-grants/{grantId}/approve:
+    post:
+      operationId: approveStaffGrant
+      summary: A second admin approves a finance or admin role
+      description: >-
+        REQ-INS-020 (T-0643). An admin of this institution other than the proposer and the person granted, with a
+        fresh step-up. The role applies once approved.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: grantId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/StepUp" }
+      responses:
+        "200":
+          description: The grant, and the staff member once it applied
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffChange" }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/collections:
     get:
       operationId: listCollections
@@ -3872,6 +3975,36 @@ components:
         refreshToken: { type: string }
         accessExpiresAt: { type: string, format: date-time }
         restrictedUntil: { type: string, format: date-time, description: Set during the 24 h recovery hold (REQ-AUTH-003) }
+    TeamMember:
+      type: object
+      required: [partyId, role, active, since]
+      properties:
+        partyId: { type: string, format: uuid }
+        role: { type: string, enum: [staff, finance, admin] }
+        active: { type: boolean }
+        since: { type: string, format: date-time }
+    StaffInvite:
+      type: object
+      required: [id, role, channel, sentAt, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        role: { type: string, enum: [staff, finance, admin] }
+        channel: { type: string, enum: [email, sms] }
+        sentAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        acceptedAt: { type: string, format: date-time }
+    InstitutionTeam:
+      type: object
+      required: [staff, invites, pendingGrants]
+      properties:
+        staff: { type: array, items: { $ref: "#/components/schemas/TeamMember" } }
+        invites: { type: array, items: { $ref: "#/components/schemas/StaffInvite" } }
+        pendingGrants: { type: array, items: { $ref: "#/components/schemas/ApprovalRequest" } }
+    StaffChange:
+      type: object
+      properties:
+        staff: { $ref: "#/components/schemas/TeamMember" }
+        grant: { $ref: "#/components/schemas/ApprovalRequest" }
     InstitutionStatement:
       type: object
       required: [month, currency, opening, rows, closing]
