@@ -16,6 +16,7 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-BIL-001 | P1 | Members see the plan versions offered in their market, with price per term, term and monthly price; never a proposed or rejected one |
 | REQ-BIL-002 | P1 | A T1-verified funder invites a member onto a plan with a saved payment method; the invite expires in 7 days and charges nothing until accepted |
 | REQ-BIL-003 | P1 | Accepting a funder's invite starts one active membership on the invite's plan version, charged once however often it is retried |
+| REQ-BIL-004 | P1 | A funder cancels a membership they pay for in two taps, at the end of the paid period; the member keeps the money loaded |
 | REQ-LED-001 | P1 | Every journal sums to zero per currency |
 | REQ-LED-002 | P1 | ledger.* rejects UPDATE/DELETE at grant level |
 | REQ-LED-003 | P1 | Same idempotency key returns the original journal |
@@ -28,6 +29,8 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-WAL-005 | P1 | Balance withdrawn or refunded on closure |
 | REQ-WAL-006 | P2 | Loads credit the chosen purse; cross-currency loads convert at the club rate |
 | REQ-WAL-007 | P2 | A funder sees each member they fund and each open invite, with balances and last spend, and no one else's |
+| REQ-WAL-008 | P2 | Members see each purse's transactions newest first, with kind, direction, amount, state, time, and a card spend's category and country |
+| REQ-WAL-009 | P2 | A funder sees a funded member's transactions and the month's spend by category, never P2P notes or counterparties, and only for members they fund |
 | REQ-CRD-001 | P2 | Virtual card within 60 s of T2 approval |
 | REQ-CRD-002 | P2 | PAN/CVV only via the processor PCI component |
 | REQ-CRD-003 | P2 | JIT decision under 300 ms p99 |
