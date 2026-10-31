@@ -4,7 +4,7 @@ import { useEffect, useMemo } from 'react';
 import { View } from 'react-native';
 import { uuidv7, type Currency } from '@kesher/domain';
 import { useApi } from '../../src/api.ts';
-import { useRouter } from '../../src/navigation.ts';
+import { useParams, useRouter } from '../../src/navigation.ts';
 import { useNow } from '../../src/clock.ts';
 import { Banner, Button, Card, Screen, Skeleton, TextField, Txt } from '../../src/components/index.ts';
 import { t, useLocale, type Locale } from '../../src/i18n.ts';
@@ -24,7 +24,21 @@ export function useAddMoneyModel(): AddMoneyModel {
 }
 
 export default function AddMoneyScreen() {
-  return <AddMoneyView model={useAddMoneyModel()} />;
+  const model = useAddMoneyModel();
+  // P05 opens Add money for one member it funds (T-0535): that member is chosen once the list has loaded.
+  const member = useParams()['member'];
+  useEffect(() => {
+    if (!member) return;
+    // Once, when the list first loads: the funder may still choose someone else afterwards.
+    const stop = model.store.subscribe(() => {
+      const s = model.store.get();
+      if (s.mode !== 'ready') return;
+      stop();
+      if (s.memberPartyId !== member && s.members.some((m) => m.partyId === member)) model.setMember(member);
+    });
+    return stop;
+  }, [model, member]);
+  return <AddMoneyView model={model} />;
 }
 
 const dateText = (iso: string, locale: Locale): string => new Date(iso).toLocaleDateString(locale === 'he' ? 'he-IL' : 'en-US', { weekday: 'short', day: 'numeric', month: 'short' });

@@ -77,6 +77,7 @@ export function HomeView({ model }: { model: HomeModel }) {
       </Card>
       {/* Funder mode (decision 1): any signed-in adult may pay for someone's membership (T-0308). */}
       <Card testID="home-funder">
+        <ListRow title={t('family.entry', locale)} onPress={() => router.push('/funder/family')} testID="home-family" />
         <ListRow title={t('funder.entry', locale)} onPress={() => router.push('/funder/plans')} last testID="home-funder-entry" />
       </Card>
       {actions.length ? (
