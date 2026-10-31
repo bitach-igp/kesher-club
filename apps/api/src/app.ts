@@ -211,7 +211,7 @@ function buildServices(o: AppOptions) {
   webhooks.bind(PAYOUT_PROVIDER, { verifier: payouts.webhookVerifier(), process: (e) => payouts.applyWebhook(e, clock.now()).then(() => undefined) });
   // The bank feed (T-0618): bound only where a bank is (ADR-006 decides which); the manual record stays the fallback.
   const planCatalogue = new PlanCatalogue(o.db, plans, approvals, audit);
-  const funderInvites = new FunderInvites({ db: o.db, plans, memberships, billing: billingPort, kyc, notify: notifyPort, flags });
+  const funderInvites = new FunderInvites({ db: o.db, plans, memberships, billing: billingPort, kyc, notify: notifyPort, flags, displayNames });
   const deposits = new InstitutionDeposits({ db: o.db, ledger, accounts, transfers, approvals, audit, flags, kyb: kybGate });
   if (o.registry.bindingFor('bank', o.market)) webhooks.bind(BANK_PROVIDER, { verifier: bankCreditVerifier(o.registry.resolve<BankPort>('bank', o.market)), process: (e) => deposits.applyBankEvent(e, clock.now()).then(() => undefined) });
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });

@@ -536,6 +536,44 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FunderInvite" }
         default: { $ref: "#/components/responses/Problem" }
+  /funder-invites/{token}:
+    get:
+      operationId: getFunderInvitePreview
+      summary: A funder's invite as M04 shows it before the member accepts
+      description: REQ-BIL-003 (T-0307). Any signed-in member holding the link. An unknown or rotated link answers 404.
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string, minLength: 16, maxLength: 64 } }
+      responses:
+        "200":
+          description: The invite
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunderInvitePreview" }
+        default: { $ref: "#/components/responses/Problem" }
+  /funder-invites/{token}/accept:
+    post:
+      operationId: acceptFunderInvite
+      summary: Accept a funder's invite; the membership starts, charged to the funder's saved card once
+      description: >-
+        REQ-BIL-003 (T-0307). Starts one membership on the invite's pinned plan version with the inviter as funder; a
+        retry, with any key, is the same membership. An expired, cancelled or someone else's accepted invite answers 409
+        and charges nothing; the funder accepting their own invite answers 422; a declined card answers 422 and leaves
+        the invite open. Behind billing.stripe.
+      parameters:
+        - { name: token, in: path, required: true, schema: { type: string, minLength: 16, maxLength: 64 } }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "200":
+          description: The invite, accepted, and the membership it started
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [invite, membership]
+                properties:
+                  invite: { $ref: "#/components/schemas/FunderInvite" }
+                  membership: { $ref: "#/components/schemas/Membership" }
+        default: { $ref: "#/components/responses/Problem" }
   /memberships:
     post:
       operationId: createMembership
@@ -3013,6 +3051,17 @@ components:
         sentCount: { type: integer, minimum: 1 }
         createdAt: { type: string, format: date-time }
         membershipId: { type: string, format: uuid }
+    FunderInvitePreview:
+      type: object
+      required: [funderName, memberName, planCode, planName, price, termMonths, status]
+      properties:
+        funderName: { type: string, description: The name others see for the funder }
+        memberName: { type: string, description: As the funder typed it }
+        planCode: { type: string }
+        planName: { type: string }
+        price: { $ref: "#/components/schemas/Money" }
+        termMonths: { type: integer }
+        status: { type: string, enum: [open, accepted, expired, cancelled] }
     OfferedPlan:
       type: object
       required: [planCode, name, version, market, price, termMonths, monthlyPrice, entitlements, fxMarkupBps]

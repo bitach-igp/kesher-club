@@ -41,6 +41,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/funder-invites', operationId: 'createFunderInvite' },
   { method: 'POST', path: '/funder-invites/{id}/resend', operationId: 'resendFunderInvite' },
   { method: 'POST', path: '/funder-invites/{id}/cancel', operationId: 'cancelFunderInvite' },
+  { method: 'GET', path: '/funder-invites/{token}', operationId: 'getFunderInvitePreview' },
+  { method: 'POST', path: '/funder-invites/{token}/accept', operationId: 'acceptFunderInvite' },
   { method: 'GET', path: '/accounts', operationId: 'listAccounts' },
   { method: 'GET', path: '/accounts/{id}/transactions', operationId: 'listTransactions' },
   { method: 'GET', path: '/me/closure', operationId: 'getClosure' },
