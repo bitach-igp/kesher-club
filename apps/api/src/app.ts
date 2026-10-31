@@ -42,6 +42,7 @@ import { ComplaintService } from './admin/complaints.ts';
 import { AlertService } from './admin/alerts.ts';
 import { caseHandlers, OpsCases } from './admin/cases.ts';
 import { InstitutionAdmin, institutionAdminHandlers } from './admin/institutions.ts';
+import { InstitutionApplications, applicationHandlers } from './institutions/application.ts';
 import { BANK_PROVIDER, bankCreditVerifier, depositHandlers, InstitutionDeposits, paymentReference } from './institutions/deposits.ts';
 import { StaffTokenVerifier, staffBearerMiddleware } from './admin/staff-token.ts';
 import type { JWK } from 'jose';
@@ -162,6 +163,7 @@ function buildServices(o: AppOptions) {
   const institutionKyb = new InstitutionKyb(o.db, approvals, audit);
   // Every institution money capability waits on its KYB decision (T-0621, ADR-017).
   const kybGate = new KybGate(institutionKyb);
+  const applications = new InstitutionApplications({ db: o.db, identity, flags, audit, kyb: institutionKyb });
   const institutionCredit = new InstitutionCredit(o.db, approvals, audit, kybGate);
   const payoutAccounts = new PayoutAccounts(o.db, audit);
   const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
@@ -221,7 +223,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
 export function createApp(o: AppOptions): App {
@@ -307,6 +309,7 @@ export function createApp(o: AppOptions): App {
     ...householdHandlers(s.households),
     ...transactionHandlers(s.transactions),
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
+    ...applicationHandlers(s.applications),
     ...depositHandlers(s.deposits),
     ...caseHandlers(new OpsCases(o.db, s.audit)),
     ...preferenceHandlers(s.preferences),

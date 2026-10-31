@@ -13,7 +13,7 @@ import { ok, route, type Handler } from '../http.ts';
 
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
 
-export const OPS_CASE_KINDS = ['suspense', 'deposit_not_on_statement', 'payout_account_mismatch', 'balance_break', 'system_total_break', 'unbalanced_journal'] as const;
+export const OPS_CASE_KINDS = ['suspense', 'deposit_not_on_statement', 'payout_account_mismatch', 'balance_break', 'system_total_break', 'unbalanced_journal', 'kyb_application'] as const;
 export type OpsCaseKind = (typeof OPS_CASE_KINDS)[number];
 export type CaseStatus = 'open' | 'investigating' | 'resolved' | 'dismissed';
 const STATUSES: readonly CaseStatus[] = ['open', 'investigating', 'resolved', 'dismissed'];
