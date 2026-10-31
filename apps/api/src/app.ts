@@ -59,7 +59,7 @@ import { FunderInvites, funderInviteHandlers } from './billing/funder-invites.ts
 import { HouseholdService, householdHandlers } from './wallet/household.ts';
 import { TransactionService, transactionHandlers } from './wallet/transactions.ts';
 import { EntitlementService } from './billing/entitlements.ts';
-import { MembershipService } from './billing/memberships.ts';
+import { MembershipService, type Membership } from './billing/memberships.ts';
 import { capabilitiesHandler, type FeatureFlags } from './billing/capabilities.ts';
 import { statusHandler } from './status/handler.ts';
 import { TransferService } from './transfers/service.ts';
@@ -259,7 +259,25 @@ export function createApp(o: AppOptions): App {
       const p = requirePrincipal(req);
       const b = req.body as { memberPartyId: string; planCode: string; termMonths?: number; funderEmail?: string };
       const m = await s.memberships.create({ idempotencyKey: requireIdempotencyKey(req), memberPartyId: b.memberPartyId, funderPartyId: p.partyId, funderEmail: b.funderEmail ?? `party:${p.partyId}@members.kesher.example`, planCode: b.planCode, ...(b.termMonths ? { termMonths: b.termMonths } : {}) }, req.now);
-      return { status: 201, body: { id: m.id, planCode: m.planCode, planVersion: m.planVersion, status: m.status, price: toWire(m.price), ...(m.currentPeriodEnd ? { currentPeriodEnd: m.currentPeriodEnd } : {}) } };
+      return { status: 201, body: membershipBody(m) };
+    }),
+    listMemberships: route(async (req) => {
+      const p = requirePrincipal(req);
+      const items = await s.memberships.forParty(p.partyId);
+      return ok({
+        items: await Promise.all(
+          items.map(async (m) => ({
+            ...membershipBody(m),
+            role: m.role,
+            memberPartyId: m.memberPartyId,
+            ...(m.role === 'funder' ? { memberName: (await s.displayNames.get(m.memberPartyId)).displayName ?? 'Member' } : {}),
+          })),
+        ),
+      });
+    }),
+    cancelMembership: route(async (req) => {
+      const p = requirePrincipal(req);
+      return ok(membershipBody(await s.memberships.cancel(req.params['id'] ?? '', p.partyId, requireIdempotencyKey(req))));
     }),
     listCatalogue: route(async (req) => {
       requirePrincipal(req);
@@ -345,6 +363,9 @@ export function createApp(o: AppOptions): App {
   const mcp = new McpHttp(mcpConfig, gateway, mcpValidator, s.flags);
   return { handlers, authenticate, services: s, mcp };
 }
+
+/** A membership as the contract's `Membership`: money on the wire, the end dates when there are any. */
+const membershipBody = (m: Membership) => ({ id: m.id, planCode: m.planCode, planVersion: m.planVersion, status: m.status, price: toWire(m.price), ...(m.currentPeriodEnd ? { currentPeriodEnd: m.currentPeriodEnd } : {}), ...(m.cancelAt ? { cancelAt: m.cancelAt } : {}) });
 
 /** Operations whose cards wait on ADR-006 (cards, loads, fx, payouts, households) answer FEATURE_OFF, never 500. */
 const notYet = (operationId: string): Handler => route(async () => {

@@ -2143,13 +2143,37 @@ export interface paths {
             readonly path?: never;
             readonly cookie?: never;
         };
-        readonly get?: never;
+        /**
+         * The memberships the caller pays for, and the one they hold
+         * @description REQ-BIL-004 (T-0310). Newest first; none still being set up. A funder's rows name the member.
+         */
+        readonly get: operations["listMemberships"];
         readonly put?: never;
         /**
          * Start a membership (plan + member) billed to the funder
          * @description E03 billing. Idempotent.
          */
         readonly post: operations["createMembership"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/memberships/{id}/cancel": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Cancel a membership the caller pays for, at the end of the paid period
+         * @description REQ-BIL-004 (T-0310). The funder only: the member answers 403, anyone else 404. The billing vendor ends the subscription at the end of the paid period, and until then the membership stays active with `cancelAt` set. The member keeps the money loaded. Idempotent; cancelling an ended membership answers 409.
+         */
+        readonly post: operations["cancelMembership"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -3649,6 +3673,11 @@ export interface components {
             readonly items: readonly components["schemas"]["MemberIntent"][];
         };
         readonly Membership: {
+            /**
+             * Format: date-time
+             * @description Set once the funder cancelled; the membership ends on this date (REQ-BIL-004)
+             */
+            readonly cancelAt?: string;
             /** Format: date-time */
             readonly currentPeriodEnd?: string;
             /** Format: uuid */
@@ -7497,6 +7526,36 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly listMemberships: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Memberships */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly (components["schemas"]["Membership"] & {
+                            /** @description The member's display name */
+                            readonly memberName?: string;
+                            /** Format: uuid */
+                            readonly memberPartyId: string;
+                            /** @enum {string} */
+                            readonly role: "funder" | "member";
+                        })[];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly createMembership: {
         readonly parameters: {
             readonly query?: never;
@@ -7515,6 +7574,32 @@ export interface operations {
         readonly responses: {
             /** @description Membership created */
             readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Membership"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly cancelMembership: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The membership, ending on `cancelAt` */
+            readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
                 };
