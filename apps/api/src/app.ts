@@ -215,7 +215,7 @@ function buildServices(o: AppOptions) {
   const planCatalogue = new PlanCatalogue(o.db, plans, approvals, audit);
   const funderInvites = new FunderInvites({ db: o.db, plans, memberships, billing: billingPort, kyc, notify: notifyPort, flags, displayNames });
   const transactions = new TransactionService(o.db, flags);
-  const households = new HouseholdService({ db: o.db, accounts, displayNames, invites: funderInvites, flags });
+  const households = new HouseholdService({ db: o.db, accounts, displayNames, invites: funderInvites, flags, transactions, cards });
   const deposits = new InstitutionDeposits({ db: o.db, ledger, accounts, transfers, approvals, audit, flags, kyb: kybGate });
   if (o.registry.bindingFor('bank', o.market)) webhooks.bind(BANK_PROVIDER, { verifier: bankCreditVerifier(o.registry.resolve<BankPort>('bank', o.market)), process: (e) => deposits.applyBankEvent(e, clock.now()).then(() => undefined) });
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
