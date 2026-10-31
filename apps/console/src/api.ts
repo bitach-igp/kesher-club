@@ -60,6 +60,8 @@ export function institutionApi(baseUrl: string, accessToken: string, stepUpToken
     rejectPayout: (id: string, reason: string, idempotencyKey: string) => c.post('/payouts/{id}/reject', { path: { id }, body: { reason }, idempotencyKey }),
     achPulls: (id: string) => c.get('/institutions/{id}/ach-pulls', { path: { id } }),
     dashboard: (id: string) => c.get('/institutions/{id}/dashboard', { path: { id } }),
+    cohorts: (id: string) => c.get('/institutions/{id}/cohorts', { path: { id } }),
+    createCohort: (id: string, body: { name: string; startsOn: string; endsOn: string }, idempotencyKey: string) => c.post('/institutions/{id}/cohorts', { path: { id }, body, idempotencyKey }),
     createAchPull: (id: string, body: Schemas['InstitutionAchPullRequest'], idempotencyKey: string) => c.post('/institutions/{id}/ach-pulls', { path: { id }, body, idempotencyKey }),
   };
 }
