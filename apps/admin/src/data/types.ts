@@ -134,7 +134,7 @@ export interface DepositInput {
 }
 
 /** The ops queue (A12, T-0930/T-0931): every ops case that is not a compliance alert. */
-export type OpsCaseKind = 'suspense' | 'deposit_not_on_statement' | 'payout_account_mismatch' | 'balance_break' | 'system_total_break' | 'unbalanced_journal';
+export type OpsCaseKind = 'suspense' | 'deposit_not_on_statement' | 'payout_account_mismatch' | 'balance_break' | 'system_total_break' | 'unbalanced_journal' | 'kyb_application';
 export type OpsCaseStatus = 'open' | 'investigating' | 'resolved' | 'dismissed';
 export interface OpsCase {
   id: string;

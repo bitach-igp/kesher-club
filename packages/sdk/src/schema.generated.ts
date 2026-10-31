@@ -1608,6 +1608,86 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institution-applications": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Apply for an organisation, becoming its first admin
+         * @description REQ-INS-016 (T-0632), behind `institutions.selfServe`. Creates the institution, its application and the applicant's admin role. No money moves for the institution until a KYB decision approves it (REQ-INS-010). Someone already staff of an institution, or who has applied before, answers 409.
+         */
+        readonly post: operations["createInstitutionApplication"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institution-applications/{id}/account": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Propose the organisation's own-name bank account
+         * @description REQ-INS-016, REQ-INS-012 (T-0632). IL takes an Israeli IBAN, US a routing and account number. The holder must be the organisation's registered name. The latest proposal stands; compliance records the verified account.
+         */
+        readonly post: operations["proposeApplicationAccount"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institution-applications/{id}/signatories": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Add a signatory, board member or control person to a draft application
+         * @description REQ-INS-016 (T-0632). Only while a draft or sent back for more information; otherwise 409.
+         */
+        readonly post: operations["addApplicationSignatory"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institution-applications/{id}/submit": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Send the application to compliance for KYB review
+         * @description REQ-INS-016 (T-0632). Needs a signatory and the proposed account (422 names what is missing). Opens a `kyb_application` case in the ops queue. Submitting a submitted application answers it unchanged.
+         */
+        readonly post: operations["submitInstitutionApplication"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/ach-pulls": {
         readonly parameters: {
             readonly query?: never;
@@ -2104,6 +2184,26 @@ export interface paths {
          * @description REQ-INS-004 (T-0608). The institution console lands on this. A token without an org role, or a member with no active staff row, answers 403 FORBIDDEN: the console shows "no institution access", never data.
          */
         readonly get: operations["getMyInstitution"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/me/institution-application": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The caller's own self-serve institution application
+         * @description REQ-INS-016 (T-0632). 404 when the caller has not applied.
+         */
+        readonly get: operations["getMyInstitutionApplication"];
         readonly put?: never;
         readonly post?: never;
         readonly delete?: never;
@@ -2924,6 +3024,11 @@ export interface components {
             /** @description Staff-entered text */
             readonly name: string;
         };
+        readonly ApplicationAddress: {
+            readonly city: string;
+            readonly line1: string;
+            readonly postalCode: string;
+        };
         readonly ApprovalRequest: {
             readonly approvals: number;
             /** Format: date-time */
@@ -3396,6 +3501,49 @@ export interface components {
             /** @description The bank account the institution linked with the provider */
             readonly paymentMethodId?: string;
         };
+        readonly InstitutionApplication: {
+            readonly account?: {
+                /** @enum {string} */
+                readonly currency: "USD" | "ILS";
+                readonly holderName: string;
+                /** @description The last four digits only */
+                readonly masked: string;
+            };
+            readonly address: components["schemas"]["ApplicationAddress"];
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** @description A draft */
+            readonly editable: boolean;
+            /** Format: uuid */
+            readonly id: string;
+            /** Format: uuid */
+            readonly institutionId: string;
+            readonly legalName: string;
+            /** @enum {string} */
+            readonly market: "IL" | "US";
+            readonly registrationNumber: string;
+            /** @description The reviewer's reasons when sent back */
+            readonly reviewerNote?: readonly string[];
+            readonly signatories: readonly {
+                readonly fullName: string;
+                /** Format: uuid */
+                readonly id: string;
+                readonly roles: readonly ("board" | "control" | "signatory")[];
+                readonly self: boolean;
+            }[];
+            /** @enum {string} */
+            readonly status: "draft" | "submitted" | "needs_more_info" | "approved_with_limits" | "approved" | "rejected";
+            /** Format: date-time */
+            readonly submittedAt?: string;
+        };
+        readonly InstitutionApplicationRequest: {
+            readonly address: components["schemas"]["ApplicationAddress"];
+            readonly legalName: string;
+            /** @enum {string} */
+            readonly market: "IL" | "US";
+            /** @description IL nine digits; US EIN NN-NNNNNNN */
+            readonly registrationNumber: string;
+        };
         readonly InstitutionDeposit: {
             readonly amount: components["schemas"]["Money"];
             readonly approvals: number;
@@ -3757,7 +3905,7 @@ export interface components {
             readonly summary: string;
         };
         /** @enum {string} */
-        readonly OpsCaseKind: "suspense" | "deposit_not_on_statement" | "payout_account_mismatch" | "balance_break" | "system_total_break" | "unbalanced_journal";
+        readonly OpsCaseKind: "suspense" | "deposit_not_on_statement" | "payout_account_mismatch" | "balance_break" | "system_total_break" | "unbalanced_journal" | "kyb_application";
         readonly OtpStart: {
             readonly attemptsAllowed: number;
             /** Format: date-time */
@@ -6681,6 +6829,127 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly createInstitutionApplication: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["InstitutionApplicationRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description The application, a draft */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionApplication"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly proposeApplicationAccount: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @description US */
+                    readonly accountNumber?: string;
+                    readonly holderName: string;
+                    /** @description IL */
+                    readonly iban?: string;
+                    /** @description US */
+                    readonly routingNumber?: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The application */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionApplication"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly addApplicationSignatory: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly fullName: string;
+                    readonly roles: readonly ("board" | "control" | "signatory")[];
+                    /** @description The applicant themselves */
+                    readonly self?: boolean;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The application */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionApplication"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly submitInstitutionApplication: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The application, submitted */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionApplication"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly listInstitutionAchPulls: {
         readonly parameters: {
             readonly query?: never;
@@ -7472,6 +7741,27 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["MyInstitution"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getMyInstitutionApplication: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The application */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionApplication"];
                 };
             };
             readonly default: components["responses"]["Problem"];
