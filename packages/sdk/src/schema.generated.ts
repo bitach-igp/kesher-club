@@ -1884,6 +1884,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/members": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The roster for staff, by status and cohort, 50 a page
+         * @description REQ-INS-019 (T-0638). Any active staff role of this institution; another institution's staff get 404. Each row has the name as the roster holds it (untrusted text), status, cohort, card state, wallet balances per currency and plan. A row never carries merchant-level spend (REQ-INS-005).
+         */
+        readonly get: operations["listInstitutionMembers"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/payout-account": {
         readonly parameters: {
             readonly query?: never;
@@ -4318,6 +4338,24 @@ export interface components {
             readonly rowCount: number;
             /** @enum {string} */
             readonly status: "validated" | "rejected" | "committed";
+        };
+        readonly RosterMember: {
+            /** @description Wallet balances per currency; empty before the member joined */
+            readonly balances: readonly components["schemas"]["Money"][];
+            /** @enum {string} */
+            readonly card: "none" | "inactive" | "active" | "frozen";
+            readonly cohort?: {
+                /** Format: uuid */
+                readonly id: string;
+                readonly name: string;
+            };
+            /** Format: uuid */
+            readonly id: string;
+            /** @description As the roster holds it; untrusted text */
+            readonly name: string;
+            readonly planCode?: string;
+            /** @enum {string} */
+            readonly status: "invited" | "verified" | "active" | "declined" | "removed";
         };
         readonly ServiceStatus: {
             readonly capabilities: {
@@ -7415,6 +7453,36 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["FeeBatch"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listInstitutionMembers: {
+        readonly parameters: {
+            readonly query?: {
+                readonly cohort?: string;
+                readonly cursor?: string;
+                readonly status?: "invited" | "verified" | "active" | "declined" | "removed";
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description A page of the roster */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["RosterMember"][];
+                        readonly nextCursor?: string;
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];
