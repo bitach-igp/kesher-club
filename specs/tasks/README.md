@@ -65,6 +65,8 @@
 | [T-0307](T-0307.md) | BIL | Accepting a funder's invite starts the membership, once | REQ-BIL-003 | 13 |
 | [T-0308](T-0308.md) | BIL | Funder mode in the app: choose a plan, pay, invite your child (P01–P04) | REQ-BIL-001 | 13 |
 | [T-0309](T-0309.md) | BIL | M04 accepts a funder's invite | REQ-BIL-003 | 13 |
+| [T-0310](T-0310.md) | BIL | The funder's memberships, and cancelling one in two taps | REQ-BIL-004 | 14 |
+| [T-0311](T-0311.md) | BIL | P13 billing in funder mode | REQ-BIL-004 | 14 |
 | [T-0401](T-0401.md) | CRD | KYC sessions and tiers over KycPort (simulator) | — | 4 |
 | [T-0402](T-0402.md) | CRD | Virtual card issue within 60 s of T2 approval; details token only | REQ-CRD-001, REQ-CRD-002 | 5 |
 | [T-0403](T-0403.md) | CRD | JIT authorisation decision, fail closed, p99 < 300 ms | REQ-CRD-003 | 5 |
@@ -76,6 +78,7 @@
 | [T-0409](T-0409.md) | CRD | A shekel card payment draws on the shekel purse at the club rate | REQ-CRD-003 | 9 |
 | [T-0410](T-0410.md) | CRD | Card settlement: clearing moves the hold, unclaimed holds release after 7 days | REQ-CRD-003 | 9 |
 | [T-0411](T-0411.md) | CRD | A card hold refunds the markup on what was not spent | REQ-CRD-003 | 9 |
+| [T-0412](T-0412.md) | CRD | P09 the funder sets a member's card controls | REQ-CRD-005 | 14 |
 | [T-0501](T-0501.md) | WAL | Loads by card, Apple Pay, Google Pay + load workflow | REQ-WAL-002 | 5 |
 | [T-0502](T-0502.md) | WAL | ACH holds and release | REQ-WAL-003 | 5 |
 | [T-0503](T-0503.md) | WAL | Auto-reload, once per 24 h | REQ-WAL-004 | 6 |
@@ -111,6 +114,9 @@
 | [T-0533](T-0533.md) | FX | The rate lock counts down on the quote's own clock, not the phone's | REQ-FX-001 | 12 |
 | [T-0534](T-0534.md) | WAL | The funder's household: each member they fund, with balances and last spend | REQ-WAL-007 | 13 |
 | [T-0535](T-0535.md) | WAL | P05 family dashboard in funder mode | REQ-WAL-007 | 13 |
+| [T-0536](T-0536.md) | WAL | Members see each purse's transactions | REQ-WAL-008 | 14 |
+| [T-0537](T-0537.md) | WAL | A funder sees a funded member's activity: transactions, spend by category, cards | REQ-WAL-009 | 14 |
+| [T-0538](T-0538.md) | WAL | P06 child detail in funder mode | REQ-WAL-009 | 14 |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
