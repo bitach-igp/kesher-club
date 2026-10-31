@@ -200,6 +200,20 @@ export interface ConciergeApi {
 export type InvitePreview = Schemas['InvitePreview'];
 export type InviteStatus = InvitePreview['status'];
 
+export type OfferedPlan = Schemas['OfferedPlan'];
+export type FunderInvite = Schemas['FunderInvite'];
+
+/** Funder mode (P01–P04, T-0308): the plans on offer, the card saved with the billing vendor, and invites. */
+export interface FunderApi {
+  plans(market: 'IL' | 'US'): Promise<{ items: readonly OfferedPlan[] }>;
+  /** The billing vendor's sheet for saving a card; the card never reaches the app or the API. */
+  setupSheet(): Promise<{ clientSecret: string; wallets: { applePay: boolean; googlePay: boolean } }>;
+  invite(input: { memberName: string; phone?: string; email?: string; planCode: string }, idempotencyKey: string): Promise<FunderInvite>;
+  invites(): Promise<{ items: readonly FunderInvite[] }>;
+  resend(id: string): Promise<FunderInvite>;
+  cancel(id: string): Promise<FunderInvite>;
+}
+
 /** Roster invite links (M04, T-0626): the preview is public, the accept needs the member signed in. */
 export interface InvitesApi {
   preview(token: string): Promise<InvitePreview>;
@@ -226,6 +240,7 @@ export interface Api {
   grants: GrantsApi;
   concierge: ConciergeApi;
   invites: InvitesApi;
+  funder: FunderApi;
 }
 
 export const ApiContext = createContext<Api | undefined>(undefined);
@@ -344,6 +359,14 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
       revokeAgentGrant: (id) => client.delete('/agent-grants/{id}', { path: { id } }),
     },
     concierge: extras.concierge,
+    funder: {
+      plans: (market) => client.get('/plans', { query: { market } }),
+      setupSheet: () => client.post('/me/billing/setup-sheet'),
+      invite: (input, idempotencyKey) => client.post('/funder-invites', { body: input, idempotencyKey }),
+      invites: () => client.get('/funder-invites'),
+      resend: (id) => client.post('/funder-invites/{id}/resend', { path: { id } }),
+      cancel: (id) => client.post('/funder-invites/{id}/cancel', { path: { id } }),
+    },
     invites: {
       preview: (token) => client.get('/invites/{token}', { path: { token } }),
       accept: (token, idempotencyKey) => client.post('/invites/{token}/accept', { path: { token }, idempotencyKey }),

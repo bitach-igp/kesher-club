@@ -14,3 +14,15 @@ Steps (from repo root, PowerShell on Windows unless stated):
 11. docker rm -f kesher-pg
 Expected: step 5 prints `ok` for every schema, with billing at 3 migrations. Step 6 prints `INSERT 0 1` twice; step 7 `SET` then `INSERT 0 1`. Step 8 prints `SET` then `ERROR:  duplicate key value violates unique constraint "funder_invite_one_open"`. Step 9 prints `SET` then `ERROR:  permission denied for table funder_invite`. Step 10 prints `SET`, `UPDATE 1`, then one row: `cancelled`.
 Report back: the console output of steps 5 to 10.
+
+## Result
+PASS · 2026-10-31 (Asia/Jerusalem) · Windows desktop checker, runner worktree at 14f0a57, Docker 29.8.2, postgres:16, fresh container.
+- Step 4 (roles.sql): DO, DO, REVOKE, ALTER ROLE, ALTER DEFAULT PRIVILEGES, ALTER ROLE ×6; exit 0.
+- Step 5: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent; billing migrated to version 0003 (3 migrations), ledger 25.
+- Step 6: `INSERT 0 1` twice.
+- Step 7: `SET`, `INSERT 0 1`.
+- Step 8: `SET`, `ERROR:  duplicate key value violates unique constraint "funder_invite_one_open"` (Key (funder_party_id, contact)=(…0306f0, +15555550101) already exists); exit 1 as expected.
+- Step 9: `SET`, `ERROR:  permission denied for table funder_invite`; exit 1 as expected.
+- Step 10: `SET`, `UPDATE 1`, one row `cancelled`.
+- Step 11: container removed.
+Note: a first attempt timed out in the tool while starting the container; it was discarded and the run above started from a fresh container.
