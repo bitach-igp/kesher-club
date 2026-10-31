@@ -14,3 +14,15 @@ Steps (from repo root, PowerShell on Windows unless stated):
 11. docker rm -f kesher-pg
 Expected: step 5 prints `ok` for every schema, with org at 9 migrations. Step 6 prints `INSERT 0 1` twice, then `SET` and `INSERT 0 1` twice. Step 7 prints `SET` and an error: new row violates check constraint `cohort_check`. Step 8 prints `SET` and `INSERT 0 0`. Step 9 prints `SET` and `ERROR: permission denied for table cohort_member`. Step 10 prints one row: `Shiur Aleph | 1`.
 Report back: the console output of steps 5 to 10.
+
+## Result
+PASS · 2026-11-01 00:07 Asia/Jerusalem · runner worktree at 214a070 (branch head), Docker 29.8.2, postgres:16, fresh container, removed after.
+- Step 4 (roles.sql): DO, DO, REVOKE, ALTER ROLE, ALTER DEFAULT PRIVILEGES, ALTER ROLE x6.
+- Step 5: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent. org applied 10 migrations, not 9: the branch head also carries org/0010 (T-0643).
+- Step 6: INSERT 0 1, INSERT 0 1, SET, INSERT 0 1, SET, INSERT 0 1.
+- Step 7: SET; ERROR: new row for relation "cohort" violates check constraint "cohort_check" (exit 1).
+- Step 8: SET; INSERT 0 0.
+- Step 9: SET; ERROR: permission denied for table cohort_member (exit 1).
+- Step 10: `Shiur Aleph | 1` (1 row).
+- Step 11: container removed.
+Note: a first pass lost psql stderr in the PowerShell bridge; it was discarded and rerun in a fresh container with stderr captured. Both passes agreed on stdout.
