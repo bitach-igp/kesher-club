@@ -66,6 +66,8 @@ export interface FamilyModel {
   /** Dollars and shekels, one tap apart. */
   toggleCurrency(): void;
   addMoney(partyId: string): void;
+  /** P06 for one member (T-0538). */
+  open(partyId: string): void;
   resend(inviteId: string): Promise<void>;
   inviteSomeone(): void;
 }
@@ -93,6 +95,10 @@ export function createFamilyModel(deps: FamilyDeps): FamilyModel {
 
     addMoney(partyId) {
       deps.router.push(`/fund/add-money?member=${encodeURIComponent(partyId)}`);
+    },
+
+    open(partyId) {
+      deps.router.push(`/funder/member?id=${encodeURIComponent(partyId)}`);
     },
 
     async resend(inviteId) {

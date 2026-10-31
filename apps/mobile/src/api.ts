@@ -204,6 +204,7 @@ export type OfferedPlan = Schemas['OfferedPlan'];
 export type FunderInvite = Schemas['FunderInvite'];
 export type FunderInvitePreview = Schemas['FunderInvitePreview'];
 export type Household = Schemas['Household'];
+export type MemberActivity = Schemas['HouseholdMemberActivity'];
 
 /** Funder mode (P01–P04, T-0308): the plans on offer, the card saved with the billing vendor, and invites. */
 export interface FunderApi {
@@ -216,6 +217,8 @@ export interface FunderApi {
   cancel(id: string): Promise<FunderInvite>;
   /** P05 (T-0535): the signed-in funder's own household; FEATURE_OFF while the wallet is off. */
   household(): Promise<Household>;
+  /** P06 (T-0538): one member the signed-in funder pays for. */
+  member(partyId: string): Promise<MemberActivity>;
   /** M04 for a funder's invite (T-0309): read and accepted signed in. */
   joinPreview(token: string): Promise<FunderInvitePreview>;
   joinAccept(token: string, idempotencyKey: string): Promise<{ invite: FunderInvite; membership: Schemas['Membership'] }>;
@@ -379,6 +382,11 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
         const self = subjectOf(session.accessToken());
         if (!self) return Promise.reject(new Error('Not signed in'));
         return client.get('/households/{id}', { path: { id: self } });
+      },
+      member: (partyId) => {
+        const self = subjectOf(session.accessToken());
+        if (!self) return Promise.reject(new Error('Not signed in'));
+        return client.get('/households/{id}/members/{partyId}', { path: { id: self, partyId } });
       },
       joinPreview: (token) => client.get('/funder-invites/{token}', { path: { token } }),
       joinAccept: (token, idempotencyKey) => client.post('/funder-invites/{token}/accept', { path: { token }, idempotencyKey }),
