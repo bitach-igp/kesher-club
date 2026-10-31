@@ -13,10 +13,11 @@ export default function FamilyScreen() {
   const api = useApi();
   const router = useRouter();
   const model = useMemo(() => createFamilyModel({ funder: api.funder, router }), [api, router]);
-  return <FamilyView model={model} />;
+  return <FamilyView model={model} openBilling={() => router.push('/funder/billing')} />;
 }
 
-export function FamilyView({ model }: { model: FamilyModel }) {
+/** P13 (T-0311) is one tap from the family dashboard. */
+export function FamilyView({ model, openBilling }: { model: FamilyModel; openBilling?: () => void }) {
   const s = useStore(model.store);
   const locale = useLocale();
   useEffect(() => void model.load(), [model]);
@@ -48,6 +49,7 @@ export function FamilyView({ model }: { model: FamilyModel }) {
       {s.error ? <Banner tone="danger" body={t(s.error, locale)} /> : null}
       {s.notice ? <Banner tone="success" body={t(s.notice, locale)} testID="family-notice" /> : null}
       <Button label={t('family.showIn', locale, { currency: other })} variant="tertiary" onPress={model.toggleCurrency} testID="family-currency" />
+      {openBilling ? <Button label={t('billing.entry', locale)} variant="tertiary" onPress={openBilling} testID="family-billing" /> : null}
       {s.members.map((m) => {
         const status = statusKey(m);
         return (
