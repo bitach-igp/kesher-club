@@ -12,3 +12,12 @@ Steps (from repo root, PowerShell on Windows unless stated):
 9. docker rm -f kesher-pg
 Expected: step 5 prints `ok` for every schema, with billing at 4 migrations. Step 6 prints `INSERT 0 1` three times; step 7 `SET` then `UPDATE 1`; step 8 one row: `active | 2027-07-31 00:00:00+00`.
 Report back: the console output of steps 5 to 8.
+
+## Result
+PASS (2026-10-31 23:10 Asia/Jerusalem), runner at 2e87809, Docker 29.8.2, postgres:16, fresh container, removed after.
+- Step 4 (roles): DO / DO / REVOKE / ALTER ROLE / ALTER DEFAULT PRIVILEGES / ALTER ROLE x6.
+- Step 5: `ok` for all 9 schemas (ledger 25, identity 4, org 8, billing 4, legal 1, addons 3, notify 1, audit 1, agent 2 migrations).
+- Step 6: `INSERT 0 1` three times.
+- Step 7: `SET`, `UPDATE 1`.
+- Step 8: `active | 2027-07-31 00:00:00+00` (1 row).
+- Step 9: `kesher-pg` removed.
