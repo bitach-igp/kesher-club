@@ -45,6 +45,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         {signedIn ? (
           <nav aria-label="Console">
             <a href="/">{t('nav.home', locale)}</a>
+            <a href="/roster">{t('nav.roster', locale)}</a>
             <a href="/cohorts">{t('nav.cohorts', locale)}</a>
             <a href="/allowances">{t('nav.allowances', locale)}</a>
             <a href="/collections">{t('nav.collections', locale)}</a>

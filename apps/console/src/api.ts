@@ -61,6 +61,8 @@ export function institutionApi(baseUrl: string, accessToken: string, stepUpToken
     achPulls: (id: string) => c.get('/institutions/{id}/ach-pulls', { path: { id } }),
     dashboard: (id: string) => c.get('/institutions/{id}/dashboard', { path: { id } }),
     cohorts: (id: string) => c.get('/institutions/{id}/cohorts', { path: { id } }),
+    roster: (id: string, query: { status?: 'invited' | 'verified' | 'active' | 'declined' | 'removed'; cohort?: string; cursor?: string }) => c.get('/institutions/{id}/members', { path: { id }, query }),
+    placeInCohort: (id: string, cohortId: string, memberIds: string[], idempotencyKey: string) => c.post('/institutions/{id}/cohorts/{cohortId}/members', { path: { id, cohortId }, body: { memberIds }, idempotencyKey }),
     createCohort: (id: string, body: { name: string; startsOn: string; endsOn: string }, idempotencyKey: string) => c.post('/institutions/{id}/cohorts', { path: { id }, body, idempotencyKey }),
     createAchPull: (id: string, body: Schemas['InstitutionAchPullRequest'], idempotencyKey: string) => c.post('/institutions/{id}/ach-pulls', { path: { id }, body, idempotencyKey }),
   };
