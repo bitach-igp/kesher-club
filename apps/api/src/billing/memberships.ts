@@ -51,15 +51,7 @@ export class MembershipService {
     const id = uuidv7(now);
 
     // Vendor first (idempotent on our key), then our row; a crash in between replays safely.
-    let customerId = await this.externalRef('party', input.funderPartyId, 'stripe');
-    if (!customerId) {
-      try {
-        customerId = (await this.billing.createCustomer({ partyId: input.funderPartyId, email: input.funderEmail }, `cus:${input.funderPartyId}`)).customerId;
-      } catch (e) {
-        throw mapBillingError(e);
-      }
-      await this.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('party', $1, 'stripe', $2) on conflict do nothing`, [input.funderPartyId, customerId]);
-    }
+    const customerId = await this.ensureCustomer(input.funderPartyId, input.funderEmail);
     let subscriptionId: string;
     try {
       subscriptionId = (await this.billing.createSubscription({ customerId, planCode: plan.planCode, price: plan.price, termMonths }, input.idempotencyKey)).subscriptionId;
@@ -110,6 +102,25 @@ export class MembershipService {
               paused_at = case when $2 = 'paused' then $3 else paused_at end, cancelled_at = case when $2 = 'cancelled' then $3 else cancelled_at end where id = $1`,
       [id, status, now, extra.dunningAttempts ?? null, extra.currentPeriodEnd ?? null],
     );
+  }
+
+  /** The payer's customer at the billing vendor, made once (keyed by the party); the vendor holds their cards. */
+  async ensureCustomer(partyId: string, email: string): Promise<string> {
+    const known = await this.customerOf(partyId);
+    if (known) return known;
+    let customerId: string;
+    try {
+      customerId = (await this.billing.createCustomer({ partyId, email }, `cus:${partyId}`)).customerId;
+    } catch (e) {
+      throw mapBillingError(e);
+    }
+    await this.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('party', $1, 'stripe', $2) on conflict do nothing`, [partyId, customerId]);
+    return customerId;
+  }
+
+  /** The payer's billing customer, when they have saved a card or paid before. */
+  customerOf(partyId: string): Promise<string | undefined> {
+    return this.externalRef('party', partyId, 'stripe');
   }
 
   private async externalRef(entityType: string, entityId: string, provider: string): Promise<string | undefined> {
