@@ -53,22 +53,24 @@ export interface RootDeps {
 export function guard(signedIn: boolean, segments: readonly string[], resume?: string): string | undefined {
   const inAuth = segments[0] === '(auth)';
   if (!signedIn) return inAuth ? undefined : SIGN_IN_HREF;
-  // An invite link is read signed out and accepted signed in (T-0626), so it is the one auth screen that keeps a member.
-  if (inAuth && segments[1] === 'invite') return undefined;
+  // An invite link is read signed out and accepted signed in (T-0626), and a funder's invite (T-0309) is read and
+  // accepted signed in: the auth screens that keep a member.
+  if (inAuth && (segments[1] === 'invite' || segments[1] === 'join')) return undefined;
   const nowhere = segments.length === 0 || segments[0]!.startsWith('+') || segments[0]!.startsWith('[');
   return inAuth || nowhere ? (resume ?? HOME_HREF) : undefined;
 }
 
 /**
- * A screen worth coming back to after sign-in: an assistant's consent request (T-1017) or a roster invite
- * (T-0626), each arriving from outside the app, often before the member has signed in on that browser.
+ * A screen worth coming back to after sign-in: an assistant's consent request (T-1017), a roster invite
+ * (T-0626) or a funder's invite (T-0309), each arriving from outside the app, often before the member has signed in on that browser.
  * Anything else starts at Home.
  */
 export function resumable(segments: readonly string[], params: Readonly<Record<string, string | undefined>>): string | undefined {
   const id = params['id'];
   if (segments[0] === 'connect' && id) return `/connect/${encodeURIComponent(id)}`;
   const token = params['token'];
-  return segments[0] === '(auth)' && segments[1] === 'invite' && token ? `/(auth)/invite?token=${encodeURIComponent(token)}` : undefined;
+  const link = segments[1];
+  return segments[0] === '(auth)' && (link === 'invite' || link === 'join') && token ? `/(auth)/${link}?token=${encodeURIComponent(token)}` : undefined;
 }
 
 export function RootLayoutView({ deps, router, segments, params = {}, ready = true, children }: { deps: RootDeps; router: Router; segments: readonly string[]; params?: Readonly<Record<string, string | undefined>>; ready?: boolean; children?: ReactNode }) {
