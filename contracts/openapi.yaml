@@ -412,8 +412,12 @@ paths:
   /households/{id}:
     get:
       operationId: getHousehold
-      summary: "A funder's household: members, memberships, funding sources"
-      description: Funder role only; members see their own household through /me/capabilities.
+      summary: "A funder's household: each member they fund, with balances and last spend, and open invites"
+      description: >-
+        REQ-WAL-007 (T-0534). The household id is the funder's own party id; any other id answers 404 (THR-09). Each
+        member from an active, past-due or paused membership the caller funds, with available balances per purse and
+        the last card spend (amount, when, merchant category and country); open invites as invited. Never P2P notes or
+        concierge cases. Behind wallet.enabled.
       parameters: [{ $ref: "#/components/parameters/Id" }]
       responses:
         "200":
@@ -3560,6 +3564,28 @@ components:
               partyId: { type: string, format: uuid }
               displayName: { type: string }
               membershipStatus: { type: string, enum: [invited, active, past_due, paused, cancelled] }
+              membershipId: { type: string, format: uuid }
+              planCode: { type: string }
+              balances: { type: array, items: { $ref: "#/components/schemas/Money" } }
+              lastSpend:
+                type: object
+                required: [amount, at]
+                properties:
+                  amount: { $ref: "#/components/schemas/Money" }
+                  at: { type: string, format: date-time }
+                  mcc: { type: string }
+                  country: { type: string }
+        invites:
+          type: array
+          items:
+            type: object
+            required: [inviteId, memberName, membershipStatus, planCode, expiresAt]
+            properties:
+              inviteId: { type: string, format: uuid }
+              memberName: { type: string }
+              membershipStatus: { type: string, enum: [invited] }
+              planCode: { type: string }
+              expiresAt: { type: string, format: date-time }
     MembershipRequest:
       type: object
       required: [memberPartyId, planCode]

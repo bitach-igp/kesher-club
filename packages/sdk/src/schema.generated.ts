@@ -1576,8 +1576,8 @@ export interface paths {
             readonly cookie?: never;
         };
         /**
-         * A funder's household: members, memberships, funding sources
-         * @description Funder role only; members see their own household through /me/capabilities.
+         * A funder's household: each member they fund, with balances and last spend, and open invites
+         * @description REQ-WAL-007 (T-0534). The household id is the funder's own party id; any other id answers 404 (THR-09). Each member from an active, past-due or paused membership the caller funds, with available balances per purse and the last card spend (amount, when, merchant category and country); open invites as invited. Never P2P notes or concierge cases. Behind wallet.enabled.
          */
         readonly get: operations["getHousehold"];
         readonly put?: never;
@@ -3281,12 +3281,33 @@ export interface components {
             readonly funderId: string;
             /** Format: uuid */
             readonly id: string;
+            readonly invites?: readonly {
+                /** Format: date-time */
+                readonly expiresAt: string;
+                /** Format: uuid */
+                readonly inviteId: string;
+                readonly memberName: string;
+                /** @enum {string} */
+                readonly membershipStatus: "invited";
+                readonly planCode: string;
+            }[];
             readonly members: readonly {
+                readonly balances?: readonly components["schemas"]["Money"][];
                 readonly displayName: string;
+                readonly lastSpend?: {
+                    readonly amount: components["schemas"]["Money"];
+                    /** Format: date-time */
+                    readonly at: string;
+                    readonly country?: string;
+                    readonly mcc?: string;
+                };
+                /** Format: uuid */
+                readonly membershipId?: string;
                 /** @enum {string} */
                 readonly membershipStatus: "invited" | "active" | "past_due" | "paused" | "cancelled";
                 /** Format: uuid */
                 readonly partyId: string;
+                readonly planCode?: string;
             }[];
         };
         readonly InstitutionAchPull: {
