@@ -443,6 +443,99 @@ paths:
                 properties:
                   items: { type: array, items: { $ref: "#/components/schemas/OfferedPlan" } }
         default: { $ref: "#/components/responses/Problem" }
+  /me/billing/setup-sheet:
+    post:
+      operationId: createBillingSetupSheet
+      summary: The billing vendor's sheet for saving a card on the caller's customer
+      description: >-
+        REQ-BIL-002 (T-0306). Makes the caller's billing customer on first use; the card is saved with the vendor and
+        never reaches the API. Wallet buttons follow billing.applePay and billing.googlePay. Behind billing.stripe.
+      responses:
+        "200":
+          description: The sheet's client secret and wallet buttons
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [clientSecret, wallets]
+                properties:
+                  clientSecret: { type: string, description: For the Payment Element only; never logged }
+                  wallets:
+                    type: object
+                    required: [applePay, googlePay]
+                    properties:
+                      applePay: { type: boolean }
+                      googlePay: { type: boolean }
+        default: { $ref: "#/components/responses/Problem" }
+  /funder-invites:
+    get:
+      operationId: listFunderInvites
+      summary: The caller's invites as a funder, newest first
+      description: REQ-BIL-002 (T-0306). An open invite past its 7 days reads expired. The contact is masked.
+      responses:
+        "200":
+          description: Invites
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/FunderInvite" } }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: createFunderInvite
+      summary: Invite a member, by phone or email, onto a plan the caller pays for (P04)
+      description: >-
+        REQ-BIL-002 (T-0306). Needs the caller's approved T1 (403) and a card saved through the setup sheet (422). Pins
+        the plan version offered now. Sends the link by SMS or email; nothing is charged until the member accepts. Open
+        for 7 days; one open invite per contact (409). Idempotent. Behind billing.stripe.
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [memberName, planCode]
+              properties:
+                memberName: { type: string, minLength: 1, maxLength: 80 }
+                phone: { type: string, description: International form; give a phone or an email }
+                email: { type: string, format: email }
+                planCode: { type: string }
+      responses:
+        "201":
+          description: The invite, sent
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunderInvite" }
+        default: { $ref: "#/components/responses/Problem" }
+  /funder-invites/{id}/resend:
+    post:
+      operationId: resendFunderInvite
+      summary: Send a fresh link for an open invite; the earlier link stops working
+      description: REQ-BIL-002 (T-0306). The caller's own open invite only; another's answers 404, a decided one 409. Behind billing.stripe.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The invite
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunderInvite" }
+        default: { $ref: "#/components/responses/Problem" }
+  /funder-invites/{id}/cancel:
+    post:
+      operationId: cancelFunderInvite
+      summary: Cancel an open invite
+      description: REQ-BIL-002 (T-0306). The caller's own open invite only; another's answers 404, a decided one 409.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The invite
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FunderInvite" }
+        default: { $ref: "#/components/responses/Problem" }
   /memberships:
     post:
       operationId: createMembership
@@ -2905,6 +2998,21 @@ components:
           limit: { type: string, pattern: "^[0-9]{1,19}$" }
           unit: { type: string, enum: [gb, calls, minor, count] }
           period: { type: string, enum: [month, term, none] }
+    FunderInvite:
+      type: object
+      required: [id, memberName, contactKind, contact, planCode, planVersion, status, expiresAt, sentCount, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        memberName: { type: string }
+        contactKind: { type: string, enum: [phone, email] }
+        contact: { type: string, description: 'Masked: "•••• 0101" or "d•••@example.com"' }
+        planCode: { type: string }
+        planVersion: { type: integer }
+        status: { type: string, enum: [open, accepted, expired, cancelled] }
+        expiresAt: { type: string, format: date-time }
+        sentCount: { type: integer, minimum: 1 }
+        createdAt: { type: string, format: date-time }
+        membershipId: { type: string, format: uuid }
     OfferedPlan:
       type: object
       required: [planCode, name, version, market, price, termMonths, monthlyPrice, entitlements, fxMarkupBps]

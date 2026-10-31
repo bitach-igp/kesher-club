@@ -1404,6 +1404,70 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/funder-invites": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The caller's invites as a funder, newest first
+         * @description REQ-BIL-002 (T-0306). An open invite past its 7 days reads expired. The contact is masked.
+         */
+        readonly get: operations["listFunderInvites"];
+        readonly put?: never;
+        /**
+         * Invite a member, by phone or email, onto a plan the caller pays for (P04)
+         * @description REQ-BIL-002 (T-0306). Needs the caller's approved T1 (403) and a card saved through the setup sheet (422). Pins the plan version offered now. Sends the link by SMS or email; nothing is charged until the member accepts. Open for 7 days; one open invite per contact (409). Idempotent. Behind billing.stripe.
+         */
+        readonly post: operations["createFunderInvite"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/funder-invites/{id}/cancel": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Cancel an open invite
+         * @description REQ-BIL-002 (T-0306). The caller's own open invite only; another's answers 404, a decided one 409.
+         */
+        readonly post: operations["cancelFunderInvite"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/funder-invites/{id}/resend": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Send a fresh link for an open invite; the earlier link stops working
+         * @description REQ-BIL-002 (T-0306). The caller's own open invite only; another's answers 404, a decided one 409. Behind billing.stripe.
+         */
+        readonly post: operations["resendFunderInvite"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/fx/conversions": {
         readonly parameters: {
             readonly query?: never;
@@ -1874,6 +1938,26 @@ export interface paths {
          * @description REQ-WAL-002/003. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Starts the LoadWorkflow keyed by the Idempotency-Key.
          */
         readonly post: operations["createLoad"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/me/billing/setup-sheet": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * The billing vendor's sheet for saving a card on the caller's customer
+         * @description REQ-BIL-002 (T-0306). Makes the caller's billing customer on first use; the card is saved with the vendor and never reaches the API. Wallet buttons follow billing.applePay and billing.googlePay. Behind billing.stripe.
+         */
+        readonly post: operations["createBillingSetupSheet"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -3063,6 +3147,26 @@ export interface components {
             readonly receipt?: components["schemas"]["Receipt"];
             /** @enum {string} */
             readonly status: "due" | "paid" | "waived";
+        };
+        readonly FunderInvite: {
+            /** @description Masked: "•••• 0101" or "d•••@example.com" */
+            readonly contact: string;
+            /** @enum {string} */
+            readonly contactKind: "phone" | "email";
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** Format: date-time */
+            readonly expiresAt: string;
+            /** Format: uuid */
+            readonly id: string;
+            readonly memberName: string;
+            /** Format: uuid */
+            readonly membershipId?: string;
+            readonly planCode: string;
+            readonly planVersion: number;
+            readonly sentCount: number;
+            /** @enum {string} */
+            readonly status: "open" | "accepted" | "expired" | "cancelled";
         };
         readonly FxConversion: {
             readonly conversionId: string;
@@ -6138,6 +6242,110 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly listFunderInvites: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Invites */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["FunderInvite"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createFunderInvite: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** Format: email */
+                    readonly email?: string;
+                    readonly memberName: string;
+                    /** @description International form; give a phone or an email */
+                    readonly phone?: string;
+                    readonly planCode: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The invite, sent */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FunderInvite"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly cancelFunderInvite: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The invite */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FunderInvite"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly resendFunderInvite: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The invite */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FunderInvite"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly convert: {
         readonly parameters: {
             readonly query?: never;
@@ -6875,6 +7083,34 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Load"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createBillingSetupSheet: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The sheet's client secret and wallet buttons */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        /** @description For the Payment Element only; never logged */
+                        readonly clientSecret: string;
+                        readonly wallets: {
+                            readonly applePay: boolean;
+                            readonly googlePay: boolean;
+                        };
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];
