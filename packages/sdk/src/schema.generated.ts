@@ -1760,6 +1760,50 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/cohorts": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution's cohorts, newest start first, with how many members each holds
+         * @description REQ-INS-018 (T-0636). Any active staff role of this institution; another institution's staff get 404.
+         */
+        readonly get: operations["listCohorts"];
+        readonly put?: never;
+        /**
+         * Create a cohort with its start and end dates
+         * @description REQ-INS-018 (T-0636). The end must be after the start (422). A retry with the same key answers the same cohort.
+         */
+        readonly post: operations["createCohort"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/cohorts/{cohortId}/members": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Place roster members in a cohort, all or none
+         * @description REQ-INS-018 (T-0636). Up to 500 roster member ids. A member's cohort is their latest placement; earlier ones stay as history. A member or cohort of another institution answers 404 and places nobody; a retried batch places nobody twice.
+         */
+        readonly post: operations["placeCohortMembers"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/collections": {
         readonly parameters: {
             readonly query?: never;
@@ -3250,6 +3294,18 @@ export interface components {
             }[];
             /** @enum {string} */
             readonly state: "open" | "refunding" | "blocked" | "closed";
+        };
+        readonly Cohort: {
+            /** Format: date */
+            readonly endsOn: string;
+            /** Format: uuid */
+            readonly id: string;
+            /** @description Members whose latest placement is this cohort */
+            readonly memberCount: number;
+            /** @description As staff wrote it */
+            readonly name: string;
+            /** Format: date */
+            readonly startsOn: string;
         };
         readonly Collections: {
             readonly items: readonly (components["schemas"]["Receipt"] & {
@@ -7157,6 +7213,103 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["AllowanceSchedule"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listCohorts: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Cohorts */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["Cohort"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createCohort: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** Format: date */
+                    readonly endsOn: string;
+                    readonly name: string;
+                    /** Format: date */
+                    readonly startsOn: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The cohort */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Cohort"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly placeCohortMembers: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly cohortId: string;
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly memberIds: readonly string[];
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The cohort and how many placements this call made */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly cohort: components["schemas"]["Cohort"];
+                        readonly placed: number;
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];
