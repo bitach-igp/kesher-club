@@ -1800,6 +1800,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/dashboard": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution's dashboard for its staff
+         * @description REQ-INS-017 (T-0634). Any active staff role of this institution; another institution's staff get 404. The roster by status, the master balances, the next three allowance runs and fees due: counts and sums only.
+         */
+        readonly get: operations["getInstitutionDashboard"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/fee-items": {
         readonly parameters: {
             readonly query?: never;
@@ -3543,6 +3563,27 @@ export interface components {
             readonly market: "IL" | "US";
             /** @description IL nine digits; US EIN NN-NNNNNNN */
             readonly registrationNumber: string;
+        };
+        readonly InstitutionDashboard: {
+            /** @description The master account per currency */
+            readonly balances: readonly components["schemas"]["Money"][];
+            /** @description Fee items still due */
+            readonly feesDue: readonly components["schemas"]["Money"][];
+            readonly roster: {
+                readonly active: number;
+                readonly invited: number;
+                readonly verified: number;
+            };
+            readonly upcomingRuns: readonly {
+                readonly amount: components["schemas"]["Money"];
+                /** Format: date */
+                readonly date: string;
+                readonly memberCount: number;
+                /** @description The schedule's name */
+                readonly name: string;
+                /** Format: uuid */
+                readonly scheduleId: string;
+            }[];
         };
         readonly InstitutionDeposit: {
             readonly amount: components["schemas"]["Money"];
@@ -7168,6 +7209,29 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["ExportFile"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getInstitutionDashboard: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The dashboard */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionDashboard"];
                 };
             };
             readonly default: components["responses"]["Problem"];

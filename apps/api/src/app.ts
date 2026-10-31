@@ -43,6 +43,7 @@ import { AlertService } from './admin/alerts.ts';
 import { caseHandlers, OpsCases } from './admin/cases.ts';
 import { InstitutionAdmin, institutionAdminHandlers } from './admin/institutions.ts';
 import { InstitutionApplications, applicationHandlers } from './institutions/application.ts';
+import { dashboardHandlers, InstitutionDashboard } from './institutions/dashboard.ts';
 import { BANK_PROVIDER, bankCreditVerifier, depositHandlers, InstitutionDeposits, paymentReference } from './institutions/deposits.ts';
 import { StaffTokenVerifier, staffBearerMiddleware } from './admin/staff-token.ts';
 import type { JWK } from 'jose';
@@ -310,6 +311,7 @@ export function createApp(o: AppOptions): App {
     ...transactionHandlers(s.transactions),
     ...institutionAdminHandlers(new InstitutionAdmin(o.db, s.identity, s.approvals, s.audit)),
     ...applicationHandlers(s.applications),
+    ...dashboardHandlers(new InstitutionDashboard({ db: o.db, accounts: s.accounts, staffOf })),
     ...depositHandlers(s.deposits),
     ...caseHandlers(new OpsCases(o.db, s.audit)),
     ...preferenceHandlers(s.preferences),
