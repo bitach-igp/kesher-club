@@ -95,7 +95,8 @@ export class ApprovalService {
       if (r.status === 'expired') throw new DomainError('IDEMPOTENCY_CONFLICT', 'Request expired');
       // Distinct approvers are guaranteed by unique (request_id, decided_by): one person decides once.
       if ((r.kind === 'flag_flip' || r.kind === 'provider_binding') && by.role !== 'admin') throw new DomainError('FORBIDDEN', 'Only admins approve flag and binding changes');
-      if (r.kind === 'staff_grant' && by.role !== 'admin') throw new DomainError('FORBIDDEN', 'Only admins approve institution staff grants');
+      // Kesher admins, or (T-0643) an admin of the grant's own institution; the team service checks which institution.
+      if (r.kind === 'staff_grant' && by.role !== 'admin' && by.role !== 'org_admin') throw new DomainError('FORBIDDEN', 'Only admins approve institution staff grants');
       if (r.kind === 'credit_limit' && by.role !== 'admin') throw new DomainError('FORBIDDEN', 'Only admins approve institution credit limits');
       if (r.kind === 'kyb_decision' && by.role !== 'compliance') throw new DomainError('FORBIDDEN', 'Only compliance approves an institution\'s KYB');
       if (r.kind === 'fx_rate' && by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only finance approves club rates');
