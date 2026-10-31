@@ -43,10 +43,13 @@ export class MembershipService {
     this.billing = billing;
   }
 
-  async create(input: { idempotencyKey: string; memberPartyId: string; funderPartyId: string; funderEmail: string; planCode: string; termMonths?: number }, now: Date): Promise<Membership> {
+  /** `planVersion` pins a version chosen earlier (a funder's invite, T-0307); otherwise the one offered now. */
+  async create(input: { idempotencyKey: string; memberPartyId: string; funderPartyId: string; funderEmail: string; planCode: string; planVersion?: number; termMonths?: number }, now: Date): Promise<Membership> {
     const existing = await this.byKey(input.idempotencyKey);
     if (existing) return existing;
-    const plan = await this.plans.current(input.planCode, now);
+    const pinned = input.planVersion === undefined ? undefined : await this.plans.get(input.planCode, input.planVersion);
+    if (input.planVersion !== undefined && !pinned) throw new DomainError('NOT_FOUND', `No plan version ${input.planCode} v${input.planVersion}`);
+    const plan = pinned ?? (await this.plans.current(input.planCode, now));
     const termMonths = input.termMonths ?? plan.termMonths;
     const id = uuidv7(now);
 

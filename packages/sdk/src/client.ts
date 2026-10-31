@@ -66,6 +66,7 @@ export interface ClientOptions {
 const HEADER_OPS: Record<string, { idempotency: boolean; stepUp: boolean }> = {
   'post /memberships': { idempotency: true, stepUp: false },
   'post /funder-invites': { idempotency: true, stepUp: false },
+  'post /funder-invites/{token}/accept': { idempotency: true, stepUp: false },
   'post /kyc/sessions': { idempotency: true, stepUp: false },
   'post /loads': { idempotency: true, stepUp: true },
   'post /accounts/{id}/auto-reload': { idempotency: true, stepUp: true },

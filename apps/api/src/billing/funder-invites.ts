@@ -4,13 +4,19 @@
 // version offered now, which the invite pins. The link carries an opaque token stored as its hash only. Nothing is
 // charged until the member accepts (T-0307); the invite is open for 7 days, and a funder has one open invite per
 // contact. Resend rotates the link, so an earlier one stops working; cancel ends the invite.
+//
+// Accepting (T-0307, REQ-BIL-003, M04): the member, signed in, previews the invite by its token and accepts it. That
+// starts one membership on the pinned version with the inviter as funder, charged to the funder's saved card, keyed
+// by the invite so a retry is the same membership. An expired or cancelled invite charges nothing (409); a declined
+// card answers 422 and leaves the invite open for the funder to update their card.
 import { createHash, randomBytes } from 'node:crypto';
-import { DomainError, uuidv7 } from '@kesher/domain';
+import { DomainError, toWire, uuidv7 } from '@kesher/domain';
 import type { BillingPort, NotifyPort, PaymentSheet } from '@kesher/ports';
 import type { FeatureFlags } from './capabilities.ts';
 import { isPgError, PG, type Database } from '../db.ts';
 import { created, ok, requireIdempotencyKey, requirePrincipal, route, type Handler } from '../http.ts';
 import type { KycService } from '../kyc/service.ts';
+import type { DisplayNameService } from '../me/display-name.ts';
 import type { MembershipService } from './memberships.ts';
 import type { PlanService } from './plans.ts';
 
@@ -50,6 +56,7 @@ interface Row {
   status: InviteStatus;
   expires_at: string | Date;
   sent_count: number;
+  member_party_id: string | null;
   membership_id: string | null;
   created_at: string | Date;
 }
@@ -84,6 +91,18 @@ export interface FunderInviteDeps {
   kyc: Pick<KycService, 'isApproved'>;
   notify: NotifyPort;
   flags: FeatureFlags;
+  displayNames: Pick<DisplayNameService, 'get'>;
+}
+
+/** What M04 shows before the member accepts (T-0307). */
+export interface InvitePreview {
+  funderName: string;
+  memberName: string;
+  planCode: string;
+  planName: string;
+  price: { minor: string; currency: string };
+  termMonths: number;
+  status: InviteStatus;
 }
 
 interface InviteInput {
@@ -166,6 +185,39 @@ export class FunderInvites {
     return view((await this.row(id))!, now);
   }
 
+  /** The invite as M04 shows it; an unknown or rotated link answers 404. */
+  async preview(token: string, now: Date): Promise<InvitePreview> {
+    const r = await this.byToken(token);
+    const v = await this.d.plans.get(r.plan_code, r.plan_version);
+    const plan = await this.d.db.query<{ name: string }>('select name from billing.plan where code = $1', [r.plan_code]);
+    const funder = await this.d.displayNames.get(r.funder_party_id);
+    return { funderName: funder.displayName ?? 'Your funder', memberName: r.member_name, planCode: r.plan_code, planName: plan.rows[0]?.name ?? r.plan_code, price: { minor: v!.price.minor.toString(), currency: v!.price.currency }, termMonths: v!.termMonths, status: statusAt(r, now) };
+  }
+
+  /** The member's acceptance: one membership, charged once, however often it is retried. */
+  async accept(token: string, memberPartyId: string, now: Date): Promise<{ invite: FunderInvite; membership: Awaited<ReturnType<MembershipService['create']>> }> {
+    await this.requireOn();
+    const r = await this.byToken(token);
+    if (r.funder_party_id === memberPartyId) throw new DomainError('VALIDATION_FAILED', 'You sent this invite: the person you invited accepts it');
+    const status = statusAt(r, now);
+    if (status === 'accepted' && r.membership_id) {
+      // The same member accepting again is the same membership; anyone else is too late.
+      if (r.member_party_id !== memberPartyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This invite was already accepted');
+      return { invite: view(r, now), membership: (await this.d.memberships.get(r.membership_id))! };
+    }
+    if (status !== 'open') throw new DomainError('IDEMPOTENCY_CONFLICT', `This invite is ${status}`);
+    // A declined card throws here (422) before anything is written: the invite stays open.
+    const membership = await this.d.memberships.create({ idempotencyKey: `funder-invite:${r.id}`, memberPartyId, funderPartyId: r.funder_party_id, funderEmail: payerEmail(r.funder_party_id), planCode: r.plan_code, planVersion: r.plan_version }, now);
+    await this.d.db.query(`update billing.funder_invite set status = 'accepted', member_party_id = $2, membership_id = $3, decided_at = $4 where id = $1 and status = 'open'`, [r.id, memberPartyId, membership.id, now]);
+    return { invite: view((await this.row(r.id))!, now), membership };
+  }
+
+  private async byToken(token: string): Promise<Row> {
+    const r = /^[\w-]{16,64}$/.test(token) ? (await this.d.db.query<Row>('select * from billing.funder_invite where token_hash = $1', [hash(token)])).rows[0] : undefined;
+    if (!r) throw new DomainError('NOT_FOUND', 'Invite not found');
+    return r;
+  }
+
   private async send(id: string, input: InviteInput, token: string, attempt: number): Promise<void> {
     await this.d.notify.send(
       { channel: input.contactKind === 'phone' ? 'sms' : 'email', to: input.contact, template: 'funder.invite', locale: 'en', data: { memberName: input.memberName, inviteUrl: `${JOIN_BASE_URL}${token}` }, category: 'service' },
@@ -218,5 +270,15 @@ export function funderInviteHandlers(invites: FunderInvites): Record<string, Han
     listFunderInvites: route(async (req) => ok({ items: await invites.list(requirePrincipal(req).partyId, req.now) })),
     resendFunderInvite: route(async (req) => ok(await invites.resend(requirePrincipal(req).partyId, req.params['id'] ?? '', req.now))),
     cancelFunderInvite: route(async (req) => ok(await invites.cancel(requirePrincipal(req).partyId, req.params['id'] ?? '', req.now))),
+    getFunderInvitePreview: route(async (req) => {
+      requirePrincipal(req);
+      return ok(await invites.preview(req.params['token'] ?? '', req.now));
+    }),
+    acceptFunderInvite: route(async (req) => {
+      const p = requirePrincipal(req);
+      requireIdempotencyKey(req);
+      const { invite, membership } = await invites.accept(req.params['token'] ?? '', p.partyId, req.now);
+      return ok({ invite, membership: { id: membership.id, planCode: membership.planCode, planVersion: membership.planVersion, status: membership.status, price: toWire(membership.price), ...(membership.currentPeriodEnd ? { currentPeriodEnd: membership.currentPeriodEnd } : {}) } });
+    }),
   };
 }

@@ -1468,6 +1468,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/funder-invites/{token}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * A funder's invite as M04 shows it before the member accepts
+         * @description REQ-BIL-003 (T-0307). Any signed-in member holding the link. An unknown or rotated link answers 404.
+         */
+        readonly get: operations["getFunderInvitePreview"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/funder-invites/{token}/accept": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Accept a funder's invite; the membership starts, charged to the funder's saved card once
+         * @description REQ-BIL-003 (T-0307). Starts one membership on the invite's pinned plan version with the inviter as funder; a retry, with any key, is the same membership. An expired, cancelled or someone else's accepted invite answers 409 and charges nothing; the funder accepting their own invite answers 422; a declined card answers 422 and leaves the invite open. Behind billing.stripe.
+         */
+        readonly post: operations["acceptFunderInvite"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/fx/conversions": {
         readonly parameters: {
             readonly query?: never;
@@ -3167,6 +3207,18 @@ export interface components {
             readonly sentCount: number;
             /** @enum {string} */
             readonly status: "open" | "accepted" | "expired" | "cancelled";
+        };
+        readonly FunderInvitePreview: {
+            /** @description The name others see for the funder */
+            readonly funderName: string;
+            /** @description As the funder typed it */
+            readonly memberName: string;
+            readonly planCode: string;
+            readonly planName: string;
+            readonly price: components["schemas"]["Money"];
+            /** @enum {string} */
+            readonly status: "open" | "accepted" | "expired" | "cancelled";
+            readonly termMonths: number;
         };
         readonly FxConversion: {
             readonly conversionId: string;
@@ -6341,6 +6393,58 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["FunderInvite"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getFunderInvitePreview: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly token: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The invite */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FunderInvitePreview"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly acceptFunderInvite: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly token: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The invite, accepted, and the membership it started */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly invite: components["schemas"]["FunderInvite"];
+                        readonly membership: components["schemas"]["Membership"];
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];
