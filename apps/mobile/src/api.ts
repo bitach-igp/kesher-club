@@ -202,6 +202,7 @@ export type InviteStatus = InvitePreview['status'];
 
 export type OfferedPlan = Schemas['OfferedPlan'];
 export type FunderInvite = Schemas['FunderInvite'];
+export type FunderInvitePreview = Schemas['FunderInvitePreview'];
 
 /** Funder mode (P01–P04, T-0308): the plans on offer, the card saved with the billing vendor, and invites. */
 export interface FunderApi {
@@ -212,6 +213,9 @@ export interface FunderApi {
   invites(): Promise<{ items: readonly FunderInvite[] }>;
   resend(id: string): Promise<FunderInvite>;
   cancel(id: string): Promise<FunderInvite>;
+  /** M04 for a funder's invite (T-0309): read and accepted signed in. */
+  joinPreview(token: string): Promise<FunderInvitePreview>;
+  joinAccept(token: string, idempotencyKey: string): Promise<{ invite: FunderInvite; membership: Schemas['Membership'] }>;
 }
 
 /** Roster invite links (M04, T-0626): the preview is public, the accept needs the member signed in. */
@@ -366,6 +370,8 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
       invites: () => client.get('/funder-invites'),
       resend: (id) => client.post('/funder-invites/{id}/resend', { path: { id } }),
       cancel: (id) => client.post('/funder-invites/{id}/cancel', { path: { id } }),
+      joinPreview: (token) => client.get('/funder-invites/{token}', { path: { token } }),
+      joinAccept: (token, idempotencyKey) => client.post('/funder-invites/{token}/accept', { path: { token }, idempotencyKey }),
     },
     invites: {
       preview: (token) => client.get('/invites/{token}', { path: { token } }),
