@@ -1988,6 +1988,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/statement": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * A month of the institution's own account, reconciled opening to closing
+         * @description REQ-INS-021 (T-0645). Finance staff and admins of this institution; other staff 403, another institution 404. The opening balance is everything posted before the month; each row is one journal with the balance after it; the closing balance is the opening plus every row. Descriptions are text people typed.
+         */
+        readonly get: operations["getInstitutionStatement"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/statement/export": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The month's statement as CSV or XLSX, in a base64 envelope
+         * @description REQ-INS-021 (T-0645). The same rows and the same opening and closing as the statement; who may read it is the same.
+         */
+        readonly get: operations["exportInstitutionStatement"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/intents": {
         readonly parameters: {
             readonly query?: never;
@@ -3760,6 +3800,24 @@ export interface components {
             readonly phoneMasked?: string;
             /** @enum {string} */
             readonly role: "staff" | "finance" | "admin";
+        };
+        readonly InstitutionStatement: {
+            readonly closing: components["schemas"]["Money"];
+            /** @enum {string} */
+            readonly currency: "ILS" | "USD";
+            readonly month: string;
+            readonly opening: components["schemas"]["Money"];
+            readonly rows: readonly {
+                readonly amount: components["schemas"]["Money"];
+                readonly balance: components["schemas"]["Money"];
+                /** Format: date */
+                readonly date: string;
+                /** @description Text people typed */
+                readonly description: string;
+                /** Format: uuid */
+                readonly journalId: string;
+                readonly kind: string;
+            }[];
         };
         readonly InstitutionStudent: {
             readonly allowances: readonly {
@@ -7672,6 +7730,66 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["RosterImportResult"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getInstitutionStatement: {
+        readonly parameters: {
+            readonly query: {
+                readonly currency?: "ILS" | "USD";
+                readonly month: string;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The statement */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionStatement"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly exportInstitutionStatement: {
+        readonly parameters: {
+            readonly query: {
+                readonly currency?: "ILS" | "USD";
+                readonly format: "csv" | "xlsx";
+                readonly month: string;
+            };
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The file */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly base64: string;
+                        readonly closing: components["schemas"]["Money"];
+                        readonly contentType: string;
+                        readonly filename: string;
+                        readonly opening: components["schemas"]["Money"];
+                        readonly rows: number;
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];
