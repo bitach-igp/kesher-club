@@ -64,8 +64,15 @@ export function institutionApi(baseUrl: string, accessToken: string, stepUpToken
     student: (id: string, memberId: string) => c.get('/institutions/{id}/members/{memberId}', { path: { id, memberId } }),
     roster: (id: string, query: { status?: 'invited' | 'verified' | 'active' | 'declined' | 'removed'; cohort?: string; cursor?: string }) => c.get('/institutions/{id}/members', { path: { id }, query }),
     placeInCohort: (id: string, cohortId: string, memberIds: string[], idempotencyKey: string) => c.post('/institutions/{id}/cohorts/{cohortId}/members', { path: { id, cohortId }, body: { memberIds }, idempotencyKey }),
+    importRoster: (id: string, body: Schemas['RosterImportRequest'], idempotencyKey: string) => c.post('/institutions/{id}/rosters', { path: { id }, body, idempotencyKey }),
     createCohort: (id: string, body: { name: string; startsOn: string; endsOn: string }, idempotencyKey: string) => c.post('/institutions/{id}/cohorts', { path: { id }, body, idempotencyKey }),
     createAchPull: (id: string, body: Schemas['InstitutionAchPullRequest'], idempotencyKey: string) => c.post('/institutions/{id}/ach-pulls', { path: { id }, body, idempotencyKey }),
+    team: (id: string) => c.get('/institutions/{id}/team', { path: { id } }),
+    inviteStaff: (id: string, body: { role: 'staff' | 'finance' | 'admin'; email?: string; phone?: string }, idempotencyKey: string) =>
+      c.post('/institutions/{id}/staff-invites', { path: { id }, body, idempotencyKey }),
+    changeStaff: (id: string, partyId: string, body: { role?: 'staff' | 'finance' | 'admin'; active?: false }, idempotencyKey: string) =>
+      c.patch('/institutions/{id}/team/{partyId}', { path: { id, partyId }, body, idempotencyKey }),
+    approveStaffGrant: (id: string, grantId: string) => c.post('/institutions/{id}/staff-grants/{grantId}/approve', { path: { id, grantId } }),
   };
 }
 

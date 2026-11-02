@@ -5,6 +5,7 @@ import { fixedClock, type AdvanceableClock } from './base.ts';
 
 authContract('simulator', () => new AuthSimulator(), {
   otpCode: () => SIM_OTP_CODE,
+  now: (port) => (port as AuthSimulator).clock.now(),
   device: () => new SimPasskeyDevice(),
   outagePhone: SIM_OTP_OUTAGE_PHONE,
 });

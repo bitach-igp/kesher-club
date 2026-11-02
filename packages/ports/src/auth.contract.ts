@@ -6,6 +6,8 @@ import { AuthError } from './auth.ts';
 export interface AuthContractOptions {
   /** How the test obtains the OTP code the port sent (simulator: lastCode; sandbox: a test number's fixed code). */
   otpCode: (port: AuthPort) => string;
+  /** The port's own clock, so expiry is measured on the port's time (simulator: its fixed clock). Default: real time. */
+  now?: (port: AuthPort) => Date;
   /** A fake authenticator the suite can drive. */
   device: () => {
     register(o: PasskeyRegistrationOptions): Promise<PasskeyRegistrationResponse>;
@@ -18,9 +20,14 @@ export function authContract(name: string, make: () => AuthPort, opts: AuthContr
   describe(`AuthPort contract: ${name}`, () => {
     it('starts an OTP with a 5-minute expiry and 5 attempts', async () => {
       const port = make();
+      const clock = (): number => (opts.now?.(port) ?? new Date()).getTime();
+      const before = clock();
       const start = await port.startOtp('+972501234567');
+      const after = clock();
       expect(start.attemptsAllowed).toBe(5);
-      expect(Date.parse(start.expiresAt)).toBeGreaterThan(Date.now() - 1 || 0);
+      const expiresAt = Date.parse(start.expiresAt);
+      expect(expiresAt).toBeGreaterThanOrEqual(before + 5 * 60_000);
+      expect(expiresAt).toBeLessThanOrEqual(after + 5 * 60_000);
     });
 
     it('verifies the right code once and refuses the wrong one, counting attempts down', async () => {

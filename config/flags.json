@@ -175,6 +175,13 @@
     "turnOnTrigger": "institutions.deposits + ADR-006 bank chosen + its BankPort adapter passing the contract suite"
   },
   {
+    "key": "institutions.usBanking",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Optional US-nonprofit banking for \"American Friends of\" institutions (InstitutionBankingPort; first candidate Crowded)",
+    "turnOnTrigger": "Phase 2 + vendor contract + adapter passing the contract suite"
+  },
+  {
     "key": "funding.ach",
     "defaultProd": false,
     "owner": "Ezra",
