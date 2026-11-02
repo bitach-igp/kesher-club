@@ -51,6 +51,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             <a href="/collections">{t('nav.collections', locale)}</a>
             <a href="/payouts">{t('nav.payouts', locale)}</a>
             {showsDeposits(landing) ? <a href="/deposits">{t('nav.deposits', locale)}</a> : null}
+            <a href="/team">{t('nav.team', locale)}</a>
           </nav>
         ) : null}
         <main>{children}</main>
