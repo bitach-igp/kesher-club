@@ -46,8 +46,11 @@ const token = (sub: string): string => `a.${Buffer.from(JSON.stringify({ sub }))
 
 describe('T-0644 I11 team and roles', () => {
   it('a role change to finance or admin reads "Waiting for a second admin"; one to staff reads as done', () => {
-    expect(messageText(claimMessage(ok({ staff: dov, grant })), 'en')).toBe('Waiting for a second admin.');
-    expect(messageText(claimMessage(ok({ staff: dov, grant })), 'he')).toMatch(/מנהל נוסף/);
+    for (const role of ['finance', 'admin'] as const) {
+      const raised = { ...grant, payload: { ...grant.payload, role } };
+      expect(messageText(claimMessage(ok({ staff: dov, grant: raised })), 'en')).toBe('Waiting for a second admin.');
+      expect(messageText(claimMessage(ok({ staff: dov, grant: raised })), 'he')).toMatch(/מנהל נוסף/);
+    }
     expect(messageText(claimMessage(ok({ staff: dov })), 'en')).toBe('The role changed.');
     expect(messageText(inviteMessage({ ok: true, value: invite }), 'en')).toBe('The invite is on its way.');
   });
@@ -56,6 +59,7 @@ describe('T-0644 I11 team and roles', () => {
     expect(canApprove(grant, RIVKA)).toBe(false);
     expect(canApprove(grant, DOV)).toBe(false);
     expect(canApprove(grant, YITZCHAK)).toBe(true);
+    expect(canApprove(grant, undefined)).toBe(false);
     expect(canApprove({ ...grant, status: 'approved' }, YITZCHAK)).toBe(false);
     expect(grantPerson(grant)).toBe(DOV);
     expect(grantRole(grant)).toBe('finance');
