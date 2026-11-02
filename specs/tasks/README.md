@@ -38,6 +38,7 @@
 | [T-0035](T-0035.md) | SETUP | The demo's shared clock reaches every API request | REQ-ADM-004 | 11 |
 | [T-0036](T-0036.md) | SETUP | The mobile layout tests warm their module graph, so CI's first test does not time out | REQ-AUTH-001 | 12 |
 | [T-0037](T-0037.md) | SETUP | The README says where the project stands; the six ADR drafts are recorded as accepted | — | 12 |
+| [T-0038](T-0038.md) | SETUP | The AuthPort contract measures OTP expiry on the port's own clock, not the wall clock | REQ-AUTH-001 | 15 |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
