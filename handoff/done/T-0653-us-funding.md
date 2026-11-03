@@ -15,3 +15,14 @@ Steps (from repo root, PowerShell on Windows unless stated):
 12. docker rm -f kesher-pg
 Expected: step 5 prints `ok` for every schema, with org at 12 migrations. Step 6 prints `INSERT 0 1` for the institution, then `SET` and `INSERT 0 1` four times. Step 7 prints `requested` then `sending`. Step 8 prints `SET` and `ERROR: duplicate key value violates unique constraint` (a quote backs one request). Step 9 prints `SET` and `ERROR: new row for relation "us_funding_event" violates check constraint`. Steps 10 and 11 each print `SET` and `ERROR: permission denied for table us_funding_event`.
 Report back: the console output of steps 5 to 11.
+
+## Result
+PASS, 2026-11-03 16:06 (Asia/Jerusalem), by the desktop checker on Zvi's PC. Runner worktree at da5ba14 (branch tip), Docker 29.8.2, postgres:16.
+- Step 5: `ok` for all nine schemas (ledger, identity, org, billing, legal, addons, notify, audit, agent). Org migrated to 13 migrations, not 12, because the branch tip also carries org/0013 (T-0652); 0012 applied cleanly.
+- Step 6: `INSERT 0 1`, then `SET` / `INSERT 0 1` four times.
+- Step 7: `requested`, `sending` (2 rows).
+- Step 8: `SET`, `ERROR:  duplicate key value violates unique constraint "us_funding_request_quote_id_key"` (Key (quote_id)=(…065302) already exists).
+- Step 9: `SET`, `ERROR:  new row for relation "us_funding_event" violates check constraint "us_funding_event_kind_check"`.
+- Steps 10 and 11: `SET`, `ERROR:  permission denied for table us_funding_event` each.
+- Step 12: container removed.
+psql stderr was captured by piping each command through `ForEach-Object { "$_" }`.
