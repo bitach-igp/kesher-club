@@ -55,7 +55,7 @@ export function byStudent(c: Collections): StudentFees[] {
 }
 
 /** The export's exact bytes, from the envelope's base64. */
-export function decodeExport(file: ExportFile): Uint8Array {
+export function decodeExport<F extends Pick<ExportFile, 'base64'>>(file: F): Uint8Array {
   const bin = atob(file.base64);
   const bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
