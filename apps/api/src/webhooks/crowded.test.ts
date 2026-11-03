@@ -8,7 +8,8 @@ import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { createApp, type App } from '../app.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
-import { dispatch } from '../server.ts';
+import type { AddressInfo } from 'node:net';
+import { createServer, dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { CrowdedWebhook, type CrowdedHandlers } from './crowded.ts';
 import { InboundEventStore } from './store.ts';
@@ -105,6 +106,51 @@ describe('POST /webhooks/crowded', () => {
     const r = await dispatch(on, { method: 'POST', url: '/v1/hooks/crowded', headers: signed(body), rawBody: body, now });
     expect(r.status).toBeGreaterThanOrEqual(400);
     expect((await db.query(`select 1 from ops.inbound_event where event_id = 'gen-1'`)).rows).toHaveLength(0);
+  });
+});
+
+describe('the bytes as received', () => {
+  async function overHttp(app: App, bytes: Buffer, headers: Record<string, string>) {
+    const server = createServer(app).listen(0, '127.0.0.1');
+    await new Promise((r) => server.once('listening', r));
+    try {
+      const res = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/webhooks/crowded`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: bytes });
+      return { status: res.status, body: (await res.json()) as unknown };
+    } finally {
+      server.close();
+    }
+  }
+  const sign = (bytes: Buffer) => ({ 'x-webhook-signature': computeCrowdedSignature(SECRET, bytes) });
+
+  it('a delivery with bytes that are not valid UTF-8 verifies, because the signature is over what was received', async () => {
+    const bytes = Buffer.concat([Buffer.from('{"events":[{"eventId":"u8-1","eventType":"platform.chapter.updated","data":{"n":"'), Buffer.from([0xff, 0xfe]), Buffer.from('"}}]}')]);
+    expect(Buffer.from(bytes.toString('utf8')).equals(bytes)).toBe(false); // decoding changes these bytes
+    const r = await overHttp(on, bytes, sign(bytes));
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ received: 1, stored: 1, duplicates: 0 });
+  });
+
+  it('a byte-order mark is not part of the JSON; a signature over other bytes than were sent fails', async () => {
+    const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(batch(event('bom-1', 'platform.chapter.updated')))]);
+    expect((await overHttp(on, bom, sign(bom))).status).toBe(200);
+    expect((await overHttp(on, bom, sign(bom.subarray(3)))).status).toBe(401);
+  });
+
+  it('a body that is not JSON is judged by its signature first: unsigned it is 401 and leaves a rejected row, never a parse error', async () => {
+    const before = await count('inbound_rejected');
+    const r = await post(on, 'this is not json', {});
+    expect(r.status).toBe(401);
+    expect(await count('inbound_rejected')).toBe(before + 1);
+    const body = 'this is not json';
+    expect([400, 422]).toContain((await post(on, body, signed(body))).status);
+  });
+
+  it('a NUL in an event, or an event over the size limit, refuses the whole batch before anything is stored', async () => {
+    const nul = JSON.stringify({ events: [event('nul-ok', 'x'), event('nul-bad\u0000id', 'x')] });
+    const nulData = JSON.stringify({ events: [event('nul-ok', 'x'), event('nul-bad-data', 'x', 'ch1', { note: 'a\u0000b' })] });
+    const big = JSON.stringify({ events: [event('big-ok', 'x'), event('big-bad', 'x', 'ch1', { blob: 'x'.repeat(70_000) })] });
+    for (const body of [nul, nulData, big]) expect([400, 422]).toContain((await post(on, body, signed(body))).status);
+    expect((await db.query(`select 1 from ops.inbound_event where event_id in ('nul-ok','big-ok','nul-bad-data','big-bad')`)).rows).toHaveLength(0);
   });
 });
 

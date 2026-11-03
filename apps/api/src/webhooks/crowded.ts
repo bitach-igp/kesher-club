@@ -60,15 +60,17 @@ export class CrowdedWebhook {
   handler(): Handler {
     return route(async (req: HttpRequest) => {
       if (!(await this.d.flags.isOn(CROWDED_FLAG))) throw new DomainError('FEATURE_OFF', 'US banking is not available');
-      // The raw bytes are what is signed. A re-serialised body is not them, so there is no fallback to req.body.
-      if (typeof req.rawBody !== 'string') throw new DomainError('VALIDATION_FAILED', 'The raw body is required');
-      const failure = verifyCrowdedSignature({ header: crowdedHeaderValue(req.headers, CROWDED_SIGNATURE_HEADER), rawBody: req.rawBody, secrets: this.d.secrets() });
+      // The bytes as received are what is signed (the server keeps them; a caller with only the string gets its UTF-8). A
+      // re-serialised body is not them, so there is no fallback to req.body. Nothing is parsed until the signature holds.
+      const bytes = req.rawBytes ?? (typeof req.rawBody === 'string' ? Buffer.from(req.rawBody, 'utf8') : undefined);
+      if (!bytes) throw new DomainError('VALIDATION_FAILED', 'The raw body is required');
+      const failure = verifyCrowdedSignature({ header: crowdedHeaderValue(req.headers, CROWDED_SIGNATURE_HEADER), rawBody: bytes, secrets: this.d.secrets() });
       if (failure) {
-        const sha256 = createHash('sha256').update(req.rawBody).digest('hex');
-        await this.d.store.record({ provider: CROWDED_PROVIDER, eventId: `rejected-${sha256.slice(0, 32)}`, signatureOk: false, payload: { reason: failure, bytes: Buffer.byteLength(req.rawBody), sha256 }, receivedAt: req.now });
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        await this.d.store.record({ provider: CROWDED_PROVIDER, eventId: `rejected-${sha256.slice(0, 32)}`, signatureOk: false, payload: { reason: failure, bytes: bytes.byteLength, sha256 }, receivedAt: req.now });
         throw new HttpError(401, 'invalid_signature', 'Webhook signature could not be verified');
       }
-      const events = parseBatch(req.rawBody);
+      const events = parseBatch(Buffer.from(bytes).toString('utf8'));
       let stored = 0;
       for (const e of events) {
         const { duplicate } = await this.d.store.record({ provider: CROWDED_PROVIDER, eventId: e.eventId, signatureOk: true, payload: e.event, receivedAt: req.now });
@@ -102,11 +104,15 @@ export class CrowdedWebhook {
   }
 }
 
+/** One event larger than this is refused with its batch: a stored event is data, not a file. */
+export const MAX_EVENT_BYTES = 64 * 1024;
+
 /** The events of a signed delivery, or a 400 for the whole thing: a batch is accepted whole or not at all. */
 function parseBatch(rawBody: string): { eventId: string; event: Record<string, unknown> }[] {
   let b: unknown;
   try {
-    b = JSON.parse(rawBody);
+    // A byte-order mark is the sender's choice and the signature already holds: it is not part of the JSON.
+    b = JSON.parse(rawBody.charCodeAt(0) === 0xfeff ? rawBody.slice(1) : rawBody);
   } catch {
     throw new DomainError('VALIDATION_FAILED', 'The body is not JSON');
   }
@@ -117,6 +123,10 @@ function parseBatch(rawBody: string): { eventId: string; event: Record<string, u
     if (!isRecord(e) || typeof e['eventId'] !== 'string' || e['eventId'] === '' || e['eventId'].length > 200 || typeof e['eventType'] !== 'string' || e['eventType'].length > 200) {
       throw new DomainError('VALIDATION_FAILED', 'Every event needs an eventId and an eventType');
     }
+    // Postgres refuses a NUL in text and in jsonb, on every retry: a batch holding one would block the events behind it for ever.
+    const text = JSON.stringify(e);
+    if (text.includes('\\u0000')) throw new DomainError('VALIDATION_FAILED', 'An event holds a NUL character');
+    if (Buffer.byteLength(text) > MAX_EVENT_BYTES) throw new DomainError('VALIDATION_FAILED', 'An event is too large');
     return { eventId: e['eventId'], event: e };
   });
 }

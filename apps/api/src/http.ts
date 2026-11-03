@@ -31,6 +31,8 @@ export interface HttpRequest<B = unknown> {
   traceId: string;
   /** Raw body for signature verification on webhooks. */
   rawBody?: string;
+  /** The body exactly as received, before any decoding. A signature is computed over these bytes (T-0649). */
+  rawBytes?: Uint8Array;
   now: Date;
 }
 
