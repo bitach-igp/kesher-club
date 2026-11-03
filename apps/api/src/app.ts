@@ -182,7 +182,7 @@ function buildServices(o: AppOptions) {
   const usBanking = new InstitutionUsBanking({ db: o.db, flags, audit, kyb: kybGate, registry: o.registry, platformEntityRef: () => o.usBankingPlatformEntityRef });
   // Crowded sends batches signed over the raw bytes: its own route stores them; the router only replays the unprocessed ones.
   // An application event is re-read through the port and its current status reaches the US-banking link (T-0650).
-  const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), handlers: { application: (ref, status) => usBanking.onProviderApplication(ref, status, clock.now()), ...o.crowdedHandlers } });
+  const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), handlers: { ...o.crowdedHandlers, application: async (ref, status) => { await usBanking.onProviderApplication(ref, status, clock.now()); await o.crowdedHandlers?.application?.(ref, status); } } });
   webhooks.bind(CROWDED_PROVIDER, { verifier: refuseAllVerifier, process: (e) => crowdedWebhook.process(e) });
   const institutionCredit = new InstitutionCredit(o.db, approvals, audit, kybGate);
   const payoutAccounts = new PayoutAccounts(o.db, audit);

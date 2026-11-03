@@ -26,12 +26,18 @@ const PLAT = uuidv7(NOW);
 const POOL = uuidv7(NOW);
 const NOREF = uuidv7(NOW);
 const OFF = uuidv7(NOW);
+const XT = uuidv7(NOW);
+const TWIN = uuidv7(NOW);
+const DUP = uuidv7(NOW);
 type Who = { app: App; partyId: string; access: string; stepUp: string };
 const people: Record<string, Who> = {};
 let main: App;
 let host: SimulatorHost;
 let pooled: App;
 let pooledHost: SimulatorHost;
+let dup: App;
+let formOpened = false;
+let ohrEntity = '';
 const sim = (h: SimulatorHost) => h.simulators['institution-banking'];
 
 const call = (who: string, method: string, url: string, body?: unknown, opts: { key?: string; stepUp?: boolean; ip?: boolean } = {}) =>
@@ -73,10 +79,23 @@ beforeAll(async () => {
   const base = { db, market: 'IL' as const, issuer: 'https://api.kesher.example', clock: () => NOW };
   const on = new StaticFlags(undefined, { [FLAG]: true });
   main = createApp({ ...base, registry: host.registry, signingKey: await generateSigningKey(), flags: on, usBankingPlatformEntityRef: await platformEntity(host, 'holder_platform_subaccounts Israel Global Pay, LLC') });
-  pooled = createApp({ ...base, registry: pooledHost.registry, signingKey: await generateSigningKey(), flags: on, usBankingPlatformEntityRef: await platformEntity(pooledHost, 'holder_platform_pooled Israel Global Pay, LLC') });
+  const pooledPlatform = await platformEntity(pooledHost, 'holder_platform_pooled Israel Global Pay, LLC');
+  // Two simulator hosts in one database would both mint `sub_000001`, which the provider-id ownership check rightly refuses: the pooled host starts later.
+  for (let i = 0; i < 5; i++) await sim(pooledHost).createSubAccount({ entityRef: pooledPlatform, institutionId: uuidv7(NOW), idempotencyKey: `pad-${i}-0000` });
+  pooled = createApp({ ...base, registry: pooledHost.registry, signingKey: await generateSigningKey(), flags: on, usBankingPlatformEntityRef: pooledPlatform });
+  // A provider that matches organizations by name hands back an entity another institution already holds (here, Ohr's).
+  const dupHost = new SimulatorHost();
+  dupHost.registry.register('institution-banking', 'simulator', () => ({
+    createEntity: async () => ({ entityRef: ohrEntity }), // a value captured before the call: the test database has one connection, held by the open transaction
+    startApplication: async () => {
+      formOpened = true;
+      return { formUrl: 'https://apply.sim.invalid/other-institutions-form' };
+    },
+  }));
+  dup = createApp({ ...base, registry: dupHost.registry, signingKey: await generateSigningKey(), flags: on });
   const noRef = createApp({ ...base, registry: new SimulatorHost().registry, signingKey: await generateSigningKey(), flags: on });
   const off = createApp({ ...base, registry: new SimulatorHost().registry, signingKey: await generateSigningKey(), flags: new StaticFlags() });
-  await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Ohr', 'IL'), ($2, 'Rejected School', 'IL'), ($3, 'Beth Friends', 'US'), ($4, 'Platform School', 'IL'), ($5, 'Pooled School', 'IL'), ($6, 'No Ref School', 'IL'), ($7, 'Off School', 'IL')`, [OHR, RJ, BETH, PLAT, POOL, NOREF, OFF]);
+  await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Ohr', 'IL'), ($2, 'Rejected School', 'IL'), ($3, 'Beth Friends', 'US'), ($4, 'Platform School', 'IL'), ($5, 'Pooled School', 'IL'), ($6, 'No Ref School', 'IL'), ($7, 'Off School', 'IL'), ($8, 'Other School', 'IL'), ($9, 'Twin School', 'IL'), ($10, 'Dup School', 'IL')`, [OHR, RJ, BETH, PLAT, POOL, NOREF, OFF, XT, TWIN, DUP]);
   await db.query(`insert into org.institution_application (id, institution_id, applicant_party_id, idempotency_key, legal_name, registration_number, address, created_at) values ($1, $2, $3, 'beth-app-1', 'Beth Friends Inc.', '45-1234567', '{"line1":"1 Main St","city":"Teaneck","postalCode":"07666"}', $4)`, [uuidv7(NOW), BETH, uuidv7(NOW), NOW]);
   const staff = async (app: App, name: string, phone: string, inst: string, role: 'admin' | 'finance' | 'staff') => {
     await person(app, name, phone, ['member', `org_${role}`]);
@@ -91,6 +110,9 @@ beforeAll(async () => {
   await staff(pooled, 'poolAdmin', '+972501240007', POOL, 'admin');
   await staff(noRef, 'noRefAdmin', '+972501240008', NOREF, 'admin');
   await staff(off, 'offAdmin', '+972501240009', OFF, 'admin');
+  await staff(main, 'xtAdmin', '+972501240010', XT, 'admin');
+  await staff(main, 'twinAdmin', '+972501240011', TWIN, 'admin');
+  await staff(dup, 'dupAdmin', '+972501240012', DUP, 'admin');
 }, 240_000);
 afterAll(async () => db.close());
 
@@ -216,6 +238,50 @@ describe('US banking link (TST-INS-022, T-0650)', () => {
     // GET re-reads the provider, whose answer wins over the event we stored: the simulator still has the application pending.
     expect(((await status('bethAdmin', BETH)).body as { status: string }).status).toBe('pending');
     expect((await rows(BETH)).map((r) => r.status)).toEqual(['pending', 'needs_info', 'pending']);
+  });
+});
+
+describe('hardening (Opus review of T-0650)', () => {
+  it('an entity another institution already banks is refused: no second mapping, no form, no row', async () => {
+    ohrEntity = (await refs(OHR))[0]!.external_id;
+    const r = await link('dupAdmin', DUP, { holder: 'institution', usEntity: OHR_ENTITY }, 'dup-link-0001');
+    expect(r.status).toBe(409);
+    expect(JSON.stringify(r.body)).not.toContain('other-institutions-form');
+    expect(formOpened).toBe(false);
+    expect(await rows(DUP)).toEqual([]);
+    expect(await refs(DUP)).toEqual([]);
+    // Ohr's own mapping and status are untouched.
+    expect(await refs(OHR)).toHaveLength(1);
+  });
+
+  it('a key means nothing to another institution: the same key string links both', async () => {
+    const a = await link('xtAdmin', XT, { holder: 'institution', usEntity: { legalName: 'Other School Friends', ein: '33-4444444' } }, 'shared-key-0001');
+    const b = await link('twinAdmin', TWIN, { holder: 'institution', usEntity: { legalName: 'Twin School Friends', ein: '55-6666666' } }, 'shared-key-0001');
+    expect([a.status, b.status]).toEqual([201, 201]);
+    expect((await refs(XT))[0]!.external_id).not.toBe((await refs(TWIN))[0]!.external_id);
+  });
+
+  it('the hosted form\'s link is not kept: the ledger holds the status only, and a replay asks the bank for the link again', async () => {
+    const stored = JSON.stringify((await db.query(`select result from org.us_banking_key where key like 'link:%'`)).rows);
+    expect(stored).not.toContain('apply.sim.invalid');
+    expect(stored).not.toContain('formUrl');
+    const replay = await link('twinAdmin', TWIN, { holder: 'institution', usEntity: { legalName: 'Twin School Friends', ein: '55-6666666' } }, 'shared-key-0001');
+    expect(replay.body).toMatchObject({ status: 'pending', formUrl: expect.stringMatching(/^https:\/\//) });
+  });
+
+  it('two requests with one key at once make one entity and one row; a poll and an event at once append one change', async () => {
+    const body = { holder: 'institution', usEntity: { legalName: 'Concurrent Friends', ein: '77-8888888' } };
+    const [a, b] = await Promise.all([link('rjAdmin', RJ, { holder: 'institution' }, 'conc-key-0001'), link('rjAdmin', RJ, { holder: 'institution' }, 'conc-key-0001')]);
+    expect([a.status, b.status]).toEqual([201, 201]);
+    expect(body.holder).toBe('institution');
+    const before = (await rows(RJ)).length;
+    expect(await refs(RJ)).toHaveLength(1);
+    const ref = (await refs(RJ))[0]!.external_id;
+    sim(host).decide(ref);
+    await Promise.all([status('rjAdmin', RJ), status('rjAdmin', RJ), main.services.usBanking.onProviderApplication(ref, 'rejected', NOW)]);
+    const after = (await rows(RJ)).map((r) => r.status);
+    expect(after.length).toBeLessThanOrEqual(before + 1);
+    for (let i = 1; i < after.length; i++) expect(after[i]).not.toBe(after[i - 1]);
   });
 });
 
