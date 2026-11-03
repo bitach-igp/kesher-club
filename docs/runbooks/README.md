@@ -17,6 +17,7 @@ to search for one at 03:00.
 | [RUN-06 Agent abuse](RUN-06-agent-abuse.md) | MCP rate-limit storm or intent-reject spike | Revoke the client's grants; flip `mcp.write.enabled` off if widespread | Block the client ID metadata URL; review the audit | Email affected users listing the grants revoked |
 | [RUN-07 Data incident](RUN-07-data-incident.md) | Security alert, secrets exposure | Rotate the affected secrets; isolate; preserve logs | Counsel within 24 h; regulators and the bank per contract; Israeli PPA notice rules | Template approved by counsel |
 | [RUN-08 Restore from backup](RUN-08-restore-from-backup.md) | DR declared | Stop writes (maintenance flag); restore PITR to a new instance | Ledger first, then reconcile, then re-enable flags in order | Status page |
+| [RUN-09 US banking provider](RUN-09-us-banking-provider.md) | Port error or contract alert on `InstitutionBankingPort`, webhook signature failures, an ACH return, a collection paid twice | Flip `institutions.usBanking` to `degraded`; never re-send an ACH under a new key | Wait for recovery, rotate and replay, re-read from the provider, work breaks as RUN-03 | "Our US banking partner is having trouble. Payments already made are safe." |
 
 ## Alerts that page
 
@@ -33,6 +34,7 @@ From Tab 3 §9. Each names its runbook.
 | RDS CPU | over 80% for 15 minutes | RUN-02 |
 | Certificate expiry | within 14 days | RUN-07 (rotate before it bites) |
 | Port contract check | nightly suite red against the sandbox or live adapter | RUN-01 |
+| US banking provider | `InstitutionBankingPort` error rate over 5% for 5 minutes; webhook signature failures; US reconciliation unfinished at 06:00 IL | RUN-09 |
 
 ## On-call
 
