@@ -134,6 +134,8 @@ export class CollectionsService {
     const posted = await this.journal(row.id);
     if (posted) return this.finish(row, posted, now);
     if (row.status === 'waived') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This fee was waived');
+    // Collected on the provider's payment page (T-0652): paying it from the purse too would be paid twice.
+    if ((await this.db.query('select 1 from org.fee_us_collect where fee_item_id = $1', [row.id])).rows.length > 0) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This fee is collected through its payment page');
     if (row.status === 'paid') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This fee is marked paid without a payment on the ledger');
     const amount = money(BigInt(row.amount_minor), row.currency);
     const purse = (await this.accounts.purses(memberPartyId)).find((p) => p.currency === amount.currency)!;

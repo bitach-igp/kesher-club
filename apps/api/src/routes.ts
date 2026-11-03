@@ -101,6 +101,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/institutions/{id}/us-funding', operationId: 'listInstitutionUsFunding' },
   { method: 'POST', path: '/institutions/{id}/us-funding/{requestId}/approve', operationId: 'approveInstitutionUsFunding' },
   { method: 'POST', path: '/institutions/{id}/us-funding/{requestId}/cancel', operationId: 'cancelInstitutionUsFunding' },
+  { method: 'POST', path: '/institutions/{id}/fee-batches/{batchId}/us-collection', operationId: 'collectFeeBatchInUs' },
   { method: 'POST', path: '/staff-invites/{token}/accept', operationId: 'acceptStaffInvite' },
   { method: 'PATCH', path: '/institutions/{id}/team/{partyId}', operationId: 'updateInstitutionStaff' },
   { method: 'POST', path: '/institutions/{id}/staff-grants/{grantId}/approve', operationId: 'approveStaffGrant' },

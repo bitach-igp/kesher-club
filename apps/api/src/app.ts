@@ -50,6 +50,7 @@ import { StudentDetail, studentHandlers } from './institutions/student.ts';
 import { statementHandlers } from './institutions/statement.ts';
 import { InstitutionTeam, teamHandlers } from './institutions/team.ts';
 import { InstitutionUsBanking, usBankingHandlers } from './institutions/us-banking.ts';
+import { UsCollections, usCollectionsHandlers } from './institutions/us-collections.ts';
 import { InstitutionUsFunding, usFundingHandlers } from './institutions/us-funding.ts';
 import { BANK_PROVIDER, bankCreditVerifier, depositHandlers, InstitutionDeposits, paymentReference } from './institutions/deposits.ts';
 import { StaffTokenVerifier, staffBearerMiddleware } from './admin/staff-token.ts';
@@ -187,6 +188,7 @@ function buildServices(o: AppOptions) {
   const usBanking = new InstitutionUsBanking({ db: o.db, flags, audit, kyb: kybGate, registry: o.registry, platformEntityRef: () => o.usBankingPlatformEntityRef });
   // Crowded sends batches signed over the raw bytes: its own route stores them; the router only replays the unprocessed ones.
   // An application event is re-read through the port and its current status reaches the US-banking link (T-0650).
+  const usCollections = new UsCollections({ db: o.db, flags, audit, kyb: kybGate, registry: o.registry, usBanking });
   const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), handlers: {
       ...o.crowdedHandlers,
       application: async (ref, status) => {
@@ -196,6 +198,11 @@ function buildServices(o: AppOptions) {
       ach: async (ref, status) => {
         await usFunding.onProviderAch(ref, status, clock.now());
         await o.crowdedHandlers?.ach?.(ref, status);
+      },
+      // A payment, collection, intent or refund event: the entity's recent payments are re-read and recorded (T-0652).
+      collected: async (ref) => {
+        await usCollections.onCollectedHint(ref, o.usBankingPlatformEntityRef, o.market, clock.now());
+        await o.crowdedHandlers?.collected?.(ref);
       },
     } });
   webhooks.bind(CROWDED_PROVIDER, { verifier: refuseAllVerifier, process: (e) => crowdedWebhook.process(e) });
@@ -259,7 +266,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
 export function createApp(o: AppOptions): App {
@@ -354,6 +361,7 @@ export function createApp(o: AppOptions): App {
     ...teamHandlers(s.team, s.stepUp, staffOf),
     ...usBankingHandlers(s.usBanking, s.stepUp, staffOf),
     ...usFundingHandlers(s.usFunding, s.stepUp, staffOf),
+    ...usCollectionsHandlers(s.usCollections, staffOf),
     ...depositHandlers(s.deposits),
     ...caseHandlers(new OpsCases(o.db, s.audit)),
     ...preferenceHandlers(s.preferences),
