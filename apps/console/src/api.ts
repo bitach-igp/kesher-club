@@ -69,6 +69,13 @@ export function institutionApi(baseUrl: string, accessToken: string, stepUpToken
     importRoster: (id: string, body: Schemas['RosterImportRequest'], idempotencyKey: string) => c.post('/institutions/{id}/rosters', { path: { id }, body, idempotencyKey }),
     createCohort: (id: string, body: { name: string; startsOn: string; endsOn: string }, idempotencyKey: string) => c.post('/institutions/{id}/cohorts', { path: { id }, body, idempotencyKey }),
     createAchPull: (id: string, body: Schemas['InstitutionAchPullRequest'], idempotencyKey: string) => c.post('/institutions/{id}/ach-pulls', { path: { id }, body, idempotencyKey }),
+    usBanking: (id: string) => c.get('/institutions/{id}/us-banking', { path: { id } }),
+    startUsBanking: (id: string, body: { holder: 'platform' | 'institution'; usEntity?: { legalName: string; ein: string } }, idempotencyKey: string) => c.post('/institutions/{id}/us-banking', { path: { id }, body, idempotencyKey }),
+    usFunding: (id: string) => c.get('/institutions/{id}/us-funding', { path: { id } }),
+    quoteUsFunding: (id: string, amount: Schemas['Money']) => c.post('/institutions/{id}/us-funding/quote', { path: { id }, body: { amount } }),
+    requestUsFunding: (id: string, quoteId: string, idempotencyKey: string) => c.post('/institutions/{id}/us-funding', { path: { id }, body: { quoteId }, idempotencyKey }),
+    approveUsFunding: (id: string, requestId: string) => c.post('/institutions/{id}/us-funding/{requestId}/approve', { path: { id, requestId } }),
+    cancelUsFunding: (id: string, requestId: string) => c.post('/institutions/{id}/us-funding/{requestId}/cancel', { path: { id, requestId } }),
     team: (id: string) => c.get('/institutions/{id}/team', { path: { id } }),
     inviteStaff: (id: string, body: { role: 'staff' | 'finance' | 'admin'; email?: string; phone?: string }, idempotencyKey: string) =>
       c.post('/institutions/{id}/staff-invites', { path: { id }, body, idempotencyKey }),

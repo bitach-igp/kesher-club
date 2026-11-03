@@ -6,6 +6,7 @@ import { theme } from '@kesher/tokens';
 import { getConfig } from '../src/config.ts';
 import { dirOf, localeFrom, t } from '../src/i18n.ts';
 import { showsDeposits } from '../src/deposits.ts';
+import { showsUsBanking } from '../src/us-banking.ts';
 import { showsAccount } from '../src/statement.ts';
 import { decodeLanding, LANDING_HEADER } from '../src/session.ts';
 
@@ -52,6 +53,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             <a href="/collections">{t('nav.collections', locale)}</a>
             <a href="/payouts">{t('nav.payouts', locale)}</a>
             {showsDeposits(landing) ? <a href="/deposits">{t('nav.deposits', locale)}</a> : null}
+            {showsUsBanking(landing) ? <a href="/us-banking">{t('nav.usbank', locale)}</a> : null}
             <a href="/team">{t('nav.team', locale)}</a>
             {landing.kind === 'dashboard' && showsAccount(landing.role) ? <a href="/account">{t('nav.account', locale)}</a> : null}
           </nav>
