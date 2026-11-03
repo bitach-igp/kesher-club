@@ -2,6 +2,8 @@
 // text input, the way the other simulators do:
 // - legalName starting `ent_ok` (the default) / `ent_rejected` / `ent_needs_info`: what `decide` settles the
 //   application to; `OUTAGE` → PROVIDER_UNAVAILABLE at createEntity.
+// - for `holder: 'platform'`, legalName starting `holder_platform_subaccounts` (the default) / `holder_platform_pooled`:
+//   whether createSubAccount gives each institution its own account number or one pooled account is shared.
 // - funder name starting `pay_ok` (default) / `pay_declined` / `pay_refunded`: how `pay` settles the payment page.
 // - counterpartyRef starting `ach_ok` (default) / `ach_returned` / `ach_rejected_201`: how the ACH ends; the last is a
 //   create the provider answers with a 201 whose status is Rejected, which the port reports as REJECTED.
@@ -18,6 +20,7 @@ import {
   type CollectedPayment,
   type CollectedPaymentStatus,
   type Funder,
+  type Holder,
   type InboundEvent,
   type InstitutionBankingPort,
   InstitutionBankingError,
@@ -34,6 +37,12 @@ const fail = (code: ConstructorParameters<typeof InstitutionBankingError>[0], me
 
 interface Entity {
   entityRef: string;
+  holder: Holder;
+  /** A sub-account's platform entity. */
+  parent?: string;
+  /** A unit of a pooled platform account: it has no account of its own. */
+  pooled?: boolean;
+  platformMode?: 'subaccounts' | 'pooled';
   fixture: 'ent_ok' | 'ent_rejected' | 'ent_needs_info';
   status: ApplicationStatus;
   balance: bigint;
@@ -65,7 +74,7 @@ export class InstitutionBankingSimulator implements InstitutionBankingPort {
   private readonly ledger: (BankTransaction & { entityRef: string })[] = [];
   private readonly aches = new Map<string, Ach>();
   private readonly keyed = new Map<string, { body: string; result: unknown }>();
-  private readonly ids = { ent: new Sequence('ent'), acct: new Sequence('acct'), col: new Sequence('col'), int: new Sequence('int'), pay: new Sequence('pay'), ach: new Sequence('ach'), txn: new Sequence('txn'), ev: new Sequence('ev') };
+  private readonly ids = { ent: new Sequence('ent'), acct: new Sequence('acct'), sub: new Sequence('sub'), bk: new Sequence('bk'), col: new Sequence('col'), int: new Sequence('int'), pay: new Sequence('pay'), ach: new Sequence('ach'), txn: new Sequence('txn'), ev: new Sequence('ev') };
 
   /** `pageSize` is the provider's page: small values make the iterators cross page boundaries in tests. */
   constructor(clock: Clock = fixedClock(), pageSize = 100) {
@@ -93,17 +102,46 @@ export class InstitutionBankingSimulator implements InstitutionBankingPort {
   private approved(ref: string): Entity {
     const e = this.entity(ref);
     if (e.status !== 'approved') fail('NOT_APPROVED', 'The application is not approved');
+    if (e.pooled) fail('VALIDATION_FAILED', 'This institution shares the platform account: it has none of its own');
     return e;
   }
 
-  async createEntity(input: { institutionId: string; legalName: string; ein: string; idempotencyKey: string }): Promise<{ entityRef: string }> {
+  async createEntity(input: { holder: Holder; institutionId: string; legalName: string; ein: string; idempotencyKey: string }): Promise<{ entityRef: string }> {
     if (input.legalName.startsWith('OUTAGE')) fail('PROVIDER_UNAVAILABLE', 'Simulated provider outage');
     if (!input.legalName.trim() || !/^\d{2}-?\d{7}$/.test(input.ein)) fail('VALIDATION_FAILED', 'A legal name and a 9-digit EIN are required');
     return this.once('entity', input.idempotencyKey, input, () => {
       const fixture = input.legalName.startsWith('ent_rejected') ? 'ent_rejected' : input.legalName.startsWith('ent_needs_info') ? 'ent_needs_info' : 'ent_ok';
       const entityRef = this.ids.ent.next();
-      this.entities.set(entityRef, { entityRef, fixture, status: 'pending', balance: 0n, accountRef: this.ids.acct.next() });
+      const platformMode = input.legalName.startsWith('holder_platform_pooled') ? 'pooled' : 'subaccounts';
+      this.entities.set(entityRef, { entityRef, holder: input.holder, ...(input.holder === 'platform' ? { platformMode } : {}), fixture, status: 'pending', balance: 0n, accountRef: this.ids.acct.next() });
       return { entityRef };
+    });
+  }
+
+  async createSubAccount(input: { entityRef: string; institutionId: string; idempotencyKey: string }): Promise<{ subAccountRef: string; hasOwnAccountNumber: boolean }> {
+    const e = this.entity(input.entityRef);
+    if (e.holder !== 'platform' || e.parent) fail('VALIDATION_FAILED', 'Only a platform entity has sub-accounts');
+    if (e.status !== 'approved') fail('NOT_APPROVED', 'The application is not approved');
+    return this.once('sub', input.idempotencyKey, input, () => {
+      const pooled = e.platformMode === 'pooled';
+      const subAccountRef = this.ids.sub.next();
+      this.entities.set(subAccountRef, { entityRef: subAccountRef, holder: 'platform', parent: e.entityRef, pooled, fixture: 'ent_ok', status: 'approved', balance: 0n, accountRef: this.ids.acct.next() });
+      return { subAccountRef, hasOwnAccountNumber: !pooled };
+    });
+  }
+
+  async bookTransfer(input: { fromRef: string; toRef: string; amount: Money; memo: string; idempotencyKey: string }): Promise<{ transferRef: string }> {
+    requireUsd(input.amount);
+    if (!isAddenda(input.memo)) fail('VALIDATION_FAILED', 'memo must be at most 80 printable ASCII characters');
+    const from = this.approved(input.fromRef);
+    const to = this.approved(input.toRef);
+    if (from.entityRef === to.entityRef) fail('VALIDATION_FAILED', 'A transfer needs two different accounts');
+    if (from.holder !== 'platform' || to.holder !== 'platform' || (from.parent ?? from.entityRef) !== (to.parent ?? to.entityRef)) fail('VALIDATION_FAILED', "A book transfer moves money between one platform's own accounts");
+    return this.once('book', input.idempotencyKey, input, () => {
+      if (from.balance < input.amount.minor) fail('VALIDATION_FAILED', 'Insufficient funds in the account');
+      this.post(from.entityRef, 'debit', input.amount, `Book transfer to ${to.entityRef}: ${input.memo}`);
+      this.post(to.entityRef, 'credit', input.amount, `Book transfer from ${from.entityRef}: ${input.memo}`);
+      return { transferRef: this.ids.bk.next() };
     });
   }
 
