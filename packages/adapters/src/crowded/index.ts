@@ -2,3 +2,5 @@
 export { CrowdedInstitutionBankingAdapter, InMemoryKeyLedger, type CrowdedInstitutionBankingOptions, type KeyLedger } from './institution-banking.ts';
 export { CrowdedClient, CrowdedApiError, CrowdedTransportError, SANDBOX_BASE_URL, type CrowdedClientOptions } from './client.ts';
 export { FakeCrowded, type FakeCrowdedOptions } from './fake-crowded.ts';
+export { computeCrowdedSignature, verifyCrowdedSignature, headerValue as crowdedHeaderValue, CROWDED_SIGNATURE_HEADER, type CrowdedSignatureFailure, type VerifyCrowdedInput } from './signature.ts';
+export { ref as crowdedRef } from './map.ts';

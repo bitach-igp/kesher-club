@@ -95,7 +95,9 @@ export const collectedStatus = (v: unknown): CollectedPaymentStatus | undefined 
 export const ref = (...parts: string[]): string => parts.join(':');
 export function parseRef(r: string, parts: number): string[] {
   const p = r.split(':');
-  if (p.length !== parts || p.some((x) => x === '' || /[/?#\s]/.test(x))) throw new InstitutionBankingError('NOT_FOUND', 'Unknown reference');
+  // Ids are UUIDs and numbers. Refs come from a webhook body too, which is untrusted, and become URL path segments: only
+  // letters, digits, `_` and `-` pass (no `.`, `..`, `/`, `?`, `#`, `%` or spaces).
+  if (p.length !== parts || p.some((x) => !/^[A-Za-z0-9_-]+$/.test(x))) throw new InstitutionBankingError('NOT_FOUND', 'Unknown reference');
   return p;
 }
 

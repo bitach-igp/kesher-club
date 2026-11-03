@@ -120,6 +120,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/intents/{id}/approve', operationId: 'approveIntent' },
   { method: 'POST', path: '/intents/{id}/decline', operationId: 'declineIntent' },
   { method: 'POST', path: '/hooks/{provider}', operationId: 'providerWebhook', public: true },
+  { method: 'POST', path: '/webhooks/crowded', operationId: 'crowdedWebhook', public: true },
   { method: 'POST', path: '/jit/card-authorizations', operationId: 'cardAuthorization', public: true },
   // Admin console (ADR-013): staff token only; the handlers refuse member and agent principals.
   { method: 'POST', path: '/kyc/sessions', operationId: 'startKycSession' },

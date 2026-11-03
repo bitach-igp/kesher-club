@@ -2928,6 +2928,29 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/webhooks/crowded": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Crowded webhook batch; signature over the raw body, events stored and deduped by event id
+         * @description REQ-INS-025, behind the flag institutions.usBanking (404 FEATURE_OFF when off). Authenticated by
+         *     `X-Webhook-Signature: sha256=<hex>`, the HMAC-SHA256 of the raw request bytes; no bearer. A bad or missing signature is
+         *     401 and claims no event id. A valid delivery stores every event as (crowded, eventId), repeats are no-ops, and the answer
+         *     is 200 at once: the provider's current state is re-read later by the worker, never taken from the event body.
+         */
+        readonly post: operations["crowdedWebhook"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -9239,6 +9262,51 @@ export interface operations {
                     readonly "application/json": components["schemas"]["TransferPreview"];
                 };
             };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly crowdedWebhook: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly batchId?: string;
+                    readonly count?: number;
+                    readonly events: readonly {
+                        readonly context?: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly data?: {
+                            readonly [key: string]: unknown;
+                        };
+                        readonly eventId: string;
+                        readonly eventType: string;
+                        readonly timestamp?: string;
+                    }[];
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Stored */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly duplicates: number;
+                        readonly received: number;
+                        readonly stored: number;
+                    };
+                };
+            };
+            readonly 401: components["responses"]["Problem"];
+            readonly 404: components["responses"]["Problem"];
             readonly default: components["responses"]["Problem"];
         };
     };

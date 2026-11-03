@@ -3,7 +3,7 @@
 // receiver (POST /v1/webhooks/crowded, T-0649). Run by a person on the desktop, never from CI.
 //
 //   node tools/crowded-webhooks.mjs list   [--dry-run]
-//   node tools/crowded-webhooks.mjs create --url https://api.example/v1/webhooks/crowded [--dry-run]
+//   node tools/crowded-webhooks.mjs create --url https://webhooks.example/webhooks/crowded [--dry-run]   (the webhook host's edge forwards /webhooks/*)
 //   node tools/crowded-webhooks.mjs delete --id <webhookId> --yes [--dry-run]
 //
 // Environment (never printed, never logged):
@@ -48,7 +48,7 @@ let request;
 if (cmd === 'list') request = { method: 'GET', path: '/webhooks' };
 else if (cmd === 'create') {
   const url = value('url') ?? '';
-  if (!/^https:\/\/[^/\s]+\/v1\/webhooks\/crowded$/.test(url)) die('--url must be https and end in /v1/webhooks/crowded');
+  if (!/^https:\/\/[^/\s]+(\/v1)?\/webhooks\/crowded$/.test(url)) die('--url must be https and end in /webhooks/crowded (or /v1/webhooks/crowded)');
   if (!/^[A-Za-z0-9_\-+/=]{32,128}$/.test(secret)) die('CROWDED_WEBHOOK_SECRET must be 32-128 characters of A-Za-z0-9_-+/=');
   request = { method: 'POST', path: '/webhooks', body: { url, events: EVENTS, deliveryMode: 'at_least_once', description: 'Kesher receiver', secret } };
 } else {

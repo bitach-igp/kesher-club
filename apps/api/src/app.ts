@@ -2,7 +2,7 @@
 // in sim mode) and returns the handler table. The HTTP server (server.ts) and tests call this;
 // nothing here knows about sockets. Secrets arrive through the config loader (T-0004).
 import type { Database } from './db.ts';
-import type { AuthPort, BankPort, BillingPort, CardIssuingPort, EventsPort, FundingPort, FxPort, PayoutPort, KycPort, KybPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
+import type { AuthPort, BankPort, BillingPort, CardIssuingPort, EventsPort, FundingPort, FxPort, InstitutionBankingPort, PayoutPort, KycPort, KybPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
 import { ok, requireIdempotencyKey, requirePrincipal, requireRole, route, type Handler, type HttpRequest } from './http.ts';
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
@@ -93,6 +93,7 @@ import { RosterService, importRosterHandler } from './institutions/roster.ts';
 import { ApprovalService } from './approvals/service.ts';
 import { AuditService } from './audit/service.ts';
 import { FlagService } from './flags/service.ts';
+import { CROWDED_PROVIDER, CrowdedWebhook, refuseAllVerifier, type CrowdedHandlers } from './webhooks/crowded.ts';
 import { INTENT_STATES, IntentService, type IntentStatus } from './intents/service.ts';
 import { WebhookRouter } from './webhooks/handler.ts';
 import { InboundEventStore } from './webhooks/store.ts';
@@ -115,6 +116,10 @@ export interface AppOptions {
   staffJwks?: readonly JWK[];
   /** Feature flags; defaults to the two-person-approved store (FlagService). Tests inject StaticFlags. */
   flags?: FeatureFlags;
+  /** The Crowded webhook secret and, during a rotation, the previous one (T-0649). None configured: every Crowded delivery is refused. */
+  crowdedWebhookSecrets?: readonly string[];
+  /** What the US-banking cards do with the provider's current state after a Crowded event (T-0650, T-0652, T-0653). */
+  crowdedHandlers?: CrowdedHandlers;
   /**
    * The process's PII cipher (T-0024): main.ts and the demo pass theirs, so what one process seals another opens.
    * Defaults to one with throwaway keys, which suits a test: nothing it seals outlives the process.
@@ -160,6 +165,9 @@ function buildServices(o: AppOptions) {
   const roster = new RosterService(o.db);
   const inbound = new InboundEventStore(o.db, o.market);
   const webhooks = new WebhookRouter(inbound);
+  // Crowded sends batches signed over the raw bytes: its own route stores them; the router only replays the unprocessed ones.
+  const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), ...(o.crowdedHandlers ? { handlers: o.crowdedHandlers } : {}) });
+  webhooks.bind(CROWDED_PROVIDER, { verifier: refuseAllVerifier, process: (e) => crowdedWebhook.process(e) });
   const kyc = new KycService(o.db, o.registry.resolve<KycPort>('kyc', o.market), o.market, o.registry.bindingFor('kyc', o.market)?.provider ?? 'issuer-kyc');
   const cardIssuing = o.registry.resolve<CardIssuingPort>('card-issuing', o.market);
   const cards = new CardService(o.db, cardIssuing, kyc, flags, o.registry.bindingFor('card-issuing', o.market)?.provider ?? 'simulator');
@@ -230,7 +238,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
 export function createApp(o: AppOptions): App {
@@ -362,6 +370,7 @@ export function createApp(o: AppOptions): App {
       return { status: 204 };
     }),
     providerWebhook: s.webhooks.handler() as Handler,
+    crowdedWebhook: s.crowdedWebhook.handler(),
     ...adminHandlers({ flags: flagStore, approvals: s.approvals, audit: s.audit, registry: o.registry, market: o.market, customers: new CustomerReadModel({ db: o.db, identity: s.identity, ledger: s.ledger, audit: s.audit }), complaints: new ComplaintService(o.db, s.audit), alerts: new AlertService(o.db, s.audit) }),
   };
   for (const r of ROUTES) if (!handlers[r.operationId]) handlers[r.operationId] = notYet(r.operationId);
