@@ -1,4 +1,4 @@
-h1:s2ms1jGvnh+6l/DZgryFPJkEvNsRpFaiP8g6nYf7bd0=
+h1:vDOoTkAifYS2ozPBsAiC/4JXDdi2TClpJzgdqRXvJaY=
 0001_init.sql h1:JG6O+KzBGryTso9G88hAhZ0xHkiUIAq9t3nVJkY5ix8=
 0002_allowance.sql h1:Q+8fviRxwHwnDpVGRKk3reSjfT6v/TF0R74S5bL6XFo=
 0003_institution_onboarding.sql h1:jtM6a6UzbbLc5HUeWMz3mpmg+eUhtCj1KKsyyr6oBVA=
@@ -9,3 +9,4 @@ h1:s2ms1jGvnh+6l/DZgryFPJkEvNsRpFaiP8g6nYf7bd0=
 0008_institution_application.sql h1:zfAwkhL+MnsX8UvbiK7oyBzCzvsS2X4t3rQ1ze5aGUo=
 0009_cohort.sql h1:sjmB96gJfkgrPGvPyMU5zZ1HlpT4q/Rn9vOY/cI57sA=
 0010_staff_invite.sql h1:lsCJZSUsCxUsBu2jr0bxQRLmhkqhNhtgv8QGhbdMsQU=
+0011_institution_us_banking.sql h1:+TxDfXKQOlqSbqn+SeCRWvQM7SwVX5dvwYq1ZkiYPGc=

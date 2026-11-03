@@ -2108,6 +2108,36 @@ export interface paths {
         readonly patch: operations["updateInstitutionStaff"];
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/us-banking": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution's US banking status, and its account once approved
+         * @description REQ-INS-022 (T-0650), behind institutions.usBanking. Finance staff and admins. While an application is open the provider is
+         *     asked for its status and a change is recorded. `moneyOpen` is true only when the provider approved AND the institution's KYB
+         *     allows it; `last4` and `balance` (USD, bigint minor units as a string) appear once approved, never the account number.
+         */
+        readonly get: operations["getInstitutionUsBanking"];
+        readonly put?: never;
+        /**
+         * Link the institution's US banking account, or resume the application
+         * @description REQ-INS-022 (T-0650), behind the flag institutions.usBanking (404 FEATURE_OFF when off). Institution admins only, with a
+         *     step-up and an Idempotency-Key. `holder` is fixed once chosen: `institution` opens the provider's hosted application for the
+         *     admin's IP and answers `formUrl`; `platform` makes the institution a sub-account under the platform company's entity, with no
+         *     form (`sharesPlatformAccount` when the provider keeps one pooled account). The same key and body answer the same result and
+         *     create nothing twice; a new key while an application is open resumes it.
+         */
+        readonly post: operations["createInstitutionUsBanking"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/intents": {
         readonly parameters: {
             readonly query?: never;
@@ -3976,6 +4006,25 @@ export interface components {
             readonly invites: readonly components["schemas"]["StaffInvite"][];
             readonly pendingGrants: readonly components["schemas"]["ApprovalRequest"][];
             readonly staff: readonly components["schemas"]["TeamMember"][];
+        };
+        readonly InstitutionUsBanking: {
+            readonly balance?: components["schemas"]["Money"];
+            /** @enum {string} */
+            readonly holder?: "platform" | "institution";
+            readonly last4?: string;
+            readonly moneyOpen: boolean;
+            readonly sharesPlatformAccount?: boolean;
+            /** @enum {string} */
+            readonly status: "not_linked" | "pending" | "needs_info" | "approved" | "rejected";
+        };
+        readonly InstitutionUsBankingLink: {
+            /** Format: uri */
+            readonly formUrl?: string;
+            /** @enum {string} */
+            readonly holder: "platform" | "institution";
+            readonly sharesPlatformAccount: boolean;
+            /** @enum {string} */
+            readonly status: "pending" | "needs_info" | "approved" | "rejected";
         };
         /** @description How an approved load intent is paid; required for load intents, ignored for the others. */
         readonly IntentApprovalRequest: {
@@ -8066,6 +8115,69 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["StaffChange"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getInstitutionUsBanking: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The status */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionUsBanking"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createInstitutionUsBanking: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @enum {string} */
+                    readonly holder: "platform" | "institution";
+                    /** @description The US entity to bank, for an institution that did not apply as a US one. Any legal form. */
+                    readonly usEntity?: {
+                        readonly ein: string;
+                        readonly legalName: string;
+                    };
+                };
+            };
+        };
+        readonly responses: {
+            /** @description Linked, or the open application resumed */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["InstitutionUsBankingLink"];
                 };
             };
             readonly default: components["responses"]["Problem"];

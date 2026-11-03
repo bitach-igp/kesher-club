@@ -81,7 +81,8 @@ afterAll(async () => db.close());
 
 describe('the KYB gate (T-0621, TST-INS-010)', () => {
   it('opens what ADR-017 says, and nothing before a decision', () => {
-    expect(OPEN).toEqual({ needs_more_info: [], approved_with_limits: ['deposits', 'allowances', 'payouts'], approved: ['deposits', 'allowances', 'credit', 'payouts'], rejected: [] });
+    // us_banking (T-0650): the institution's US account follows its own KYB, like its other money, and is never open before a decision.
+    expect(OPEN).toEqual({ needs_more_info: [], approved_with_limits: ['deposits', 'allowances', 'payouts', 'us_banking'], approved: ['deposits', 'allowances', 'credit', 'payouts', 'us_banking'], rejected: [] });
   });
 
   it('needs_more_info: the second approval of a ₪20,000.00 deposit answers FEATURE_OFF, the deposit stays pending, the balance stays 0', async () => {
