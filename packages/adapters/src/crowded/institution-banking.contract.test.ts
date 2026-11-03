@@ -247,13 +247,13 @@ describe('hardening', () => {
     expect((await h.adapter.account(entityRef)).balance.minor).toBe(90_000n);
   });
 
-  it('a 409 on a payment is an unknown outcome, never our IDEMPOTENCY_CONFLICT', async () => {
+  it('a 409 on a payment is OUTCOME_UNKNOWN, never our IDEMPOTENCY_CONFLICT', async () => {
     const h = harness();
     const entityRef = await approvedEntity(h);
     h.fake.fund(entityRef, 100_000n);
     const b = restarted(h, (url, init) => (init?.method === 'POST' && url.endsWith(`/chapters/${entityRef}/payments`) ? json(409, { message: 'dup', code: 'DUPLICATE_REQUEST' }) : undefined));
     const e = await b.sendAch(ach(entityRef)).catch((x: unknown) => x);
-    expect(e).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(e).toMatchObject({ code: 'OUTCOME_UNKNOWN' });
     expect((e as Error).message).toMatch(/read it back/);
   });
 
@@ -283,7 +283,7 @@ describe('hardening', () => {
     const sub = await h.adapter.createSubAccount({ entityRef: platform.entityRef, institutionId: '0190a0a0-0000-7000-8000-000000000101', idempotencyKey: 'key-sub-00001' });
     const move = { fromRef: platform.entityRef, toRef: sub.subAccountRef, amount: money(1_000n, 'USD'), memo: 'KC-7M4QX2HD' };
     const fund = (url: string, init: RequestInit | undefined) => init?.method === 'POST' && url.endsWith('/subaccounts/fund');
-    await expect(restarted(h, (u, i) => (fund(u, i) ? json(200, { data: {} }) : undefined)).bookTransfer({ ...move, idempotencyKey: 'key-book-0001' })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    await expect(restarted(h, (u, i) => (fund(u, i) ? json(200, { data: {} }) : undefined)).bookTransfer({ ...move, idempotencyKey: 'key-book-0001' })).rejects.toMatchObject({ code: 'OUTCOME_UNKNOWN' });
     await expect(restarted(h, (u, i) => (fund(u, i) ? json(200, { data: [{ id: 'x', status: 'failed', error: 'no' }] }) : undefined)).bookTransfer({ ...move, idempotencyKey: 'key-book-0002' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
     await h.adapter.bookTransfer({ ...move, idempotencyKey: 'key-book-0003' });
     await restarted(h).bookTransfer({ ...move, idempotencyKey: 'key-book-0003' });

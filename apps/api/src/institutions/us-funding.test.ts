@@ -198,15 +198,40 @@ describe('US funding (TST-INS-024, T-0653)', () => {
     expect((await call('ownFin1', 'POST', `/institutions/${OWN}/us-funding/${gone.id}/cancel`)).status).toBe(409);
   });
 
-  it('a provider that is unavailable leaves the request approved; the sweep sends it again under the same key, once', async () => {
+  it('a provider that is unavailable leaves the claim to go stale; the sweep sends it again under the same key, once', async () => {
     const send = vi.spyOn(sim(host), 'sendAch').mockRejectedValueOnce(new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'down'));
     const r = await asked('ownFin1', OWN, 240_000n, 'fund-key-0030');
-    expect((await approve('ownFin2', OWN, r.id)).body).toMatchObject({ status: 'approved' });
-    expect(await main.services.usFunding.sweep('IL', LATER)).toMatchObject({ sent: 1 });
+    expect((await approve('ownFin2', OWN, r.id)).body).toMatchObject({ status: 'sending' });
+    // A fresh claim is left alone; a cancel meanwhile is refused.
+    expect(await main.services.usFunding.sweep('IL', new Date(NOW.getTime() + 60_000))).toMatchObject({ sent: 0 });
+    expect((await call('ownFin1', 'POST', `/institutions/${OWN}/us-funding/${r.id}/cancel`)).status).toBe(409);
+    const STALE = new Date(NOW.getTime() + 11 * 60_000);
+    expect(await main.services.usFunding.sweep('IL', STALE)).toMatchObject({ sent: 1 });
     expect(await view('ownFin1', OWN, r.id)).toMatchObject({ status: 'in_transit', achStatus: 'pending' });
-    expect(await main.services.usFunding.sweep('IL', LATER)).toMatchObject({ sent: 0 });
+    expect(await main.services.usFunding.sweep('IL', STALE)).toMatchObject({ sent: 0 });
     expect(send).toHaveBeenCalledTimes(2);
     expect(send.mock.calls[0]![0].idempotencyKey).toBe(send.mock.calls[1]![0].idempotencyKey);
+    send.mockRestore();
+  });
+
+  it('an answer we cannot read stops the request for a person: needs_review, a case, and no resend', async () => {
+    const send = vi.spyOn(sim(host), 'sendAch').mockRejectedValueOnce(new InstitutionBankingError('OUTCOME_UNKNOWN', 'unreadable'));
+    const r = await asked('ownFin1', OWN, 270_000n, 'fund-key-0050');
+    expect((await approve('ownFin2', OWN, r.id)).body).toMatchObject({ status: 'needs_review' });
+    expect((await db.query(`select 1 from ops.case where kind = 'us_funding_failed' and payload->>'requestId' = $1`, [r.id])).rows).toHaveLength(1);
+    await main.services.usFunding.sweep('IL', new Date(NOW.getTime() + 3 * 3_600_000));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect((await call('ownFin1', 'POST', `/institutions/${OWN}/us-funding/${r.id}/cancel`)).status).toBe(409);
+    send.mockRestore();
+  });
+
+  it('a request still unsent after a day is stopped, not resent', async () => {
+    const send = vi.spyOn(sim(host), 'sendAch').mockRejectedValue(new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'down'));
+    const r = await asked('ownFin1', OWN, 280_000n, 'fund-key-0051');
+    await approve('ownFin2', OWN, r.id);
+    await main.services.usFunding.sweep('IL', new Date(NOW.getTime() + 25 * 3_600_000));
+    expect(await view('ownFin1', OWN, r.id)).toMatchObject({ status: 'needs_review' });
+    expect(send).toHaveBeenCalledTimes(1);
     send.mockRestore();
   });
 

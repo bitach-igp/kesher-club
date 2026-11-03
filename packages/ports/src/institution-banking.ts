@@ -101,7 +101,9 @@ export type InstitutionBankingErrorCode =
   | 'NOT_APPROVED'
   | 'IDEMPOTENCY_CONFLICT'
   | 'NOT_CANCELLABLE'
-  | 'REJECTED';
+  | 'REJECTED'
+  /** A call that moves money got an answer we cannot read, or one that says the provider may already hold it: do not resend blindly; read the payment back. */
+  | 'OUTCOME_UNKNOWN';
 
 export class InstitutionBankingError extends Error {
   readonly code: InstitutionBankingErrorCode;

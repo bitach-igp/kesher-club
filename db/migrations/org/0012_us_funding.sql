@@ -36,7 +36,7 @@ create table org.us_funding_event (
   -- Two events in one millisecond tie on time; the sequence orders them.
   seq         bigint generated always as identity unique,
   request_id  uuid not null references org.us_funding_request(id),
-  kind        text not null check (kind in ('requested', 'approved', 'sent', 'ach_status', 'book_transferred', 'deposit_recorded', 'linked', 'cancelled', 'failed')),
+  kind        text not null check (kind in ('requested', 'approved', 'sending', 'sent', 'send_unknown', 'ach_status', 'book_transferred', 'deposit_recorded', 'linked', 'cancelled', 'failed')),
   by_party    uuid,
   payload     jsonb not null default '{}',
   at          timestamptz not null

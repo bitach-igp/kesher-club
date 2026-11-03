@@ -4891,11 +4891,14 @@ export interface components {
             readonly amount: components["schemas"]["Money"];
             /** Format: uuid */
             readonly approvedBy?: string;
+            /** Format: date */
+            readonly arrivesOn?: string;
             /** Format: date-time */
             readonly createdAt: string;
             /** Format: uuid */
             readonly depositId?: string;
             readonly failure?: string;
+            readonly fee: components["schemas"]["Money"];
             /** @enum {string} */
             readonly holder: "platform" | "institution";
             /** Format: uuid */
@@ -4904,8 +4907,11 @@ export interface components {
             readonly reference: string;
             /** Format: uuid */
             readonly requestedBy: string;
-            /** @enum {string} */
-            readonly status: "awaiting_approval" | "approved" | "in_transit" | "deposit_pending" | "received" | "returned" | "rejected" | "cancelled" | "failed";
+            /**
+             * @description `sending` is claimed and not cancellable; `needs_review` is stopped until a person reads the payment back
+             * @enum {string}
+             */
+            readonly status: "awaiting_approval" | "approved" | "sending" | "in_transit" | "deposit_pending" | "received" | "returned" | "rejected" | "cancelled" | "failed" | "needs_review";
         };
         readonly UsFundingQuote: {
             readonly amount: components["schemas"]["Money"];

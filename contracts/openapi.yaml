@@ -4294,11 +4294,13 @@ components:
         holder: { type: string, enum: [platform, institution] }
     UsFunding:
       type: object
-      required: [id, status, amount, reference, holder, requestedBy, createdAt]
+      required: [id, status, amount, fee, reference, holder, requestedBy, createdAt]
       properties:
         id: { type: string, format: uuid }
-        status: { type: string, enum: [awaiting_approval, approved, in_transit, deposit_pending, received, returned, rejected, cancelled, failed] }
+        status: { type: string, enum: [awaiting_approval, approved, sending, in_transit, deposit_pending, received, returned, rejected, cancelled, failed, needs_review], description: "`sending` is claimed and not cancellable; `needs_review` is stopped until a person reads the payment back" }
         amount: { $ref: "#/components/schemas/Money" }
+        fee: { $ref: "#/components/schemas/Money" }
+        arrivesOn: { type: string, format: date }
         reference: { type: string, description: The institution's payment reference (KC-…) the transfer carries }
         holder: { type: string, enum: [platform, institution] }
         requestedBy: { type: string, format: uuid }

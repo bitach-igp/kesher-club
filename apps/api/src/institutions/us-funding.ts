@@ -11,8 +11,12 @@
 // for them. The deposit path tells this card when a deposit posts, and the request is linked to it (`received`): by deposit id for the
 // recorded ones, by amount for an ACH that arrived (the credit is already tied to the institution by its reference).
 //
-// A request's life is an insert-only event log. A provider failure that may pass (unavailable) leaves it `approved` for the sweep to send
-// again under the same key; a refusal, a rejection or a return opens a case and the status says so.
+// A request's life is an insert-only event log. Before the provider is called, `execute` takes a CLAIM (a `sending` event under a lock on the
+// request): a second worker, the sweep and a cancel then take turns, and a cancel after the claim is refused. A provider that is unavailable
+// leaves the claim to go stale, and the sweep tries again under the same key. An answer we cannot read, or one that says the provider may
+// already hold the payment, is `OUTCOME_UNKNOWN`: the request stops (`needs_review`), a case opens, and nothing is resent until a person has
+// read the payment back. So does a request still unsent after a day, well inside the bank's dedupe window. A refusal, a rejection or a return
+// opens a case and the status says so.
 import { DomainError, fromWire, money, toWire, uuidv7, type Money } from '@kesher/domain';
 import { InstitutionBankingError, isAddenda, type AchStatus, type InstitutionBankingPort, type ProviderRegistry } from '@kesher/ports';
 import type { AuditService } from '../audit/service.ts';
@@ -20,16 +24,20 @@ import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database, SqlClient } from '../db.ts';
 import { created, ok, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
-import { paymentReference, type InstitutionDeposits } from './deposits.ts';
+import { DEPOSITS_FLAG, paymentReference, type InstitutionDeposits } from './deposits.ts';
 import type { KybGate } from './kyb-gate.ts';
 import { US_BANKING_FLAG, type InstitutionUsBanking } from './us-banking.ts';
 
 const ENTITY_TYPE = 'institution_us_funding';
 const QUOTE_TTL_MS = 10 * 60_000;
+/** A claim older than this was abandoned (a crash, or an unavailable provider): the sweep may claim it again. */
+const SENDING_STALE_MS = 10 * 60_000;
+/** An approved request still unsent after this stops being resent: the bank dedupes a key for about 48 hours, so a resend later could be a second payment. */
+const RESEND_WINDOW_MS = 24 * 3_600_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export type FundingStatus = 'awaiting_approval' | 'approved' | 'in_transit' | 'deposit_pending' | 'received' | 'returned' | 'rejected' | 'cancelled' | 'failed';
-type EventKind = 'requested' | 'approved' | 'sent' | 'ach_status' | 'book_transferred' | 'deposit_recorded' | 'linked' | 'cancelled' | 'failed';
+export type FundingStatus = 'awaiting_approval' | 'approved' | 'sending' | 'in_transit' | 'deposit_pending' | 'received' | 'returned' | 'rejected' | 'cancelled' | 'failed' | 'needs_review';
+type EventKind = 'requested' | 'approved' | 'sending' | 'sent' | 'send_unknown' | 'ach_status' | 'book_transferred' | 'deposit_recorded' | 'linked' | 'cancelled' | 'failed';
 interface Event {
   kind: EventKind;
   by_party: string | null;
@@ -72,21 +80,32 @@ export interface UsFundingView {
   requestedBy: string;
   approvedBy?: string;
   createdAt: string;
+  fee: { minor: string; currency: string };
+  arrivesOn?: string;
   achStatus?: AchStatus;
   depositId?: string;
   failure?: string;
 }
 
 /** What a request's events say it is now. */
-function fold(events: readonly Event[]): { status: FundingStatus; paymentRef?: string; achStatus?: AchStatus; depositId?: string; approvedBy?: string; failure?: string } {
+function fold(events: readonly Event[]): { status: FundingStatus; paymentRef?: string; achStatus?: AchStatus; depositId?: string; approvedBy?: string; approvedAt?: Date; sendingAt?: Date; booked: boolean; failure?: string } {
   let status: FundingStatus = 'awaiting_approval';
-  const out: { paymentRef?: string; achStatus?: AchStatus; depositId?: string; approvedBy?: string; failure?: string } = {};
+  const out: { paymentRef?: string; achStatus?: AchStatus; depositId?: string; approvedBy?: string; approvedAt?: Date; sendingAt?: Date; booked: boolean; failure?: string } = { booked: false };
   for (const e of events) {
     const p = e.payload;
     switch (e.kind) {
       case 'approved':
         status = 'approved';
+        out.approvedAt = new Date(e.at);
         if (e.by_party) out.approvedBy = e.by_party;
+        break;
+      case 'sending':
+        status = 'sending';
+        out.sendingAt = new Date(e.at);
+        break;
+      case 'send_unknown':
+        status = 'needs_review';
+        if (typeof p['reason'] === 'string') out.failure = p['reason'];
         break;
       case 'sent':
       case 'ach_status': {
@@ -95,6 +114,11 @@ function fold(events: readonly Event[]): { status: FundingStatus; paymentRef?: s
         status = out.achStatus === 'returned' ? 'returned' : out.achStatus === 'rejected' ? 'rejected' : out.achStatus === 'cancelled' ? 'cancelled' : 'in_transit';
         break;
       }
+      // The money has moved inside Kesher but the deposit is not recorded yet: not a state to cancel from.
+      case 'book_transferred':
+        status = 'sending';
+        out.booked = true;
+        break;
       case 'deposit_recorded':
         status = 'deposit_pending';
         if (typeof p['depositId'] === 'string') out.depositId = p['depositId'];
@@ -117,11 +141,12 @@ function fold(events: readonly Event[]): { status: FundingStatus; paymentRef?: s
   return { status, ...out };
 }
 
-const FINAL: readonly FundingStatus[] = ['received', 'returned', 'rejected', 'cancelled', 'failed'];
+const FINAL: readonly FundingStatus[] = ['received', 'returned', 'rejected', 'cancelled', 'failed', 'needs_review'];
 
 function asDomain(e: unknown): never {
   if (!(e instanceof InstitutionBankingError)) throw e;
   if (e.code === 'VALIDATION_FAILED' || e.code === 'NOT_APPROVED') throw new DomainError('VALIDATION_FAILED', e.message);
+  if (e.code === 'OUTCOME_UNKNOWN') throw new DomainError('IDEMPOTENCY_CONFLICT', 'The bank\'s answer could not be read; nothing was resent');
   throw new DomainError('PROVIDER_UNAVAILABLE', 'The banking provider is not available');
 }
 
@@ -185,6 +210,8 @@ export class InstitutionUsFunding {
     if (typeof quoteId !== 'string' || !UUID.test(quoteId)) throw new DomainError('VALIDATION_FAILED', 'quoteId is required');
     const acct = await this.open(institutionId);
     if (acct.holder === 'institution' && !this.d.collectionCounterpartyRef()) throw new DomainError('VALIDATION_FAILED', 'Kesher\'s US collection account is not set up yet');
+    // A platform institution's funding ends in a deposit for finance to approve, so the deposit path must be on before money moves.
+    if (acct.holder === 'platform' && !(await this.d.flags.isOn(DEPOSITS_FLAG))) throw new DomainError('FEATURE_OFF', 'Deposits are not available');
     if (acct.holder === 'platform' && !acct.sharesPlatformAccount && !this.d.collectionAccountRef()) throw new DomainError('VALIDATION_FAILED', 'Kesher\'s US collection account is not set up yet');
     const id = await this.d.db.transaction(async (tx) => {
       await tx.query('select 1 from org.institution where id = $1 for update', [institutionId]);
@@ -223,10 +250,27 @@ export class InstitutionUsFunding {
     return this.view(requestId);
   }
 
-  /** Sends an approved request's money. Safe to repeat: the provider hears the same key every time. */
+  /**
+   * Sends an approved request's money. The claim (a `sending` event, taken under a lock on the request) comes before the provider is called, so
+   * two callers and a cancel take turns. Repeating it is safe: the provider hears the same key every time.
+   */
   async execute(requestId: string, now: Date): Promise<void> {
     const req = (await this.d.db.query<RequestRow>('select * from org.us_funding_request where id = $1', [requestId])).rows[0];
-    if (!req || fold(await this.events(requestId)).status !== 'approved') return;
+    if (!req) return;
+    const claimed = await this.d.db.transaction(async (tx) => {
+      await tx.query('select 1 from org.us_funding_request where id = $1 for update', [requestId]);
+      const s = fold(await this.events(requestId, tx));
+      const abandoned = s.status === 'sending' && s.sendingAt !== undefined && now.getTime() - s.sendingAt.getTime() > SENDING_STALE_MS;
+      if (s.status !== 'approved' && !abandoned) return undefined;
+      if (s.approvedAt && now.getTime() - s.approvedAt.getTime() > RESEND_WINDOW_MS) {
+        await this.append(tx, requestId, 'send_unknown', null, { reason: 'unsent after a day' }, now);
+        return 'stale' as const;
+      }
+      await this.append(tx, requestId, 'sending', null, {}, now);
+      return s;
+    });
+    if (claimed === 'stale') return this.openCase(req, 'send_unknown', now);
+    if (!claimed) return;
     const acct = await this.d.usBanking.account(req.institution_id);
     if (!acct || !acct.ref) return;
     const port = this.d.registry.resolve<InstitutionBankingPort>('institution-banking', acct.market);
@@ -241,21 +285,26 @@ export class InstitutionUsFunding {
           await tx.query('insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing', [ENTITY_TYPE, requestId, acct.provider ?? 'simulator', sent.paymentRef]);
           await this.append(tx, requestId, 'sent', null, { paymentRef: sent.paymentRef, status: sent.status }, now);
         });
+        if (sent.status === 'rejected' || sent.status === 'returned') await this.openCase(req, sent.status, now);
         return;
       }
       if (!acct.sharesPlatformAccount) {
         const to = this.d.collectionAccountRef();
         if (!to || !isAddenda(req.reference)) throw new InstitutionBankingError('VALIDATION_FAILED', 'The transfer cannot be described to the bank');
         await port.bookTransfer({ fromRef: acct.ref, toRef: to, amount, memo: req.reference, idempotencyKey: key });
-        await this.append(this.d.db, requestId, 'book_transferred', null, {}, now);
+        if (!claimed.booked) await this.append(this.d.db, requestId, 'book_transferred', null, {}, now);
       }
       // No bank credit comes for money that never left Kesher's accounts: the deposit is recorded for finance to approve.
       const dep = await this.d.deposits.recordSystem(req.institution_id, { amount, bankReference: `USFUND-${requestId.slice(-12).toUpperCase()}`, note: 'US funding' }, `us-fund-deposit:${requestId}`, now);
       await this.append(this.d.db, requestId, 'deposit_recorded', null, { depositId: dep.id }, now);
     } catch (e) {
       if (!(e instanceof InstitutionBankingError)) throw e;
-      // Unavailable passes: the request stays approved and the sweep sends it again under the same key. Anything else is final.
+      // Unavailable passes: the claim goes stale and the sweep sends again under the same key. An unreadable answer stops everything until a person reads the payment back.
       if (e.code === 'PROVIDER_UNAVAILABLE') return;
+      if (e.code === 'OUTCOME_UNKNOWN') {
+        await this.append(this.d.db, requestId, 'send_unknown', null, { reason: 'the bank\'s answer could not be read' }, now);
+        return this.openCase(req, 'send_unknown', now);
+      }
       await this.fail(req, e.code, now);
     }
   }
@@ -266,34 +315,43 @@ export class InstitutionUsFunding {
     if (!r) return;
     const req = (await this.d.db.query<RequestRow>('select * from org.us_funding_request where id = $1', [r.entity_id])).rows[0];
     if (!req) return;
-    const changed = await this.d.db.transaction(async (tx) => {
+    const bad = status === 'returned' || status === 'rejected';
+    const outcome = await this.d.db.transaction(async (tx) => {
       await tx.query('select 1 from org.us_funding_request where id = $1 for update', [req.id]);
       const now_ = fold(await this.events(req.id, tx));
-      if (FINAL.includes(now_.status) || now_.achStatus === status) return false;
+      // Money that was already received and then comes back is a case for people, not a status that hides what posted.
+      if (now_.status === 'received') return bad ? ('after_posting' as const) : ('ignore' as const);
+      if (FINAL.includes(now_.status) || now_.achStatus === status) return 'ignore' as const;
       await this.append(tx, req.id, 'ach_status', null, { paymentRef, status }, now);
-      return true;
+      return bad ? ('case' as const) : ('ignore' as const);
     });
-    if (changed && (status === 'returned' || status === 'rejected')) await this.openCase(req, status, now);
+    if (outcome === 'case') await this.openCase(req, status, now);
+    if (outcome === 'after_posting') await this.openCase(req, `${status}_after_posting`, now);
   }
 
-  /** Cancels a request nobody has sent yet, or an ACH the bank still holds as pending. */
+  /** Cancels a request nobody has claimed yet, or an ACH the bank still holds as pending. A claimed send is not cancelled. */
   async cancel(institutionId: string, requestId: string, actorId: string, now: Date): Promise<UsFundingView> {
     await this.requireOn();
     await this.requireRequest(institutionId, requestId);
-    const s = fold(await this.events(requestId));
-    if (s.status === 'awaiting_approval' || (s.status === 'approved' && !s.paymentRef)) {
-      await this.append(this.d.db, requestId, 'cancelled', actorId, {}, now);
-    } else if (s.status === 'in_transit' && s.paymentRef && s.achStatus === 'pending') {
+    const route = await this.d.db.transaction(async (tx) => {
+      await tx.query('select 1 from org.us_funding_request where id = $1 for update', [requestId]);
+      const s = fold(await this.events(requestId, tx));
+      if (s.status === 'awaiting_approval' || s.status === 'approved') {
+        await this.append(tx, requestId, 'cancelled', actorId, {}, now);
+        return undefined;
+      }
+      if (s.status === 'in_transit' && s.paymentRef && s.achStatus === 'pending') return s.paymentRef;
+      throw new DomainError('IDEMPOTENCY_CONFLICT', `A funding that is ${s.status.replace(/_/g, ' ')} cannot be cancelled`);
+    });
+    if (route) {
       const acct = await this.d.usBanking.account(institutionId);
       if (!acct) throw new DomainError('VALIDATION_FAILED', 'The US account is not approved yet');
       const port = this.d.registry.resolve<InstitutionBankingPort>('institution-banking', acct.market);
-      const status = await port.cancelAch(s.paymentRef).catch((e: unknown) => {
+      const status = await port.cancelAch(route).catch((e: unknown) => {
         if (e instanceof InstitutionBankingError && e.code === 'NOT_CANCELLABLE') throw new DomainError('IDEMPOTENCY_CONFLICT', 'The bank has already sent this transfer');
         return asDomain(e);
       });
-      await this.onProviderAch(s.paymentRef, status, now);
-    } else {
-      throw new DomainError('IDEMPOTENCY_CONFLICT', `A funding that is ${s.status.replace(/_/g, ' ')} cannot be cancelled`);
+      await this.onProviderAch(route, status, now);
     }
     await this.d.audit.record({ actorId, actorRole: 'org_finance', action: 'institution.us_funding.cancel', subject: institutionId, reason: 'US funding cancelled', payload: { requestId, institutionId } }, now);
     return this.view(requestId);
@@ -305,48 +363,60 @@ export class InstitutionUsFunding {
     return { items: await Promise.all(rows.rows.map((r) => this.view(r.id))) };
   }
 
-  /** The worker's cycle for one market: approved requests not yet sent are sent; sent ones the bank has not finished are asked about. */
-  async sweep(market: 'IL' | 'US', now: Date): Promise<{ sent: number; polled: number }> {
+  /**
+   * The worker's cycle for one market: approved requests (and sends whose claim went stale) are sent; sent ones the bank has not finished are
+   * asked about. One request that cannot be handled never stops the rest.
+   */
+  async sweep(market: 'IL' | 'US', now: Date): Promise<{ sent: number; polled: number; errors: number }> {
     const rows = await this.d.db.query<{ id: string }>(
       `select r.id from org.us_funding_request r join org.institution i on i.id = r.institution_id where i.market = $1
-        and not exists (select 1 from org.us_funding_event e where e.request_id = r.id and e.kind in ('linked', 'failed', 'cancelled', 'deposit_recorded')) order by r.created_at`,
+        and not exists (select 1 from org.us_funding_event e where e.request_id = r.id and e.kind in ('linked', 'failed', 'cancelled', 'deposit_recorded', 'send_unknown')) order by r.created_at`,
       [market],
     );
     let sent = 0;
     let polled = 0;
+    let errors = 0;
     for (const { id } of rows.rows) {
-      const s = fold(await this.events(id));
-      if (s.status === 'approved') {
-        await this.execute(id, now);
-        sent += 1;
-      } else if (s.status === 'in_transit' && s.paymentRef) {
-        const req = (await this.d.db.query<RequestRow>('select * from org.us_funding_request where id = $1', [id])).rows[0]!;
-        const acct = await this.d.usBanking.account(req.institution_id);
-        if (!acct) continue;
-        try {
-          await this.onProviderAch(s.paymentRef, await this.d.registry.resolve<InstitutionBankingPort>('institution-banking', acct.market).achStatus(s.paymentRef), now);
-          polled += 1;
-        } catch (e) {
-          if (!(e instanceof InstitutionBankingError)) throw e; // the provider is unavailable: next cycle
+      try {
+        const s = fold(await this.events(id));
+        if (FINAL.includes(s.status)) continue;
+        if (s.status === 'approved' || s.status === 'sending') {
+          const before = (await this.events(id)).length;
+          await this.execute(id, now);
+          if ((await this.events(id)).length > before) sent += 1;
+        } else if (s.status === 'in_transit' && s.paymentRef) {
+          const req = (await this.d.db.query<RequestRow>('select * from org.us_funding_request where id = $1', [id])).rows[0]!;
+          const acct = await this.d.usBanking.account(req.institution_id);
+          if (!acct) continue;
+          try {
+            await this.onProviderAch(s.paymentRef, await this.d.registry.resolve<InstitutionBankingPort>('institution-banking', acct.market).achStatus(s.paymentRef), now);
+            polled += 1;
+          } catch (e) {
+            if (!(e instanceof InstitutionBankingError)) throw e; // the provider is unavailable: next cycle
+          }
         }
+      } catch {
+        errors += 1; // one request's trouble is not the others' (it is retried next cycle)
       }
     }
-    return { sent, polled };
+    return { sent, polled, errors };
   }
 
-  /** A deposit has posted: the request whose money it is becomes `received`. A recorded deposit is found by its id; an arrived ACH by its amount. */
+  /**
+   * A deposit has posted: the request whose money it is becomes `received`. A deposit this card recorded is found by its id. An ACH that arrived
+   * is matched by amount among requests the bank has SENT, and only when exactly one matches: a near miss, or two of one amount, links nothing.
+   */
   async linkDeposit(dep: { id: string; institutionId: string; amountMinor: bigint; currency: string }, now: Date): Promise<void> {
     if (dep.currency !== 'USD') return;
     const rows = await this.d.db.query<RequestRow>('select * from org.us_funding_request where institution_id = $1 order by created_at', [dep.institutionId]);
-    let match: RequestRow | undefined;
+    let exact: RequestRow | undefined;
+    const sent: RequestRow[] = [];
     for (const r of rows.rows) {
       const s = fold(await this.events(r.id));
-      if (s.depositId === dep.id && s.status === 'deposit_pending') {
-        match = r;
-        break;
-      }
-      if (!match && s.status === 'in_transit' && s.paymentRef && BigInt(r.amount_minor) === dep.amountMinor) match = r;
+      if (s.status === 'deposit_pending' && s.depositId === dep.id) exact = r;
+      else if (s.status === 'in_transit' && s.paymentRef && (s.achStatus === 'sent' || s.achStatus === 'settled') && BigInt(r.amount_minor) === dep.amountMinor) sent.push(r);
     }
+    const match = exact ?? (sent.length === 1 ? sent[0] : undefined);
     if (!match) return;
     await this.d.db.transaction(async (tx) => {
       await tx.query('select 1 from org.us_funding_request where id = $1 for update', [match.id]);
@@ -356,14 +426,19 @@ export class InstitutionUsFunding {
   }
 
   private async fail(req: RequestRow, reason: string, now: Date): Promise<void> {
-    await this.append(this.d.db, req.id, 'failed', null, { reason }, now);
-    await this.openCase(req, reason, now);
+    const appended = await this.d.db.transaction(async (tx) => {
+      await tx.query('select 1 from org.us_funding_request where id = $1 for update', [req.id]);
+      if (FINAL.includes(fold(await this.events(req.id, tx)).status)) return false;
+      await this.append(tx, req.id, 'failed', null, { reason }, now);
+      return true;
+    });
+    if (appended) await this.openCase(req, reason, now);
   }
 
   private async openCase(req: RequestRow, reason: string, now: Date): Promise<void> {
     await this.d.db.query(
       `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'us_funding_failed', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-      [uuidv7(now), `us-funding-failed:${req.id}`, { requestId: req.id, institutionId: req.institution_id, reason, amount: { minor: req.amount_minor, currency: req.currency }, reference: req.reference }, now],
+      [uuidv7(now), `us-funding-case:${req.id}:${reason}`, { requestId: req.id, institutionId: req.institution_id, reason, amount: { minor: req.amount_minor, currency: req.currency }, reference: req.reference }, now],
     );
     await this.d.audit.record({ actorId: req.requested_by, actorRole: 'system', action: 'institution.us_funding.failed', subject: req.institution_id, reason: `US funding ${reason}`, payload: { requestId: req.id } }, now);
   }
@@ -383,16 +458,21 @@ export class InstitutionUsFunding {
   }
 
   private async view(requestId: string): Promise<UsFundingView> {
-    const r = (await this.d.db.query<RequestRow>('select * from org.us_funding_request where id = $1', [requestId])).rows[0]!;
+    const r = (await this.d.db.query<RequestRow & { fee_minor: string; arrives_on: string | null }>(
+      'select r.*, q.fee_minor::text as fee_minor, q.arrives_on::text as arrives_on from org.us_funding_request r join org.us_funding_quote q on q.id = r.quote_id where r.id = $1',
+      [requestId],
+    )).rows[0]!;
     const s = fold(await this.events(requestId));
     return {
       id: r.id,
       status: s.status,
       amount: toWire(money(BigInt(r.amount_minor), 'USD')),
+      fee: toWire(money(BigInt(r.fee_minor), 'USD')),
       reference: r.reference,
       holder: r.holder,
       requestedBy: r.requested_by,
       createdAt: new Date(r.created_at).toISOString(),
+      ...(r.arrives_on ? { arrivesOn: r.arrives_on.slice(0, 10) } : {}),
       ...(s.approvedBy ? { approvedBy: s.approvedBy } : {}),
       ...(s.achStatus ? { achStatus: s.achStatus } : {}),
       ...(s.depositId ? { depositId: s.depositId } : {}),

@@ -140,7 +140,7 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
       return await fn();
     } catch (e) {
       if (e instanceof CrowdedApiError && (e.status === 409 || e.code === 'DUPLICATE_REQUEST')) {
-        throw new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'Crowded may already hold this payment: read it back before retrying, and do not resend under a new key');
+        throw new InstitutionBankingError('OUTCOME_UNKNOWN', 'Crowded may already hold this payment: read it back before retrying, and do not resend under a new key');
       }
       throw e;
     }
@@ -383,7 +383,7 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
         const r = await this.moneyCall(() => this.c.post(`/chapters/${from}/subaccounts/fund`, [{ id: to, amount: toCents(input.amount), description: input.memo, idempotencyKey: uuid }]));
         // The response is undocumented. Money may have moved, so a shape we cannot read is an unknown outcome, not a success.
         const item = Array.isArray(r.data) && r.data.length === 1 ? r.data[0] : undefined;
-        if (!isRecord(item)) throw new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'Crowded answered the funding call in a shape we do not know: read the account back before retrying');
+        if (!isRecord(item)) throw new InstitutionBankingError('OUTCOME_UNKNOWN', 'Crowded answered the funding call in a shape we do not know: read the account back before retrying');
         // A failed item is a refusal (insufficient funds, a bad sub-account): VALIDATION_FAILED, as for a simulator transfer.
         if (item['error'] !== undefined || ['failed', 'rejected'].includes(String(item['status']).toLowerCase())) throw new InstitutionBankingError('VALIDATION_FAILED', 'The provider refused the transfer');
         return { transferRef: ref(from!, 'fund', uuid) };

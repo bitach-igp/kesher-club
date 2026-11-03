@@ -163,16 +163,32 @@ export class InstitutionDeposits {
     await this.requireOn();
     await this.requireInstitution(institutionId);
     const replay = await this.byKey(key);
-    if (replay) return this.view(replay, SYSTEM_OWNER);
+    if (replay) {
+      if (!replay.approval_id) await this.attachApproval(replay.id, institutionId, input.amount, input.bankReference, now);
+      return this.view((await this.row(replay.id))!, SYSTEM_OWNER);
+    }
     const id = uuidv7(now);
-    await this.d.db.query(
-      `insert into ops.institution_deposit (id, idempotency_key, institution_id, rail, bank_reference, amount_minor, currency, value_date, note, status, recorded_by, created_at) values ($1, $2, $3, 'ach', $4, $5, $6, $7, $8, 'pending', $9, $10)`,
-      [id, key, institutionId, input.bankReference, input.amount.minor.toString(), input.amount.currency, now.toISOString().slice(0, 10), input.note, SYSTEM_OWNER, now],
-    );
-    const approval = await this.d.approvals.request({ kind: 'institution_deposit', subject: `deposit:${id}`, scope: institutionId, requestedBy: { partyId: SYSTEM_OWNER, role: 'bank_feed' }, amount: input.amount, payload: { institutionId, rail: 'ach', bankReference: input.bankReference, valueDate: now.toISOString().slice(0, 10) } }, now);
-    await this.d.db.query('update ops.institution_deposit set approval_id = $2 where id = $1', [id, approval.id]);
-    await this.d.audit.record({ actorId: SYSTEM_OWNER, actorRole: 'bank_feed', action: 'institution.deposit.record', subject: institutionId, reason: `Deposit ach ${input.bankReference} (US funding)`, payload: { depositId: id, amount: toWire(input.amount), bankReference: input.bankReference } }, now);
+    try {
+      await this.d.db.query(
+        `insert into ops.institution_deposit (id, idempotency_key, institution_id, rail, bank_reference, amount_minor, currency, value_date, note, status, recorded_by, created_at) values ($1, $2, $3, 'ach', $4, $5, $6, $7, $8, 'pending', $9, $10)`,
+        [id, key, institutionId, input.bankReference, input.amount.minor.toString(), input.amount.currency, now.toISOString().slice(0, 10), input.note, SYSTEM_OWNER, now],
+      );
+    } catch (e) {
+      if (!isPgError(e, PG.UNIQUE_VIOLATION)) throw e;
+      const raced = await this.byKey(key);
+      if (raced) return this.view(raced, SYSTEM_OWNER);
+      throw new DomainError('IDEMPOTENCY_CONFLICT', 'This bank reference is already recorded on this rail', { rail: 'ach', bankReference: input.bankReference });
+    }
+    // A crash after the insert leaves a deposit without its approval: the retry finds it by key above and finishes the job here.
+    await this.attachApproval(id, institutionId, input.amount, input.bankReference, now);
     return this.view((await this.row(id))!, SYSTEM_OWNER);
+  }
+
+  private async attachApproval(id: string, institutionId: string, amount: Money, bankReference: string, now: Date): Promise<void> {
+    const subject = `deposit:${id}`;
+    const approval = (await this.d.approvals.find('institution_deposit', subject)) ?? (await this.d.approvals.request({ kind: 'institution_deposit', subject, scope: institutionId, requestedBy: { partyId: SYSTEM_OWNER, role: 'bank_feed' }, amount, payload: { institutionId, rail: 'ach', bankReference, valueDate: now.toISOString().slice(0, 10) } }, now));
+    await this.d.db.query('update ops.institution_deposit set approval_id = $2 where id = $1 and approval_id is null', [id, approval.id]);
+    await this.d.audit.record({ actorId: SYSTEM_OWNER, actorRole: 'bank_feed', action: 'institution.deposit.record', subject: institutionId, reason: `Deposit ach ${bankReference} (US funding)`, payload: { depositId: id, amount: toWire(amount), bankReference } }, now);
   }
 
   /** Records a statement line against the institution; the recorder's own approval is the first of two. */
@@ -386,7 +402,10 @@ export class InstitutionDeposits {
     });
     if (t.state !== 'settled') await this.d.transfers.apply(t.id, 'settle', now, { journalId: journal.id });
     const updated = await this.d.db.query(`update ops.institution_deposit set status = 'posted', journal_id = $2, decided_at = $3 where id = $1 and status = 'pending'`, [r.id, journal.id, now]);
-    if (updated.rowCount > 0) await this.onPosted?.({ id: r.id, institutionId: r.institution_id, amountMinor: amount.minor, currency: r.currency }, now);
+    if (updated.rowCount > 0) {
+      // The deposit has posted; a linking hiccup must not fail it (the funding sweep and the next webhook find the match again).
+      await this.onPosted?.({ id: r.id, institutionId: r.institution_id, amountMinor: amount.minor, currency: r.currency }, now).catch(() => undefined);
+    }
     if (updated.rowCount > 0) {
       await this.d.audit.record({ actorId: approver.partyId, actorRole: approver.role, action: 'institution.deposit.post', subject: r.institution_id, reason: `Deposit ${r.rail} ${r.bank_reference} approved`, after: { amount: toWire(amount), journalId: journal.id }, payload: { depositId: r.id, recordedBy: r.recorded_by, approvedBy: approver.partyId } }, now);
     }
