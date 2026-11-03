@@ -118,6 +118,12 @@
 | [T-0536](T-0536.md) | WAL | Members see each purse's transactions | REQ-WAL-008 | 14 |
 | [T-0537](T-0537.md) | WAL | A funder sees a funded member's activity: transactions, spend by category, cards | REQ-WAL-009 | 14 |
 | [T-0538](T-0538.md) | WAL | P06 child detail in funder mode | REQ-WAL-009 | 14 |
+| [T-0539](T-0539.md) | WAL | Fix: a returned or failed ACH load is failed, never released to the wallet | REQ-WAL-003, REQ-LED-004 | fix |
+| [T-0540](T-0540.md) | PO | Fix: reserve payout funds while a payout waits for cool-off or approval | REQ-PO-001, REQ-WAL-001 | fix |
+| [T-0541](T-0541.md) | PO | Fix: a payout hit by a rail outage is retried, not stranded | REQ-PO-002 | fix |
+| [T-0542](T-0542.md) | ESIM | Fix: add-on orders get a funds check, step-up and a validated quantity | REQ-ESIM-001, REQ-WAL-001 | fix |
+| [T-0543](T-0543.md) | PAY | Fix: a P2P send left pending is finished once, never posted twice | REQ-PAY-003, REQ-PAY-005 | fix |
+| [T-0544](T-0544.md) | LED | Fix: balance and limit checks hold a per-wallet lock, real-Postgres concurrency test | REQ-WAL-001, REQ-PAY-002, REQ-CRD-003 | fix |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
@@ -174,6 +180,7 @@
 | [T-0654](T-0654.md) | INS | Nightly reconciliation of linked US accounts | REQ-INS-026 | later |
 | [T-0655](T-0655.md) | INS | Crowded go-live kit: vendor questions, runbook, webhook registration | REQ-INS-025, REQ-INS-026 | later |
 | [T-0656](T-0656.md) | INS | Evaluate Crowded ILS transfers as a USD→ILS route (spike) | REQ-FX-001, REQ-FX-003, REQ-PO-001 | later |
+| [T-0657](T-0657.md) | INS | Fix: Crowded lookups match on our institution id, not the name | REQ-INS-022, REQ-INS-023 | fix |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
