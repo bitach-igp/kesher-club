@@ -55,7 +55,8 @@ export function institutionBankingContract<P extends InstitutionBankingPort>(nam
       const a = await port.createEntity(NEW('key-entity-0001'));
       expect(await port.createEntity(NEW('key-entity-0001'))).toEqual(a);
       await expect(port.createEntity(NEW('key-entity-0001', 'Another Name'))).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
-      expect((await port.createEntity(NEW('key-entity-0002'))).entityRef).not.toBe(a.entityRef);
+      // A new key with another legal name is another entity (a provider may reuse one it already has for the same name).
+      expect((await port.createEntity(NEW('key-entity-0002', 'Another Friends'))).entityRef).not.toBe(a.entityRef);
     });
 
     it('keeps the account closed until approved; then last four and a USD balance in bigint', async () => {

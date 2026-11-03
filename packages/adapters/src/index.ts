@@ -11,3 +11,4 @@ export * from './postmark/index.ts';
 export * from './twilio/index.ts';
 export * from './concierge/index.ts';
 export * from './workos/index.ts';
+export * from './crowded/index.ts';
