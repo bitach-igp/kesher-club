@@ -3,7 +3,8 @@
 // - deposit posting;
 // - allowance runs, inside the credit lock;
 // - setting and drawing on a credit line;
-// - payouts.
+// - payouts;
+// - collecting fees into and funding from the institution's US account (T-0650, REQ-INS-022).
 // A closed capability answers FEATURE_OFF naming the status, so the console can say what is missing.
 //
 // An open sanctions match (T-0624, REQ-INS-013) suspends payouts and credit draws on top of that, whatever the
@@ -13,13 +14,13 @@ import { DomainError } from '@kesher/domain';
 import type { SqlClient } from '../db.ts';
 import type { InstitutionKyb, KybStatus } from './kyb.ts';
 
-export type Capability = 'deposits' | 'allowances' | 'credit' | 'payouts';
+export type Capability = 'deposits' | 'allowances' | 'credit' | 'payouts' | 'us_banking';
 
 /** ADR-017's table. Approved with limits runs on the institution's own money only: no credit. */
 export const OPEN: Readonly<Record<KybStatus, readonly Capability[]>> = {
   needs_more_info: [],
-  approved_with_limits: ['deposits', 'allowances', 'payouts'],
-  approved: ['deposits', 'allowances', 'credit', 'payouts'],
+  approved_with_limits: ['deposits', 'allowances', 'payouts', 'us_banking'],
+  approved: ['deposits', 'allowances', 'credit', 'payouts', 'us_banking'],
   rejected: [],
 };
 

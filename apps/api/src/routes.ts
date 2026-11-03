@@ -94,6 +94,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/institutions/{id}/statement/export', operationId: 'exportInstitutionStatement' },
   { method: 'GET', path: '/institutions/{id}/team', operationId: 'getInstitutionTeam' },
   { method: 'POST', path: '/institutions/{id}/staff-invites', operationId: 'createStaffInvite' },
+  { method: 'POST', path: '/institutions/{id}/us-banking', operationId: 'createInstitutionUsBanking' },
+  { method: 'GET', path: '/institutions/{id}/us-banking', operationId: 'getInstitutionUsBanking' },
   { method: 'POST', path: '/staff-invites/{token}/accept', operationId: 'acceptStaffInvite' },
   { method: 'PATCH', path: '/institutions/{id}/team/{partyId}', operationId: 'updateInstitutionStaff' },
   { method: 'POST', path: '/institutions/{id}/staff-grants/{grantId}/approve', operationId: 'approveStaffGrant' },
