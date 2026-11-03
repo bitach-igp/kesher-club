@@ -45,7 +45,7 @@ describe('ids, names and refs', () => {
   it('refs carry the chapter; a malformed ref is NOT_FOUND', () => {
     expect(ref('ch1', 'col2')).toBe('ch1:col2');
     expect(parseRef('ch1:col2', 2)).toEqual(['ch1', 'col2']);
-    for (const bad of ['ch1', 'ch1:', 'ch1:a/b', 'ch1:a b', 'a:b:c']) expect(() => parseRef(bad, 2)).toThrow(/Unknown reference/);
+    for (const bad of ['ch1', 'ch1:', 'ch1:a/b', 'ch1:a b', 'a:b:c', 'ch1:..', '..:x', 'ch1:a%2Fb', 'ch1:a?x=1', 'ch1:a#b']) expect(() => parseRef(bad, 2)).toThrow(/Unknown reference/);
   });
 
   it('our key becomes a stable version-5 UUID', () => {
