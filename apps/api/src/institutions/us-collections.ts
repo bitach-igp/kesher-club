@@ -10,7 +10,7 @@
 // payment ref per kind, so a payment marks its item paid exactly once however often it is told. A payment of another amount, one for an item
 // Kesher's purse already paid, and a refund are not marked: each opens a case for a person. The provider's ids live in ops.external_ref.
 import { DomainError, money, toWire, uuidv7, type Money } from '@kesher/domain';
-import type { InstitutionBankingPort, ProviderRegistry } from '@kesher/ports';
+import { InstitutionBankingError, type InstitutionBankingPort, type ProviderRegistry } from '@kesher/ports';
 import type { AuditService } from '../audit/service.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
@@ -96,21 +96,25 @@ export class UsCollections {
     if (batch.currency !== 'USD') throw new DomainError('VALIDATION_FAILED', 'Only USD fees are collected in the US');
     const items = (await this.d.db.query<ItemRow>('select id, institution_id, batch_id, amount_minor::text, currency, status from org.fee_item where batch_id = $1 and id = any($2::uuid[])', [batchId, funders.map((f) => f.feeItemId)])).rows;
     if (items.length !== funders.length) throw new DomainError('VALIDATION_FAILED', 'Every fee item must belong to this batch');
-    const marked = new Set((await this.d.db.query<{ fee_item_id: string }>('select fee_item_id from org.fee_us_collect where fee_item_id = any($1::uuid[])', [funders.map((f) => f.feeItemId)])).rows.map((r) => r.fee_item_id));
-    for (const it of items) {
-      // A fee already paid (by the purse or by the funder) is not collected again; a due one, or one already collected here, is.
-      if (it.status !== 'due' && !(marked.has(it.id) && it.status === 'paid')) throw new DomainError('IDEMPOTENCY_CONFLICT', 'A fee that is not due cannot be collected', { feeItemId: it.id });
-    }
+    // Under a lock on the items: the fee is still due (or already collected here), no purse journal exists, and the marker is written BEFORE the provider is
+    // called, so the purse cannot pay a fee whose page is about to go out. A failed provider call leaves the marker; repeating the call finishes the job.
+    await this.d.db.transaction(async (tx) => {
+      const locked = (await tx.query<ItemRow>('select id, institution_id, batch_id, amount_minor::text, currency, status from org.fee_item where id = any($1::uuid[]) order by id for update', [funders.map((f) => f.feeItemId)])).rows;
+      const marked = new Set((await tx.query<{ fee_item_id: string }>('select fee_item_id from org.fee_us_collect where fee_item_id = any($1::uuid[])', [funders.map((f) => f.feeItemId)])).rows.map((r) => r.fee_item_id));
+      for (const it of locked) {
+        const purse = (await tx.query('select 1 from ledger.journal where idempotency_key = $1', [`fee:${it.id}`])).rows.length > 0;
+        // A fee already paid (by the purse or by the funder) is not collected again; a due one, or one already collected here, is.
+        if (purse || (it.status !== 'due' && !(marked.has(it.id) && it.status === 'paid'))) throw new DomainError('IDEMPOTENCY_CONFLICT', 'A fee that is not due cannot be collected', { feeItemId: it.id });
+        await tx.query('insert into org.fee_us_collect (fee_item_id, institution_id, batch_id, requested_by, created_at) values ($1, $2, $3, $4, $5) on conflict do nothing', [it.id, institutionId, batchId, actorId, now]);
+      }
+    });
     const port = this.d.registry.resolve<InstitutionBankingPort>('institution-banking', acct.market);
     const amount = money(BigInt(batch.amount_minor), 'USD');
     const collectionRef = await this.collectionOf(port, acct.ref, acct.provider ?? 'simulator', batchId, batch.description, amount);
     const out: UsCollectionView['items'] = [];
     for (const f of funders) {
       const page = await port.createPaymentPage({ collectionRef, funder: { name: f.name, email: f.email, mobile: f.mobile }, idempotencyKey: `us-fee-item:${f.feeItemId}` }).catch(asDomain);
-      await this.d.db.transaction(async (tx) => {
-        await tx.query('insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing', [INTENT_REF, f.feeItemId, acct.provider ?? 'simulator', page.intentRef]);
-        await tx.query('insert into org.fee_us_collect (fee_item_id, institution_id, batch_id, requested_by, created_at) values ($1, $2, $3, $4, $5) on conflict do nothing', [f.feeItemId, institutionId, batchId, actorId, now]);
-      });
+      await this.d.db.query('insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing', [INTENT_REF, f.feeItemId, acct.provider ?? 'simulator', page.intentRef]);
       out.push({ feeItemId: f.feeItemId, status: items.find((i) => i.id === f.feeItemId)!.status === 'paid' ? 'paid' : 'collecting', paymentUrl: page.paymentUrl });
     }
     await this.d.audit.record({ actorId, actorRole: 'org_finance', action: 'institution.us_fee_collection.create', subject: institutionId, reason: 'Fee batch collected in the US', payload: { batchId, items: funders.length } }, now);
@@ -133,39 +137,60 @@ export class UsCollections {
    * "paid". Payments for pages we did not make are left to the nightly reconciliation (T-0654). A page boundary loses nothing: the port yields
    * every page. Answers how many items it marked paid and how many cases it opened.
    */
-  async reconcileEntity(port: InstitutionBankingPort, entityRef: string, since: Date, now: Date): Promise<{ marked: number; cases: number }> {
+  async reconcileEntity(port: InstitutionBankingPort, entityRef: string, since: Date, now: Date, provider?: string): Promise<{ marked: number; cases: number }> {
     let marked = 0;
     let cases = 0;
     for await (const p of port.collectPayments({ entityRef, since })) {
-      const r = await this.record(p, now);
+      const r = await this.record(p, provider, now);
       marked += r.marked;
       cases += r.cases;
     }
     return { marked, cases };
   }
 
-  /** One provider payment, applied once. */
-  private async record(p: { paymentRef: string; intentRef: string; amount: Money; status: 'paid' | 'declined' | 'refunded' }, now: Date): Promise<{ marked: number; cases: number }> {
-    const ref = (await this.d.db.query<{ entity_id: string }>('select entity_id from ops.external_ref where entity_type = $1 and external_id = $2', [INTENT_REF, p.intentRef])).rows[0];
-    if (!ref) return { marked: 0, cases: 0 };
+  /**
+   * The provider's `collected` hint: only for an entity we hold (an institution's own, or the platform's), re-read from the oldest page still being
+   * collected so a late refund is found, through the port of that institution's market. An entity we do not know, or one the provider does not
+   * answer for, is ignored (a stored event that threw would be replayed for ever).
+   */
+  async onCollectedHint(entityRef: string, platformEntityRef: string | undefined, fallbackMarket: 'IL' | 'US', now: Date): Promise<void> {
+    const own = (await this.d.db.query<{ entity_id: string; provider: string }>(`select entity_id, provider from ops.external_ref where entity_type = 'institution_us_banking' and external_id = $1`, [entityRef])).rows[0];
+    if (!own && entityRef !== platformEntityRef) return;
+    const acct = own ? await this.d.usBanking.account(own.entity_id) : undefined;
+    const since = (await this.d.db.query<{ since: string | Date | null }>(own ? 'select min(created_at) as since from org.fee_us_collect where institution_id = $1' : 'select min(created_at) as since from org.fee_us_collect', own ? [own.entity_id] : [])).rows[0]?.since;
+    if (!since) return;
+    const port = this.d.registry.resolve<InstitutionBankingPort>('institution-banking', acct?.market ?? fallbackMarket);
+    try {
+      await this.reconcileEntity(port, entityRef, new Date(since), now, own?.provider);
+    } catch (e) {
+      if (e instanceof InstitutionBankingError && (e.code === 'NOT_FOUND' || e.code === 'NOT_APPROVED')) return;
+      throw e;
+    }
+  }
+
+  /** One provider payment, applied once, under a lock on its fee item. */
+  private async record(p: { paymentRef: string; intentRef: string; amount: Money; status: 'paid' | 'declined' | 'refunded' }, provider: string | undefined, now: Date): Promise<{ marked: number; cases: number }> {
     if (p.status === 'declined') return { marked: 0, cases: 0 };
-    const item = (await this.d.db.query<ItemRow>('select id, institution_id, batch_id, amount_minor::text, currency, status from org.fee_item where id = $1', [ref.entity_id])).rows[0];
-    if (!item) return { marked: 0, cases: 0 };
-    const matches = p.amount.currency === 'USD' && item.currency === 'USD' && p.amount.minor === BigInt(item.amount_minor);
-    if (!matches) return { marked: 0, cases: await this.openCase(item, p.paymentRef, 'amount_mismatch', { paid: toWire(p.amount), owed: { minor: item.amount_minor, currency: item.currency } }, now) };
-    // The purse already paid this fee: the funder paid twice, which a person must settle.
-    const purse = (await this.d.db.query('select 1 from ledger.journal where idempotency_key = $1', [`fee:${item.id}`])).rows.length > 0;
-    if (purse) return { marked: 0, cases: await this.openCase(item, p.paymentRef, 'paid_twice', {}, now) };
+    const ref = (await this.d.db.query<{ entity_id: string }>(`select entity_id from ops.external_ref where entity_type = $1 and external_id = $2 ${provider ? 'and provider = $3' : ''}`, provider ? [INTENT_REF, p.intentRef, provider] : [INTENT_REF, p.intentRef])).rows[0];
+    if (!ref) return { marked: 0, cases: 0 };
     return this.d.db.transaction(async (tx) => {
-      const paid = await tx.query(`insert into org.fee_external_payment (id, fee_item_id, kind, provider_payment_ref, amount_minor, currency, at) values ($1, $2, 'payment', $3, $4, 'USD', $5) on conflict do nothing`, [uuidv7(now), item.id, p.paymentRef, p.amount.minor.toString(), now]);
-      await tx.query(`update org.fee_item set status = 'paid' where id = $1 and status = 'due'`, [item.id]);
-      let cases = 0;
+      const item = (await tx.query<ItemRow>('select id, institution_id, batch_id, amount_minor::text, currency, status from org.fee_item where id = $1 for update', [ref.entity_id])).rows[0];
+      if (!item) return { marked: 0, cases: 0 };
+      const matches = p.amount.currency === 'USD' && item.currency === 'USD' && p.amount.minor === BigInt(item.amount_minor);
+      if (!matches) return { marked: 0, cases: await this.openCaseIn(tx, item, p.paymentRef, 'amount_mismatch', { paid: toWire(p.amount), owed: { minor: item.amount_minor, currency: item.currency } }, now) };
+      // The purse already paid this fee: the funder paid twice, which a person must settle.
+      if ((await tx.query('select 1 from ledger.journal where idempotency_key = $1', [`fee:${item.id}`])).rows.length > 0) return { marked: 0, cases: await this.openCaseIn(tx, item, p.paymentRef, 'paid_twice', {}, now) };
+      const row = (kind: 'payment' | 'refund') => tx.query(`insert into org.fee_external_payment (id, fee_item_id, kind, provider_payment_ref, amount_minor, currency, at) values ($1, $2, $3, $4, $5, 'USD', $6) on conflict do nothing`, [uuidv7(now), item.id, kind, p.paymentRef, p.amount.minor.toString(), now]);
       if (p.status === 'refunded') {
-        const refunded = await tx.query(`insert into org.fee_external_payment (id, fee_item_id, kind, provider_payment_ref, amount_minor, currency, at) values ($1, $2, 'refund', $3, $4, 'USD', $5) on conflict do nothing`, [uuidv7(now), item.id, p.paymentRef, p.amount.minor.toString(), now]);
-        // A refund is a person's call: the fee stays as it was marked and a case says it was given back.
-        if (refunded.rowCount > 0) cases = await this.openCaseIn(tx, item, p.paymentRef, 'refunded', {}, now);
+        // Money given back is a person's call. Seen refunded for the first time, the payment never counted: only the refund is recorded, the fee stays due.
+        const had = (await tx.query(`select 1 from org.fee_external_payment where provider_payment_ref = $1 and kind = 'payment'`, [p.paymentRef])).rows.length > 0;
+        const refunded = await row('refund');
+        return { marked: 0, cases: refunded.rowCount > 0 ? await this.openCaseIn(tx, item, p.paymentRef, 'refunded', { afterPayment: had }, now) : 0 };
       }
-      return { marked: paid.rowCount, cases };
+      const paid = await row('payment');
+      if (item.status === 'waived') return { marked: 0, cases: paid.rowCount > 0 ? await this.openCaseIn(tx, item, p.paymentRef, 'paid_after_waive', {}, now) : 0 };
+      await tx.query(`update org.fee_item set status = 'paid' where id = $1 and status = 'due'`, [item.id]);
+      return { marked: paid.rowCount, cases: 0 };
     });
   }
 

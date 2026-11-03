@@ -3,8 +3,8 @@
 // only when the provider says so (a re-read, never an event body), exactly once however often it is told; a payment of another amount, one for a
 // fee the purse already paid, and a refund open a case and do not mark the fee paid. The flag off and an unapproved link answer 404 and 422.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { money, uuidv7 } from '@kesher/domain';
-import { SIM_OTP_CODE, SimPasskeyDevice, type InstitutionBankingPort } from '@kesher/ports';
+import { uuidv7 } from '@kesher/domain';
+import { fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type InstitutionBankingPort } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { createApp, type App } from '../app.ts';
@@ -29,7 +29,7 @@ const people: Record<string, Who> = {};
 const sim = () => host.simulators['institution-banking'];
 const port = () => host.registry.resolve<InstitutionBankingPort>('institution-banking', 'IL');
 let entityRef = '';
-const items = Array.from({ length: 8 }, () => uuidv7(NOW));
+const items: string[] = Array.from({ length: 8 }, () => uuidv7(NOW));
 const funder = (i: number, name = `Funder ${i}`) => ({ feeItemId: items[i]!, name, email: `funder${i}@example.org`, mobile: `+1415555010${i}` });
 
 const call = (who: string, method: string, url: string, body?: unknown, key?: string) =>
@@ -56,7 +56,8 @@ const reconcile = (at = NOW) => main.services.usCollections.reconcileEntity(port
 
 beforeAll(async () => {
   db = await createTestDatabase();
-  host = new SimulatorHost();
+  host = new SimulatorHost(fixedClock('2026-11-03T09:00:00Z') as AdvanceableClock); // the provider's clock is the test's
+  (sim() as unknown as { pageSize: number }).pageSize = 2; // a provider page of two payments, so a re-read crosses page boundaries
   const base = { db, market: 'IL' as const, issuer: 'https://api.kesher.example', clock: () => NOW };
   const flagsOn = new StaticFlags(undefined, { 'institutions.usBanking': true, 'institutions.money': true });
   main = createApp({ ...base, flags: flagsOn, registry: host.registry, signingKey: await generateSigningKey() });
@@ -142,9 +143,11 @@ describe('fees to US funders (TST-INS-023, T-0652)', () => {
     await main.services.crowdedWebhook.process({ provider: 'crowded', eventId: 'evt-collect-0001', receivedAt: NOW.toISOString(), signatureOk: true, payload: { eventId: 'evt-collect-0001', eventType: 'collect.payment.paid', context: { chapterId: entityRef }, data: { fake: 'a body that says paid' } } });
     expect(await status(1)).toBe('paid');
     expect(await rows(1)).toEqual(['payment']);
-    // A body with no real payment behind it marks nothing.
-    await main.services.crowdedWebhook.process({ provider: 'crowded', eventId: 'evt-collect-0002', receivedAt: NOW.toISOString(), signatureOk: true, payload: { eventId: 'evt-collect-0002', eventType: 'collect.payment.paid', context: { chapterId: entityRef }, data: {} } });
+    // A body that says paid, for a page nobody paid, marks nothing; a chapter we do not hold is ignored, not thrown.
+    expect((await collect('fin', BATCH, [funder(2, 'pay_declined Funder 2')], 'collect-key-0007')).status).toBe(201);
+    await main.services.crowdedWebhook.process({ provider: 'crowded', eventId: 'evt-collect-0002', receivedAt: NOW.toISOString(), signatureOk: true, payload: { eventId: 'evt-collect-0002', eventType: 'collect.payment.paid', context: { chapterId: entityRef }, data: { status: 'paid', feeItemId: items[2] } } });
     expect(await status(2)).toBe('due');
+    await expect(main.services.crowdedWebhook.process({ provider: 'crowded', eventId: 'evt-collect-0003', receivedAt: NOW.toISOString(), signatureOk: true, payload: { eventId: 'evt-collect-0003', eventType: 'collect.payment.paid', context: { chapterId: 'ent_unknown' }, data: {} } })).resolves.toBeUndefined();
   });
 
   it('a declined payment marks nothing; a payment of another amount opens one case and does not mark paid', async () => {
@@ -161,11 +164,13 @@ describe('fees to US funders (TST-INS-023, T-0652)', () => {
     expect(await rows(3)).toEqual([]);
   });
 
-  it('a refund appends a refund row and opens a case; the fee is not silently reopened', async () => {
+  it('a refund is recorded and opens a case; a fee seen refunded first is not marked paid', async () => {
     expect((await collect('fin', BATCH, [funder(4, 'pay_refunded Funder 4')], 'collect-key-0005')).status).toBe(201);
     sim().pay(await intentOf(4));
-    expect(await reconcile()).toMatchObject({ marked: 1, cases: 1 });
-    expect(await rows(4)).toEqual(['payment', 'refund']);
+    // Seen refunded for the first time, the payment never counted: only the refund is recorded and the fee stays due.
+    expect(await reconcile()).toMatchObject({ marked: 0, cases: 1 });
+    expect(await rows(4)).toEqual(['refund']);
+    expect(await status(4)).toBe('due');
     expect(await reconcile()).toMatchObject({ marked: 0, cases: 0 });
   });
 
@@ -173,19 +178,21 @@ describe('fees to US funders (TST-INS-023, T-0652)', () => {
     expect((await collect('fin', BATCH, [funder(5)], 'collect-key-0006')).status).toBe(201);
     const poster = uuidv7(NOW);
     await db.query(`update org.fee_item set status = 'paid' where id = $1`, [items[5]]);
-    await db.query(`insert into ledger.journal (id, idempotency_key, kind, effective_at, created_at) values ($1, $2, 'fee', $3, $3)`, [poster, `fee:${items[5]}`, NOW]).catch(() => undefined);
+    await db.query(`insert into ledger.journal (id, idempotency_key, kind, effective_at, created_at) values ($1, $2, 'fee', $3, $3)`, [poster, `fee:${items[5]}`, NOW]);
     sim().pay(await intentOf(5));
-    const res = await reconcile();
-    expect(res.marked).toBe(0);
+    expect(await reconcile()).toMatchObject({ marked: 0, cases: 1 });
     expect(await rows(5)).toEqual([]);
+    expect((await db.query(`select 1 from ops.case where kind = 'us_fee_collection' and payload->>'reason' = 'paid_twice'`)).rows).toHaveLength(1);
   });
 
   it('a page boundary mid-list loses no payment', async () => {
-    const many = (await db.query<{ n: string }>('select count(*)::text as n from org.fee_external_payment')).rows[0]!.n;
-    expect(Number(many)).toBeGreaterThan(0);
-    const seen: string[] = [];
-    for await (const p of port().collectPayments({ entityRef, since: new Date(0) })) seen.push(p.paymentRef);
-    expect(new Set(seen).size).toBe(seen.length);
-    expect(money(1n, 'USD').minor).toBe(1n);
+    // The provider's page is two payments: five more funders pay, and one re-read marks every one of them.
+    const ids = [8, 9, 10, 11, 12].map((n) => (items[n] = uuidv7(NOW)));
+    const member = uuidv7(NOW);
+    for (const id of ids) await db.query(`insert into org.fee_item (id, institution_id, member_party_id, description, amount_minor, currency, status, due_at, created_at, batch_id) values ($1, $2, $3, 'Tuition', 10000, 'USD', 'due', '2026-12-01', $4, $5)`, [id, INST, member, NOW, OTHER_BATCH]);
+    expect((await collect('fin', OTHER_BATCH, ids.map((_, k) => funder(8 + k)), 'collect-key-0008')).status).toBe(201);
+    for (let k = 0; k < ids.length; k++) sim().pay(await intentOf(8 + k));
+    expect(await reconcile()).toMatchObject({ marked: 5 });
+    for (let k = 0; k < ids.length; k++) expect(await status(8 + k)).toBe('paid');
   });
 });

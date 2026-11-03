@@ -201,7 +201,7 @@ function buildServices(o: AppOptions) {
       },
       // A payment, collection, intent or refund event: the entity's recent payments are re-read and recorded (T-0652).
       collected: async (ref) => {
-        await usCollections.reconcileEntity(o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), ref, new Date(clock.now().getTime() - 7 * 86_400_000), clock.now());
+        await usCollections.onCollectedHint(ref, o.usBankingPlatformEntityRef, o.market, clock.now());
         await o.crowdedHandlers?.collected?.(ref);
       },
     } });
