@@ -46,3 +46,26 @@ i3 Bank; Kesher never holds a student's personal balance there. Behind `Institut
 8. **Rate limits:** headers and the 429 body for the 1,000/min limit; retry guidance for 5xx.
 9. **Partner economics:** fees per account, collection and ACH; platform charges and `move-fees` for revenue share.
 10. **Data:** why `accountNumber` is returned unmasked; data-processing terms; data retention.
+
+## Answers log
+Send the list above to Crowded, then record each answer here with its date. Cards T-0648 to T-0654 stay blocked on
+questions 1 to 4. Until an answer is recorded, each question has an owner and the date it was sent.
+
+| # | Owner | Sent | Answered | Answer |
+|---|---|---|---|---|
+| 1 Credentials | Zvi | — | — | — |
+| 2 American Friends entities | Zvi | — | — | — |
+| 3 Webhook signature | Zvi | — | — | — |
+| 4 ACH event names | Zvi | — | — | — |
+| 5 Amounts | Zvi | — | — | — |
+| 6 Idempotency | Zvi | — | — | — |
+| 7 Collections in sandbox | Zvi | — | — | — |
+| 8 Rate limits | Zvi | — | — | — |
+| 9 Partner economics | Zvi | — | — | — |
+| 10 Data | Zvi | — | — | — |
+
+## Webhook registration
+`node tools/crowded-webhooks.mjs list | create --url … | delete --id … --yes`, with `--dry-run` to print the request
+with the token and secret redacted. Run by a person on the desktop, never from CI. It needs `CROWDED_BASE_URL`,
+`CROWDED_API_TOKEN` and `CROWDED_WEBHOOK_SECRET` in the environment; none is ever printed. Crowded has no test
+delivery in sandbox: use the replay endpoint on a delivered event to exercise the receiver.
