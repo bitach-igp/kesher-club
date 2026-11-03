@@ -143,7 +143,7 @@ function fold(events: readonly Event[]): { status: FundingStatus; paymentRef?: s
 
 const FINAL: readonly FundingStatus[] = ['received', 'returned', 'rejected', 'cancelled', 'failed', 'needs_review'];
 
-function asDomain(e: unknown): never {
+export function asDomain(e: unknown): never {
   if (!(e instanceof InstitutionBankingError)) throw e;
   if (e.code === 'VALIDATION_FAILED' || e.code === 'NOT_APPROVED') throw new DomainError('VALIDATION_FAILED', e.message);
   if (e.code === 'OUTCOME_UNKNOWN') throw new DomainError('IDEMPOTENCY_CONFLICT', 'The bank\'s answer could not be read; nothing was resent');
