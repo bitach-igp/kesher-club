@@ -42,7 +42,7 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
         </label>
         <button type="submit">{t('account.show', locale)}</button>
       </form>
-      {!reconciles(s) ? (
+      {!reconciles(s, currency) ? (
         <div className="card error" role="alert" data-testid="account-mismatch">{t('account.mismatch', locale)}</div>
       ) : (
         <div className="card" data-testid="account-statement">

@@ -30,6 +30,14 @@ describe('T-0646 I10 master account', () => {
     expect(reconciles(broken)).toBe(false);
   });
 
+  it('a mixed, wrong-currency or malformed statement is a mismatch, not numbers and not a crash', () => {
+    const usd = (minor: string) => ({ minor, currency: 'USD' as const });
+    expect(reconciles({ ...october, rows: october.rows.map((r, i) => (i === 0 ? { ...r, amount: usd('1000000'), balance: usd('1200000') } : r)) })).toBe(false);
+    expect(reconciles(october, 'USD')).toBe(false);
+    expect(reconciles(october, 'ILS')).toBe(true);
+    expect(reconciles({ ...october, opening: { minor: 'abc', currency: 'ILS' } })).toBe(false);
+  });
+
   it('downloads decode the bytes exactly: a CSV with its BOM, an XLSX zip', () => {
     const csv = decodeExport({ base64: Buffer.from('\uFEFFdate,kind\r\n2026-10-31,closing\r\n').toString('base64') });
     expect(hasBom(csv)).toBe(true);

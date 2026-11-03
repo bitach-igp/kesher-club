@@ -9,14 +9,27 @@ import { shiftMonth } from './collections.ts';
 
 export type Statement = Schemas['InstitutionStatement'];
 
-/** Opening + rows = closing, and every running balance follows from the one before, in bigint. */
-export function reconciles(s: Statement): boolean {
-  let balance = fromWire(s.opening).minor;
-  for (const r of s.rows) {
-    balance += fromWire(r.amount).minor;
-    if (fromWire(r.balance).minor !== balance) return false;
+/**
+ * Opening + rows = closing, and every running balance follows from the one before, in bigint. Every amount must be
+ * in the statement's own currency (and in `expected`, the one asked for); a mixed or malformed statement is a
+ * mismatch, never numbers and never a crash.
+ */
+export function reconciles(s: Statement, expected?: string): boolean {
+  try {
+    const money = (m: Statement['opening']): bigint => {
+      const v = fromWire(m);
+      if (v.currency !== s.currency || (expected !== undefined && v.currency !== expected)) throw new RangeError('currency');
+      return v.minor;
+    };
+    let balance = money(s.opening);
+    for (const r of s.rows) {
+      balance += money(r.amount);
+      if (money(r.balance) !== balance) return false;
+    }
+    return balance === money(s.closing);
+  } catch {
+    return false;
   }
-  return balance === fromWire(s.closing).minor;
 }
 
 /** The last `count` months, newest first, never one that has not started. */
