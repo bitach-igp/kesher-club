@@ -16,3 +16,16 @@ Steps (from repo root, PowerShell on Windows unless stated):
 13. docker rm -f kesher-pg
 Expected: step 5 prints `ok` for every schema, with org at 11 migrations. Step 6 prints `INSERT 0 1` for the institution, then `SET` and `INSERT 0 1` three times. Step 7 prints `pending` for the latest row, then three rows: `pending`, `rejected`, `pending`. Step 8 prints `SET` and `ERROR: new row for relation "institution_us_banking_event" violates check constraint`. Steps 9 and 10 each print `SET` and `ERROR: permission denied for table institution_us_banking_event`. Step 11 prints `SET`, `INSERT 0 1`, `SET`, `INSERT 0 0`, then one row: `hash-a | "ch1"`. Step 12 prints `SET` and `ERROR: permission denied for table us_banking_key`.
 Report back: the console output of steps 5 to 12.
+
+## Result
+PASS (2026-11-03 15:10 Asia/Jerusalem, Kesher desktop checker). Runner worktree at a338257 (tree equal to main 49fd93b), Docker Desktop 29.8.2 (was stopped; started it), postgres:16.
+- Step 4: roles applied (`ALTER ROLE` x3).
+- Step 5: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent; org has 11 migrations (0001..0011_institution_us_banking.sql); both new tables present.
+- Step 6: `INSERT 0 1`, then `SET` / `INSERT 0 1` three times.
+- Step 7: latest by seq `pending`; all rows by seq `pending`, `rejected`, `pending`.
+- Step 8: `SET`, `ERROR: new row for relation "institution_us_banking_event" violates check constraint "institution_us_banking_event_status_check"`.
+- Steps 9 and 10: `SET`, `ERROR: permission denied for table institution_us_banking_event`.
+- Step 11: `SET`, `INSERT 0 1`, `SET`, `INSERT 0 0`, one row `hash-a | "ch1"`.
+- Step 12: `SET`, `ERROR: permission denied for table us_banking_key`.
+- Step 13: container removed.
+Note: PowerShell dropped psql's stderr on the first pass, so steps 8-12 were re-run on a fresh container capturing stderr (`2>&1`); the ERROR lines above are from that run (exit 1 each), and a final check showed the status row unchanged (`pending`) and the key unchanged (`hash-a`).
