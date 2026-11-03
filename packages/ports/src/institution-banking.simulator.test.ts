@@ -6,21 +6,25 @@ import { fixedClock } from './base.ts';
 import { institutionBankingContract } from './institution-banking.contract.ts';
 import { InstitutionBankingSimulator } from './institution-banking.simulator.ts';
 
-// A page of 2 so five rows cross three page boundaries.
-institutionBankingContract('simulator', () => new InstitutionBankingSimulator(fixedClock(), 2), {
-  approve: async (sim, ref) => void sim.decide(ref),
-  fund: async (sim, ref, minor) => void sim.post(ref, 'credit', money(minor, 'USD'), 'Wire in'),
-  post: async (sim, ref, count) => {
+// A page of 2 so five rows cross three page boundaries. The suite runs for each holder setup.
+const common = {
+  approve: async (sim: InstitutionBankingSimulator, ref: string) => void sim.decide(ref),
+  fund: async (sim: InstitutionBankingSimulator, ref: string, minor: bigint) => void sim.post(ref, 'credit', money(minor, 'USD'), 'Wire in'),
+  post: async (sim: InstitutionBankingSimulator, ref: string, count: number) => {
     for (let i = 0; i < count; i++) sim.post(ref, 'credit', money(100n + BigInt(i), 'USD'), `Deposit ${i}`);
   },
-  pay: async (sim, intentRef) => sim.pay(intentRef),
-  advanceAch: async (sim, ref) => void sim.settleAch(ref),
-  signed: (sim) => sim.webhook([{ type: 'application.updated', objectRef: 'ent_000001' }]),
-  forge: (n) => ({ ...n, headers: { ...n.headers, 'x-webhook-signature': 'sha256=forged' } }),
+  pay: async (sim: InstitutionBankingSimulator, intentRef: string) => sim.pay(intentRef),
+  advanceAch: async (sim: InstitutionBankingSimulator, ref: string) => void sim.settleAch(ref),
+  signed: (sim: InstitutionBankingSimulator) => sim.webhook([{ type: 'application.updated', objectRef: 'ent_000001' }]),
+  forge: (n: { headers: Record<string, string>; rawBody: string }) => ({ ...n, headers: { ...n.headers, 'x-webhook-signature': 'sha256=forged' } }),
   outageLegalName: 'OUTAGE Friends',
-});
+};
+const make = () => new InstitutionBankingSimulator(fixedClock(), 2);
+institutionBankingContract('simulator, institution holder', make, { ...common, holder: 'institution' });
+institutionBankingContract('simulator, platform holder with sub-accounts', make, { ...common, holder: 'platform', legalName: 'holder_platform_subaccounts Israel Global Pay' });
+institutionBankingContract('simulator, platform holder with a pooled account', make, { ...common, holder: 'platform', legalName: 'holder_platform_pooled Israel Global Pay' });
 
-const NEW = (key: string, legalName: string) => ({ institutionId: '0190a0a0-0000-7000-8000-000000000001', legalName, ein: '123456789', idempotencyKey: key });
+const NEW = (key: string, legalName: string) => ({ holder: 'institution' as const, institutionId: '0190a0a0-0000-7000-8000-000000000001', legalName, ein: '123456789', idempotencyKey: key });
 const opened = async (sim: InstitutionBankingSimulator, legalName = 'ent_ok Friends') => {
   const { entityRef } = await sim.createEntity(NEW('key-entity-0001', legalName));
   sim.decide(entityRef);

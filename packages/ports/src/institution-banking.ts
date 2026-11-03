@@ -10,6 +10,8 @@
 // mobiles, descriptions and event bodies are untrusted text, shown as text and never interpreted.
 import type { Money } from '@kesher/domain';
 
+/** Who holds the account: the institution's own US entity, or the platform's company with the institution under it. */
+export type Holder = 'platform' | 'institution';
 export type ApplicationStatus = 'pending' | 'approved' | 'rejected' | 'needs_info';
 export type CollectedPaymentStatus = 'paid' | 'declined' | 'refunded';
 export type AchStatus = 'pending' | 'sent' | 'settled' | 'returned' | 'rejected' | 'cancelled';
@@ -51,12 +53,22 @@ export interface InboundEvent {
 export type WebhookResult = { events: InboundEvent[] } | { rejected: 'BAD_SIGNATURE' | 'MALFORMED' };
 
 export interface InstitutionBankingPort {
-  /** Creates the provider entity for an institution, once per key. A reused key with another body is IDEMPOTENCY_CONFLICT. */
-  createEntity(input: { institutionId: string; legalName: string; ein: string; idempotencyKey: string }): Promise<{ entityRef: string }>;
+  /**
+   * Creates the provider entity, once per key: the institution's own (`holder: 'institution'`) or the platform's
+   * company (`holder: 'platform'`, for which `institutionId` names the first institution it is made for). A reused
+   * key with another body is IDEMPOTENCY_CONFLICT.
+   */
+  createEntity(input: { holder: Holder; institutionId: string; legalName: string; ein: string; idempotencyKey: string }): Promise<{ entityRef: string }>;
+  /**
+   * The platform entity's unit for one institution, once per key. `hasOwnAccountNumber` is false when the provider
+   * keeps one pooled account: then the institution's share is tracked in our ledger and the unit has no account of
+   * its own to read, send from or reconcile. Only a platform entity that is approved can have units.
+   */
+  createSubAccount(input: { entityRef: string; institutionId: string; idempotencyKey: string }): Promise<{ subAccountRef: string; hasOwnAccountNumber: boolean }>;
   /** Opens the provider's hosted application (the bank's own KYB of the US entity) for the applicant at this IP. */
   startApplication(input: { entityRef: string; applicantIp: string }): Promise<{ formUrl: string }>;
   applicationStatus(entityRef: string): Promise<ApplicationStatus>;
-  /** The account of an approved entity. Last four digits only. */
+  /** The account of an approved entity or of a sub-account with its own number. Last four digits only. */
   account(entityRef: string): Promise<{ accountRef: string; balance: Money; last4: string }>;
   /** A fee billed to funders. Needs an approved entity. */
   createCollection(input: { entityRef: string; title: string; amount: Money; idempotencyKey: string }): Promise<{ collectionRef: string }>;
@@ -64,13 +76,15 @@ export interface InstitutionBankingPort {
   createPaymentPage(input: { collectionRef: string; funder: Funder; idempotencyKey: string }): Promise<{ intentRef: string; paymentUrl: string }>;
   /** Payments collected since a time, across pages, each exactly once. */
   collectPayments(input: { entityRef: string; since: Date }): AsyncIterable<CollectedPayment>;
-  /** What an ACH credit of this amount would cost and when it would arrive (YYYY-MM-DD). */
-  quoteAch(input: { entityRef: string; amount: Money }): Promise<{ fee: Money; arrivesOn: string }>;
+  /** What an ACH credit of this amount would cost and, where the provider says, when it would arrive (YYYY-MM-DD). */
+  quoteAch(input: { entityRef: string; amount: Money }): Promise<{ fee: Money; arrivesOn?: string }>;
   /** Sends an ACH credit to a counterparty. `addenda` is at most 80 printable ASCII characters and carries our KC- reference. */
   sendAch(input: { entityRef: string; counterpartyRef: string; amount: Money; addenda: string; idempotencyKey: string }): Promise<{ paymentRef: string; status: AchStatus }>;
   achStatus(paymentRef: string): Promise<AchStatus>;
   /** Cancels a payment that has not been sent. NOT_CANCELLABLE once it has. */
   cancelAch(paymentRef: string): Promise<AchStatus>;
+  /** Moves money between two of the platform's own accounts (the entity and its sub-accounts), once per key. `memo` is as `addenda`. */
+  bookTransfer(input: { fromRef: string; toRef: string; amount: Money; memo: string; idempotencyKey: string }): Promise<{ transferRef: string }>;
   /** The account's transactions between two times, across pages, each exactly once. */
   transactions(input: { entityRef: string; from: Date; to: Date }): AsyncIterable<BankTransaction>;
   /**

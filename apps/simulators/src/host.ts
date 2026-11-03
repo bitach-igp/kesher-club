@@ -211,6 +211,7 @@ const FIXTURES: Partial<Record<keyof Simulators, Fixture[]>> = {
   ],
   'institution-banking': [
     { trigger: 'legalName ent_ok / ent_rejected / ent_needs_info; OUTAGE…', effect: 'application approved / rejected / needs_info; PROVIDER_UNAVAILABLE' },
+    { trigger: 'platform holder legalName holder_platform_subaccounts / holder_platform_pooled', effect: 'each institution gets its own account number / shares one pooled account (no account to read, send from or book to)' },
     { trigger: 'funder name pay_ok / pay_declined / pay_refunded', effect: 'payment paid / declined / refunded' },
     { trigger: 'counterpartyRef ach_ok / ach_returned / ach_rejected_201', effect: 'settles / returned to the balance / REJECTED (a 201 Rejected)' },
     { trigger: 'webhook fixture wh_bad_sig / wh_dup', effect: 'rejected BAD_SIGNATURE / the first event id twice in one batch' },
