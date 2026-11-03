@@ -174,6 +174,8 @@
 | [T-0654](T-0654.md) | INS | Nightly reconciliation of linked US accounts | REQ-INS-026 | later |
 | [T-0655](T-0655.md) | INS | Crowded go-live kit: vendor questions, runbook, webhook registration | REQ-INS-025, REQ-INS-026 | later |
 | [T-0656](T-0656.md) | INS | Evaluate Crowded ILS transfers as a USD→ILS route (spike) | REQ-FX-001, REQ-FX-003, REQ-PO-001 | later |
+| [T-0659](T-0659.md) | INS | Go-live wiring: Crowded adapter by config, secrets passed, keys persisted | REQ-INS-022, REQ-INS-025 | go-live |
+| [T-0660](T-0660.md) | INS | Crowded HTTP simulator and an end-to-end run of the US-banking flows | REQ-INS-022, REQ-INS-023, REQ-INS-024, REQ-INS-025 | go-live |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
