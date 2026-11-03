@@ -16,3 +16,14 @@ Steps (from repo root, PowerShell on Windows unless stated):
 13. docker rm -f kesher-pg
 Expected: step 5 prints `ok` for every schema, with org at 13 migrations. Step 6 prints `INSERT 0 1` for the institution, the batch and the item, then `SET` and `INSERT 0 1` twice. Step 7 prints `SET` and `ERROR: duplicate key value violates unique constraint` (a payment ref is written once per kind). Step 8 prints `SET` and `INSERT 0 1` (a refund of the same ref is a different kind). Step 9 prints `SET` and `ERROR: new row for relation "fee_external_payment" violates check constraint`. Steps 10 and 11 each print `SET` and `ERROR: permission denied for table fee_external_payment`. Step 12 prints two rows: `payment | pay_t0652_1` and `refund | pay_t0652_1`.
 Report back: the console output of steps 5 to 12.
+
+## Result
+PASS, 2026-11-03 16:07 (Asia/Jerusalem), by the desktop checker on Zvi's PC. Runner worktree at da5ba14, Docker 29.8.2, postgres:16.
+- Step 5: `ok` for all nine schemas; org at 13 migrations.
+- Step 6: `INSERT 0 1` three times (institution, batch, item), then `SET` / `INSERT 0 1` twice.
+- Step 7: `SET`, `ERROR:  duplicate key value violates unique constraint "fee_external_payment_provider_payment_ref_kind_key"` (Key (provider_payment_ref, kind)=(pay_t0652_1, payment) already exists).
+- Step 8: `SET`, `INSERT 0 1`.
+- Step 9: `SET`, `ERROR:  new row for relation "fee_external_payment" violates check constraint "fee_external_payment_kind_check"`.
+- Steps 10 and 11: `SET`, `ERROR:  permission denied for table fee_external_payment` each.
+- Step 12: `payment | pay_t0652_1`, `refund | pay_t0652_1` (2 rows).
+- Step 13: container removed.
