@@ -3,10 +3,10 @@
 // quote and a request carry bigint minor units as strings, never a float; the application and the request keep their Idempotency-Key across a
 // retry; English and Hebrew mirror each other.
 import { describe, expect, it, vi } from 'vitest';
-import type { Result } from './api.ts';
+import { browserIp, institutionApi, type Result } from './api.ts';
 import { COPY } from './i18n.ts';
 import type { Landing } from './session.ts';
-import { askQuote, bankingState, canApprove, canCancel, canFund, canStart, errorKey, fundingLine, partyIdOf, showsUsBanking, startBody, submitApprove, submitRequest, submitStart, type UsBanking, type UsBankingDeps, type UsFunding, type UsFundingQuote } from './us-banking.ts';
+import { askQuote, bankingState, canApprove, canCancel, canFund, canStart, errorKey, fundingLine, partyIdOf, resumeBody, showsUsBanking, startBody, submitApprove, submitRequest, submitStart, type UsBanking, type UsBankingDeps, type UsFunding, type UsFundingQuote } from './us-banking.ts';
 
 const landing = (role: 'staff' | 'finance' | 'admin'): Landing => ({ kind: 'dashboard', institution: { id: 'i1', name: 'Yeshiva', market: 'IL' }, role, paymentReference: 'KC-7M4QX2HD' });
 const banking = (status: UsBanking['status'], moneyOpen = false): UsBanking => ({ status, moneyOpen });
@@ -47,10 +47,35 @@ describe('the US bank account screen (TST-INS-022, T-0651)', () => {
     expect(showsUsBanking(landing('admin'))).toBe(true);
     expect(showsUsBanking({ kind: 'signed_out' })).toBe(false);
     expect(canStart(landing('admin'), banking('not_linked'))).toBe(true);
-    expect(canStart(landing('admin'), banking('needs_info'))).toBe(true);
     expect(canStart(landing('admin'), banking('approved', true))).toBe(false);
-    expect(canStart(landing('admin'), banking('rejected'))).toBe(false);
     expect(canStart(landing('finance'), banking('not_linked'))).toBe(false);
+  });
+
+  it('an application on the institution\'s own entity can be continued, and started again after a rejection, with the holder fixed and nothing typed again', () => {
+    const own = (status: UsBanking['status']): UsBanking => ({ status, moneyOpen: false, holder: 'institution' });
+    expect(canStart(landing('admin'), own('pending'))).toBe(true);
+    expect(canStart(landing('admin'), own('needs_info'))).toBe(true);
+    expect(canStart(landing('admin'), own('rejected'))).toBe(true);
+    expect(canStart(landing('admin'), own('approved'))).toBe(false);
+    expect(canStart(landing('admin'), { status: 'pending', moneyOpen: false, holder: 'platform' })).toBe(false);
+    expect(resumeBody()).toEqual({ holder: 'institution' });
+  });
+
+  it('the bank\'s application form is opened for the person\'s own address: the console forwards the browser\'s', async () => {
+    const seen: Record<string, string>[] = [];
+    const fake = (async (_u: unknown, init?: RequestInit) => {
+      seen.push(init?.headers as Record<string, string>);
+      return new Response(JSON.stringify({ status: 'pending', holder: 'institution', sharesPlatformAccount: false }), { status: 201, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    await institutionApi('https://api.example', 'tok', 'step', { clientIp: '198.51.100.7', fetch: fake }).startUsBanking('i1', { holder: 'institution' }, 'key-0000001');
+    expect(seen[0]!['x-forwarded-for']).toBe('198.51.100.7');
+    expect(seen[0]!['idempotency-key']).toBe('key-0000001');
+    await institutionApi('https://api.example', 'tok', 'step', { fetch: fake }).startUsBanking('i1', { holder: 'institution' }, 'key-0000002');
+    expect(seen[1]!['x-forwarded-for']).toBeUndefined();
+    // The last entry is the one the console's own proxy saw; anything before it is the client's claim.
+    expect(browserIp('6.6.6.6, 198.51.100.7')).toBe('198.51.100.7');
+    expect(browserIp('not an address')).toBeUndefined();
+    expect(browserIp(null)).toBeUndefined();
   });
 
   it('the application of an own entity needs a legal name and a well-formed EIN; Kesher\'s company needs neither', () => {
@@ -147,6 +172,8 @@ describe('funding the master account (TST-INS-024, T-0651)', () => {
     expect(d.stepUp).toHaveBeenCalledTimes(1);
     expect(errorKey('FORBIDDEN')).toBe('error.forbidden');
     expect(errorKey('FEATURE_OFF')).toBe('usbank.off');
+    // While funding, FEATURE_OFF is the deposits path, not US banking (the page just showed the account).
+    expect(errorKey('FEATURE_OFF', 'fund')).toBe('usbank.fund.off');
   });
 
   it('reads the signed-in person from the token and nothing else', () => {

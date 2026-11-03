@@ -5,7 +5,8 @@ import { asStaff } from '../../src/request.ts';
 import type { Money, StartInput, UsBankingLink, UsFunding, UsFundingQuote } from '../../src/us-banking.ts';
 
 export async function startUsBanking(body: StartInput, idempotencyKey: string): Promise<Result<UsBankingLink>> {
-  return asStaff((api, id) => api.startUsBanking(id, body, idempotencyKey));
+  // The bank's application form is opened for the applicant's address: the browser's is forwarded.
+  return asStaff((api, id) => api.startUsBanking(id, body, idempotencyKey), { forwardIp: true });
 }
 export async function quoteUsFunding(amount: Money): Promise<Result<UsFundingQuote>> {
   return asStaff((api, id) => api.quoteUsFunding(id, amount));

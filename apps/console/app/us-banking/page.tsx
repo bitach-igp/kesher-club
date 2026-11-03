@@ -6,7 +6,7 @@ import { fmt } from '../../src/allowances.ts';
 import { getConfig } from '../../src/config.ts';
 import { t } from '../../src/i18n.ts';
 import { requestContext } from '../../src/request.ts';
-import { bankingState, canFund, canStart, partyIdOf, showsUsBanking } from '../../src/us-banking.ts';
+import { bankingState, canFund, canStart, errorKey, partyIdOf, showsUsBanking } from '../../src/us-banking.ts';
 import { Funding, Start } from './UsBanking.tsx';
 
 export default async function UsBankingPage() {
@@ -18,10 +18,19 @@ export default async function UsBankingPage() {
     banking = await api.usBanking(landing.institution.id);
   } catch (e) {
     const code = codeOf(e);
-    if (code === 'FEATURE_OFF' || code === 'NOT_FOUND') redirect('/');
+    if (code === 'FEATURE_OFF' || code === 'NOT_FOUND' || code === 'FORBIDDEN') redirect('/');
     throw e;
   }
-  const funding = canFund(banking) ? await api.usFunding(landing.institution.id) : { items: [] };
+  let funding: Awaited<ReturnType<typeof api.usFunding>> = { items: [] };
+  if (canFund(banking)) {
+    try {
+      funding = await api.usFunding(landing.institution.id);
+    } catch (e) {
+      const code = codeOf(e);
+      if (code !== 'FEATURE_OFF' && code !== 'NOT_FOUND' && code !== 'FORBIDDEN') throw e;
+      return <div className="card" role="status" data-testid="usbank-unavailable">{t(errorKey(code), locale)}</div>;
+    }
+  }
   return (
     <>
       <h1>{t('usbank.title', locale)}</h1>

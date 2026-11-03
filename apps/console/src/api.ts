@@ -31,12 +31,22 @@ export function consoleApi(baseUrl: string, fetchImpl?: typeof fetch): ConsoleAp
   };
 }
 
+/** The browser's address as this server's own proxy saw it: the last X-Forwarded-For entry (one internet-facing hop in front of the console). */
+export const browserIp = (forwardedFor: string | null): string | undefined => {
+  const last = (forwardedFor ?? '').split(',').pop()?.trim();
+  return last && /^[0-9a-f.:]{3,45}$/i.test(last) ? last : undefined;
+};
+
 export const statusOf = (e: unknown): number | undefined => (e instanceof ApiError ? e.status : undefined);
 
 /** The API as the signed-in staff member, for pages and server actions; the step-up token comes from its httpOnly cookie. */
-export function institutionApi(baseUrl: string, accessToken: string, stepUpToken?: string) {
+export function institutionApi(baseUrl: string, accessToken: string, stepUpToken?: string, opts: { clientIp?: string; fetch?: typeof fetch } = {}) {
+  const base = opts.fetch ?? fetch;
+  // The API reads the person's address from the last X-Forwarded-For entry (the bank's application form wants it): the console's server forwards the browser's.
+  const forwarding: typeof fetch | undefined = opts.clientIp ? (input, init) => base(input, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), 'x-forwarded-for': opts.clientIp! } }) : opts.fetch;
   const c = createClient({
     baseUrl,
+    ...(forwarding ? { fetch: forwarding } : {}),
     getAccessToken: () => accessToken,
     // A preview sends an empty header and the API ignores it; a run without a fresh token answers STEP_UP_REQUIRED.
     getStepUpToken: () => stepUpToken ?? '',

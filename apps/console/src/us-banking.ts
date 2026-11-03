@@ -38,8 +38,15 @@ export function bankingState(b: UsBanking): CopyKey {
   }
 }
 
-/** Only an institution admin starts or continues the application (the API says so too), and not once the bank decided. */
-export const canStart = (l: Landing, b: UsBanking): boolean => l.kind === 'dashboard' && l.role === 'admin' && (b.status === 'not_linked' || b.status === 'pending' || b.status === 'needs_info');
+/**
+ * Only an institution admin starts or continues the application (the API says so too): from scratch, or on the entity the institution already has
+ * while the bank is reviewing it, wants more, or rejected it (a rejection followed by a new application is a new row). Never once approved.
+ */
+export const canStart = (l: Landing, b: UsBanking): boolean =>
+  l.kind === 'dashboard' && l.role === 'admin' && (b.status === 'not_linked' || (b.holder === 'institution' && (b.status === 'pending' || b.status === 'needs_info' || b.status === 'rejected')));
+
+/** An application on the entity the institution already has: the holder is fixed and the API needs no legal name or EIN again. */
+export const resumeBody = (): StartInput => ({ holder: 'institution' });
 
 /** Funding needs both approvals: the bank's (approved) and Kesher's review of the institution (money open). */
 export const canFund = (b: UsBanking): boolean => b.status === 'approved' && b.moneyOpen;
@@ -127,11 +134,14 @@ export async function submitCancel(d: UsBankingDeps, requestId: string): Promise
   return r.ok ? { outcome: { kind: 'done', value: r.value }, attempt: undefined } : failed(r, undefined);
 }
 
-/** A refusal as a plain sentence. */
-export function errorKey(code: string): CopyKey {
+/**
+ * A refusal as a plain sentence. FEATURE_OFF while funding is not the US-banking flag (the page just rendered the account): it is the
+ * deposits path the funding ends in.
+ */
+export function errorKey(code: string, during: 'page' | 'fund' = 'page'): CopyKey {
   switch (code) {
     case 'FEATURE_OFF':
-      return 'usbank.off';
+      return during === 'fund' ? 'usbank.fund.off' : 'usbank.off';
     case 'QUOTE_EXPIRED':
       return 'usbank.error.quote_expired';
     case 'FORBIDDEN':
