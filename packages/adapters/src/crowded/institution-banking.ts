@@ -17,6 +17,7 @@
 // - A pooled account (no number of its own) is not something Crowded offers as far as its docs say: every sub-account
 //   has its own deposit account, so `hasOwnAccountNumber` is true.
 // Never returned or logged: the account number (last four only), names, emails, mobiles, officers, or the token.
+import { createHash } from 'node:crypto';
 import { type Money } from '@kesher/domain';
 import {
   InstitutionBankingError,
@@ -101,16 +102,22 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
     }
   }
 
-  private async idem<T>(scope: string, key: string, body: unknown, make: () => Promise<T>): Promise<T> {
+  /**
+   * Same key + same body answers the remembered result; the same key with another body is IDEMPOTENCY_CONFLICT, decided
+   * from the ledger before anything is sent. Only a SHA-256 of the body is kept, never the body: it holds names, emails
+   * and an EIN. `before` runs after a ledger miss and before the create (a read that must pass first).
+   */
+  private async idem<T>(scope: string, key: string, body: unknown, make: () => Promise<T>, before?: () => Promise<void>): Promise<T> {
     const k = `${scope}:${key}`;
-    const text = JSON.stringify(body, bigintJson);
+    const digest = createHash('sha256').update(JSON.stringify(body, bigintJson)).digest('hex');
     const prior = await this.ledger.get(k);
     if (prior) {
-      if (prior.body !== text) throw new InstitutionBankingError('IDEMPOTENCY_CONFLICT', 'Idempotency key reused with a different body');
+      if (prior.body !== digest) throw new InstitutionBankingError('IDEMPOTENCY_CONFLICT', 'Idempotency key reused with a different body');
       return prior.result as T;
     }
+    await before?.();
     const result = await make();
-    await this.ledger.put(k, { body: text, result });
+    await this.ledger.put(k, { body: digest, result });
     return result;
   }
 
@@ -122,9 +129,26 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
     return typeof e?.result === 'string' ? e.result : undefined;
   }
 
+  /**
+   * A call that moves money. Crowded dedupes a repeated `idempotencyKey` for about 48 hours, but how it answers the
+   * repeat is undocumented (Q14). A 409 here is therefore never read as our own IDEMPOTENCY_CONFLICT (the ledger decides
+   * that): it means Crowded may already hold this payment, so the outcome is unknown. The caller must read it back and
+   * must not resend under a new key.
+   */
+  private async moneyCall<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (e) {
+      if (e instanceof CrowdedApiError && (e.status === 409 || e.code === 'DUPLICATE_REQUEST')) {
+        throw new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'Crowded may already hold this payment: read it back before retrying, and do not resend under a new key');
+      }
+      throw e;
+    }
+  }
+
   private async openAccount(chapterId: string): Promise<{ id: string; balance: Money; accountNumber: unknown }> {
     for await (const a of this.c.list(`/chapters/${chapterId}/accounts`)) {
-      if (isRecord(a) && String(a['status']).toLowerCase() === 'open') return { id: str(a['id']), balance: fromCents(a['balance']), accountNumber: a['accountNumber'] };
+      if (isRecord(a) && String(a['status']).toLowerCase() === 'open') return { id: str(a['id']), balance: fromCents(a['balance'], a['currency']), accountNumber: a['accountNumber'] };
     }
     throw new InstitutionBankingError('NOT_APPROVED', 'The application is not approved');
   }
@@ -191,15 +215,20 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
       throw new InstitutionBankingError('VALIDATION_FAILED', 'Only a platform entity has sub-accounts');
     }
     if (!this.o.subAccountEmail) throw new InstitutionBankingError('VALIDATION_FAILED', 'No contact is configured for sub-accounts');
-    return this.call(async () => {
-      await this.openAccount(parent!);
-      return this.idem('sub', input.idempotencyKey, input, async () => {
-        const r = await this.c.post(`/chapters/${parent}/subaccounts`, { name: `Institution ${input.institutionId}`, email: this.o.subAccountEmail, idempotencyKey: uuidFromKey(`sub:${input.idempotencyKey}`) });
-        const id = str((r.data as Record<string, unknown>)['id']);
-        await this.note(`parent:${id}`, parent!);
-        return { subAccountRef: id, hasOwnAccountNumber: true };
-      });
-    });
+    return this.call(() =>
+      this.idem(
+        'sub',
+        input.idempotencyKey,
+        input,
+        async () => {
+          const r = await this.c.post(`/chapters/${parent}/subaccounts`, { name: `Institution ${input.institutionId}`, email: this.o.subAccountEmail, idempotencyKey: uuidFromKey(`sub:${input.idempotencyKey}`) });
+          const id = str((r.data as Record<string, unknown>)['id']);
+          await this.note(`parent:${id}`, parent!);
+          return { subAccountRef: id, hasOwnAccountNumber: true };
+        },
+        async () => void (await this.openAccount(parent!)),
+      ),
+    );
   }
 
   // ---- collections ----------------------------------------------------------------------------------------------
@@ -209,16 +238,20 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
     const title = input.title.trim();
     if (!title || title.length > 50) throw new InstitutionBankingError('VALIDATION_FAILED', 'A collection needs a title of at most 50 characters');
     const [chapterId] = parseRef(input.entityRef, 1);
-    return this.call(async () => {
-      await this.openAccount(chapterId!);
-      return this.idem('collection', input.idempotencyKey, input, async () => {
-        if (input.amount.minor < MIN_CENTS) throw new InstitutionBankingError('VALIDATION_FAILED', 'A collection is at least $1.00');
-        const cents = toCents(input.amount);
-        const found = await this.findByName(`/chapters/${chapterId}/collections`, title, {}, (c) => c['title'] === title && Number(c['requestedAmount']) === cents);
-        const id = found ?? str(((await this.c.post(`/chapters/${chapterId}/collections`, { title, requestedAmount: cents })).data as Record<string, unknown>)['id']);
-        return { collectionRef: ref(chapterId!, id) };
-      });
-    });
+    return this.call(() =>
+      this.idem(
+        'collection',
+        input.idempotencyKey,
+        input,
+        async () => {
+          if (input.amount.minor < MIN_CENTS) throw new InstitutionBankingError('VALIDATION_FAILED', 'A collection is at least $1.00');
+          const found = await this.findByName(`/chapters/${chapterId}/collections`, title, {}, (c) => sameCents(c['requestedAmount'], input.amount) && c['title'] === title);
+          const id = found ?? str(((await this.c.post(`/chapters/${chapterId}/collections`, { title, requestedAmount: toCents(input.amount) })).data as Record<string, unknown>)['id']);
+          return { collectionRef: ref(chapterId!, id) };
+        },
+        async () => void (await this.openAccount(chapterId!)),
+      ),
+    );
   }
 
   async createPaymentPage(input: { collectionRef: string; funder: Funder; idempotencyKey: string }): Promise<{ intentRef: string; paymentUrl: string }> {
@@ -258,6 +291,7 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
       // `amount` includes the fee. Where the payer covered it, the fee item's amount is what is left (Q13 in the vendor notes).
       const gross = fromCents(item['amount']);
       const fee = item['feeCovered'] === true && item['fee'] !== undefined ? fromCents(item['fee']) : undefined;
+      if (fee && (fee.minor < 0n || fee.minor >= gross.minor)) throw new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'Crowded sent a fee that does not fit the payment');
       const amount = fee ? { ...gross, minor: gross.minor - fee.minor } : gross;
       yield { paymentRef: ref(chapterId!, id), intentRef: ref(chapterId!, collection, intent), collectionRef: ref(chapterId!, collection), amount, status, paidAt: date(item['updatedAt'] ?? item['createdAt']) };
     }
@@ -273,7 +307,8 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
     return this.call(async () => {
       await this.openAccount(chapterId!);
       const r = await this.c.post(`/chapters/${chapterId}/payments/quotes/ach`, { amount: toCents(input.amount), applyFee: true, sameDay: false, counterpartyId: this.o.collectionCounterpartyRef });
-      const fee = isRecord(r.data) && isRecord(r.data['fee']) ? r.data['fee']['amount'] : 0;
+      const fee = isRecord(r.data) && isRecord(r.data['fee']) ? r.data['fee']['amount'] : undefined;
+      if (fee === undefined) throw new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'Crowded quoted no fee');
       return { fee: fromCents(fee) };
     });
   }
@@ -282,21 +317,29 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
     requireUsd(input.amount);
     if (!isAddenda(input.addenda)) throw new InstitutionBankingError('VALIDATION_FAILED', 'addenda must be at most 80 printable ASCII characters');
     const [chapterId] = parseRef(input.entityRef, 1);
-    return this.call(async () => {
-      await this.openAccount(chapterId!);
-      return this.idem('ach', input.idempotencyKey, input, async () => {
+    return this.call(() =>
+      this.idem(
+        'ach',
+        input.idempotencyKey,
+        input,
+        async () => {
         if (input.amount.minor < MIN_CENTS) throw new InstitutionBankingError('VALIDATION_FAILED', 'An ACH is at least $1.00');
-        const r = await this.c.post(`/chapters/${chapterId}/payments`, {
+        const r = await this.moneyCall(() => this.c.post(`/chapters/${chapterId}/payments`, {
           type: 'achCounterparty',
           payments: [{ counterpartyId: input.counterpartyRef, amount: toCents(input.amount), description: 'KESHER', addenda: input.addenda, sameDay: false, applyFee: true, idempotencyKey: uuidFromKey(`ach:${input.idempotencyKey}`) }],
-        });
+        }));
         const p = firstItem(r.data);
+        // A bulk-style item says `status: success | failed` and puts the payment's own status in `paymentStatus`.
+        const status = p['paymentStatus'] ?? p['status'];
         // A business rejection can arrive as a 201 whose status says Rejected, and a bulk-style 200 can carry an item error.
-        if (String(p['status'] ?? p['paymentStatus']).toLowerCase() === 'rejected') throw new InstitutionBankingError('REJECTED', 'The provider rejected the payment');
-        if (p['error'] !== undefined || p['errorCode'] !== undefined || String(p['status']).toLowerCase() === 'failed') throw new InstitutionBankingError('VALIDATION_FAILED', typeof p['error'] === 'string' ? p['error'].slice(0, 200) : 'The provider refused the payment');
-        return { paymentRef: ref(chapterId!, str(p['id'] ?? p['paymentId'])), status: achStatus(p['status'] ?? p['paymentStatus']) };
-      });
-    });
+        if (String(status).toLowerCase() === 'rejected' || p['error'] !== undefined || p['errorCode'] !== undefined || String(p['status']).toLowerCase() === 'failed') {
+          throw new InstitutionBankingError('REJECTED', 'The provider rejected the payment');
+        }
+        return { paymentRef: ref(chapterId!, str(p['id'] ?? p['paymentId'])), status: achStatus(status) };
+        },
+        async () => void (await this.openAccount(chapterId!)),
+      ),
+    );
   }
 
   async achStatus(paymentRef: string): Promise<AchStatus> {
@@ -312,8 +355,14 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
     return this.call(async () => {
       const now = await this.achStatus(paymentRef);
       if (now === 'cancelled') return now;
-      const r = await this.c.post(`/chapters/${chapterId}/payments/${paymentId}/cancel`);
-      return achStatus(isRecord(r.data) ? r.data['status'] : undefined);
+      try {
+        const r = await this.c.post(`/chapters/${chapterId}/payments/${paymentId}/cancel`);
+        return achStatus(isRecord(r.data) ? r.data['status'] : undefined);
+      } catch (e) {
+        // Cancelled by someone else between our read and our call: that is the answer, not a refusal.
+        if (e instanceof CrowdedApiError && e.code === 'CANNOT_CANCEL' && (await this.achStatus(paymentRef)) === 'cancelled') return 'cancelled';
+        throw e;
+      }
     });
   }
 
@@ -331,11 +380,12 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
     return this.call(() =>
       this.idem('book', input.idempotencyKey, input, async () => {
         const uuid = uuidFromKey(`book:${input.idempotencyKey}`);
-        const r = await this.c.post(`/chapters/${from}/subaccounts/fund`, [{ id: to, amount: toCents(input.amount), description: input.memo, idempotencyKey: uuid }]);
-        const items = Array.isArray(r.data) ? r.data : [];
-        for (const it of items) {
-          if (isRecord(it) && (it['error'] !== undefined || ['failed', 'rejected'].includes(String(it['status']).toLowerCase()))) throw new InstitutionBankingError('VALIDATION_FAILED', 'The provider refused the transfer');
-        }
+        const r = await this.moneyCall(() => this.c.post(`/chapters/${from}/subaccounts/fund`, [{ id: to, amount: toCents(input.amount), description: input.memo, idempotencyKey: uuid }]));
+        // The response is undocumented. Money may have moved, so a shape we cannot read is an unknown outcome, not a success.
+        const item = Array.isArray(r.data) && r.data.length === 1 ? r.data[0] : undefined;
+        if (!isRecord(item)) throw new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'Crowded answered the funding call in a shape we do not know: read the account back before retrying');
+        // A failed item is a refusal (insufficient funds, a bad sub-account): VALIDATION_FAILED, as for a simulator transfer.
+        if (item['error'] !== undefined || ['failed', 'rejected'].includes(String(item['status']).toLowerCase())) throw new InstitutionBankingError('VALIDATION_FAILED', 'The provider refused the transfer');
         return { transferRef: ref(from!, 'fund', uuid) };
       }),
     );
@@ -391,6 +441,15 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
 }
 
 /** One payment out of a payments response: the object itself, or the first of `payments` / `results`. */
+/** Provider cents equal our Money, compared as bigint; anything that is not whole cents never matches. */
+function sameCents(v: unknown, m: Money): boolean {
+  try {
+    return fromCents(v).minor === m.minor;
+  } catch {
+    return false;
+  }
+}
+
 function firstItem(data: unknown): Record<string, unknown> {
   if (isRecord(data)) {
     for (const k of ['payments', 'results']) {

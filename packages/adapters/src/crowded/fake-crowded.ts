@@ -44,6 +44,11 @@ export class FakeCrowded {
   private readonly payments: Payment[] = [];
   private readonly ledger: { id: string; chapterId: string; accountId: string; direction: 'Credit' | 'Debit'; amount: bigint; title: string; at: Date }[] = [];
   private readonly keys = new Map<string, { body: string; response: Response }>();
+  private readonly funded = new Map<string, Json>();
+  /** A fee on collected payments, and whether the payer covered it (so the fee item is `amount - fee`). */
+  collectFee: { fee: bigint; covered: boolean } = { fee: 0n, covered: false };
+  /** Quotes carry no fee (a malformed quote). */
+  quoteWithoutFee = false;
 
   constructor(opts: FakeCrowdedOptions) {
     this.token = opts.token;
@@ -188,7 +193,7 @@ export class FakeCrowded {
       const min = q['filter[createdAt][min]'] ? new Date(q['filter[createdAt][min]']) : undefined;
       const rows = this.intents
         .filter((i) => i.paid && i.chapterId === q['filter[chapterId]'] && (!min || i.paid.at >= min))
-        .map((i) => ({ id: i.paid!.id, method: 'Card', status: 'Succeeded', amount: wire(i.amount), fee: wire(0n), feeCovered: false, createdAt: i.paid!.at.toISOString(), updatedAt: i.paid!.at.toISOString(), collectRequest: { id: i.collectionId }, intent: { id: i.id } }));
+        .map((i) => ({ id: i.paid!.id, method: 'Card', status: 'Succeeded', amount: wire(i.amount), fee: wire(this.collectFee.fee), feeCovered: this.collectFee.covered, createdAt: i.paid!.at.toISOString(), updatedAt: i.paid!.at.toISOString(), collectRequest: { id: i.collectionId }, intent: { id: i.id } }));
       return this.page(rows, q);
     }
     return err(404, 'No such route');
@@ -219,6 +224,8 @@ export class FakeCrowded {
     if (method === 'POST' && rest === 'subaccounts/fund') {
       const items = Array.isArray(data) ? (data as Json[]) : [];
       const results = items.map((it) => {
+        const seen = this.funded.get(String(it['idempotencyKey']));
+        if (seen) return seen;
         const sub = this.chapters.find((c) => c.id === it['id'] && c.parent === ch.id);
         const from = this.accounts.find((a) => a.chapterId === ch.id);
         const moved = cents(it['amount']);
@@ -226,7 +233,9 @@ export class FakeCrowded {
         if (from.balance < moved) return { id: it['id'], status: 'failed', error: 'Insufficient funds' };
         this.debit(from, moved, `Fund ${sub.id}`);
         this.credit(this.accountOf(sub.id), moved, `Funded by ${ch.id}`);
-        return { id: sub.id, status: 'success' };
+        const done = { id: sub.id, status: 'success' };
+        this.funded.set(String(it['idempotencyKey']), done);
+        return done;
       });
       return ok(results);
     }
@@ -255,7 +264,7 @@ export class FakeCrowded {
       })();
       return ok({ id: i.id, requestedAmount: wire(i.amount), status: i.paid ? 'Paid' : 'Pending', paymentUrl: `https://pay.fake.invalid/${i.id}` }, created ? 201 : 200);
     }
-    if (method === 'POST' && rest === 'payments/quotes/ach') return ok({ type: 'ach', amount: d['amount'], fee: { feeType: 'flat', amount: wire(25n) }, totalDebit: wire(cents(d['amount']) + 25n), quotedAt: this.now().toISOString() });
+    if (method === 'POST' && rest === 'payments/quotes/ach') return ok({ type: 'ach', amount: d['amount'], ...(this.quoteWithoutFee ? {} : { fee: { feeType: 'flat', amount: wire(25n) } }), totalDebit: wire(cents(d['amount']) + 25n), quotedAt: this.now().toISOString() });
     if (method === 'POST' && rest === 'payments') return this.originate(ch, d);
     if ((m = rest.match(/^payments\/([^/]+)(\/cancel)?$/))) {
       const p = this.payments.find((x) => x.chapterId === ch.id && x.id === m![1]);

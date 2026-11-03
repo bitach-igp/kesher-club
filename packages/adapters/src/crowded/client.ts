@@ -16,6 +16,18 @@ export interface CrowdedClientOptions {
   onAuthFailure?: (status: number) => void;
 }
 
+/**
+ * Crowded's error text is untrusted and can echo what we sent (an account or routing number, an email, a mobile). It ends
+ * up in messages that callers log, so long digit runs, emails and phone numbers are masked and the text is cut.
+ */
+export function redact(text: string): string {
+  return text
+    .replace(/[^\s@]+@[^\s@]+\.[^\s@]+/g, '•••@•••')
+    .replace(/\+?\d[\d\s().-]{6,}\d/g, '•••')
+    .replace(/\d{5,}/g, '•••')
+    .slice(0, 200);
+}
+
 export class CrowdedApiError extends Error {
   readonly status: number;
   readonly type: string | undefined;
@@ -24,7 +36,7 @@ export class CrowdedApiError extends Error {
   constructor(status: number, body: unknown) {
     const b = isRecord(body) ? body : {};
     // The provider's message is kept as data (truncated); it is never trusted or interpreted.
-    super(typeof b['message'] === 'string' ? b['message'].slice(0, 200) : `Crowded answered ${status}`);
+    super(typeof b['message'] === 'string' ? redact(b['message']) : `Crowded answered ${status}`);
     this.name = 'CrowdedApiError';
     this.status = status;
     this.type = typeof b['type'] === 'string' ? b['type'] : undefined;
