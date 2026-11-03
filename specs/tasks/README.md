@@ -164,6 +164,15 @@
 | [T-0644](T-0644.md) | INS | I11 team and roles in the console | REQ-INS-020 | 15 |
 | [T-0645](T-0645.md) | INS | The master account statement: a month that reconciles, and its export | REQ-INS-021 | 15 |
 | [T-0646](T-0646.md) | INS | I10 master account and I12 reports in the console | REQ-INS-021, REQ-INS-006 | 15 |
+| [T-0647](T-0647.md) | INS | InstitutionBankingPort: interface, simulator, contract suite, catalogue entry | REQ-INS-022..026 | later |
+| [T-0648](T-0648.md) | INS | Crowded adapter for InstitutionBankingPort | REQ-INS-022, REQ-INS-024 | later |
+| [T-0649](T-0649.md) | INS | Crowded webhook receiver: raw-body signature, batch split, dedupe, re-read | REQ-INS-025 | later |
+| [T-0650](T-0650.md) | INS | Link a US banking account: entity, hosted application, status, KYB gate | REQ-INS-022 | later |
+| [T-0651](T-0651.md) | INS | US banking screen in the console | REQ-INS-022, REQ-INS-024 | later |
+| [T-0652](T-0652.md) | INS | Fees to US funders through the provider's payment page | REQ-INS-023 | later |
+| [T-0653](T-0653.md) | INS | Fund the master account by ACH from the linked US account | REQ-INS-024 | later |
+| [T-0654](T-0654.md) | INS | Nightly reconciliation of linked US accounts | REQ-INS-026 | later |
+| [T-0655](T-0655.md) | INS | Crowded go-live kit: vendor questions, runbook, webhook registration | REQ-INS-025, REQ-INS-026 | later |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |

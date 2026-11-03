@@ -69,6 +69,11 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-INS-019 | P2 | Staff list the roster by status and cohort: name, status, card, balances, plan; never merchant-level spend |
 | REQ-INS-020 | P2 | Institution admins invite staff and change roles; finance and admin roles need a second approver; removal ends access at once |
 | REQ-INS-021 | P2 | A month's master account statement reconciles opening to closing, and its export equals it |
+| REQ-INS-022 | P3 | An institution's US nonprofit entity links a US banking account through the provider's hosted application; money features open only when the provider approves and our KYB approves |
+| REQ-INS-023 | P3 | Fees billed to US funders of a linked institution are paid on the provider's payment page into the institution's own US account; each payment marks the fee paid exactly once |
+| REQ-INS-024 | P3 | A linked institution funds its master account from its US account by ACH carrying its KC- payment reference, after a quote and a second finance approver; the deposit posts only when the credit arrives |
+| REQ-INS-025 | P3 | Provider webhooks are accepted only with a valid HMAC-SHA256 signature over the raw body, deduplicated by event id, and payment state is re-read from the provider before it changes anything |
+| REQ-INS-026 | P3 | Nightly reconciliation of a linked US account's transactions and collected payments against Kesher's records opens a case for any break by 06:00 IL |
 | REQ-FX-001 | P2 | Quotes lock 30 s with rate, markup, total |
 | REQ-FX-002 | P2 | Markup from plan config stored on the journal |
 | REQ-FX-003 | P2 | Conversions use the club-published, versioned rate; the version is on the quote and the journal |
