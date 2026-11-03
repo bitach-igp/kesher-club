@@ -167,12 +167,13 @@
 | [T-0647](T-0647.md) | INS | InstitutionBankingPort: interface, simulator, contract suite, catalogue entry | REQ-INS-022..026 | later |
 | [T-0648](T-0648.md) | INS | Crowded adapter for InstitutionBankingPort | REQ-INS-022, REQ-INS-024 | later |
 | [T-0649](T-0649.md) | INS | Crowded webhook receiver: raw-body signature, batch split, dedupe, re-read | REQ-INS-025 | later |
-| [T-0650](T-0650.md) | INS | Link a US banking account: entity, hosted application, status, KYB gate | REQ-INS-022 | later |
+| [T-0650](T-0650.md) | INS | US banking for an institution: platform sub-account or own entity, hosted application, status, KYB gate | REQ-INS-022 | later |
 | [T-0651](T-0651.md) | INS | US banking screen in the console | REQ-INS-022, REQ-INS-024 | later |
 | [T-0652](T-0652.md) | INS | Fees to US funders through the provider's payment page | REQ-INS-023 | later |
 | [T-0653](T-0653.md) | INS | Fund the master account by ACH from the linked US account | REQ-INS-024 | later |
 | [T-0654](T-0654.md) | INS | Nightly reconciliation of linked US accounts | REQ-INS-026 | later |
 | [T-0655](T-0655.md) | INS | Crowded go-live kit: vendor questions, runbook, webhook registration | REQ-INS-025, REQ-INS-026 | later |
+| [T-0656](T-0656.md) | INS | Evaluate Crowded ILS transfers as a USD→ILS route (spike) | REQ-FX-001, REQ-FX-003, REQ-PO-001 | later |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
