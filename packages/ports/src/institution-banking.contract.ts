@@ -60,10 +60,10 @@ export function institutionBankingContract<P extends InstitutionBankingPort>(nam
       await expect(port.createCollection({ entityRef, title: 'Trip', amount: money(10_000n, 'USD'), idempotencyKey: 'key-col-00001' })).rejects.toMatchObject({ code: 'NOT_APPROVED' });
       await opts.approve(port, entityRef);
       expect(await port.applicationStatus(entityRef)).toBe('approved');
-      await opts.fund(port, entityRef, 9_007_199_254_740_993n);
+      await opts.fund(port, entityRef, 123_456n);
       const acct = await port.account(entityRef);
       expect(acct.last4).toMatch(/^\d{4}$/);
-      expect(acct.balance).toEqual(money(9_007_199_254_740_993n, 'USD'));
+      expect(acct.balance).toEqual(money(123_456n, 'USD'));
       expect(typeof acct.balance.minor).toBe('bigint');
     });
 
@@ -85,18 +85,24 @@ export function institutionBankingContract<P extends InstitutionBankingPort>(nam
       const port = make();
       const entityRef = await approved(port);
       const { collectionRef } = await port.createCollection({ entityRef, title: 'Trip', amount: money(45_000n, 'USD'), idempotencyKey: 'key-col-00001' });
-      const funder = { name: 'Dana Levi', email: 'dana@example.com', mobile: '+12125550123' };
-      const page = await port.createPaymentPage({ collectionRef, funder, idempotencyKey: 'key-page-0001' });
+      const funder = (n: number) => ({ name: `Funder ${n}`, email: `f${n}@example.com`, mobile: '+12125550123' });
+      const page = await port.createPaymentPage({ collectionRef, funder: funder(0), idempotencyKey: 'key-page-0000' });
       expect(page.paymentUrl).toMatch(/^https:\/\//);
-      expect(await port.createPaymentPage({ collectionRef, funder, idempotencyKey: 'key-page-0001' })).toEqual(page);
-      await opts.pay(port, page.intentRef);
+      expect(await port.createPaymentPage({ collectionRef, funder: funder(0), idempotencyKey: 'key-page-0000' })).toEqual(page);
+      const intents = [page.intentRef];
+      for (let n = 1; n < 5; n++) intents.push((await port.createPaymentPage({ collectionRef, funder: funder(n), idempotencyKey: `key-page-000${n}` })).intentRef);
+      for (const intentRef of intents) {
+        const hook = await opts.pay(port, intentRef);
+        const parsed = await port.parseWebhook(hook.headers, hook.rawBody);
+        expect('events' in parsed && parsed.events.length).toBeGreaterThan(0);
+      }
       const seen: string[] = [];
       for await (const p of port.collectPayments({ entityRef, since: SINCE })) {
         expect(typeof p.amount.minor).toBe('bigint');
         seen.push(p.paymentRef);
       }
-      expect(seen).toHaveLength(1);
-      expect(new Set(seen).size).toBe(1);
+      expect(seen).toHaveLength(5);
+      expect(new Set(seen).size).toBe(5);
     });
 
     it('sends one ACH per key, cancels only before it is sent, and reports its status', async () => {
@@ -138,7 +144,9 @@ export function institutionBankingContract<P extends InstitutionBankingPort>(nam
       const n = opts.signed(port);
       const ok = await port.parseWebhook(n.headers, n.rawBody);
       expect(ok).toHaveProperty('events');
-      if ('events' in ok) for (const e of ok.events) expect(e).toMatchObject({ eventId: expect.any(String), type: expect.any(String), occurredAt: expect.any(String) });
+      if (!('events' in ok)) throw new Error('a signed batch was rejected');
+      expect(ok.events.length).toBeGreaterThan(0);
+      for (const e of ok.events) expect(e).toMatchObject({ eventId: expect.any(String), type: expect.any(String), occurredAt: expect.any(String) });
       const f = opts.forge(n);
       expect(await port.parseWebhook(f.headers, f.rawBody)).toEqual({ rejected: 'BAD_SIGNATURE' });
       expect(await port.parseWebhook(n.headers, 'not json')).toEqual({ rejected: 'MALFORMED' });

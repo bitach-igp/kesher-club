@@ -28,6 +28,17 @@ const opened = async (sim: InstitutionBankingSimulator, legalName = 'ent_ok Frie
 };
 
 describe('InstitutionBankingSimulator fixtures', () => {
+  it('keeps a balance past 2^53 exact in bigint, and a page is paid once', async () => {
+    const sim = new InstitutionBankingSimulator();
+    const entityRef = await opened(sim);
+    sim.post(entityRef, 'credit', money(9_007_199_254_740_993n, 'USD'), 'Wire in');
+    expect((await sim.account(entityRef)).balance).toEqual(money(9_007_199_254_740_993n, 'USD'));
+    const { collectionRef } = await sim.createCollection({ entityRef, title: 'Trip', amount: money(45_000n, 'USD'), idempotencyKey: 'key-col-00001' });
+    const { intentRef } = await sim.createPaymentPage({ collectionRef, funder: { name: 'A', email: 'a@example.com', mobile: '+12125550123' }, idempotencyKey: 'key-page-0001' });
+    expect(sim.pay(intentRef).payment).toEqual(sim.pay(intentRef).payment);
+    expect((await sim.account(entityRef)).balance).toEqual(money(9_007_199_254_785_993n, 'USD'));
+  });
+
   it('ent_rejected and ent_needs_info decide that way; the default is approved', async () => {
     const sim = new InstitutionBankingSimulator();
     for (const [name, status] of [['ent_rejected Friends', 'rejected'], ['ent_needs_info Friends', 'needs_info'], ['Friends', 'approved']] as const) {
@@ -60,6 +71,7 @@ describe('InstitutionBankingSimulator fixtures', () => {
     expect((await sim.account(entityRef)).balance).toEqual(money(200_000n, 'USD'));
     await expect(send('ach_rejected_201_kesher', 'key-ach-00002')).rejects.toMatchObject({ code: 'REJECTED' });
     await expect(send('ach_ok_kesher', 'key-ach-00003', 200_001n)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(sim.sendAch({ entityRef, counterpartyRef: 'ach_rejected_201_kesher', amount: money(1n, 'USD'), addenda: 'KC-7M4QX2HD', idempotencyKey: 'key-ach-00001' })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
   });
 
   it('wh_dup repeats an event id in one batch and wh_bad_sig is rejected', async () => {

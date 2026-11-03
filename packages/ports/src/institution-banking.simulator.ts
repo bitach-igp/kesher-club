@@ -52,6 +52,7 @@ interface Intent {
   entityRef: string;
   amount: Money;
   fixture: 'pay_ok' | 'pay_declined' | 'pay_refunded';
+  payment?: CollectedPayment;
 }
 
 export class InstitutionBankingSimulator implements InstitutionBankingPort {
@@ -154,8 +155,11 @@ export class InstitutionBankingSimulator implements InstitutionBankingPort {
   /** Control hook: the funder pays the page; the payment settles as the funder's fixture says. Answers the signed webhook batch. */
   pay(intentRef: string): { payment: CollectedPayment; headers: Record<string, string>; rawBody: string } {
     const i = this.intents.get(intentRef) ?? fail('NOT_FOUND', `Unknown payment page ${intentRef}`);
+    // A page is paid once: paying it again answers the first payment (and its webhook), never a second credit.
+    if (i.payment) return { payment: i.payment, ...this.webhook([{ type: 'collect.payment.' + i.payment.status, objectRef: i.payment.paymentRef }]) };
     const status: CollectedPaymentStatus = i.fixture === 'pay_declined' ? 'declined' : i.fixture === 'pay_refunded' ? 'refunded' : 'paid';
     const payment: CollectedPayment = { paymentRef: this.ids.pay.next(), intentRef, collectionRef: i.collectionRef, amount: i.amount, status, paidAt: this.clock.now() };
+    i.payment = payment;
     this.payments.push({ ...payment, entityRef: i.entityRef });
     if (status === 'paid') this.post(i.entityRef, 'credit', i.amount, `Payment ${payment.paymentRef}`);
     return { payment, ...this.webhook([{ type: 'collect.payment.' + status, objectRef: payment.paymentRef }]) };
@@ -180,8 +184,8 @@ export class InstitutionBankingSimulator implements InstitutionBankingPort {
     requireUsd(input.amount);
     if (!isAddenda(input.addenda)) fail('VALIDATION_FAILED', 'addenda must be at most 80 printable ASCII characters');
     const e = this.approved(input.entityRef);
-    if (input.counterpartyRef.startsWith('ach_rejected_201')) fail('REJECTED', 'The provider rejected the payment (201 with status Rejected)');
     return this.once('ach', input.idempotencyKey, input, () => {
+      if (input.counterpartyRef.startsWith('ach_rejected_201')) fail('REJECTED', 'The provider rejected the payment (201 with status Rejected)');
       if (e.balance < input.amount.minor) fail('VALIDATION_FAILED', 'Insufficient funds in the account');
       const ach: Ach = { paymentRef: this.ids.ach.next(), entityRef: e.entityRef, amount: input.amount, status: 'pending', fixture: input.counterpartyRef.startsWith('ach_returned') ? 'ach_returned' : 'ach_ok' };
       this.aches.set(ach.paymentRef, ach);
