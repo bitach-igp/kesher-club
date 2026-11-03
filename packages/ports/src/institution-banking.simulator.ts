@@ -120,7 +120,7 @@ export class InstitutionBankingSimulator implements InstitutionBankingPort {
 
   async createSubAccount(input: { entityRef: string; institutionId: string; idempotencyKey: string }): Promise<{ subAccountRef: string; hasOwnAccountNumber: boolean }> {
     const e = this.entity(input.entityRef);
-    if (e.holder !== 'platform') fail('VALIDATION_FAILED', 'Only a platform entity has sub-accounts');
+    if (e.holder !== 'platform' || e.parent) fail('VALIDATION_FAILED', 'Only a platform entity has sub-accounts');
     if (e.status !== 'approved') fail('NOT_APPROVED', 'The application is not approved');
     return this.once('sub', input.idempotencyKey, input, () => {
       const pooled = e.platformMode === 'pooled';

@@ -43,6 +43,40 @@ describe('InstitutionBankingSimulator fixtures', () => {
     expect((await sim.account(entityRef)).balance).toEqual(money(9_007_199_254_785_993n, 'USD'));
   });
 
+  it('the platform fixtures decide whether an institution gets its own account number; a unit has no units', async () => {
+    const sim = new InstitutionBankingSimulator();
+    const platform = async (legalName: string, key: string) => {
+      const { entityRef } = await sim.createEntity({ ...NEW(key, legalName), holder: 'platform' });
+      sim.decide(entityRef);
+      return entityRef;
+    };
+    const inst = '0190a0a0-0000-7000-8000-000000000101';
+    const own = await platform('holder_platform_subaccounts IGP', 'key-plat-0001');
+    const pooled = await platform('holder_platform_pooled IGP', 'key-plat-0002');
+    const a = await sim.createSubAccount({ entityRef: own, institutionId: inst, idempotencyKey: 'key-sub-00001' });
+    const b = await sim.createSubAccount({ entityRef: pooled, institutionId: inst, idempotencyKey: 'key-sub-00002' });
+    expect([a.hasOwnAccountNumber, b.hasOwnAccountNumber]).toEqual([true, false]);
+    await expect(sim.createSubAccount({ entityRef: a.subAccountRef, institutionId: inst, idempotencyKey: 'key-sub-00003' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(sim.createSubAccount({ entityRef: b.subAccountRef, institutionId: inst, idempotencyKey: 'key-sub-00004' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+  });
+
+  it('a book transfer stays inside one platform: another platform, or an institution\'s own entity, is refused and nothing moves', async () => {
+    const sim = new InstitutionBankingSimulator();
+    const open = async (holder: 'platform' | 'institution', key: string) => {
+      const { entityRef } = await sim.createEntity({ ...NEW(key, 'ent_ok Friends'), holder });
+      sim.decide(entityRef);
+      sim.post(entityRef, 'credit', money(100_000n, 'USD'), 'Wire in');
+      return entityRef;
+    };
+    const p1 = await open('platform', 'key-plat-0001');
+    const p2 = await open('platform', 'key-plat-0002');
+    const own = await open('institution', 'key-inst-0001');
+    const book = (fromRef: string, toRef: string, key: string) => sim.bookTransfer({ fromRef, toRef, amount: money(1_000n, 'USD'), memo: 'KC-7M4QX2HD', idempotencyKey: key });
+    await expect(book(p1, p2, 'key-book-0001')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(book(p1, own, 'key-book-0002')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    for (const ref of [p1, p2, own]) expect((await sim.account(ref)).balance).toEqual(money(100_000n, 'USD'));
+  });
+
   it('ent_rejected and ent_needs_info decide that way; the default is approved', async () => {
     const sim = new InstitutionBankingSimulator();
     for (const [name, status] of [['ent_rejected Friends', 'rejected'], ['ent_needs_info Friends', 'needs_info'], ['Friends', 'approved']] as const) {
