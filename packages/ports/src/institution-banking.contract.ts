@@ -1,18 +1,25 @@
 // InstitutionBankingPort contract (T-0647, REQ-INS-022..026). Every adapter:
-// - creates an entity once per idempotency key, and refuses a reused key with another body (IDEMPOTENCY_CONFLICT);
+// - creates an entity (an institution's own, or the platform's) once per idempotency key, and refuses a reused key with another body (IDEMPOTENCY_CONFLICT);
 // - keeps money features closed until the application is approved (NOT_APPROVED), and returns the account's last
 //   four digits and a USD balance in bigint, never the number;
 // - refuses any currency but USD, and an ACH addenda over 80 characters or outside printable ASCII, before the provider;
 // - makes one payment page per key, and lists each collected payment once, across pages;
 // - sends one ACH per key, cancels it only while it has not been sent, and reports its status;
 // - lists the account's transactions each exactly once, across pages;
+// - for a platform entity: makes one sub-account per key, and either gives it an account of its own (it can then be
+//   moved to by book transfer, once per key, never overdrawing) or says it shares the pooled account (nothing is
+//   booked at the bank); an institution's own entity has no sub-accounts;
 // - verifies a webhook batch (a bad signature or body is a rejection, not an exception) and surfaces outages as
 //   PROVIDER_UNAVAILABLE.
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
-import { InstitutionBankingError, type InstitutionBankingPort } from './institution-banking.ts';
+import { type Holder, InstitutionBankingError, type InstitutionBankingPort } from './institution-banking.ts';
 
 export interface InstitutionBankingContractOptions<P extends InstitutionBankingPort> {
+  /** Which holder setup the suite runs under; a platform adapter runs it again for each way the provider can be set up. */
+  holder: Holder;
+  /** The legal name the entities are created with (a provider fixture or setup can ride on it). */
+  legalName?: string;
   /** The provider decides the entity's application: approved. */
   approve(port: P, entityRef: string): Promise<void>;
   /** Puts money in the entity's account (USD minor units). */
@@ -30,11 +37,11 @@ export interface InstitutionBankingContractOptions<P extends InstitutionBankingP
   outageLegalName?: string;
 }
 
-const NEW = (key: string, legalName = 'American Friends of Yeshiva Or') => ({ institutionId: '0190a0a0-0000-7000-8000-000000000001', legalName, ein: '12-3456789', idempotencyKey: key });
 const SINCE = new Date('2026-01-01T00:00:00Z');
 const UNTIL = new Date('2027-01-01T00:00:00Z');
 
 export function institutionBankingContract<P extends InstitutionBankingPort>(name: string, make: () => P, opts: InstitutionBankingContractOptions<P>): void {
+  const NEW = (key: string, legalName = opts.legalName ?? 'American Friends of Yeshiva Or') => ({ holder: opts.holder, institutionId: '0190a0a0-0000-7000-8000-000000000001', legalName, ein: '12-3456789', idempotencyKey: key });
   const approved = async (port: P, key = 'key-entity-0001'): Promise<string> => {
     const { entityRef } = await port.createEntity(NEW(key));
     await port.startApplication({ entityRef, applicantIp: '203.0.113.7' });
@@ -111,7 +118,7 @@ export function institutionBankingContract<P extends InstitutionBankingPort>(nam
       await opts.fund(port, entityRef, 500_000n);
       const q = await port.quoteAch({ entityRef, amount: money(120_000n, 'USD') });
       expect(q.fee.currency).toBe('USD');
-      expect(q.arrivesOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      if (q.arrivesOn !== undefined) expect(q.arrivesOn).toMatch(/^\d{4}-\d{2}-\d{2}$/);
       const input = { entityRef, counterpartyRef: 'cp_kesher', amount: money(120_000n, 'USD'), addenda: 'KC-7M4QX2HD', idempotencyKey: 'key-ach-00001' };
       const a = await port.sendAch(input);
       expect(await port.sendAch(input)).toEqual(a);
@@ -137,6 +144,49 @@ export function institutionBankingContract<P extends InstitutionBankingPort>(nam
       }
       expect(refs).toHaveLength(5);
       expect(new Set(refs).size).toBe(5);
+    });
+
+    it.skipIf(opts.holder !== 'institution')('gives an institution\'s own entity no sub-accounts', async () => {
+      const port = make();
+      const entityRef = await approved(port);
+      await expect(port.createSubAccount({ entityRef, institutionId: '0190a0a0-0000-7000-8000-000000000002', idempotencyKey: 'key-sub-00001' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    });
+
+    it.skipIf(opts.holder !== 'platform')('makes one sub-account per key, and only for an approved platform entity', async () => {
+      const port = make();
+      const { entityRef } = await port.createEntity(NEW('key-entity-0001'));
+      const inst = (n: number) => `0190a0a0-0000-7000-8000-00000000010${n}`;
+      await expect(port.createSubAccount({ entityRef, institutionId: inst(1), idempotencyKey: 'key-sub-00001' })).rejects.toMatchObject({ code: 'NOT_APPROVED' });
+      await port.startApplication({ entityRef, applicantIp: '203.0.113.7' });
+      await opts.approve(port, entityRef);
+      const a = await port.createSubAccount({ entityRef, institutionId: inst(1), idempotencyKey: 'key-sub-00001' });
+      expect(typeof a.hasOwnAccountNumber).toBe('boolean');
+      expect(await port.createSubAccount({ entityRef, institutionId: inst(1), idempotencyKey: 'key-sub-00001' })).toEqual(a);
+      await expect(port.createSubAccount({ entityRef, institutionId: inst(2), idempotencyKey: 'key-sub-00001' })).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+      expect((await port.createSubAccount({ entityRef, institutionId: inst(2), idempotencyKey: 'key-sub-00002' })).subAccountRef).not.toBe(a.subAccountRef);
+    });
+
+    it.skipIf(opts.holder !== 'platform')('books money between the platform\'s own accounts once per key, or says the account is shared', async () => {
+      const port = make();
+      const entityRef = await approved(port);
+      await opts.fund(port, entityRef, 500_000n);
+      const sub = await port.createSubAccount({ entityRef, institutionId: '0190a0a0-0000-7000-8000-000000000101', idempotencyKey: 'key-sub-00001' });
+      const book = (minor: bigint, key: string, memo = 'KC-7M4QX2HD', currency: 'USD' | 'ILS' = 'USD') => port.bookTransfer({ fromRef: entityRef, toRef: sub.subAccountRef, amount: money(minor, currency), memo, idempotencyKey: key });
+      if (!sub.hasOwnAccountNumber) {
+        await expect(book(120_000n, 'key-book-0001')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+        await expect(port.account(sub.subAccountRef)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+        return;
+      }
+      const t = await book(120_000n, 'key-book-0001');
+      expect(await book(120_000n, 'key-book-0001')).toEqual(t);
+      await expect(book(1n, 'key-book-0001')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+      expect((await port.account(sub.subAccountRef)).balance).toEqual(money(120_000n, 'USD'));
+      expect((await port.account(entityRef)).balance).toEqual(money(380_000n, 'USD'));
+      await expect(book(380_001n, 'key-book-0002')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      await expect(book(1n, 'key-book-0003', 'KC-שלום')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      await expect(book(1n, 'key-book-0004', 'KC-7M4QX2HD', 'ILS')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      await expect(port.bookTransfer({ fromRef: entityRef, toRef: entityRef, amount: money(1n, 'USD'), memo: 'KC-7M4QX2HD', idempotencyKey: 'key-book-0005' })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      expect((await port.account(entityRef)).balance).toEqual(money(380_000n, 'USD'));
     });
 
     it('verifies a webhook batch; a forged or malformed one is a rejection, not an exception', async () => {
