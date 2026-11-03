@@ -80,6 +80,9 @@ export interface JobDeps {
   catalogue: CatalogueConfig;
 }
 
+/** US funding (T-0653): approved requests not yet sent are sent, and sent ones the bank has not finished are asked about. */
+const US_FUNDING_SWEEP_CYCLE_MS = 5 * 60_000;
+
 export function buildJobs({ app, db, registry, market, clock, runs, catalogue }: JobDeps): Job[] {
   const s = app.services;
   const tokenEvents = new TokenEventsJob(s.inbound, cardIssuingProcessor({ provisioning: s.provisioning, settlement: s.settlement }), clock);
@@ -123,6 +126,7 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue }:
     { name: 'webhook-replay', scope: 'market', everyMs: WEBHOOK_REPLAY_CYCLE_MS, run: () => s.webhooks.replay({ now: clock() }) },
     { name: 'fx-refresh-rates', scope: 'club', everyMs: REFRESH_CYCLE_MS, run: () => rates.run() },
     { name: 'ach-release-holds', scope: 'market', everyMs: ACH_RELEASE_CYCLE_MS, run: () => achHolds.run() },
+    { name: 'us-funding-sweep', scope: 'market', everyMs: US_FUNDING_SWEEP_CYCLE_MS, run: () => s.usFunding.sweep(market, clock()) },
     { name: 'p2p-expire-requests', scope: 'club', everyMs: EXPIRE_CYCLE_MS, run: () => requests.run() },
     { name: 'auto-reload', scope: 'market', everyMs: AUTO_RELOAD_CYCLE_MS, run: () => autoReload.run() },
     { name: 'agent-expire-intents', scope: 'club', everyMs: EXPIRE_INTENTS_CYCLE_MS, run: () => intents.run() },

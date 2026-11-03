@@ -210,6 +210,15 @@ export class InstitutionUsBanking {
     if (institutionId) await this.record(institutionId, 'institution', status, status, now);
   }
 
+  /** The institution's US account as other cards (US funding, fees) need it: who holds it, its status, the provider's id for it, and its market. */
+  async account(institutionId: string, client: SqlClient = this.d.db): Promise<{ holder: UsBankingHolder; status: ApplicationStatus; sharesPlatformAccount: boolean; ref?: string; provider?: string; market: 'IL' | 'US' } | undefined> {
+    const cur = await this.latest(institutionId, client);
+    if (!cur) return undefined;
+    const ref = await this.refOf(institutionId, client);
+    const inst = (await client.query<{ market: 'IL' | 'US' }>('select market from org.institution where id = $1', [institutionId])).rows[0];
+    return inst ? { ...cur, market: inst.market, ...(ref ? { ref: ref.externalId, provider: ref.provider } : {}) } : undefined;
+  }
+
   /** Appends the provider's status if it differs from the latest, under the institution's lock. Answers the status now current. */
   private async record(institutionId: string, holder: UsBankingHolder, status: ApplicationStatus, providerStatus: string, now: Date): Promise<ApplicationStatus | undefined> {
     return this.d.db.transaction(async (tx) => {

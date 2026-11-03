@@ -50,6 +50,7 @@ import { StudentDetail, studentHandlers } from './institutions/student.ts';
 import { statementHandlers } from './institutions/statement.ts';
 import { InstitutionTeam, teamHandlers } from './institutions/team.ts';
 import { InstitutionUsBanking, usBankingHandlers } from './institutions/us-banking.ts';
+import { InstitutionUsFunding, usFundingHandlers } from './institutions/us-funding.ts';
 import { BANK_PROVIDER, bankCreditVerifier, depositHandlers, InstitutionDeposits, paymentReference } from './institutions/deposits.ts';
 import { StaffTokenVerifier, staffBearerMiddleware } from './admin/staff-token.ts';
 import type { JWK } from 'jose';
@@ -123,6 +124,10 @@ export interface AppOptions {
   crowdedHandlers?: CrowdedHandlers;
   /** The platform company's provider entity for institutions that bank under it (T-0650), set up and approved by ops. */
   usBankingPlatformEntityRef?: string;
+  /** The provider's saved counterparty for Kesher's US collection account, for an institution's ACH funding (T-0653); set up by ops. */
+  usCollectionCounterpartyRef?: string;
+  /** The provider's id of Kesher's US collection account, for a book transfer from a platform sub-account (T-0653). */
+  usCollectionAccountRef?: string;
   /**
    * The process's PII cipher (T-0024): main.ts and the demo pass theirs, so what one process seals another opens.
    * Defaults to one with throwaway keys, which suits a test: nothing it seals outlives the process.
@@ -182,7 +187,17 @@ function buildServices(o: AppOptions) {
   const usBanking = new InstitutionUsBanking({ db: o.db, flags, audit, kyb: kybGate, registry: o.registry, platformEntityRef: () => o.usBankingPlatformEntityRef });
   // Crowded sends batches signed over the raw bytes: its own route stores them; the router only replays the unprocessed ones.
   // An application event is re-read through the port and its current status reaches the US-banking link (T-0650).
-  const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), handlers: { ...o.crowdedHandlers, application: async (ref, status) => { await usBanking.onProviderApplication(ref, status, clock.now()); await o.crowdedHandlers?.application?.(ref, status); } } });
+  const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), handlers: {
+      ...o.crowdedHandlers,
+      application: async (ref, status) => {
+        await usBanking.onProviderApplication(ref, status, clock.now());
+        await o.crowdedHandlers?.application?.(ref, status);
+      },
+      ach: async (ref, status) => {
+        await usFunding.onProviderAch(ref, status, clock.now());
+        await o.crowdedHandlers?.ach?.(ref, status);
+      },
+    } });
   webhooks.bind(CROWDED_PROVIDER, { verifier: refuseAllVerifier, process: (e) => crowdedWebhook.process(e) });
   const institutionCredit = new InstitutionCredit(o.db, approvals, audit, kybGate);
   const payoutAccounts = new PayoutAccounts(o.db, audit);
@@ -240,10 +255,11 @@ function buildServices(o: AppOptions) {
   const households = new HouseholdService({ db: o.db, accounts, displayNames, invites: funderInvites, flags, transactions, cards });
   const deposits = new InstitutionDeposits({ db: o.db, ledger, accounts, transfers, approvals, audit, flags, kyb: kybGate });
   if (o.registry.bindingFor('bank', o.market)) webhooks.bind(BANK_PROVIDER, { verifier: bankCreditVerifier(o.registry.resolve<BankPort>('bank', o.market)), process: (e) => deposits.applyBankEvent(e, clock.now()).then(() => undefined) });
+  const usFunding = new InstitutionUsFunding({ db: o.db, flags, audit, kyb: kybGate, registry: o.registry, deposits, usBanking, collectionCounterpartyRef: () => o.usCollectionCounterpartyRef, collectionAccountRef: () => o.usCollectionAccountRef });
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
+  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
 export function createApp(o: AppOptions): App {
@@ -337,6 +353,7 @@ export function createApp(o: AppOptions): App {
     ...statementHandlers(o.db, s.accounts, staffOf),
     ...teamHandlers(s.team, s.stepUp, staffOf),
     ...usBankingHandlers(s.usBanking, s.stepUp, staffOf),
+    ...usFundingHandlers(s.usFunding, s.stepUp, staffOf),
     ...depositHandlers(s.deposits),
     ...caseHandlers(new OpsCases(o.db, s.audit)),
     ...preferenceHandlers(s.preferences),
