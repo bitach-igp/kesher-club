@@ -15,6 +15,7 @@ import {
   FxSimulator,
   IlPayInitSimulator,
   InsuranceSimulator,
+  InstitutionBankingSimulator,
   KybSimulator,
   KycSimulator,
   NotifySimulator,
@@ -54,6 +55,7 @@ export interface Simulators {
   billing: BillingSimulator;
   funding: FundingSimulator;
   bank: BankSimulator;
+  'institution-banking': InstitutionBankingSimulator;
   'card-issuing': CardIssuingSimulator;
   'wallet-provisioning': WalletProvisioningSimulator;
   fx: FxSimulator;
@@ -86,6 +88,7 @@ export class SimulatorHost {
       billing: new BillingSimulator(c),
       funding: new FundingSimulator(c),
       bank: new BankSimulator(c),
+      'institution-banking': new InstitutionBankingSimulator(c),
       'card-issuing': new CardIssuingSimulator(c),
       'wallet-provisioning': new WalletProvisioningSimulator(c),
       fx: new FxSimulator(c),
@@ -131,6 +134,12 @@ export class SimulatorHost {
           args: ['rail', 'minor', 'currency', 'remitterReference'],
           run: (rail, minor, currency, remitter) => s.bank.credit({ rail: (rail || 'masav') as 'masav' | 'wire' | 'ach', amount: money(BigInt(minor || '0'), (currency || 'ILS') as 'ILS' | 'USD'), remitterReference: remitter ?? '' }),
         },
+      },
+      'institution-banking': {
+        decide: { describe: "The provider decides an entity's application (by its ent_ fixture: approved | rejected | needs_info)", args: ['entityRef'], run: (ref) => s['institution-banking'].decide(ref) },
+        pay: { describe: 'A funder pays a payment page (pay_ fixture by funder name); answers the signed webhook batch', args: ['intentRef'], run: (ref) => s['institution-banking'].pay(ref) },
+        settleAch: { describe: 'A pending ACH moves on: sent, then settled or returned (ach_ fixture by counterparty)', args: ['paymentRef'], run: (ref) => s['institution-banking'].settleAch(ref) },
+        webhook: { describe: 'A signed webhook batch (fixture: wh_bad_sig | wh_dup)', args: ['type', 'objectRef', 'fixture'], run: (type, objectRef, fixture) => s['institution-banking'].webhook([{ type: type || 'application.updated', ...(objectRef ? { objectRef } : {}) }], (fixture || undefined) as 'wh_bad_sig' | 'wh_dup' | undefined) },
       },
       funding: {
         settle: { describe: 'Signed webhook that settles or fails a load', args: ['loadId', 'status'], run: (id, status) => s.funding.webhookFor(id, (status || 'succeeded') as 'succeeded' | 'failed') },
@@ -199,6 +208,12 @@ const FIXTURES: Partial<Record<keyof Simulators, Fixture[]>> = {
   bank: [
     { trigger: 'statement for value date 2000-01-01', effect: 'PROVIDER_UNAVAILABLE' },
     { trigger: 'header x-sim-signature other than sim', effect: 'BAD_SIGNATURE' },
+  ],
+  'institution-banking': [
+    { trigger: 'legalName ent_ok / ent_rejected / ent_needs_info; OUTAGE…', effect: 'application approved / rejected / needs_info; PROVIDER_UNAVAILABLE' },
+    { trigger: 'funder name pay_ok / pay_declined / pay_refunded', effect: 'payment paid / declined / refunded' },
+    { trigger: 'counterpartyRef ach_ok / ach_returned / ach_rejected_201', effect: 'settles / returned to the balance / REJECTED (a 201 Rejected)' },
+    { trigger: 'webhook fixture wh_bad_sig / wh_dup', effect: 'rejected BAD_SIGNATURE / the first event id twice in one batch' },
   ],
   funding: [
     { trigger: 'paymentMethodId pm_declined / pm_outage', effect: 'DECLINED / PROVIDER_UNAVAILABLE' },
