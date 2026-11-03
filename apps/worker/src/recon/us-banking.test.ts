@@ -11,7 +11,7 @@ import { StaticFlags } from '@kesher/api/billing/capabilities';
 import { createRegistry } from '@kesher/api/registry';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
 import { decideKyb } from '@kesher/api/test-institution';
-import { israelDayStart, UsBankingRecon } from './us-banking.ts';
+import { israelDayStart, previousIsraelDay, UsBankingRecon } from './us-banking.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -55,6 +55,12 @@ describe('the nightly US banking reconciliation (TST-INS-026, T-0654)', () => {
     expect(israelDayStart('2026-07-01').toISOString()).toBe('2026-06-30T21:00:00.000Z');
   });
 
+  it('the day before is by the calendar, also on the nights the clocks change', () => {
+    expect(previousIsraelDay(new Date('2026-10-25T21:30:00Z'))).toBe('2026-10-24'); // 23:30 on the fall-back day
+    expect(previousIsraelDay(new Date('2027-03-26T22:30:00Z'))).toBe('2027-03-26'); // 00:30 after spring-forward, 03-27
+    expect(previousIsraelDay(new Date('2026-11-02T03:30:00Z'))).toBe('2026-11-01');
+  });
+
   it('a clean day opens no case, and the flag off asks the provider nothing', async () => {
     expect(await job().run(RUN)).toMatchObject({ day: '2026-11-01', institutions: 1, clean: 1, breaks: 0, outages: 0 });
     expect(await cases()).toEqual([]);
@@ -78,16 +84,21 @@ describe('the nightly US banking reconciliation (TST-INS-026, T-0654)', () => {
     // Break 3: a row the provider never listed (recorded yesterday).
     await db.query(`insert into org.fee_external_payment (id, fee_item_id, kind, provider_payment_ref, amount_minor, currency, at) values ($1, $2, 'payment', 'pay_ghost_0001', 25000, 'USD', '2026-11-01T10:00:00Z')`, [uuidv7(RUN), items[5]]);
     // Break 4: money out that no funding request explains; one that a request explains is fine.
+    sim().post(entityRef, 'credit', money(20_000_000n, 'USD'), 'Wire in');
     sim().post(entityRef, 'debit', money(7_700n, 'USD'), 'ACH to a stranger');
     const quote = uuidv7(RUN);
     await db.query(`insert into org.us_funding_quote (id, institution_id, amount_minor, fee_minor, currency, expires_at, created_by, created_at) values ($1, $2, 90000, 0, 'USD', $3, $4, $3)`, [quote, INST, RUN, ACTOR]);
     await db.query(`insert into org.us_funding_request (id, institution_id, idempotency_key, quote_id, holder, amount_minor, currency, reference, requested_by, created_at) values ($1, $2, 'recon-fund-01', $3, 'institution', 90000, 'USD', 'KC-RECON001', $4, $5)`, [uuidv7(RUN), INST, quote, ACTOR, RUN]);
+    await db.query(`insert into org.us_funding_event (id, request_id, kind, payload, at) select $1, id, 'sending', '{}', $2 from org.us_funding_request where reference = 'KC-RECON001'`, [uuidv7(RUN), RUN]);
     sim().post(entityRef, 'debit', money(90_000n, 'USD'), 'ACH KC-RECON001 funding');
+    // The KC- reference is public: the same text on a debit of another amount, or a second debit of the same amount, is not explained by that one request.
+    sim().post(entityRef, 'debit', money(5_000_000n, 'USD'), 'memo KC-RECON001');
+    sim().post(entityRef, 'debit', money(90_000n, 'USD'), 'again KC-RECON001');
 
     const first = await job().run(RUN);
-    expect(first).toMatchObject({ institutions: 1, clean: 0, breaks: 4 });
+    expect(first).toMatchObject({ institutions: 1, clean: 0, breaks: 6 });
     const found = await cases();
-    expect(found.map((c) => c.reason)).toEqual(['amount_mismatch', 'outbound_without_request', 'payment_row_created', 'row_without_payment']);
+    expect(found.map((c) => c.reason)).toEqual(['amount_mismatch', 'outbound_without_request', 'outbound_without_request', 'outbound_without_request', 'payment_row_created', 'row_without_payment']);
     expect(found.find((c) => c.reason === 'amount_mismatch')!.ref).toBe(refs[2]);
     expect(found.find((c) => c.reason === 'payment_row_created')!.ref).toBe(refs[1]);
     expect(found.find((c) => c.reason === 'row_without_payment')!.ref).toBe('pay_ghost_0001');
@@ -108,7 +119,7 @@ describe('the nightly US banking reconciliation (TST-INS-026, T-0654)', () => {
     expect((await cases()).find((c) => c.reason === 'payment_without_page')!.ref).toBe(paid.paymentRef);
   });
 
-  it('an outage is retried with back-off, then costs one case for the institution; the run still finishes', async () => {
+  it('an outage is retried with back-off, then costs one case for the institution; the day is read on the next run that can', async () => {
     const down = vi.spyOn(port(), 'collectPayments').mockImplementation(() => {
       throw new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'down');
     });
@@ -116,17 +127,28 @@ describe('the nightly US banking reconciliation (TST-INS-026, T-0654)', () => {
     const report = await job(true, () => RUN, async (ms) => void sleeps.push(ms)).run(RUN);
     expect(report).toMatchObject({ institutions: 1, outages: 1 });
     expect(sleeps).toEqual([1000, 2000]);
-    await job().run(RUN).catch(() => undefined);
-    down.mockRestore();
-    const outage = (await db.query(`select 1 from ops.case where kind = 'recon_break' and payload->>'reason' = 'provider_outage'`)).rows;
-    expect(outage).toHaveLength(1);
+    const outage = () => db.query(`select 1 from ops.case where kind = 'recon_break' and payload->>'reason' = 'provider_outage'`).then((r) => r.rows.length);
+    expect(await outage()).toBe(1);
     // Down again the same day: still one case.
-    const again = vi.spyOn(port(), 'collectPayments').mockImplementation(() => {
-      throw new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'down');
-    });
     await job(true, () => RUN, async () => undefined).run(RUN);
-    again.mockRestore();
-    expect((await db.query(`select 1 from ops.case where kind = 'recon_break' and payload->>'reason' = 'provider_outage'`)).rows).toHaveLength(1);
+    expect(await outage()).toBe(1);
+    down.mockRestore();
+    // The next night the account is readable: a payment of the lost day that the hint missed is recorded now.
+    const col = await sim().createCollection({ entityRef, title: 'Lost day', amount: money(25_000n, 'USD'), idempotencyKey: 'lost-day-col-01' });
+    expect(col.collectionRef).toBeTruthy();
+    const next = new Date('2026-11-03T03:30:00Z');
+    expect(await job(true, () => next).run(next)).toMatchObject({ day: '2026-11-02', outages: 0 });
+    expect((await db.query(`select 1 from ops.case where payload->>'reason' = 'provider_outage' and payload->>'recoveredAt' is null`)).rows).toHaveLength(0);
+  });
+
+  it('an account the bank will not answer for is its own reason, not an outage', async () => {
+    const closed = vi.spyOn(port(), 'collectPayments').mockImplementation(() => {
+      throw new InstitutionBankingError('NOT_APPROVED', 'closed');
+    });
+    const day = new Date('2026-11-04T03:30:00Z');
+    expect(await job(true, () => day).run(day)).toMatchObject({ outages: 1 });
+    closed.mockRestore();
+    expect((await db.query(`select 1 from ops.case where payload->>'reason' = 'account_unreadable' and payload->>'day' = '2026-11-03'`)).rows).toHaveLength(1);
   });
 
   it('a run that finishes after 06:00 Israel time says so with one case', async () => {
