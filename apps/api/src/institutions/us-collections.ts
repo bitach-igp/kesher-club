@@ -168,6 +168,11 @@ export class UsCollections {
     }
   }
 
+  /** One provider payment, applied as `reconcileEntity` applies it (the nightly reconciliation, T-0654, applies the ones the hint missed). */
+  applyPayment(p: { paymentRef: string; intentRef: string; amount: Money; status: 'paid' | 'declined' | 'refunded' }, provider: string | undefined, now: Date): Promise<{ marked: number; cases: number }> {
+    return this.record(p, provider, now);
+  }
+
   /** One provider payment, applied once, under a lock on its fee item. */
   private async record(p: { paymentRef: string; intentRef: string; amount: Money; status: 'paid' | 'declined' | 'refunded' }, provider: string | undefined, now: Date): Promise<{ marked: number; cases: number }> {
     if (p.status === 'declined') return { marked: 0, cases: 0 };
