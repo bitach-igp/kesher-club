@@ -2138,6 +2138,93 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/us-funding": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution's US funding requests, newest first
+         * @description REQ-INS-024 (T-0653). Finance staff and admins.
+         */
+        readonly get: operations["listInstitutionUsFunding"];
+        readonly put?: never;
+        /**
+         * Ask to fund the master account from the US account, with a quote
+         * @description REQ-INS-024 (T-0653). Finance staff and admins, with a step-up and an Idempotency-Key. Spends the quote (409 QUOTE_EXPIRED when it lapsed).
+         *     A second finance user or admin must approve; the person who asked cannot. Nothing posts until the money arrives and the deposit path posts it.
+         */
+        readonly post: operations["createInstitutionUsFunding"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/us-funding/{requestId}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Approve a funding request as the second finance user
+         * @description REQ-INS-024 (T-0653). Finance staff and admins of the institution, with a step-up; 403 for the person who asked. On approval the
+         *     money is sent (an ACH to Kesher's US collection account, a book transfer, or nothing for a pooled account). Approving again is a no-op.
+         */
+        readonly post: operations["approveInstitutionUsFunding"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/us-funding/{requestId}/cancel": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Cancel a funding that has not been sent, or an ACH the bank still holds as pending
+         * @description REQ-INS-024 (T-0653). Finance staff and admins, with a step-up. 409 once the bank has sent the transfer.
+         */
+        readonly post: operations["cancelInstitutionUsFunding"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/us-funding/quote": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * What it would cost to fund the master account from the US account
+         * @description REQ-INS-024 (T-0653), behind institutions.usBanking. Finance staff and admins. The fee (and the arrival date where the bank gives one)
+         *     for an amount in USD; the quote is valid for ten minutes and is spent by the request that uses it. Side-effect free apart from storing the quote.
+         */
+        readonly post: operations["quoteInstitutionUsFunding"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/intents": {
         readonly parameters: {
             readonly query?: never;
@@ -4797,6 +4884,40 @@ export interface components {
             readonly note?: string;
             /** Format: uuid */
             readonly toPartyId: string;
+        };
+        readonly UsFunding: {
+            /** @enum {string} */
+            readonly achStatus?: "pending" | "sent" | "settled" | "returned" | "rejected" | "cancelled";
+            readonly amount: components["schemas"]["Money"];
+            /** Format: uuid */
+            readonly approvedBy?: string;
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** Format: uuid */
+            readonly depositId?: string;
+            readonly failure?: string;
+            /** @enum {string} */
+            readonly holder: "platform" | "institution";
+            /** Format: uuid */
+            readonly id: string;
+            /** @description The institution's payment reference (KC-…) the transfer carries */
+            readonly reference: string;
+            /** Format: uuid */
+            readonly requestedBy: string;
+            /** @enum {string} */
+            readonly status: "awaiting_approval" | "approved" | "in_transit" | "deposit_pending" | "received" | "returned" | "rejected" | "cancelled" | "failed";
+        };
+        readonly UsFundingQuote: {
+            readonly amount: components["schemas"]["Money"];
+            /** Format: date */
+            readonly arrivesOn?: string;
+            /** Format: date-time */
+            readonly expiresAt: string;
+            readonly fee: components["schemas"]["Money"];
+            /** @enum {string} */
+            readonly holder: "platform" | "institution";
+            /** Format: uuid */
+            readonly quoteId: string;
         };
     };
     responses: {
@@ -8178,6 +8299,149 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["InstitutionUsBankingLink"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listInstitutionUsFunding: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The requests with their status */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["UsFunding"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createInstitutionUsFunding: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** Format: uuid */
+                    readonly quoteId: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The request */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["UsFunding"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveInstitutionUsFunding: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+                readonly requestId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The request as it stands */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["UsFunding"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly cancelInstitutionUsFunding: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+                readonly requestId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The request as it stands */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["UsFunding"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly quoteInstitutionUsFunding: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly amount: components["schemas"]["Money"];
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The quote */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["UsFundingQuote"];
                 };
             };
             readonly default: components["responses"]["Problem"];

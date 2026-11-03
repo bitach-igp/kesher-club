@@ -1630,6 +1630,109 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/InstitutionUsBanking" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/us-funding/quote:
+    post:
+      operationId: quoteInstitutionUsFunding
+      summary: What it would cost to fund the master account from the US account
+      description: |
+        REQ-INS-024 (T-0653), behind institutions.usBanking. Finance staff and admins. The fee (and the arrival date where the bank gives one)
+        for an amount in USD; the quote is valid for ten minutes and is spent by the request that uses it. Side-effect free apart from storing the quote.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { $ref: "#/components/schemas/Money" }
+      responses:
+        "200":
+          description: The quote
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsFundingQuote" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/us-funding:
+    post:
+      operationId: createInstitutionUsFunding
+      summary: Ask to fund the master account from the US account, with a quote
+      description: |
+        REQ-INS-024 (T-0653). Finance staff and admins, with a step-up and an Idempotency-Key. Spends the quote (409 QUOTE_EXPIRED when it lapsed).
+        A second finance user or admin must approve; the person who asked cannot. Nothing posts until the money arrives and the deposit path posts it.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quoteId]
+              properties:
+                quoteId: { type: string, format: uuid }
+      responses:
+        "201":
+          description: The request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsFunding" }
+        default: { $ref: "#/components/responses/Problem" }
+    get:
+      operationId: listInstitutionUsFunding
+      summary: The institution's US funding requests, newest first
+      description: REQ-INS-024 (T-0653). Finance staff and admins.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+      responses:
+        "200":
+          description: The requests with their status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/UsFunding" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/us-funding/{requestId}/approve:
+    post:
+      operationId: approveInstitutionUsFunding
+      summary: Approve a funding request as the second finance user
+      description: |
+        REQ-INS-024 (T-0653). Finance staff and admins of the institution, with a step-up; 403 for the person who asked. On approval the
+        money is sent (an ACH to Kesher's US collection account, a book transfer, or nothing for a pooled account). Approving again is a no-op.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/StepUp" }
+      responses:
+        "200":
+          description: The request as it stands
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsFunding" }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/us-funding/{requestId}/cancel:
+    post:
+      operationId: cancelInstitutionUsFunding
+      summary: Cancel a funding that has not been sent, or an ACH the bank still holds as pending
+      description: REQ-INS-024 (T-0653). Finance staff and admins, with a step-up. 409 once the bank has sent the transfer.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/StepUp" }
+      responses:
+        "200":
+          description: The request as it stands
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsFunding" }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/staff-invites:
     post:
       operationId: createStaffInvite
@@ -4179,6 +4282,31 @@ components:
         card: { type: string, enum: [none, inactive, active, frozen] }
         balances: { type: array, items: { $ref: "#/components/schemas/Money" }, description: Wallet balances per currency; empty before the member joined }
         planCode: { type: string }
+    UsFundingQuote:
+      type: object
+      required: [quoteId, amount, fee, expiresAt, holder]
+      properties:
+        quoteId: { type: string, format: uuid }
+        amount: { $ref: "#/components/schemas/Money" }
+        fee: { $ref: "#/components/schemas/Money" }
+        arrivesOn: { type: string, format: date }
+        expiresAt: { type: string, format: date-time }
+        holder: { type: string, enum: [platform, institution] }
+    UsFunding:
+      type: object
+      required: [id, status, amount, reference, holder, requestedBy, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [awaiting_approval, approved, in_transit, deposit_pending, received, returned, rejected, cancelled, failed] }
+        amount: { $ref: "#/components/schemas/Money" }
+        reference: { type: string, description: The institution's payment reference (KC-…) the transfer carries }
+        holder: { type: string, enum: [platform, institution] }
+        requestedBy: { type: string, format: uuid }
+        approvedBy: { type: string, format: uuid }
+        achStatus: { type: string, enum: [pending, sent, settled, returned, rejected, cancelled] }
+        depositId: { type: string, format: uuid }
+        failure: { type: string }
+        createdAt: { type: string, format: date-time }
     InstitutionUsBankingLink:
       type: object
       required: [status, holder, sharesPlatformAccount]
