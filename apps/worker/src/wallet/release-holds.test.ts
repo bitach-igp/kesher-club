@@ -183,6 +183,50 @@ describe('TST-WAL-003', () => {
     expect(await purse(c)).toEqual({ available: 4_000n, holds: 0n, settled: 4_000n });
   });
 
+  it('a return that lands between the vendor check and the release does not leave money in the wallet (the release journal is reversed once)', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-race-a-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 6_000n), key, now);
+    // The load is failed (webhook or sweep) just as the release gets to the row lock.
+    const realApply = transfers.apply.bind(transfers);
+    let injected = false;
+    transfers.apply = async (id, event, at, extra) => {
+      if (event === 'release_hold' && !injected) {
+        injected = true;
+        await loads.fail((await transfers.get(id))!, 'VENDOR_FAILED', at);
+      }
+      return realApply(id, event, at, extra);
+    };
+    now = THURSDAY;
+    try {
+      await expect(loads.release((await transfers.get(run.transfer.id))!, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    } finally {
+      transfers.apply = realApply;
+    }
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'failed' });
+    expect(await journals(releaseKey(key))).toBe(1);
+    expect(await journals(`${releaseKey(key)}:reversal`)).toBe(1);
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+  });
+
+  it('a return handled from a stale read after the release has won leaves the released load alone (the hold reversal is undone once)', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-race-b-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 2_500n), key, now);
+    const stale = (await transfers.get(run.transfer.id))!; // still pending_hold in this reader's hands
+    now = THURSDAY;
+    await loads.release(stale, now);
+    expect(await purse(party)).toEqual({ available: 2_500n, holds: 0n, settled: 2_500n });
+    await expect(loads.fail(stale, 'VENDOR_FAILED', now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'settled' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await journals(`${holdKey(key)}:reversal:undo`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 2_500n, holds: 0n, settled: 2_500n });
+  });
+
   it('an institution\'s ACH pull is held in its own hold account and released into its own account on Thursday (T-0617)', async () => {
     const institution = uuidv7(MONDAY);
     const key = `ach-pull:${institution}:monday`;

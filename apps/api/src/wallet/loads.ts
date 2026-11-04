@@ -239,6 +239,7 @@ export class LoadService implements LoadActivities {
     // Ask the vendor before the money leaves pending: a debit the bank returned during the hold is failed (the hold
     // is reversed once), never released. The vendor cannot be asked: the error leaves the hold in place and the next
     // cycle tries again. Releasing blind would credit money that was never collected.
+    // (A load with no vendor link, a statement deposit, is never held, so it never gets here without one.)
     const loadId = await this.vendorLoadOf(transfer.id);
     if (loadId) {
       const vendor = await this.d.port.getLoad(loadId);
@@ -259,13 +260,27 @@ export class LoadService implements LoadActivities {
       ],
       metadata: { workflowId, provider: this.d.provider, heldUntil: transfer.holdReleasesAt, ...institutionMetadata(transfer) },
     });
-    const released = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold days passed' });
+    let released: Transfer;
+    try {
+      released = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold days passed' });
+    } catch (e) {
+      // A return (webhook or sweep) failed the load between the vendor check and here: the row lock refuses the
+      // release. Its journal is already posted, so reverse it once, or the wallet keeps money that was never collected.
+      if ((await this.d.transfers.get(transfer.id))?.state === 'failed') await this.d.ledger.reverse(journal.id, `${releaseKey(workflowId)}:reversal`);
+      throw e;
+    }
     return this.d.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
   }
 
   async fail(transfer: Transfer, code: string, now: Date): Promise<Transfer> {
-    if (transfer.state === 'pending_hold' && transfer.journalId) await this.d.ledger.reverse(transfer.journalId, `${holdKey(transfer.idempotencyKey)}:reversal`);
-    return this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: transfer.state === 'pending_hold' ? 'returned during hold' : 'vendor' });
+    const reversal = transfer.state === 'pending_hold' && transfer.journalId ? await this.d.ledger.reverse(transfer.journalId, `${holdKey(transfer.idempotencyKey)}:reversal`) : undefined;
+    try {
+      return await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: transfer.state === 'pending_hold' ? 'returned during hold' : 'vendor' });
+    } catch (e) {
+      // The release won the race (the row is no longer in its hold and not failed): the hold stays, so undo the reversal once.
+      if (reversal && (await this.d.transfers.get(transfer.id))?.state !== 'failed') await this.d.ledger.reverse(reversal.id, `${holdKey(transfer.idempotencyKey)}:reversal:undo`);
+      throw e;
+    }
   }
 
   // ---- webhooks ----
@@ -320,7 +335,7 @@ export class LoadService implements LoadActivities {
     // institution's ACH pull is one too (T-0617); a deposit recorded off a statement (T-0614) never met the vendor.
     const r = await this.d.db.query<{ id: string }>(`select t.id from ops.transfer t
         where (t.kind = 'load' or (t.kind = 'deposit' and exists (select 1 from ops.external_ref r where r.entity_type = 'transfer' and r.entity_id = t.id and r.provider = $4)))
-          and t.state in ('submitted', 'pending_hold') and t.updated_at <= $1 and t.market = $3 order by t.updated_at limit $2`,
+          and t.state in ('submitted', 'pending_hold') and t.updated_at <= $1 and t.market = $3 order by (t.state = 'pending_hold'), t.updated_at limit $2`,
       [new Date(now.getTime() - olderThanMs), limit, this.d.transfers.market, this.d.provider]);
     const out: Transfer[] = [];
     for (const row of r.rows) {

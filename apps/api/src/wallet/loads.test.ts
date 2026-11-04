@@ -441,6 +441,17 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     expect(stale).not.toContain(settled);
   });
 
+  it('held loads do not starve the submitted ones: with a small limit the submitted load comes first', async () => {
+    const old = new Date(NOW.getTime() - 7_200_000);
+    const older = new Date(NOW.getTime() - 9_000_000);
+    const [held, submitted] = [uuidv7(), uuidv7()];
+    await seedTransfer(db, { id: held, kind: 'load', state: 'pending_hold', market: 'US', at: older });
+    await seedTransfer(db, { id: submitted, kind: 'load', state: 'submitted', market: 'US', at: old });
+    const all = (await app.services.loads.stale(NOW, 60_000, 1000)).map((t) => t.id);
+    expect(all.indexOf(submitted)).toBeGreaterThanOrEqual(0);
+    expect(all.indexOf(held)).toBeGreaterThan(all.indexOf(submitted));
+  });
+
   it('the stale-load sweep sees only this market\'s loads, so it asks only this market\'s provider (T-0028)', async () => {
     const old = new Date(NOW.getTime() - 3_600_000);
     const [us, il] = [uuidv7(), uuidv7()];

@@ -214,9 +214,9 @@ export function mapPaymentIntent(pi: Record<string, unknown>, known?: { method: 
       break;
     case 'requires_payment_method':
       // Stripe returns a debit the bank sent back (an ACH return) to requires_payment_method and records why in
-      // last_payment_error; that is a failed load, not one waiting for the member. Without an error it is a fresh
-      // intent that still needs a payment method.
-      status = lastError ? 'failed' : 'requires_action';
+      // last_payment_error; that is a failed load, not one waiting for the member. A card intent is back here after
+      // a declined attempt too, but the client may confirm the same intent again, so it stays requires_action.
+      status = lastError && method === 'ach' ? 'failed' : 'requires_action';
       break;
     case 'requires_action':
     case 'requires_confirmation':
