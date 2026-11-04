@@ -18,4 +18,4 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-04 | T-0543 | #200 | Opus APPROVE (1 fix round) | green |
 | 2026-11-04 | T-0546 | #201 | Opus APPROVE (1 fix round) | green |
 | 2026-11-04 | T-0541 | #202 | Opus APPROVE (1 fix round) | green |
-| 2026-11-04 | T-0544 | pending | pending | pending |
+| 2026-11-04 | T-0544 | #203 | Sonnet APPROVE (1 fix round; Sonnet by the user's throttle request), desktop PASS | green |
