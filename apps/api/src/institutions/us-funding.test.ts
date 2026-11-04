@@ -4,7 +4,7 @@
 // posted until the money arrives and the deposit path posts it, and then the request is received. A quote that lapsed is 409; a quote is spent once.
 // A provider that is unavailable leaves the request for the sweep; a refusal opens a case; a return is shown. Cancel works until the bank sends.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { money, uuidv7 } from '@kesher/domain';
+import { DomainError, money, uuidv7 } from '@kesher/domain';
 import { InstitutionBankingError, SIM_OTP_CODE, SimPasskeyDevice } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
@@ -21,6 +21,7 @@ let pooled: App;
 let host: SimulatorHost;
 let pooledHost: SimulatorHost;
 let collectionAccount = '';
+let flags: StaticFlags;
 const NOW = new Date('2026-11-03T09:00:00Z');
 const LATER = new Date('2026-11-03T09:30:00Z');
 const OWN = uuidv7(NOW);
@@ -77,7 +78,7 @@ beforeAll(async () => {
   db = await createTestDatabase();
   host = new SimulatorHost();
   pooledHost = new SimulatorHost();
-  const flags = new StaticFlags(undefined, { 'institutions.usBanking': true, 'institutions.deposits': true, 'institutions.bankFeed': true });
+  flags = new StaticFlags(undefined, { 'institutions.usBanking': true, 'institutions.deposits': true, 'institutions.bankFeed': true });
   const base = { db, market: 'IL' as const, issuer: 'https://api.kesher.example', clock: () => NOW, flags };
   const platform = await platformEntity(host, 'holder_platform_subaccounts Israel Global Pay, LLC');
   collectionAccount = (await sim(host).createSubAccount({ entityRef: platform, institutionId: uuidv7(NOW), idempotencyKey: 'collection-acct-0001' })).subAccountRef;
@@ -308,3 +309,94 @@ describe('US funding (TST-INS-024, T-0653)', () => {
     }
   });
 });
+describe('US funding is judged again before every send (T-0658, REQ-INS-024, REQ-INS-022)', () => {
+  const STALE = new Date(NOW.getTime() + 11 * 60_000);
+  const events = async (id: string, kind: string) => (await db.query(`select 1 from org.us_funding_event where request_id = $1 and kind = $2`, [id, kind])).rows.length;
+  /** A request approved while the bank was unavailable: its claim is left to go stale. */
+  const stuck = async (minor: bigint, key: string): Promise<View> => {
+    const r = await asked('ownFin1', OWN, minor, key);
+    await approve('ownFin2', OWN, r.id);
+    return r;
+  };
+
+  it('with the kill switch off the sweep sends nothing and fails nothing; turned back on, it sends once', async () => {
+    const send = vi.spyOn(sim(host), 'sendAch').mockRejectedValueOnce(new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'down'));
+    const r = await stuck(310_000n, 'fund-key-0070');
+    expect(send).toHaveBeenCalledTimes(1);
+    const real = flags.isOn.bind(flags);
+    const off = vi.spyOn(flags, 'isOn').mockImplementation((k: string) => (k === 'institutions.usBanking' ? false : real(k)));
+    expect(await main.services.usFunding.sweep('IL', STALE)).toMatchObject({ sent: 0, blocked: 1 });
+    off.mockRestore();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await view('ownFin1', OWN, r.id)).toMatchObject({ status: 'sending' });
+    expect(await main.services.usFunding.sweep('IL', STALE)).toMatchObject({ sent: 1, blocked: 0 });
+    expect(await view('ownFin1', OWN, r.id)).toMatchObject({ status: 'in_transit' });
+    expect(send).toHaveBeenCalledTimes(2);
+    send.mockRestore();
+  });
+
+  it('a suspended account sends nothing; approved again, it sends once', async () => {
+    const send = vi.spyOn(sim(host), 'sendAch').mockRejectedValueOnce(new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'down'));
+    const r = await stuck(320_000n, 'fund-key-0071');
+    const real = main.services.usBanking.account.bind(main.services.usBanking);
+    const suspended = vi.spyOn(main.services.usBanking, 'account').mockImplementation(async (id: string) => {
+      const a = await real(id);
+      return a ? { ...a, status: 'suspended' as typeof a.status } : a;
+    });
+    expect(await main.services.usFunding.sweep('IL', STALE)).toMatchObject({ sent: 0, blocked: 1 });
+    suspended.mockRestore();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await main.services.usFunding.sweep('IL', STALE)).toMatchObject({ sent: 1 });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(await view('ownFin1', OWN, r.id)).toMatchObject({ status: 'in_transit' });
+    send.mockRestore();
+  });
+
+  it('a lapsed KYB sends nothing; once it is approved again, the request sends once', async () => {
+    const send = vi.spyOn(sim(host), 'sendAch').mockRejectedValueOnce(new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'down'));
+    const r = await stuck(330_000n, 'fund-key-0072');
+    await decideKyb(db, OWN, 'rejected');
+    expect(await main.services.usFunding.sweep('IL', STALE)).toMatchObject({ sent: 0, blocked: 1 });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await events(r.id, 'failed')).toBe(0);
+    await decideKyb(db, OWN, 'approved');
+    expect(await main.services.usFunding.sweep('IL', STALE)).toMatchObject({ sent: 1 });
+    expect(send).toHaveBeenCalledTimes(2);
+    send.mockRestore();
+  });
+
+  it('an account the bank has not given an id yet takes no claim: the request stays approved and sends once the id is there', async () => {
+    const send = vi.spyOn(sim(host), 'sendAch');
+    const r = await asked('ownFin1', OWN, 340_000n, 'fund-key-0073');
+    const real = main.services.usBanking.account.bind(main.services.usBanking);
+    const noRef = vi.spyOn(main.services.usBanking, 'account').mockImplementation(async (id: string) => {
+      const a = await real(id);
+      return a ? ({ ...a, ref: undefined } as unknown as typeof a) : a;
+    });
+    await approve('ownFin2', OWN, r.id);
+    expect(await view('ownFin1', OWN, r.id)).toMatchObject({ status: 'approved' });
+    expect(await events(r.id, 'sending')).toBe(0);
+    expect(send).not.toHaveBeenCalled();
+    noRef.mockRestore();
+    expect(await main.services.usFunding.sweep('IL', new Date(NOW.getTime() + 60_000))).toMatchObject({ sent: 1 });
+    expect(await view('ownFin1', OWN, r.id)).toMatchObject({ status: 'in_transit' });
+    expect(send).toHaveBeenCalledTimes(1);
+    send.mockRestore();
+  });
+
+  it('a transfer already booked is never marked unsent, however late: the sweep records its deposit once deposits work again', async () => {
+    const down = vi.spyOn(main.services.deposits, 'recordSystem').mockRejectedValue(new DomainError('FEATURE_OFF', 'Deposits are not available'));
+    const r = await asked('subFin1', SUB, 350_000n, 'fund-key-0074');
+    await approve('subFin2', SUB, r.id);
+    expect(await events(r.id, 'book_transferred')).toBe(1);
+    const LATE = new Date(NOW.getTime() + 25 * 3_600_000);
+    expect(await main.services.usFunding.sweep('IL', LATE)).toMatchObject({ errors: 1, errorClasses: ['DomainError:FEATURE_OFF'] });
+    expect(await events(r.id, 'send_unknown')).toBe(0);
+    down.mockRestore();
+    // The failed attempt's claim is fresh; it is taken again once it goes stale.
+    await main.services.usFunding.sweep('IL', new Date(LATE.getTime() + 11 * 60_000));
+    expect(await view('subFin1', SUB, r.id)).toMatchObject({ status: 'deposit_pending', depositId: expect.any(String) });
+    expect(await events(r.id, 'send_unknown')).toBe(0);
+  });
+});
+

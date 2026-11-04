@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import type { App } from '@kesher/api/app';
 import { cardIssuingProcessor } from '@kesher/api/cards/settlement';
 import type { Database } from '@kesher/api/db';
+import { US_BANKING_FLAG } from '@kesher/api/institutions/us-banking';
 import type { BankPort, EsimPort, FundingPort, FxPort, InstitutionBankingPort, InsurancePort, KybPort, Market, NotifyPort, ProviderRegistry } from '@kesher/ports';
 import { z } from 'zod';
 import { EXPIRE_INTENTS_CYCLE_MS, ExpireIntentsJob } from './agent/expire-intents.ts';
@@ -129,7 +130,7 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue }:
     { name: 'webhook-replay', scope: 'market', everyMs: WEBHOOK_REPLAY_CYCLE_MS, run: () => s.webhooks.replay({ now: clock() }) },
     { name: 'fx-refresh-rates', scope: 'club', everyMs: REFRESH_CYCLE_MS, run: () => rates.run() },
     { name: 'ach-release-holds', scope: 'market', everyMs: ACH_RELEASE_CYCLE_MS, run: () => achHolds.run() },
-    { name: 'us-funding-sweep', scope: 'market', everyMs: US_FUNDING_SWEEP_CYCLE_MS, run: () => s.usFunding.sweep(market, clock()) },
+    { name: 'us-funding-sweep', scope: 'market', everyMs: US_FUNDING_SWEEP_CYCLE_MS, run: async () => ((await s.flags.isOn(US_BANKING_FLAG)) ? s.usFunding.sweep(market, clock()) : { sent: 0, polled: 0, errors: 0, blocked: 0, errorClasses: [] }) },
     { name: 'p2p-expire-requests', scope: 'club', everyMs: EXPIRE_CYCLE_MS, run: () => requests.run() },
     { name: 'auto-reload', scope: 'market', everyMs: AUTO_RELOAD_CYCLE_MS, run: () => autoReload.run() },
     { name: 'agent-expire-intents', scope: 'club', everyMs: EXPIRE_INTENTS_CYCLE_MS, run: () => intents.run() },
