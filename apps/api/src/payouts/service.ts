@@ -34,6 +34,9 @@ export const FAILED_TEMPLATE = 'money.payout_failed';
 export type PayoutState = 'cooling_off' | 'awaiting_second_approval' | 'submitted' | 'processing' | 'settled' | 'failed' | 'reversed' | 'rejected';
 /** A second finance member rejected the payout: the transfer fails with this code before anything moved. */
 export const REJECTED = 'REJECTED';
+/** A payout the rail never took (it was down) is retried by the sweep from this age, and failed (reversed, the member told) at STRANDED_AFTER_MS (T-0541, RUN-01). */
+export const RETRY_AFTER_MS = 5 * 60_000;
+export const STRANDED_AFTER_MS = 30 * 60_000;
 /** A payout whose second approval was never given within its time (T-0540): failed, and its reserve released. */
 export const APPROVAL_EXPIRED = 'APPROVAL_EXPIRED';
 
@@ -86,6 +89,10 @@ export interface PayoutActivities {
   approved(transfer: Transfer, input: PayoutInput, now: Date): Promise<boolean>;
   /** A member's payout whose approval was rejected or ran out: failed, the reserve released, the approval marked expired. Undefined when it is not due. */
   expireIfDue(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined>;
+  /** True when the vendor has a payout for this transfer (its webhook finishes it). */
+  atRail(transfer: Transfer): Promise<boolean>;
+  /** A submitted (or cooled-off, `pending`) payout the rail still refuses 30 minutes after its first attempt: failed and reversed once, the payer told, a case opened. Undefined when it is not due. */
+  stranded(transfer: Transfer, now: Date): Promise<Transfer | undefined>;
   /** The journal (from the reserve, or the wallet when nothing was reserved → partner_settlement) and the vendor pull, both keyed by the workflow id. */
   submit(transfer: Transfer, input: PayoutInput, workflowId: string, now: Date): Promise<{ transfer: Transfer; payout: VendorPayout }>;
   settle(transfer: Transfer, now: Date): Promise<Transfer>;
@@ -108,7 +115,10 @@ export interface PayoutRun {
 export async function runPayout(a: PayoutActivities, input: PayoutInput, workflowId: string, now: Date): Promise<PayoutRun> {
   let t = await a.begin(input, workflowId, now);
   const replayed = t.state !== 'created';
-  if (t.state === 'settled' || t.state === 'failed' || t.state === 'cancelled' || t.state === 'reversed' || t.state === 'submitted') return { workflowId, transfer: t, replayed };
+  if (t.state === 'settled' || t.state === 'failed' || t.state === 'cancelled' || t.state === 'reversed') return { workflowId, transfer: t, replayed };
+  // At the rail already: its webhook finishes it. Otherwise (a `submitted` payout with no vendor ref) the rail was down, or its answer
+  // was lost: it is asked again under the same key below (the journal is posted once, the vendor makes one payout).
+  if (t.state === 'submitted' && (await a.atRail(t))) return { workflowId, transfer: t, replayed };
   // Past the hold and already at the rail: the webhook finishes it.
   if (t.state === 'pending' && t.journalId) return { workflowId, transfer: t, replayed };
   if (t.state === 'pending_hold') {
@@ -130,7 +140,18 @@ export async function runPayout(a: PayoutActivities, input: PayoutInput, workflo
     const gone = await a.reserve(t, input, now);
     return gone ? { workflowId, transfer: gone, replayed } : { workflowId, transfer: t, waiting: 'approval', replayed };
   }
-  const r = await a.submit(t, input, workflowId, now);
+  let r;
+  try {
+    r = await a.submit(t, input, workflowId, now);
+  } catch (e) {
+    // The rail answered "unavailable" to this attempt too. Only now, 30 minutes after the first attempt, is the payout given up on: the
+    // vendor was asked once more first (it may have taken the payout and lost its answer, or be back), so a payout it holds is never refunded.
+    if (e instanceof DomainError && e.code === 'PROVIDER_UNAVAILABLE') {
+      const dead = await a.stranded(t, now);
+      if (dead) return { workflowId, transfer: dead, replayed };
+    }
+    throw e;
+  }
   t = r.transfer;
   if (r.payout.status === 'settled') t = await a.settle(t, now);
   else if (r.payout.status === 'failed') t = await a.fail(t, r.payout.failureReason ?? 'PAYOUT_FAILED', now);
@@ -260,6 +281,23 @@ export class PayoutService implements PayoutActivities {
     return (await this.requestApproval(transfer, input, now)).status === 'approved';
   }
 
+  async atRail(transfer: Transfer): Promise<boolean> {
+    return (await this.d.db.query(`select 1 from ops.external_ref where entity_type = 'transfer' and entity_id = $1 and provider = $2`, [transfer.id, this.d.provider])).rows.length > 0;
+  }
+
+  async stranded(transfer: Transfer, now: Date): Promise<Transfer | undefined> {
+    if (transfer.state !== 'submitted' && transfer.state !== 'pending') return undefined;
+    // Thirty minutes from the first attempt: the settle journal is posted by it (the transfer's own age would count a cool-off or an approval wait).
+    const first = await this.d.db.query<{ effective_at: string | Date }>(`select effective_at from ledger.journal where idempotency_key = $1`, [settleKey(transfer.idempotencyKey)]);
+    if (!first.rows[0] || now.getTime() - new Date(first.rows[0].effective_at).getTime() < STRANDED_AFTER_MS) return undefined;
+    // The case first (deduped): a crash after the fail must still leave ops the signal.
+    await this.d.db.query(
+      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'payout_stranded', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
+      [uuidv7(now), `payout_stranded:${transfer.id}`, JSON.stringify({ transferId: transfer.id, runbook: 'RUN-01', summary: 'A payout the rail never took in 30 minutes was failed and reversed' }), now],
+    );
+    return this.fail(transfer, 'PROVIDER_UNAVAILABLE', now, 'the rail stayed down for 30 minutes');
+  }
+
   async expireIfDue(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined> {
     // An institution's payout keeps waiting as before (nothing was reserved for it); a member's ends with its approval.
     if (input.source.kind === 'institution') return undefined;
@@ -377,7 +415,9 @@ export class PayoutService implements PayoutActivities {
 
   async fail(transfer: Transfer, code: string, now: Date, reason = 'rail failed'): Promise<Transfer> {
     let reversalJournalId: string | undefined;
-    if (transfer.journalId) reversalJournalId = (await this.d.ledger.reverse(transfer.journalId, `${settleKey(transfer.idempotencyKey)}:reversal`)).id;
+    // The payout journal, by key when the transfer does not carry it (a cooled-off payout the rail never took stays `pending` with its journal posted).
+    const posted = transfer.journalId ?? (await this.journalIdOf(settleKey(transfer.idempotencyKey)));
+    if (posted) reversalJournalId = (await this.d.ledger.reverse(posted, `${settleKey(transfer.idempotencyKey)}:reversal`)).id;
     await this.unreserve(transfer);
     const t = await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason, ...(reversalJournalId ? { reversalJournalId } : {}) });
     await this.tellPayer(t, code, now);
@@ -538,10 +578,12 @@ export class PayoutService implements PayoutActivities {
       `select t.id from ops.transfer t where t.kind = 'payout' and (
           (t.state = 'pending_hold' and t.hold_releases_at <= $1)
           or (t.state in ('created', 'pending') and t.journal_id is null and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and a.status = 'approved'))
+          or (t.state = 'submitted' and t.journal_id is not null and t.updated_at <= $1::timestamptz - ($4 * interval '1 millisecond')
+              and not exists (select 1 from ops.external_ref x where x.entity_type = 'transfer' and x.entity_id = t.id and x.provider = $5))
           or (t.state in ('created', 'pending') and t.journal_id is null and not exists (select 1 from org.institution i where i.id = t.from_party_id)
               and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and (a.status in ('rejected', 'expired') or (a.status in ('pending', 'awaiting_second_approval') and a.expires_at <= $1))))
        ) and t.market = $3 order by t.created_at limit $2`,
-      [now, limit, this.d.transfers.market],
+      [now, limit, this.d.transfers.market, RETRY_AFTER_MS, this.d.provider],
     );
     const out: Transfer[] = [];
     for (const row of r.rows) {
