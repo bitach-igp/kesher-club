@@ -1733,6 +1733,59 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/UsFunding" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/fee-batches/{batchId}/us-collection:
+    post:
+      operationId: collectFeeBatchInUs
+      summary: Collect a USD fee batch from US funders on the provider's payment page
+      description: |
+        REQ-INS-023 (T-0652). Finance staff and admins of the institution; the US account must be approved and open in KYB. Each listed fee item
+        of the batch gets a payment page for its funder; the money lands in the institution's own US account and nothing posts to Kesher's ledger.
+        Safe to repeat: the provider's keys are the item and the batch. The funder's contact is sent to the provider and not stored. An item is
+        marked paid only when the provider says so (never from a webhook body).
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: batchId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [funders]
+              properties:
+                funders:
+                  type: array
+                  minItems: 1
+                  maxItems: 200
+                  items:
+                    type: object
+                    required: [feeItemId, name, email, mobile]
+                    properties:
+                      feeItemId: { type: string, format: uuid }
+                      name: { type: string, maxLength: 100 }
+                      email: { type: string, format: email }
+                      mobile: { type: string, description: International format, digits only after an optional plus }
+      responses:
+        "201":
+          description: One payment page for each fee item
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [batchId, items]
+                properties:
+                  batchId: { type: string, format: uuid }
+                  items:
+                    type: array
+                    items:
+                      type: object
+                      required: [feeItemId, status, paymentUrl]
+                      properties:
+                        feeItemId: { type: string, format: uuid }
+                        status: { type: string, enum: [collecting, paid] }
+                        paymentUrl: { type: string, format: uri }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/staff-invites:
     post:
       operationId: createStaffInvite
