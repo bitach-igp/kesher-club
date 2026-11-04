@@ -86,16 +86,16 @@ The port models a **holder** (`platform` or `institution`) so the cards work und
 Record each answer here with its date; an unanswered question keeps its owner and the date it was sent. Which card
 waits on which question is in `specs/tasks/T-0655.md`.
 
-| # | Owner | Sent | Answered | Answer |
+| # | Owner | Sent | Answered / source | Answer |
 |---|---|---|---|---|
-| 1 ILS transfers | Zvi | 2026-11-03 | 2026-11-04 (partial, meeting recording) | Shekel wallets with instant in-wallet conversion (via stablecoins), then a local payout ("Masaf") in Israeli business hours, about one business day, Friday and Saturday wait; Citi Israel for institutional payouts. Personal vs business recipients not stated. Cap of ILS 2,000 a day per account for local Israeli money movement, scope unclear |
-| 2 Account structure | Zvi | 2026-11-03 | 2026-11-04 (meeting recording) | Both exist. A *sub-account* (a project, trip or program) sits under the holder's entity and its own KYB. A *related entity* is a separate business with its own account, KYB on the entity and KYC on its officer, invited by link, email or CSV. A per diem account has its own wallet, ledger and bank details. Subscription tier limits the number of sub-accounts (Postman, 429) |
-| 3 Who is the customer | Ezra | — | 2026-11-04 (partial) | Israel Global Pay as holder with customers under it works if each customer funds from its own account and the platform does not act as a money transmitter on their behalf; Crowded discourages one officer paying out hundreds of per diem accounts for unrelated purposes and recommends a foundation or fiscal sponsor |
+| 1 ILS transfers | Zvi | 2026-11-03 | 2026-11-04 (meeting recording, to confirm) | Per recording: Shekel wallets with instant in-wallet conversion (via stablecoins), then a local payout ("Masaf") in Israeli business hours, about one business day, Friday and Saturday wait; Citi Israel for institutional payouts. Personal vs business recipients not stated. Cap of ILS 2,000 a day per account for local Israeli money movement, scope unclear |
+| 2 Account structure | Zvi | 2026-11-03 | 2026-11-04 (meeting recording, to confirm) | Per recording: Both exist. A *sub-account* (a project, trip or program) sits under the holder's entity and its own KYB. A *related entity* is a separate business with its own account, KYB on the entity and KYC on its officer, invited by link, email or CSV. A per diem account has its own wallet, ledger and bank details. Subscription tier limits the number of sub-accounts (Postman, 429) |
+| 3 Who is the customer | Ezra | — | 2026-11-04 (meeting recording, to confirm) | Per recording: Israel Global Pay as holder with customers under it works if each customer funds from its own account and the platform does not act as a money transmitter on their behalf; Crowded discourages one officer paying out hundreds of per diem accounts for unrelated purposes and recommends a foundation or fiscal sponsor |
 | 4 "Related to Israel" | Ezra | — | — | — |
-| 5 Economics | Ezra | — | 2026-11-04 (meeting recording) | Float paid nightly on balances at about 60% of the midpoint of the Fed rate (about 2.5% annualized); interchange up to about 100 bps of card spend depending on volume, with some pass-through costs. Whether the share is negotiable and what the pass-through costs are: not answered |
-| 6 ILS timing | Ezra | — | 2026-11-04 (meeting recording) | About four weeks from Nov 1, to be confirmed with Dave (a Crowded contact named in the recording); not in writing. Shekel and international wallets are built but not live |
-| 7 Umbrella nonprofit | Ezra | — | 2026-11-04 (partial) | Crowded runs two 501(c)(3)s, one general and one military-focused; an LLC can own a nonprofit. Who legally owns the money and who issues donor receipts: not answered |
-| 8 Students | Ezra | — | 2026-11-04 (meeting recording) | Per diem cardholders (students, kollel) need light KYC only: personal ID, date of birth, email, no ID photo. Cardholders outside the US and the ID type accepted for Israeli residents: not stated |
+| 5 Economics | Ezra | — | 2026-11-04 (meeting recording, to confirm) | Per recording: Float paid nightly on balances at about 60% of the midpoint of the Fed rate (about 2.5% annualized); interchange up to about 100 bps of card spend depending on volume, with some pass-through costs. Whether the share is negotiable and what the pass-through costs are: not answered |
+| 6 ILS timing | Ezra | — | 2026-11-04 (meeting recording, to confirm) | Per recording: About four weeks from Nov 1, to be confirmed with Dave (a Crowded contact named in the recording); not in writing. Shekel and international wallets are built but not live |
+| 7 Umbrella nonprofit | Ezra | — | 2026-11-04 (meeting recording, to confirm) | Per recording: Crowded runs two 501(c)(3)s, one general and one military-focused; an LLC can own a nonprofit. Who legally owns the money and who issues donor receipts: not answered |
+| 8 Students | Ezra | — | 2026-11-04 (meeting recording, to confirm) | Per recording: Per diem cardholders (students, kollel) need light KYC only: personal ID, date of birth, email, no ID photo. Cardholders outside the US and the ID type accepted for Israeli residents: not stated |
 | 9 Credentials | Zvi | — | — | — |
 | 10 Webhook signature | Zvi | — | — | — |
 | 11 ACH event names | Zvi | — | — | — |
@@ -125,7 +125,7 @@ and related entities exist (the port's `platform` / `institution` holder covers 
   where it briefly owns them and carries the exposure. Question 18 below. Until answered, prefer an institution-held account (setup B or C).
 - *Limits (all per the recording, to confirm).* Incoming ACH credit about $300,000 a month (stated loosely), incoming Fedwire up to $20,000,000 a day, funding speed wire in hours
   and ACH 1-2 days, local Israeli money movement up to ILS 2,000 a day (scope unclear). Hosted-page ACH payments are incoming ACH.
-- *Revenue.* Float and interchange are credited to the holder's account nightly from an operations account. T-0654 does not compare credits,
+- *Revenue.* Per the recording, float and interchange are credited to the holder's account nightly from an operations account. T-0654 does not compare credits,
   so it is unaffected. It does compare every outbound debit: if Crowded debits pass-through costs from the account they would be reported as
   `outbound_without_request` breaks each night (question 21). T-0618's deposit feed is Kesher's own bank (`BankPort`, waiting on ADR-006),
   not the Crowded institution accounts; if the Crowded-held account ever becomes that feed, a float credit with no KC- reference would open
@@ -139,7 +139,7 @@ and related entities exist (the port's `platform` / `institution` holder covers 
 **Not built, and the proposal expects it:** per-movement consent records, a bulk (CSV) onboarding of per diem contacts, a unique funding
 account per member, purpose and recipient rules, an evidence pack per transfer, and a revenue ledger for float and interchange.
 
-**Out of bounds per Crowded:** large private checks, property purchases and investments. Checks in Israel have no lockbox (US checks:
+**Out of bounds per the recording (to confirm):** large private checks, property purchases and investments. Checks in Israel have no lockbox (US checks:
 mobile deposit or lockbox).
 
 ### New questions (meeting)
