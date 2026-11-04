@@ -236,6 +236,14 @@ export class LoadService implements LoadActivities {
   async release(transfer: Transfer, now: Date): Promise<Transfer> {
     if (transfer.state !== 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a load that is ${transfer.state}`);
     const workflowId = transfer.idempotencyKey;
+    // Ask the vendor before the money leaves pending: a debit the bank returned during the hold is failed (the hold
+    // is reversed once), never released. The vendor cannot be asked: the error leaves the hold in place and the next
+    // cycle tries again. Releasing blind would credit money that was never collected.
+    const loadId = await this.vendorLoadOf(transfer.id);
+    if (loadId) {
+      const vendor = await this.d.port.getLoad(loadId);
+      if (vendor.status === 'failed') return this.fail(transfer, vendor.failureCode ?? 'VENDOR_FAILED', now);
+    }
     // The hold already converted: the release moves the credited amount within the purse currency.
     const { minor, currency } = credited(transfer);
     const pending = await this.destination(transfer, 'pending', currency);
@@ -306,13 +314,13 @@ export class LoadService implements LoadActivities {
     return r.rows[0]?.external_id;
   }
 
-  /** Loads the vendor has not finished: submitted longer than `olderThanMs` ago. The worker asks the vendor about them. */
+  /** Loads the vendor has not finished: submitted, or held for the bank's hold days (a return can come during it), longer than `olderThanMs` ago. The worker asks the vendor about them. */
   async stale(now: Date, olderThanMs: number, limit = 100): Promise<Transfer[]> {
     // This market's loads only: another market's worker asks its own provider about its own (T-0028). An
     // institution's ACH pull is one too (T-0617); a deposit recorded off a statement (T-0614) never met the vendor.
     const r = await this.d.db.query<{ id: string }>(`select t.id from ops.transfer t
         where (t.kind = 'load' or (t.kind = 'deposit' and exists (select 1 from ops.external_ref r where r.entity_type = 'transfer' and r.entity_id = t.id and r.provider = $4)))
-          and t.state = 'submitted' and t.updated_at <= $1 and t.market = $3 order by t.updated_at limit $2`,
+          and t.state in ('submitted', 'pending_hold') and t.updated_at <= $1 and t.market = $3 order by t.updated_at limit $2`,
       [new Date(now.getTime() - olderThanMs), limit, this.d.transfers.market, this.d.provider]);
     const out: Transfer[] = [];
     for (const row of r.rows) {

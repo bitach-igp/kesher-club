@@ -203,6 +203,7 @@ export function mapPaymentIntent(pi: Record<string, unknown>, known?: { method: 
   const metadata = isRecord(pi['metadata']) ? pi['metadata'] : {};
   const holdUntil = method === 'ach' ? (str(metadata['holdUntil']) ?? known?.holdUntil) : undefined;
   const vendorStatus = str(pi['status']);
+  const lastError = isRecord(pi['last_payment_error']) ? pi['last_payment_error'] : undefined;
   let status: LoadStatus;
   switch (vendorStatus) {
     case 'succeeded':
@@ -211,9 +212,14 @@ export function mapPaymentIntent(pi: Record<string, unknown>, known?: { method: 
     case 'processing':
       status = method === 'ach' ? 'on_hold' : 'processing';
       break;
+    case 'requires_payment_method':
+      // Stripe returns a debit the bank sent back (an ACH return) to requires_payment_method and records why in
+      // last_payment_error; that is a failed load, not one waiting for the member. Without an error it is a fresh
+      // intent that still needs a payment method.
+      status = lastError ? 'failed' : 'requires_action';
+      break;
     case 'requires_action':
     case 'requires_confirmation':
-    case 'requires_payment_method':
     case 'requires_capture':
       status = 'requires_action';
       break;
@@ -223,7 +229,6 @@ export function mapPaymentIntent(pi: Record<string, unknown>, known?: { method: 
     default:
       throw unexpected(`payment intent status ${String(vendorStatus)}`);
   }
-  const lastError = isRecord(pi['last_payment_error']) ? pi['last_payment_error'] : undefined;
   const failureCode = lastError ? (str(lastError['decline_code']) ?? str(lastError['code'])) : undefined;
   const clientSecret = status === 'requires_action' ? str(pi['client_secret']) : undefined;
   return {

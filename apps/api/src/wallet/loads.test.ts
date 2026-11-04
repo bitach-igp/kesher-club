@@ -431,6 +431,16 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     expect(await purse('USD', party)).toEqual({ available: 0n, holds: 0n });
   });
 
+  it('the stale-load sweep also picks up a load held for the bank\'s hold days, so a return during the hold is found (F05)', async () => {
+    const old = new Date(NOW.getTime() - 3_600_000);
+    const [held, settled] = [uuidv7(), uuidv7()];
+    await seedTransfer(db, { id: held, kind: 'load', state: 'pending_hold', market: 'US', at: old });
+    await seedTransfer(db, { id: settled, kind: 'load', state: 'settled', market: 'US', at: old });
+    const stale = (await app.services.loads.stale(NOW, 60_000, 1000)).map((t) => t.id);
+    expect(stale).toContain(held);
+    expect(stale).not.toContain(settled);
+  });
+
   it('the stale-load sweep sees only this market\'s loads, so it asks only this market\'s provider (T-0028)', async () => {
     const old = new Date(NOW.getTime() - 3_600_000);
     const [us, il] = [uuidv7(), uuidv7()];

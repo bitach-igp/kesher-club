@@ -5,14 +5,14 @@
 // in its own hold account and released into its own account the same way.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
-import { BillingSimulator, FundingSimulator, fixedClock } from '@kesher/ports';
+import { BillingSimulator, FundingError, FundingSimulator, fixedClock } from '@kesher/ports';
 import { StaticFlags } from '@kesher/api/billing/capabilities';
 import { MembershipService } from '@kesher/api/billing/memberships';
 import { PlanService } from '@kesher/api/billing/plans';
 import { AccountService } from '@kesher/api/ledger/accounts';
 import { PostgresLedger } from '@kesher/api/ledger/post';
 import { TransferService } from '@kesher/api/transfers/service';
-import { holdKey, LoadService, releaseKey, runLoad, settleKey, type LoadInput } from '@kesher/api/wallet/loads';
+import { applyVendorState, holdKey, LoadService, releaseKey, runLoad, settleKey, type LoadInput } from '@kesher/api/wallet/loads';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
 import { ReleaseHoldsJob } from './release-holds.ts';
 
@@ -110,6 +110,77 @@ describe('TST-WAL-003', () => {
     now = THURSDAY;
     const report = await job.run();
     expect(report.attempted).toBe(0);
+  });
+
+  it('an ACH returned on day 2 whose webhook never arrived is failed at the release date, never credited to the wallet (F05)', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-lost-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 7_000n), key, now);
+    const loadId = (await loads.vendorLoadOf(run.transfer.id))!;
+    // Tuesday: the bank returns the debit. The vendor knows; our webhook endpoint never hears of it.
+    const w = sim.webhookFor(loadId, 'failed');
+    await sim.parseWebhook(w.headers, w.rawBody);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 7_000n, settled: 7_000n });
+
+    now = THURSDAY;
+    const report = await job.run();
+    expect(report).toMatchObject({ attempted: 1, released: 0, errors: [] });
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'failed', failureCode: 'VENDOR_FAILED' });
+    expect(await journals(releaseKey(key))).toBe(0);
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    // The member is told through the transfer's failed event.
+    expect((await transfers.history(run.transfer.id)).map((e) => e.to)).toEqual(['created', 'submitted', 'pending_hold', 'failed']);
+
+    // A second cycle, and a replayed release, post nothing more.
+    now = new Date(now.getTime() + 60_000);
+    expect(await job.run()).toMatchObject({ attempted: 0, released: 0 });
+    await expect(loads.release((await transfers.get(run.transfer.id))!, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+  });
+
+  it('the vendor saying the return during the hold, by webhook or by the sweep, reaches the same end state; a vendor outage at release credits nothing', async () => {
+    const [a, b] = [uuidv7(MONDAY), uuidv7(MONDAY)];
+    now = MONDAY;
+    const [runA, runB] = [await runLoad(loads, ach(a, 3_000n), `ach-hook-${a}`, now), await runLoad(loads, ach(b, 3_000n), `ach-sweep-${b}`, now)];
+    for (const r of [runA, runB]) {
+      const id = (await loads.vendorLoadOf(r.transfer.id))!;
+      const w = sim.webhookFor(id, 'failed');
+      await sim.parseWebhook(w.headers, w.rawBody);
+    }
+    // A: the webhook reaches us. B: the sweep asks the vendor (what the worker's resume does).
+    const idA = (await loads.vendorLoadOf(runA.transfer.id))!;
+    const verifier = loads.webhookVerifier();
+    const hook = sim.webhookFor(idA, 'failed');
+    const v = await verifier.verify(hook.headers, hook.rawBody, now);
+    const viaHook = await loads.applyWebhook({ provider: 'funding', eventId: v.eventId, receivedAt: now.toISOString(), signatureOk: true, payload: v.payload }, now);
+    const idB = (await loads.vendorLoadOf(runB.transfer.id))!;
+    const viaSweep = (await applyVendorState(loads, runB.transfer, await sim.getLoad(idB), `ach-sweep-${b}`, now)).transfer;
+    expect(viaHook).toMatchObject({ state: 'failed', failureCode: 'VENDOR_FAILED' });
+    expect(viaSweep).toMatchObject({ state: 'failed', failureCode: 'VENDOR_FAILED' });
+    expect(await purse(a)).toEqual(await purse(b));
+    expect(await purse(a)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+
+    // The vendor cannot be asked on the release date: the hold stays, the money is not released blind.
+    const c = uuidv7(MONDAY);
+    now = MONDAY;
+    const runC = await runLoad(loads, ach(c, 4_000n), `ach-out-${c}`, now);
+    const realGet = sim.getLoad.bind(sim);
+    sim.getLoad = async () => {
+      throw new FundingError('PROVIDER_UNAVAILABLE', 'down');
+    };
+    now = THURSDAY;
+    const report = await job.run();
+    sim.getLoad = realGet;
+    expect(report.released).toBe(0);
+    expect(report.errors.some((e) => e.transferId === runC.transfer.id)).toBe(true);
+    expect(await purse(c)).toEqual({ available: 0n, holds: 4_000n, settled: 4_000n });
+    expect(await transfers.get(runC.transfer.id)).toMatchObject({ state: 'pending_hold' });
+    // Back up: the next cycle releases it.
+    expect(await job.run()).toMatchObject({ released: 1 });
+    expect(await purse(c)).toEqual({ available: 4_000n, holds: 0n, settled: 4_000n });
   });
 
   it('an institution\'s ACH pull is held in its own hold account and released into its own account on Thursday (T-0617)', async () => {
