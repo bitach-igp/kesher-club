@@ -16,6 +16,8 @@ import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
 import { LoadWorkflow, STALE_AFTER_MS } from './load-workflow.ts';
 
 let db: TestDatabase;
+/** Loads in their bank hold that the sweep now asks about; earlier tests in this file leave some. */
+const heldCount = async (): Promise<number> => (await db.query<{ n: number }>(`select count(*)::int as n from ops.transfer where state = 'pending_hold' and kind in ('load', 'deposit')`)).rows[0]!.n;
 const NOW = new Date('2026-11-01T09:00:00Z');
 let now = NOW;
 const clock = () => now;
@@ -161,12 +163,14 @@ describe('the sweep', () => {
     vendor.script.set('sv_3', ['processing', 'succeeded']);
 
     // Too young: nothing is asked.
+    const baseHeld = await heldCount();
     now = new Date(NOW.getTime() + STALE_AFTER_MS - 1);
     expect(await wf.sweep()).toMatchObject({ attempted: 0 });
 
     now = new Date(NOW.getTime() + STALE_AFTER_MS + 1);
     const first = await wf.sweep();
-    expect(first).toMatchObject({ attempted: 4, settled: 1, failed: 1, open: 2, held: 0, errors: [] });
+    // T-0539: the sweep also asks about loads in their hold (a return can come during it), so loads an earlier test left held are counted.
+    expect(first).toMatchObject({ attempted: 4 + baseHeld, settled: 1, failed: 1, open: 2, held: baseHeld, errors: [] });
     expect(await transfers.get(ra.transfer.id)).toMatchObject({ state: 'settled' });
     expect(await transfers.get(rb.transfer.id)).toMatchObject({ state: 'failed', failureCode: 'CARD_EXPIRED' });
     expect(await transfers.get(rc.transfer.id)).toMatchObject({ state: 'submitted' });
@@ -176,16 +180,16 @@ describe('the sweep', () => {
     // The next cycle: c is now confirmed; d, which the vendor never heard of, stays for the member's rerun.
     now = new Date(now.getTime() + 60_000);
     const second = await wf.sweep();
-    expect(second).toMatchObject({ attempted: 2, settled: 1, open: 1, errors: [] });
+    expect(second).toMatchObject({ attempted: 2 + baseHeld, settled: 1, open: 1, held: baseHeld, errors: [] }); // c, d and the held loads
     expect(await transfers.get(rc.transfer.id)).toMatchObject({ state: 'settled' });
     expect(await available(c)).toBe(3_000n);
     expect(await journals(`sw-a-${a}`)).toBe(1);
     expect(await journals(`sw-c-${c}`)).toBe(1);
     expect((await transfers.byKey(`sw-d-${d}`))!.state).toBe('submitted');
 
-    // Settled and failed loads are out of the sweep's reach; a third pass finds only d.
+    // Settled and failed loads are out of the sweep's reach; a third pass finds only d and the held ACH load.
     now = new Date(now.getTime() + 60_000);
-    expect(await wf.sweep()).toMatchObject({ attempted: 1, open: 1 });
+    expect(await wf.sweep()).toMatchObject({ attempted: 1 + baseHeld, open: 1, held: baseHeld }); // d, and the loads still in their hold
     expect(await wf.run(input(d, 4_000n), `sw-d-${d}`)).toMatchObject({ replayed: true, awaiting: 'vendor' });
   });
 
@@ -202,9 +206,10 @@ describe('the sweep', () => {
       if (id === 'sv_1') throw new FundingError('PROVIDER_UNAVAILABLE', 'flaky');
       return { loadId: id, method: 'apple_pay', amount: money(600n, 'USD'), status: 'succeeded' };
     };
+    const baseHeld = await heldCount();
     now = new Date(start.getTime() + STALE_AFTER_MS + 1);
     const report = await wf.sweep(); // the previous test's unresolved load is still waiting, and counted open
-    expect(report).toMatchObject({ attempted: 3, settled: 1, failed: 0, open: 1, errors: [{ transferId: ra.transfer.id, error: 'flaky' }] });
+    expect(report).toMatchObject({ attempted: 3 + baseHeld, settled: 1, failed: 0, open: 1, errors: [{ transferId: ra.transfer.id, error: 'flaky' }] });
     expect(await transfers.get(rb.transfer.id)).toMatchObject({ state: 'settled' });
     expect(await transfers.get(ra.transfer.id)).toMatchObject({ state: 'submitted' });
   });

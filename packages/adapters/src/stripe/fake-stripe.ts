@@ -56,7 +56,9 @@ interface Pi {
   customer: string | undefined;
   payment_method: string;
   payment_method_types: string[];
-  status: 'succeeded' | 'processing' | 'requires_action' | 'canceled';
+  status: 'succeeded' | 'processing' | 'requires_action' | 'canceled' | 'requires_payment_method';
+  /** What Stripe reports as `last_payment_error`: set when a payment attempt failed, a decline or an ACH return. */
+  last_error?: { code: string; decline_code: string };
   metadata: Record<string, string>;
   client_secret: string;
 }
@@ -112,11 +114,33 @@ export class FakeStripe {
     return this.event('customer.subscription.updated', this.subJson(this.mustSub(subscriptionId)));
   }
 
-  settlePaymentIntent(id: string, outcome: 'succeeded' | 'failed' = 'succeeded'): { headers: Record<string, string>; rawBody: string } {
+  /**
+   * Moves a PaymentIntent the way Stripe does. `failed`: the intent is canceled. `returned`: a bank debit that was
+   * `processing` comes back (R01 and the like), so Stripe returns it to `requires_payment_method` with a
+   * `last_payment_error`, it is not canceled. `reset`: back to `requires_payment_method` with no error (a fresh
+   * attempt is possible), which is not a failure.
+   */
+  settlePaymentIntent(id: string, outcome: 'succeeded' | 'failed' | 'returned' | 'reset' = 'succeeded'): { headers: Record<string, string>; rawBody: string } {
     const pi = this.pis.get(id);
     if (!pi) throw new Error(`fake stripe: no payment intent ${id}`);
-    pi.status = outcome === 'succeeded' ? 'succeeded' : 'canceled';
-    return this.event(outcome === 'succeeded' ? 'payment_intent.succeeded' : 'payment_intent.payment_failed', this.piJson(pi));
+    switch (outcome) {
+      case 'succeeded':
+        pi.status = 'succeeded';
+        delete pi.last_error;
+        return this.event('payment_intent.succeeded', this.piJson(pi));
+      case 'failed':
+        pi.status = 'canceled';
+        pi.last_error = { code: 'payment_intent_payment_attempt_failed', decline_code: 'generic_decline' };
+        return this.event('payment_intent.payment_failed', this.piJson(pi));
+      case 'returned':
+        pi.status = 'requires_payment_method';
+        pi.last_error = { code: 'payment_intent_payment_attempt_failed', decline_code: 'insufficient_funds' };
+        return this.event('payment_intent.payment_failed', this.piJson(pi));
+      case 'reset':
+        pi.status = 'requires_payment_method';
+        delete pi.last_error;
+        return this.event('payment_intent.requires_action', this.piJson(pi));
+    }
   }
 
   /** Signs an arbitrary event body; `ageSeconds` back-dates the timestamp to test the tolerance window. */
@@ -372,7 +396,7 @@ export class FakeStripe {
       status: pi.status,
       client_secret: pi.client_secret,
       metadata: pi.metadata,
-      last_payment_error: pi.status === 'canceled' ? { code: 'payment_intent_payment_attempt_failed', decline_code: 'generic_decline' } : null,
+      last_payment_error: pi.last_error ?? null,
       livemode: false,
     };
   }
