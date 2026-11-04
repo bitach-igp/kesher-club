@@ -60,7 +60,8 @@ describe('the sweep', () => {
     expect(cool.state).toBe('cooling_off');
     expect(big.state).toBe('cooling_off'); // new payee and over the threshold: the cooling-off comes first, the approval after
     expect(small.state).toBe('processing');
-    expect(await available(a)).toBe(1_950_000n);
+    // T-0540: the 300,000 in cool-off and the 700,000 that will wait for an approver are reserved; only the 50,000 left the wallet for the rail.
+    expect(await available(a)).toBe(950_000n);
 
     expect(await wf.sweep()).toMatchObject({ attempted: 0 });
     clock.advance(COOL_OFF_MS);
@@ -71,7 +72,7 @@ describe('the sweep', () => {
     expect((await transfers.get(big.id))!.state).toBe('pending'); // released from the hold, waiting on the second approver
     expect((await transfers.get(big.id))!.journalId).toBeUndefined();
     expect((await payouts.view((await transfers.get(big.id))!)).state).toBe('awaiting_second_approval');
-    expect(await available(a)).toBe(1_650_000n);
+    expect(await available(a)).toBe(950_000n); // unchanged by the cool-off ending: it was reserved from the start
     expect(await journals(settleKey(`po-cool-${a}`))).toBe(1);
     expect(await journals(settleKey(`po-big-${a}`))).toBe(0);
 
