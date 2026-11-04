@@ -9,11 +9,19 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import type { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
+import { computeCrowdedSignature } from '@kesher/adapters';
 import { ConfigError } from '@kesher/domain';
 import { exportJWK, generateKeyPair } from 'jose';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { drain, main } from './main.ts';
+import { createPgDatabase } from './pg.ts';
 import { createMigratedPGlite } from './test-db.ts';
+
+// A pass-through spy: the real pool is still created, and a test can assert that a refused start never reached it.
+vi.mock('./pg.ts', async (importOriginal) => {
+  const original = await importOriginal<{ createPgDatabase: typeof createPgDatabase }>();
+  return { ...original, createPgDatabase: vi.fn(original.createPgDatabase) };
+});
 
 const API_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /** Migrating a fresh PGlite takes seconds, and well over vitest's 10 s hook default when every package tests at once. */
@@ -82,6 +90,105 @@ describe('main (T-0021)', () => {
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).missing).toEqual(['PII_INDEX_KEY']);
     await expect(fetch(`http://127.0.0.1:${env['PORT']}/v1/status`)).rejects.toThrow();
+  });
+});
+
+// T-0659 (REQ-INS-022, REQ-INS-025): the configured Crowded secrets reach the webhook receiver, so it verifies for real.
+describe('Crowded wiring (T-0659)', () => {
+  const TOKEN = 'crowded-api-token-do-not-print';
+  const CURRENT = 'whsec-current-do-not-print';
+  const PREVIOUS = 'whsec-previous-do-not-print';
+  const SIMULATOR = 'whsec-the-simulators-own';
+  const crowdedEnv = () => ({ ...env, PROVIDER_INSTITUTION_BANKING: 'crowded', CROWDED_BASE_URL: 'https://crowded.test/api/v1', CROWDED_API_TOKEN: TOKEN, CROWDED_WEBHOOK_SECRETS: `${CURRENT},${PREVIOUS}` });
+  const batch = (eventId: string) => JSON.stringify({ events: [{ eventId, eventType: 'platform.ping', version: '1.0', timestamp: '2026-11-03T09:59:00Z', context: { partnerId: 'p1' }, data: {} }] });
+  const deliver = async (port: number, body: string, signature: string): Promise<number> =>
+    (await fetch(`http://127.0.0.1:${port}/v1/webhooks/crowded`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-webhook-signature': signature }, body })).status;
+  const stored = async (eventId: string): Promise<number> => (await lite.query(`select 1 from ops.inbound_event where provider = 'crowded' and event_id = $1`, [eventId])).rows.length;
+
+  beforeAll(async () => {
+    // The receiver answers 404 until institutions.usBanking is on; the flag's approval and audit rows are not what is under test.
+    await lite.exec(`set session_replication_role = replica;
+      insert into ops.flag_state (key, value, changed_at, approval_id, audit_id) values ('institutions.usBanking', true, now(), gen_random_uuid(), gen_random_uuid());
+      reset session_replication_role;`);
+  });
+  afterAll(async () => {
+    await lite.exec(`delete from ops.flag_state where key = 'institutions.usBanking'`);
+  });
+
+  it('accepts a delivery signed with the configured secret, or the previous one, and stores it', async () => {
+    const api = await main({ ...crowdedEnv(), PORT: String(await freePort()) });
+    try {
+      const a = batch('wire-current');
+      expect(await deliver(api.port, a, computeCrowdedSignature(CURRENT, a))).toBe(200);
+      expect(await stored('wire-current')).toBe(1);
+      const b = batch('wire-previous');
+      expect(await deliver(api.port, b, computeCrowdedSignature(PREVIOUS, b))).toBe(200);
+      expect(await stored('wire-previous')).toBe(1);
+    } finally {
+      await api.shutdown();
+    }
+  });
+
+  it('refuses a delivery signed with the simulator\'s secret or signature, and stores nothing', async () => {
+    const api = await main({ ...crowdedEnv(), PORT: String(await freePort()) });
+    try {
+      const body = batch('wire-sim');
+      expect(await deliver(api.port, body, computeCrowdedSignature(SIMULATOR, body))).toBe(401);
+      expect(await deliver(api.port, body, 'sha256=sim')).toBe(401);
+      expect(await stored('wire-sim')).toBe(0);
+    } finally {
+      await api.shutdown();
+    }
+  });
+
+  it('on the simulator (the default) no secret is configured, so every delivery is refused, as before', async () => {
+    const api = await main({ ...env, PORT: String(await freePort()) });
+    try {
+      const body = batch('wire-default');
+      for (const secret of [CURRENT, SIMULATOR]) expect(await deliver(api.port, body, computeCrowdedSignature(secret, body))).toBe(401);
+      expect(await stored('wire-default')).toBe(0);
+    } finally {
+      await api.shutdown();
+    }
+  });
+
+  it('logs the provider chosen per port at start-up and never the token or a secret', async () => {
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let out: string;
+    try {
+      for (const e of [crowdedEnv(), env]) {
+        const api = await main({ ...e, PORT: String(await freePort()) });
+        await api.shutdown();
+      }
+      out = write.mock.calls.map((c) => String(c[0])).join('');
+    } finally {
+      write.mockRestore();
+    }
+    const listening = out.split('\n').filter((l) => l.includes('"event":"listening"')).map((l) => JSON.parse(l) as { providers: Record<string, string> });
+    expect(listening.map((l) => l.providers['institution-banking'])).toEqual(['crowded', 'sim']);
+    for (const s of [TOKEN, CURRENT, PREVIOUS]) expect(out).not.toContain(s);
+  });
+
+  it('refuses a partial Crowded environment before opening anything', async () => {
+    const { CROWDED_API_TOKEN: _t, ...partial } = crowdedEnv();
+    const port = await freePort();
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.mocked(createPgDatabase).mockClear();
+    let err: unknown;
+    let out: string;
+    try {
+      err = await main({ ...partial, PORT: String(port) }).catch((e: unknown) => e);
+      out = write.mock.calls.map((c) => String(c[0])).join('');
+    } finally {
+      write.mockRestore();
+    }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).missing).toEqual(['CROWDED_API_TOKEN']);
+    expect((err as ConfigError).message).not.toContain(CURRENT);
+    // Nothing was opened: no Postgres pool was created, nothing listens on the port, and no lifecycle line was written.
+    expect(createPgDatabase).not.toHaveBeenCalled();
+    await expect(fetch(`http://127.0.0.1:${port}/v1/status`)).rejects.toThrow();
+    expect(out).toBe('');
   });
 });
 

@@ -185,6 +185,8 @@
 | [T-0656](T-0656.md) | INS | Evaluate Crowded ILS transfers as a USD→ILS route (spike) | REQ-FX-001, REQ-FX-003, REQ-PO-001 | later |
 | [T-0657](T-0657.md) | INS | Fix: Crowded lookups match on our institution id, not the name | REQ-INS-022, REQ-INS-023 | fix |
 | [T-0658](T-0658.md) | INS | Fix: US funding re-checks the kill switch, KYB and account before every send | REQ-INS-024, REQ-INS-022 | fix |
+| [T-0659](T-0659.md) | INS | Go-live wiring: Crowded adapter by config, secrets passed, keys persisted | REQ-INS-022, REQ-INS-025 | go-live |
+| [T-0660](T-0660.md) | INS | Crowded HTTP simulator and an end-to-end run of the US-banking flows | REQ-INS-022, REQ-INS-023, REQ-INS-024, REQ-INS-025 | go-live |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
