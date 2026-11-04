@@ -2,7 +2,7 @@
 // whose second approval landed, exactly once; what is still waiting stays; reruns are replays.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
-import { fixedClock, NotifySimulator, PayoutSimulator, type AdvanceableClock } from '@kesher/ports';
+import { fixedClock, NotifySimulator, PayoutError, PayoutSimulator, type AdvanceableClock, type PayoutPort } from '@kesher/ports';
 import { ApprovalService } from '@kesher/api/approvals/service';
 import { AuditService } from '@kesher/api/audit/service';
 import { InstitutionKyb } from '@kesher/api/institutions/kyb';
@@ -115,3 +115,118 @@ describe('the sweep', () => {
     payouts.submit = original;
   });
 });
+
+describe('T-0541: a payout hit by a rail outage is retried, not stranded (F10)', () => {
+  let db2: TestDatabase;
+  let sim: PayoutSimulator;
+  let wf2: PayoutWorkflow;
+  let p2: PayoutService;
+  let t2: TransferService;
+  let l2: PostgresLedger;
+  let a2: AccountService;
+  const rail = { down: false, calls: 0 };
+  const T = new Date('2026-11-12T09:00:00Z');
+  const c2 = fixedClock(T.toISOString()) as AdvanceableClock;
+  const vendorRef = async (id: string) => (await db2.query<{ n: number }>(`select count(*)::int as n from ops.external_ref where entity_type = 'transfer' and entity_id = $1 and provider = 'simulator'`, [id])).rows[0]!.n;
+  const jr = async (key: string) => (await db2.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [key])).rows[0]!.n;
+  async function funded(minor: bigint): Promise<string> {
+    const partyId = uuidv7(T);
+    await identity.createUser({ partyId, phone: `+97250900${Math.floor(Math.random() * 9000 + 1000)}`, status: 'active', roles: ['member'], createdAt: T.toISOString() });
+    const wallet = await a2.memberAccount(partyId, 'wallet', 'ILS');
+    const partner = await a2.systemAccount('partner_settlement', 'ILS');
+    await l2.post({ idempotencyKey: `credit-${partyId}`, kind: 'load', postings: [{ accountId: partner, currency: 'ILS', amountMinor: minor }, { accountId: wallet, currency: 'ILS', amountMinor: -minor }] });
+    return partyId;
+  }
+  const ask = (party: string, key: string, minor: bigint) => p2.request(party, { payee: { iban: IL, name: 'Yeshivat Example' }, amount: { minor: minor.toString(), currency: 'ILS' }, reference: 'tuition' }, key, c2.now());
+  const avail = async (party: string) => (await a2.purses(party)).find((p) => p.currency === 'ILS')!.available.minor;
+
+  beforeAll(async () => {
+    db2 = await createTestDatabase();
+    sim = new PayoutSimulator(c2);
+    const port: PayoutPort = {
+      validatePayee: (x) => sim.validatePayee(x),
+      createPayout: async (x, k) => {
+        rail.calls += 1;
+        if (rail.down) throw new PayoutError('PROVIDER_UNAVAILABLE', 'rail down');
+        return sim.createPayout(x, k);
+      },
+      getPayout: (x) => sim.getPayout(x),
+      parseWebhook: (h, b) => sim.parseWebhook(h, b),
+    };
+    l2 = new PostgresLedger(db2);
+    a2 = new AccountService(db2, l2);
+    t2 = new TransferService(db2);
+    const ap = new ApprovalService(db2);
+    p2 = new PayoutService({ db: db2, port, ledger: l2, accounts: a2, transfers: t2, approvals: ap, identity, notify: new NotifySimulator(), flags: new StaticFlags(undefined, { 'payouts.nium': true }), provider: 'simulator', kyb: new KybGate(new InstitutionKyb(db2, ap, new AuditService(db2))), payoutAccounts: new PayoutAccounts(db2, new AuditService(db2)) });
+    wf2 = new PayoutWorkflow(p2, () => c2.now());
+  }, 60_000);
+  afterAll(async () => db2.close());
+
+  it('outage then recovery: the sweep retries with the same key and exactly one vendor payout is made', async () => {
+    const a = await funded(100_000n);
+    const key = `po-out-${a}`;
+    rail.down = true;
+    await expect(ask(a, key, 50_000n)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    const t = (await t2.byKey(key))!;
+    expect(t.state).toBe('submitted');
+    expect(await vendorRef(t.id)).toBe(0);
+    expect(await jr(settleKey(key))).toBe(1);
+    // Too young for the sweep.
+    expect(await wf2.sweep()).toMatchObject({ attempted: 0 });
+    c2.advance(6 * 60_000);
+    // Still down: the sweep tries, it fails quietly (reported), nothing doubles.
+    const down = await wf2.sweep();
+    expect(down.attempted).toBe(1);
+    expect(down.errors).toHaveLength(1);
+    expect((await t2.get(t.id))!.state).toBe('submitted');
+    expect(await jr(settleKey(key))).toBe(1);
+    // The rail is back: the next sweep sends it once.
+    rail.down = false;
+    const callsBefore = rail.calls;
+    const ok = await wf2.sweep();
+    expect(ok).toMatchObject({ attempted: 1, errors: [] });
+    expect(rail.calls - callsBefore).toBe(1);
+    expect(await vendorRef(t.id)).toBe(1);
+    expect(await jr(settleKey(key))).toBe(1);
+    expect(await avail(a)).toBe(50_000n);
+    // Nothing more to do; a client replay of the request changes nothing.
+    expect(await wf2.sweep()).toMatchObject({ attempted: 0 });
+    await ask(a, key, 50_000n);
+    expect(rail.calls - callsBefore).toBe(1);
+  });
+
+  it('a persistent outage fails the payout after 30 minutes and reverses it once; the member is told and ops get a case', async () => {
+    const a = await funded(100_000n);
+    const key = `po-dead-${a}`;
+    rail.down = true;
+    await expect(ask(a, key, 40_000n)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    const t = (await t2.byKey(key))!;
+    expect(await avail(a)).toBe(60_000n);
+    c2.advance(10 * 60_000);
+    expect((await wf2.sweep()).attempted).toBe(1);
+    expect((await t2.get(t.id))!.state).toBe('submitted'); // ten minutes in: still retrying
+    c2.advance(25 * 60_000);
+    await wf2.sweep();
+    expect(await t2.get(t.id)).toMatchObject({ state: 'failed', failureCode: 'PROVIDER_UNAVAILABLE' });
+    expect(await avail(a)).toBe(100_000n);
+    expect(await jr(`${settleKey(key)}:reversal`)).toBe(1);
+    expect((await db2.query<{ n: number }>(`select count(*)::int as n from ops.case where kind = 'payout_stranded' and payload->>'transferId' = $1`, [t.id])).rows[0]!.n).toBe(1);
+    // Failed once: further sweeps and the recovery of the rail change nothing.
+    rail.down = false;
+    expect(await wf2.sweep()).toMatchObject({ attempted: 0 });
+    expect(await avail(a)).toBe(100_000n);
+    expect(await jr(`${settleKey(key)}:reversal`)).toBe(1);
+  });
+
+  it('a payout under the approval threshold that cooled off is resumed by the sweep (no approver is needed)', async () => {
+    rail.down = false;
+    const a = await funded(500_000n);
+    const key = `po-cool-${a}`;
+    expect((await ask(a, key, 300_000n)).state).toBe('cooling_off');
+    c2.advance(COOL_OFF_MS);
+    expect(await wf2.sweep()).toMatchObject({ attempted: 1, submitted: 1, errors: [] });
+    expect((await t2.byKey(key))!).toMatchObject({ state: 'pending', journalId: expect.any(String) });
+    expect(await vendorRef((await t2.byKey(key))!.id)).toBe(1);
+  });
+});
+
