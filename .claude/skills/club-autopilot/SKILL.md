@@ -50,3 +50,11 @@ per `handoff/README.md`, push, wait for the checker's PASS on the branch before 
 - If a merge turns main red: open a revert PR immediately (same gate except the review: the owner's rule, since a
   revert restores code that was already reviewed), then reopen the card.
 - Commits also carry the trailers the session gives (Co-Authored-By, Claude-Session).
+
+## Cost control
+A session's credits are shared across a five-hour window; spend them deliberately.
+- Scouts and mechanical work (renames, doc edits, log rows, CI reading) go to Haiku. Reviews default to Sonnet. Use Opus only for the ledger core or auth, and ask the user first.
+- Give a reviewer the card and the diff only, and ask for a report under 300 words. A re-review covers just the delta since the last round.
+- Run the whole check set (`pnpm typecheck`, `lint`, `test`, `trace`) before pushing, including other packages' tests when a shared behaviour changed; a CI-only failure costs a round trip.
+- Do not poll. Subscribe to the PR and end the turn; the CI event wakes the session. Events for an older head are not the current head's result.
+- One card at a time. When the user asks to throttle, finish the card in flight and stop starting new ones until told.
