@@ -4890,7 +4890,7 @@ components:
         source: { type: string, enum: [port, manual] }
         status: { type: string, enum: [proposed, active, superseded, rejected] }
         validFrom: { type: string, format: date-time }
-        validUntil: { type: string, format: date-time, description: Absent on a manual rate, which holds until superseded }
+        validUntil: { type: string, format: date-time, description: A port rate holds 15 minutes; a manual rate at most 24 hours from its activation (T-0546); past it the feed takes over }
         proposedBy: { type: string }
         reason: { type: string }
         createdAt: { type: string, format: date-time }
