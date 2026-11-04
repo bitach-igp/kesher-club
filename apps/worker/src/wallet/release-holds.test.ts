@@ -12,8 +12,9 @@ import { PlanService } from '@kesher/api/billing/plans';
 import { AccountService } from '@kesher/api/ledger/accounts';
 import { PostgresLedger } from '@kesher/api/ledger/post';
 import { TransferService } from '@kesher/api/transfers/service';
-import { applyVendorState, holdKey, LoadService, releaseKey, runLoad, settleKey, type LoadInput } from '@kesher/api/wallet/loads';
+import { holdKey, LoadService, releaseKey, runLoad, settleKey, type LoadInput } from '@kesher/api/wallet/loads';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
+import { LoadWorkflow, STALE_AFTER_MS } from './load-workflow.ts';
 import { ReleaseHoldsJob } from './release-holds.ts';
 
 let db: TestDatabase;
@@ -156,8 +157,13 @@ describe('TST-WAL-003', () => {
     const hook = sim.webhookFor(idA, 'failed');
     const v = await verifier.verify(hook.headers, hook.rawBody, now);
     const viaHook = await loads.applyWebhook({ provider: 'funding', eventId: v.eventId, receivedAt: now.toISOString(), signatureOk: true, payload: v.payload }, now);
-    const idB = (await loads.vendorLoadOf(runB.transfer.id))!;
-    const viaSweep = (await applyVendorState(loads, runB.transfer, await sim.getLoad(idB), `ach-sweep-${b}`, now)).transfer;
+    const wf = new LoadWorkflow(loads, sim, () => now);
+    now = new Date(MONDAY.getTime() + STALE_AFTER_MS + 1); // the held load is past the stale window
+    const swept = await wf.sweep();
+    expect(swept.failed).toBeGreaterThanOrEqual(1);
+    expect(swept.errors).toEqual([]);
+    const viaSweep = (await transfers.get(runB.transfer.id))!;
+    now = MONDAY;
     expect(viaHook).toMatchObject({ state: 'failed', failureCode: 'VENDOR_FAILED' });
     expect(viaSweep).toMatchObject({ state: 'failed', failureCode: 'VENDOR_FAILED' });
     expect(await purse(a)).toEqual(await purse(b));
@@ -225,6 +231,63 @@ describe('TST-WAL-003', () => {
     expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
     expect(await journals(`${holdKey(key)}:reversal:undo`)).toBe(1);
     expect(await purse(party)).toEqual({ available: 2_500n, holds: 0n, settled: 2_500n });
+  });
+
+  it('a return that lands after the release moved the row to pending, before it settled, undoes both the hold and the release', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-race-c-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 5_500n), key, now);
+    const realApply = transfers.apply.bind(transfers);
+    let injected = false;
+    transfers.apply = async (id, event, at, extra) => {
+      if (event === 'settle' && !injected) {
+        injected = true;
+        await loads.fail((await transfers.get(id))!, 'VENDOR_FAILED', at); // the row is pending: the release journal is posted
+      }
+      return realApply(id, event, at, extra);
+    };
+    now = THURSDAY;
+    try {
+      await expect(loads.release((await transfers.get(run.transfer.id))!, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    } finally {
+      transfers.apply = realApply;
+    }
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'failed' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await journals(`${releaseKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+  });
+
+  it('a release journal orphaned by a crash is reversed when the vendor later reports the return', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-orphan-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 4_200n), key, now);
+    const realApply = transfers.apply.bind(transfers);
+    transfers.apply = async (id, event, at, extra) => {
+      if (event === 'release_hold') throw new Error('process died');
+      return realApply(id, event, at, extra);
+    };
+    now = THURSDAY;
+    try {
+      await expect(loads.release((await transfers.get(run.transfer.id))!, now)).rejects.toThrow('process died');
+    } finally {
+      transfers.apply = realApply;
+    }
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'pending_hold' });
+    expect(await journals(releaseKey(key))).toBe(1); // posted, the row never moved
+    expect(await purse(party)).toEqual({ available: 4_200n, holds: 0n, settled: 4_200n }); // wallet credited by the orphan
+
+    // The bank returns the debit; the next cycle finds out.
+    const loadId = (await loads.vendorLoadOf(run.transfer.id))!;
+    const w = sim.webhookFor(loadId, 'failed');
+    await sim.parseWebhook(w.headers, w.rawBody);
+    expect(await job.run()).toMatchObject({ attempted: 1, released: 0, errors: [] });
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'failed' });
+    expect(await journals(`${releaseKey(key)}:reversal`)).toBe(1);
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
   });
 
   it('an institution\'s ACH pull is held in its own hold account and released into its own account on Thursday (T-0617)', async () => {

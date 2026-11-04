@@ -31,7 +31,7 @@ import type { Database } from '../db.ts';
 import type { RateService } from '../fx/rates.ts';
 import { rateString } from '../fx/service.ts';
 import type { AccountService } from '../ledger/accounts.ts';
-import type { PostgresLedger } from '../ledger/post.ts';
+import type { PostedJournal, PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
@@ -260,25 +260,36 @@ export class LoadService implements LoadActivities {
       ],
       metadata: { workflowId, provider: this.d.provider, heldUntil: transfer.holdReleasesAt, ...institutionMetadata(transfer) },
     });
-    let released: Transfer;
     try {
-      released = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold days passed' });
+      const released = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold days passed' });
+      return await this.d.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
     } catch (e) {
-      // A return (webhook or sweep) failed the load between the vendor check and here: the row lock refuses the
-      // release. Its journal is already posted, so reverse it once, or the wallet keeps money that was never collected.
+      // A return (webhook or sweep) failed the load after the vendor check, before the row moved or between its two
+      // steps. Its journal is already posted, so reverse it (once: the key is idempotent and `fail` uses the same one),
+      // or the wallet keeps money that was never collected.
       if ((await this.d.transfers.get(transfer.id))?.state === 'failed') await this.d.ledger.reverse(journal.id, `${releaseKey(workflowId)}:reversal`);
       throw e;
     }
-    return this.d.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
   }
 
+  /**
+   * Fails the load. While the money is held (`pending_hold`, or `pending` once a release has begun) it undoes what is
+   * posted: the hold journal, and the release journal if one exists (a release that posted and then died leaves one).
+   * If the row had in fact moved on (the release won), the reversals are undone and the error stands.
+   */
   async fail(transfer: Transfer, code: string, now: Date): Promise<Transfer> {
-    const reversal = transfer.state === 'pending_hold' && transfer.journalId ? await this.d.ledger.reverse(transfer.journalId, `${holdKey(transfer.idempotencyKey)}:reversal`) : undefined;
+    const workflowId = transfer.idempotencyKey;
+    const held = transfer.state === 'pending_hold' || transfer.state === 'pending';
+    const reversals: PostedJournal[] = [];
+    if (held && transfer.journalId) reversals.push(await this.d.ledger.reverse(transfer.journalId, `${holdKey(workflowId)}:reversal`));
+    if (held) {
+      const posted = await this.d.db.query<{ id: string }>(`select id from ledger.journal where idempotency_key = $1`, [releaseKey(workflowId)]);
+      if (posted.rows[0]) reversals.push(await this.d.ledger.reverse(posted.rows[0].id, `${releaseKey(workflowId)}:reversal`));
+    }
     try {
-      return await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: transfer.state === 'pending_hold' ? 'returned during hold' : 'vendor' });
+      return await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: held ? 'returned during hold' : 'vendor' });
     } catch (e) {
-      // The release won the race (the row is no longer in its hold and not failed): the hold stays, so undo the reversal once.
-      if (reversal && (await this.d.transfers.get(transfer.id))?.state !== 'failed') await this.d.ledger.reverse(reversal.id, `${holdKey(transfer.idempotencyKey)}:reversal:undo`);
+      if ((await this.d.transfers.get(transfer.id))?.state !== 'failed') for (const r of reversals) await this.d.ledger.reverse(r.id, `${r.idempotencyKey}:undo`);
       throw e;
     }
   }

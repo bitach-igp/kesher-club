@@ -447,9 +447,12 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     const [held, submitted] = [uuidv7(), uuidv7()];
     await seedTransfer(db, { id: held, kind: 'load', state: 'pending_hold', market: 'US', at: older });
     await seedTransfer(db, { id: submitted, kind: 'load', state: 'submitted', market: 'US', at: old });
-    const all = (await app.services.loads.stale(NOW, 60_000, 1000)).map((t) => t.id);
-    expect(all.indexOf(submitted)).toBeGreaterThanOrEqual(0);
-    expect(all.indexOf(held)).toBeGreaterThan(all.indexOf(submitted));
+    // Earlier tests in this file leave stale submitted loads of their own, so ask for exactly as many as exist.
+    const submittedCount = Number((await db.query<{ n: number }>(`select count(*)::int as n from ops.transfer where kind = 'load' and state = 'submitted' and market = 'US' and updated_at <= $1`, [new Date(NOW.getTime() - 60_000)])).rows[0]!.n);
+    const firstPage = (await app.services.loads.stale(NOW, 60_000, submittedCount)).map((t) => t.id);
+    expect(firstPage).toContain(submitted);
+    expect(firstPage).not.toContain(held); // the limit is filled by submitted loads; the held one waits
+    expect((await app.services.loads.stale(NOW, 60_000, submittedCount + 1)).map((t) => t.id)).toContain(held);
   });
 
   it('the stale-load sweep sees only this market\'s loads, so it asks only this market\'s provider (T-0028)', async () => {
