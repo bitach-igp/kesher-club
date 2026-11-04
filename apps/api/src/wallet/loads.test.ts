@@ -456,6 +456,75 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     expect((await app.services.loads.stale(NOW, 60_000, submittedCount + 1)).map((t) => t.id)).toContain(held);
   });
 
+  it('a release that dies after the row moved to pending is finished by the vendor\'s confirmation, a retry or the sweep, and never credits twice (T-0543, F09)', async () => {
+    const crashAtSettle = async (run: () => Promise<unknown>) => {
+      const transfers = app.services.transfers;
+      const real = transfers.apply.bind(transfers);
+      let boom = true;
+      transfers.apply = async (id, event, at, extra) => {
+        if (event === 'settle' && boom) {
+          boom = false;
+          throw new Error('db down');
+        }
+        return real(id, event, at, extra);
+      };
+      try {
+        await expect(run()).rejects.toThrow('db down');
+      } finally {
+        transfers.apply = real;
+      }
+    };
+    const stuck = async (key: string) => {
+      const r = await load({ method: 'ach', paymentMethodId: 'pm_bank', amount: { minor: '5000', currency: 'USD' } }, key);
+      const t = (await app.services.transfers.byKey(key))!;
+      expect(r.body).toMatchObject({ state: 'on_hold' });
+      await crashAtSettle(() => app.services.loads.release(t, new Date('2026-11-05T09:00:00Z')));
+      const pending = (await app.services.transfers.get(t.id))!;
+      expect(pending.state).toBe('pending');
+      return pending;
+    };
+    const count = async (k: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [k])).rows[0]!.n;
+
+    // (a) the vendor says it succeeded (webhook) while the row is pending: it settles the release, it does not post a second credit.
+    const before = await available();
+    const a = await stuck('load-pending-hook-1');
+    expect(await available()).toBe(before + 5_000n); // the release journal already credited the wallet
+    expect((await hook(host.simulators.funding.webhookFor((await vendorLoadOf(a.id))!, 'succeeded'))).status).toBe(200);
+    expect((await app.services.transfers.get(a.id))!.state).toBe('settled');
+    expect(await available()).toBe(before + 5_000n);
+    expect(await count(settleKey('load-pending-hook-1'))).toBe(0);
+
+    // (b) the member's retry with the same key.
+    const b = await stuck('load-pending-retry-1');
+    const again = await load({ method: 'ach', paymentMethodId: 'pm_bank', amount: { minor: '5000', currency: 'USD' } }, 'load-pending-retry-1');
+    expect(again.body).toMatchObject({ id: b.id, state: 'settled' });
+    expect(await available()).toBe(before + 10_000n);
+    expect(await count(settleKey('load-pending-retry-1'))).toBe(0);
+    expect(await count(releaseKey('load-pending-retry-1'))).toBe(1);
+
+    // (c) the sweep picks a stuck pending load up, and asking the vendor finishes it the same way.
+    const c = await stuck('load-pending-sweep-1');
+    const sweepAt = new Date('2026-11-05T10:00:00Z');
+    expect((await app.services.loads.stale(sweepAt, 60_000, 1000)).map((t) => t.id)).toContain(c.id);
+    const { applyVendorState } = await import('./loads.ts');
+    const vendor = await host.simulators.funding.getLoad((await vendorLoadOf(c.id))!);
+    expect((await applyVendorState(app.services.loads, c, vendor, c.idempotencyKey, sweepAt)).transfer.state).toBe('settled');
+    expect(await available()).toBe(before + 15_000n);
+    expect(await count(settleKey('load-pending-sweep-1'))).toBe(0);
+  });
+
+  it('a pending load is swept ahead of loads still in their hold, even when more held loads are older than the limit (T-0543)', async () => {
+    const [held1, held2, held3, pending] = [uuidv7(), uuidv7(), uuidv7(), uuidv7()];
+    const ancient = new Date(NOW.getTime() - 30 * 86_400_000);
+    for (const id of [held1, held2, held3]) await seedTransfer(db, { id, kind: 'load', state: 'pending_hold', market: 'US', at: ancient });
+    await seedTransfer(db, { id: pending, kind: 'load', state: 'pending', market: 'US', at: new Date(NOW.getTime() - 86_400_000) });
+    // The limit is the number of rows that must come first (submitted or pending): the held ones, however old, wait behind them.
+    const first = Number((await db.query<{ n: number }>(`select count(*)::int as n from ops.transfer where kind = 'load' and market = 'US' and state in ('submitted', 'pending') and updated_at <= $1`, [new Date(NOW.getTime() - 60_000)])).rows[0]!.n);
+    const page = (await app.services.loads.stale(NOW, 60_000, first)).map((t) => t.id);
+    expect(page).toContain(pending);
+    for (const id of [held1, held2, held3]) expect(page).not.toContain(id);
+  });
+
   it('the stale-load sweep sees only this market\'s loads, so it asks only this market\'s provider (T-0028)', async () => {
     const old = new Date(NOW.getTime() - 3_600_000);
     const [us, il] = [uuidv7(), uuidv7()];

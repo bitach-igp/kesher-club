@@ -14,8 +14,8 @@ import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { runLoad } from '../wallet/loads.ts';
-import { HOLD_MS, releaseKey } from './holds.ts';
-import { RECEIVED_TEMPLATE, settleKey } from './send.ts';
+import { HOLD_MS, holdKey, releaseKey } from './holds.ts';
+import { RECEIVED_TEMPLATE, runSend, settleKey } from './send.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -336,3 +336,135 @@ describe('TST-PAY-006: the receiving currency', () => {
     expect((await app.services.transfers.history(released.id)).map((e) => e.to)).toEqual(['created', 'submitted', 'pending_hold', 'pending', 'settled']);
   });
 });
+
+describe('T-0543: a send left in pending is finished once, never posted twice (F09)', () => {
+  const MIN = 60_000;
+  const journalCount = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [key])).rows[0]!.n;
+  /** The release dies after the hold left (release_hold applied, settle not): the row stays `pending`. */
+  async function crashAtSettle(run: () => Promise<unknown>) {
+    const transfers = app.services.transfers;
+    const real = transfers.apply.bind(transfers);
+    let boom = true;
+    transfers.apply = async (id, event, at, extra) => {
+      if (event === 'settle' && boom) {
+        boom = false;
+        throw new Error('db down');
+      }
+      return real(id, event, at, extra);
+    };
+    try {
+      await expect(run()).rejects.toThrow('db down');
+    } finally {
+      transfers.apply = real;
+    }
+  }
+
+  it('a client retry after the crash finishes the send: the recipient is credited once, one release journal, no settle journal, one notification', async () => {
+    const a = await register('+972501000090');
+    const b = await register('+972501000091');
+    await fund(a, 100_000n);
+    const key = 'pending-retry-1';
+    const body = { toPartyId: b.partyId, amount: ils('60000') };
+    const held = await send(a, body, key);
+    expect(held.body).toMatchObject({ state: 'pending_hold' });
+    const id = (held.body as { id: string }).id;
+    const later = new Date(NOW.getTime() + HOLD_MS);
+    const before = notifySim().sent.length;
+    await crashAtSettle(() => app.services.p2p.send(a.partyId, body, key, later));
+    expect((await app.services.transfers.get(id))!.state).toBe('pending');
+    // The client retries with the same key.
+    const done = await app.services.p2p.send(a.partyId, body, key, later);
+    expect(done).toMatchObject({ id, state: 'settled' });
+    expect(await available(b.partyId)).toBe(60_000n);
+    expect(await available(a.partyId)).toBe(40_000n);
+    expect(await journalCount(holdKey(key))).toBe(1);
+    expect(await journalCount(releaseKey(key))).toBe(1);
+    expect(await journalCount(settleKey(key))).toBe(0);
+    expect((await app.services.transfers.history(id)).map((e) => e.to)).toEqual(['created', 'submitted', 'pending_hold', 'pending', 'settled']);
+    expect(notifySim().sent.slice(before).filter((n) => n.data['transferId'] === id)).toHaveLength(1);
+    // Once more: nothing changes.
+    await app.services.p2p.send(a.partyId, body, key, later);
+    expect(await available(b.partyId)).toBe(60_000n);
+    expect(await journalCount(releaseKey(key))).toBe(1);
+  });
+
+  it('the sweep finds a stuck pending send and finishes it with the stored key', async () => {
+    const a = await register('+972501000092');
+    const b = await register('+972501000093');
+    await fund(a, 100_000n);
+    const key = 'pending-sweep-1';
+    const body = { toPartyId: b.partyId, amount: ils('60000') };
+    const id = ((await send(a, body, key)).body as { id: string }).id;
+    const later = new Date(NOW.getTime() + HOLD_MS);
+    await crashAtSettle(() => app.services.p2p.send(a.partyId, body, key, later));
+    const sweepAt = new Date(later.getTime() + 10 * MIN);
+    expect((await app.services.p2p.stale(sweepAt, 5 * MIN)).map((t) => t.id)).toContain(id);
+    const t = (await app.services.transfers.get(id))!;
+    const run = await runSend(app.services.p2p, { fromPartyId: a.partyId, toPartyId: b.partyId, amount: t.amount }, key, sweepAt);
+    expect(run.transfer).toMatchObject({ id, state: 'settled' });
+    expect(await available(b.partyId)).toBe(60_000n);
+    expect(await journalCount(settleKey(key))).toBe(0);
+    expect((await app.services.p2p.stale(sweepAt, 5 * MIN)).map((x) => x.id)).not.toContain(id);
+  });
+
+  it('a replay after the payee became known does not settle on top of the hold; the release still pays once', async () => {
+    const a = await register('+972501000094');
+    const b = await register('+972501000095');
+    await fund(a, 100_000n);
+    const key = 'pending-known-1';
+    const body = { toPartyId: b.partyId, amount: ils('60000') };
+    const id = ((await send(a, body, key)).body as { id: string }).id;
+    // A small send settles, so b is no longer a new counterparty.
+    expect((await send(a, { toPartyId: b.partyId, amount: ils('1000') }, 'pending-known-small')).body).toMatchObject({ state: 'settled' });
+    // The replay inside the two hours still returns the held send: no settle journal.
+    expect(await app.services.p2p.send(a.partyId, body, key, new Date(NOW.getTime() + 10 * MIN))).toMatchObject({ id, state: 'pending_hold' });
+    expect(await journalCount(settleKey(key))).toBe(0);
+    expect(await app.services.p2p.send(a.partyId, body, key, new Date(NOW.getTime() + HOLD_MS))).toMatchObject({ id, state: 'settled' });
+    expect(await journalCount(settleKey(key))).toBe(0);
+    expect(await journalCount(releaseKey(key))).toBe(1);
+    expect(await available(b.partyId)).toBe(60_000n + 1_000n);
+  });
+
+  it('the converted-currency release finishes a pending row too: the member is credited once at the price fixed when it began', async () => {
+    const a = await register('+972501000096');
+    const c = await register('+972501000097');
+    await fund(a, 50_000n, 'USD');
+    await app.services.preferences.set(c.partyId, 'ILS', NOW);
+    const key = 'pending-xccy-1';
+    const body = { toPartyId: c.partyId, amount: usd('20000') };
+    // The earlier test in this file left the second published rate current from a minute on; price the hold then.
+    const at = new Date(NOW.getTime() + 5 * MIN);
+    const held = await app.services.p2p.send(a.partyId, body, key, at);
+    expect(held).toMatchObject({ state: 'pending_hold', rateVersion: expect.any(Number) });
+    const received = BigInt((held as { received: { minor: string } }).received.minor);
+    expect(received).toBeGreaterThan(0n);
+    const later = new Date(at.getTime() + HOLD_MS);
+    await crashAtSettle(() => app.services.p2p.send(a.partyId, body, key, later));
+    expect((await app.services.transfers.get(held.id))!.state).toBe('pending');
+    expect(await available(c.partyId, 'ILS')).toBe(received); // the release journal already credited it
+    expect(await app.services.p2p.send(a.partyId, body, key, later)).toMatchObject({ id: held.id, state: 'settled', received: { minor: received.toString(), currency: 'ILS' } });
+    expect(await available(c.partyId, 'ILS')).toBe(received); // the retry added nothing
+    expect(await journalCount(releaseKey(key))).toBe(1);
+    expect(await journalCount(settleKey(key))).toBe(0);
+  });
+
+  it('a hold that went back to the sender (a cancel that died after reversing it) is never paid out to the recipient', async () => {
+    const a = await register('+972501000098');
+    const b = await register('+972501000099');
+    await fund(a, 100_000n);
+    const key = 'pending-cancelled-1';
+    const body = { toPartyId: b.partyId, amount: ils('60000') };
+    const held = await send(a, body, key);
+    const id = (held.body as { id: string }).id;
+    const t = (await app.services.transfers.get(id))!;
+    expect(await available(a.partyId)).toBe(40_000n);
+    // The cancel reversed the hold (the money is back with the sender) and died before the transfer was marked cancelled.
+    await app.services.ledger.reverse(t.journalId!, `${holdKey(key)}:reversal`);
+    expect(await available(a.partyId)).toBe(100_000n);
+    await expect(app.services.p2p.send(a.partyId, body, key, new Date(NOW.getTime() + HOLD_MS))).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await journalCount(releaseKey(key))).toBe(0);
+    expect(await available(b.partyId)).toBe(0n);
+    expect(await available(a.partyId)).toBe(100_000n);
+  });
+});
+
