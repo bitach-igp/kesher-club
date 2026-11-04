@@ -59,7 +59,7 @@ import { OtpService } from './auth/otp.ts';
 import { PasskeyService } from './auth/passkeys.ts';
 import { RecoveryService } from './auth/recovery.ts';
 import { InMemoryIdentityRepository, type IdentityRepository } from './auth/repository.ts';
-import { StepUpService } from './auth/step-up.ts';
+import { requireStepUp, StepUpService } from './auth/step-up.ts';
 import { TokenService, type SigningKey } from './auth/tokens.ts';
 import { AccountService } from './ledger/accounts.ts';
 import { PostgresLedger } from './ledger/post.ts';
@@ -331,9 +331,10 @@ export function createApp(o: AppOptions): App {
     }),
     createAddonOrder: route(async (req) => {
       const p = requirePrincipal(req);
+      requireStepUp(s.stepUp, req);
       const b = req.body as { sku: string; quantity?: number; disclosuresAcknowledged?: boolean };
       const membership = await s.memberships.forMember(p.partyId);
-      const order = await s.orders.create({ idempotencyKey: requireIdempotencyKey(req), memberPartyId: p.partyId, membership, sku: b.sku, ...(b.quantity ? { quantity: b.quantity } : {}), ...(b.disclosuresAcknowledged !== undefined ? { disclosuresAcknowledged: b.disclosuresAcknowledged } : {}) }, req.now);
+      const order = await s.orders.create({ idempotencyKey: requireIdempotencyKey(req), memberPartyId: p.partyId, membership, sku: b.sku, ...(b.quantity !== undefined ? { quantity: b.quantity } : {}), ...(b.disclosuresAcknowledged !== undefined ? { disclosuresAcknowledged: b.disclosuresAcknowledged } : {}) }, req.now);
       return { status: 201, body: { id: order.id, sku: order.sku, state: order.state, price: toWire(order.price), creditApplied: toWire(order.credit), ...(order.fulfilment ? { fulfilment: order.fulfilment } : {}) } };
     }),
     importRoster: importRosterHandler({ roster: s.roster, staffInstitution, onCommitted: (importId, now) => s.invites.fanOut(importId, now) }),

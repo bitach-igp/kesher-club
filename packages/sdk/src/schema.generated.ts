@@ -99,7 +99,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Buy an add-on; entitlement credits apply automatically
-         * @description REQ-MKT-001, REQ-ESIM-001/002, REQ-INSR-001. Idempotent; starts the AddonWorkflow keyed by the Idempotency-Key.
+         * @description REQ-MKT-001, REQ-ESIM-001/002, REQ-INSR-001 (T-0542). Needs a fresh step-up (STEP_UP_REQUIRED, 401). Idempotent; starts the AddonWorkflow keyed by the Idempotency-Key, which names one request: the same member, sku and quantity, otherwise IDEMPOTENCY_CONFLICT (409). The wallet must hold the price after credit, otherwise INSUFFICIENT_FUNDS (422) and nothing is created or spent. The quantity is a whole number from 1 to 10, otherwise VALIDATION_FAILED (422).
          */
         readonly post: operations["createAddonOrder"];
         readonly delete?: never;
@@ -5107,6 +5107,8 @@ export interface operations {
             readonly header: {
                 /** @description Client-generated key; replays return the original response for 24 h. */
                 readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
             };
             readonly path?: never;
             readonly cookie?: never;
