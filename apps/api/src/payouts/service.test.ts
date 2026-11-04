@@ -98,7 +98,8 @@ describe('TST-PO-002: cooling off, approval, settlement and reversal', () => {
     expect(r.status).toBe(201);
     expect(r.body).toEqual({ id: expect.any(String), state: 'cooling_off', amount: { minor: '300000', currency: 'ILS' }, scheduledFor: new Date(NOW.getTime() + COOL_OFF_MS).toISOString() });
     const id = (r.body as PayoutView).id;
-    expect(await available()).toBe(2_000_000n);
+    // T-0540: the amount is reserved (wallet → pending) the moment it has to wait, so it cannot be spent meanwhile.
+    expect(await available()).toBe(1_700_000n);
     expect(await journals(settleKey('po-cool-1'))).toBe(0);
     expect((await db.query<{ n: number; last4: string }>(`select count(*)::int as n, min(iban_last4) as last4 from ops.payee where party_id = $1`, [member])).rows[0]).toEqual({ n: 1, last4: '9999' });
     // Replay: the same held payout.
@@ -157,7 +158,7 @@ describe('TST-PO-002: cooling off, approval, settlement and reversal', () => {
     const r = await payout({ amount: { minor: '600000', currency: 'ILS' } }, 'po-big-1');
     expect(r.body).toMatchObject({ state: 'awaiting_second_approval', amount: { minor: '600000', currency: 'ILS' } });
     const id = (r.body as PayoutView).id;
-    expect(await available()).toBe(1_400_000n);
+    expect(await available()).toBe(800_000n); // reserved while it waits for the approver
     const req = (await app.services.approvals.find('payout', id))!;
     expect(req).toMatchObject({ kind: 'payout', required: 2, approvals: 1, status: 'awaiting_second_approval' });
     expect(await app.services.payouts.resumable(now)).toEqual([]);
@@ -200,4 +201,103 @@ describe('TST-PO-002: cooling off, approval, settlement and reversal', () => {
     expect(resumable).not.toContain(us);
   });
 
+});
+
+describe('T-0540: a payout that waits has its funds reserved (REQ-PO-001, REQ-WAL-001, F11)', () => {
+  const reserveKey = (k: string) => `${k}:reserve`;
+  const unreserveKey = (k: string) => `${k}:unreserve`;
+  const poPayee = (iban: string, name: string) => ({ iban, name });
+  async function newMember(minor: bigint) {
+    const party = uuidv7(now);
+    await app.services.accounts.provisionMember(party);
+    await runLoad(app.services.loads, { payerPartyId: party, memberPartyId: party, method: 'card', amount: money(minor, 'ILS'), paymentMethodId: 'pm_ok' }, `po-fund-${party}`, now);
+    return party;
+  }
+  const purse = async (party: string) => {
+    const p = (await app.services.accounts.purses(party)).find((x) => x.currency === 'ILS')!;
+    return { available: p.available.minor, holds: p.holds.minor };
+  };
+  const ask = (party: string, key: string, minor: bigint, payee = poPayee(IL, 'Yeshivat Example')) =>
+    app.services.payouts.request(party, { payee, amount: { minor: minor.toString(), currency: 'ILS' }, reference: 'tuition' }, key, now);
+  const run = async (key: string) => {
+    const t = (await app.services.transfers.byKey(key))!;
+    return runPayout(app.services.payouts, await app.services.payouts.inputFor(t), key, now);
+  };
+
+  it('3,000 to a new payee with 3,000 available: spending it during the cool-off is refused, and the release leaves the wallet at zero, not below', async () => {
+    const party = await newMember(300_000n);
+    const key = `po-res-1-${party}`;
+    const r = await ask(party, key, 300_000n);
+    expect(r).toMatchObject({ state: 'cooling_off' });
+    expect(await purse(party)).toEqual({ available: 0n, holds: 300_000n });
+    expect(await journals(reserveKey(key))).toBe(1);
+    // The same 3,000 cannot be spent again (another payout, as P2P would be).
+    await expect(ask(party, `po-res-1b-${party}`, 100_000n, poPayee(IL2, 'FAIL'))).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
+    // A replay with the same key reserves nothing more.
+    expect(await ask(party, key, 300_000n)).toMatchObject({ state: 'cooling_off' });
+    expect(await journals(reserveKey(key))).toBe(1);
+    // The cool-off ends: the payout posts from the reserve, not from the wallet.
+    advance(COOL_OFF_MS);
+    const out = await run(key);
+    expect(out.transfer.state).toBe('pending');
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n });
+    expect(await journals(settleKey(key))).toBe(1);
+    // Replayed: nothing more is posted.
+    await run(key);
+    expect(await journals(settleKey(key))).toBe(1);
+    expect(await journals(reserveKey(key))).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n });
+  });
+
+  it('a rail failure after a cool-off returns the money to the wallet exactly once (the payout and the reserve are each reversed once)', async () => {
+    const party = await newMember(300_000n);
+    const key = `po-res-2-${party}`;
+    await ask(party, key, 300_000n, poPayee(IL2, 'FAIL'));
+    expect(await purse(party)).toEqual({ available: 0n, holds: 300_000n });
+    advance(COOL_OFF_MS);
+    const t = (await run(key)).transfer;
+    const po = (await vendorPayoutOf(t.id))!;
+    expect((await hook(sim().nextWebhook(po))).status).toBe(200);
+    expect((await hook(sim().nextWebhook(po))).status).toBe(200);
+    expect(await app.services.transfers.get(t.id)).toMatchObject({ state: 'failed', failureCode: 'ACCOUNT_CLOSED' });
+    expect(await purse(party)).toEqual({ available: 300_000n, holds: 0n });
+    expect(await journals(`${settleKey(key)}:reversal`)).toBe(1);
+    expect(await journals(unreserveKey(key))).toBe(1);
+    await run(key);
+    expect(await purse(party)).toEqual({ available: 300_000n, holds: 0n });
+  });
+
+  it('an approval that expires fails the payout and releases the reserve once; a payout that cooled off and was approved posts from the reserve', async () => {
+    const party = await newMember(900_000n);
+    const key = `po-res-3-${party}`;
+    expect(await ask(party, key, 600_000n)).toMatchObject({ state: 'cooling_off' });
+    expect(await purse(party)).toEqual({ available: 300_000n, holds: 600_000n });
+    advance(COOL_OFF_MS);
+    const waiting = await run(key);
+    expect(waiting.waiting).toBe('approval');
+    expect(await purse(party)).toEqual({ available: 300_000n, holds: 600_000n }); // still reserved, once
+    expect(await journals(reserveKey(key))).toBe(1);
+    // Nobody decides for seven days and a bit: the sweep finds it and fails it.
+    advance(7 * 86_400_000 + 60_000);
+    const due = (await app.services.payouts.resumable(now)).map((t) => t.id);
+    expect(due).toContain(waiting.transfer.id);
+    const after = await run(key);
+    expect(after.transfer).toMatchObject({ state: 'failed', failureCode: 'APPROVAL_EXPIRED' });
+    expect(await purse(party)).toEqual({ available: 900_000n, holds: 0n });
+    expect(await journals(unreserveKey(key))).toBe(1);
+    expect(await journals(settleKey(key))).toBe(0);
+    await run(key);
+    expect(await journals(unreserveKey(key))).toBe(1);
+    expect(await purse(party)).toEqual({ available: 900_000n, holds: 0n });
+    expect((await app.services.payouts.view(after.transfer)).state).toBe('failed');
+    expect(await app.services.payouts.resumable(now)).not.toContainEqual(expect.objectContaining({ id: waiting.transfer.id }));
+  });
+
+  it('a payout that goes straight to the rail reserves nothing and posts from the wallet as before', async () => {
+    const party = await newMember(500_000n);
+    const key = `po-res-4-${party}`;
+    expect(await ask(party, key, 200_000n)).toMatchObject({ state: 'processing' });
+    expect(await journals(reserveKey(key))).toBe(0);
+    expect(await purse(party)).toEqual({ available: 300_000n, holds: 0n });
+  });
 });
