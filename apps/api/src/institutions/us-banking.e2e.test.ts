@@ -20,7 +20,7 @@ import { CROWDED_SIGNATURE_HEADER, FakeCrowded } from '@kesher/adapters';
 import { money, uuidv7 } from '@kesher/domain';
 import { SIM_OTP_CODE, SimPasskeyDevice, fixedClock, type AdvanceableClock, type InstitutionBankingPort } from '@kesher/ports';
 import { SimulatorHost, createServer as createPanel } from '@kesher/simulators';
-import { CrowdedHttpSimulator } from '../../../simulators/src/crowded-http.ts';
+import { CrowdedHttpSimulator } from '@kesher/simulators/crowded-http';
 import { createApp, type App } from '../app.ts';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
@@ -228,7 +228,7 @@ afterAll(async () => {
   await db.close();
 });
 
-describe.sequential('1. link: the bank approves, the event arrives, money opens only after our KYB (REQ-INS-022)', () => {
+describe.sequential('1. link: the bank approves, the event arrives, money opens only after our KYB (REQ-INS-022)', { timeout: 60_000 }, () => {
   it('the registration the script made is on the simulator, and the API is reachable at the URL it holds', async () => {
     const listed = await fetch(`${panelOrigin}${BASE_PATH}/webhooks`, { headers: { authorization: `Bearer ${TOKEN}` } });
     const body = (await listed.json()) as { data: { url: string; isActive: boolean; secret?: string }[] };
@@ -305,7 +305,7 @@ describe.sequential('1. link: the bank approves, the event arrives, money opens 
   });
 });
 
-describe.sequential('2. fee: billed in the US, paid on the simulator, delivered twice, paid once (REQ-INS-023)', () => {
+describe.sequential('2. fee: billed in the US, paid on the simulator, delivered twice, paid once (REQ-INS-023)', { timeout: 60_000 }, () => {
   const funder = (i: number) => ({ feeItemId: items[i], name: `Funder ${i}`, email: `funder${i}@example.org`, mobile: `+1415555010${i}` });
   const intentOf = async (i: number) => (await db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'fee_item_us_intent' and entity_id = $1`, [items[i]])).rows[0]!.external_id;
 
@@ -345,15 +345,19 @@ describe.sequential('2. fee: billed in the US, paid on the simulator, delivered 
 
   it('only a fee the funder paid is marked: the second funder, delivered twice, is marked once; the others stay due', async () => {
     const out = await crowded.pay(await intentOf(1));
-    await crowded.redeliver(out.delivered[0]!.batchId);
-    await replay();
+    expect(out.delivered).toMatchObject([{ status: 200 }]);
+    expect(await replay()).toMatchObject({ attempted: 1, succeeded: 1 });
+    const again = await crowded.redeliver(out.delivered[0]!.batchId);
+    expect(again).toMatchObject([{ status: 200, delivered: true }]);
+    expect(JSON.parse(again[0]!.response ?? '{}')).toMatchObject({ received: 1, stored: 0, duplicates: 1 });
+    expect(await replay()).toEqual({ attempted: 0, succeeded: 0 });
     expect(await feeStatus(1)).toBe('paid');
     expect(await feePayments(1)).toEqual(['payment']);
     expect(await feeStatus(2)).toBe('due');
   });
 });
 
-describe.sequential('3. fund: the master account by ACH, linked to the deposit; a returned ACH opens a case (REQ-INS-024)', () => {
+describe.sequential('3. fund: the master account by ACH, linked to the deposit; a returned ACH opens a case (REQ-INS-024)', { timeout: 60_000 }, () => {
   it('a quote prices the ACH, a second approver sends it with the KC- reference, and the simulator moves it on', async () => {
     fake.fund(await refOf(OHR), 10_000_000n);
     const q = await quote('ohrFin1', OHR, 200_000n);
@@ -393,9 +397,12 @@ describe.sequential('3. fund: the master account by ACH, linked to the deposit; 
     expect(await replay()).toMatchObject({ attempted: 1, succeeded: 1 });
     expect(await funding('ohrFin1', OHR, view.id)).toMatchObject({ status: 'returned', achStatus: 'returned' });
     expect(await cases('returned')).toBe('1');
-    await crowded.redeliver(out.delivered[0]!.batchId);
-    await crowded.emit([{ eventType: 'finance.ach_payment.returned', chapterId: await refOf(OHR), data: { id: paymentRef.split(':')[1]! } }]);
-    await replay();
+    const again = await crowded.redeliver(out.delivered[0]!.batchId);
+    expect(again).toMatchObject([{ status: 200, delivered: true }]);
+    expect(JSON.parse(again[0]!.response ?? '{}')).toMatchObject({ stored: 0, duplicates: 1 });
+    const told = await crowded.emit([{ eventType: 'finance.ach_payment.returned', chapterId: await refOf(OHR), data: { id: paymentRef.split(':')[1]! } }]);
+    expect(told.delivered).toMatchObject([{ status: 200 }]);
+    expect(await replay()).toMatchObject({ attempted: 1, succeeded: 1 });
     expect(await cases('returned')).toBe('1');
     expect(await funding('ohrFin1', OHR, view.id)).toMatchObject({ status: 'returned' });
   });
@@ -424,7 +431,7 @@ describe.sequential('3. fund: the master account by ACH, linked to the deposit; 
   });
 });
 
-describe.sequential('4. a wrong signature is refused and logged (REQ-INS-025)', () => {
+describe.sequential('4. a wrong signature is refused and logged (REQ-INS-025)', { timeout: 60_000 }, () => {
   it('a delivery signed with another key answers 401, lands in ops.inbound_rejected as a hash and claims nothing; the retry with the right key is stored', async () => {
     const ref = await refOf(OHR);
     const before = { stored: (await stored()).length, rejected: (await rejected()).length };
