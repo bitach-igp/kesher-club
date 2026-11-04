@@ -53,8 +53,8 @@ per `handoff/README.md`, push, wait for the checker's PASS on the branch before 
 
 ## Cost control
 A session's credits are shared across a five-hour window; spend them deliberately.
-- Scouts and mechanical work (renames, doc edits, log rows, CI reading) go to Haiku. Reviews default to Sonnet. Use Opus only for the ledger core or auth, and ask the user first.
-- Give a reviewer the card and the diff only, and ask for a report under 300 words. A re-review covers just the delta since the last round.
+- Scouts and mechanical work (renames, doc edits, log rows, CI reading) go to Haiku. Reviews default to Sonnet. On 2026-11-04 the user asked to throttle credit use, which relaxes the Opus-for-money-paths rule above until they say otherwise: money-path cards are reviewed by Sonnet, and Opus is used only when the user asks for it.
+- Give a reviewer the card and the diff only, and ask for a report under 300 words. A re-review may look at just the delta since the last round, but the merge gate still needs a verdict on the full final diff: the last round's reviewer reads the final diff, or its approval is cited with the delta that followed.
 - Run the whole check set (`pnpm typecheck`, `lint`, `test`, `trace`) before pushing, including other packages' tests when a shared behaviour changed; a CI-only failure costs a round trip.
 - Do not poll. Subscribe to the PR and end the turn; the CI event wakes the session. Events for an older head are not the current head's result.
 - One card at a time. When the user asks to throttle, finish the card in flight and stop starting new ones until told.
