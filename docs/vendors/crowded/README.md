@@ -12,7 +12,7 @@ labels unreliable, partner names as transcribed. Nothing in them is from Crowded
 - Crowded is not limited to nonprofits. A regular company can sign up as long as its business is related to
   Israel, so **Israel Global Pay, LLC** can be the account holder.
 - Crowded runs a general nonprofit under its own umbrella that institutions without a 501(c)(3) can work under.
-- **ILS transfers are due in 4–6 weeks** (the meeting recording says about four weeks from Nov 1, to be confirmed with Dave). If they pay Israeli accounts, Crowded could be a USD→ILS route as well
+- **ILS transfers are due in 4–6 weeks** (the meeting recording says about four weeks from Nov 1, to be confirmed with Dave, a Crowded contact named in the recording). If they pay Israeli accounts, Crowded could be a USD→ILS route as well
   as a US bank (card T-0656 evaluates it against our FX and payout ports).
 
 So the account holder is one of three setups, still to be decided (question 2 below):
@@ -41,7 +41,7 @@ The port models a **holder** (`platform` or `institution`) so the cards work und
 | ILS transfer (not yet released) | A payout or FX route to Israeli accounts | Evaluated in T-0656; no build until it is live and documented |
 | Transactions, collect payments | The linked account's statement and reconciliation | Read-only |
 | Webhooks (batched, HMAC-SHA256) | `ops.inbound_event`, provider `crowded` | Dedupe on `eventId`; ACH/wire events are hints, re-read the payment |
-| Cards (wallet / perdiem) | Not used yet; reopened by the 2026-11-04 meeting | Per diem and expense cards work in USD in Israel today (ATMs too), digital with Apple/Google Wallet, light KYC; but the API has no spend-control or PIN endpoint and physical cards ship to the US only. See "Meeting documents" |
+| Cards (wallet / perdiem) | Not used yet; reopened by the 2026-11-04 meeting | Per the recording, per diem and expense cards work in USD in Israel today (ATMs too), digital with Apple/Google Wallet, light KYC (to confirm); but the API has no spend-control or PIN endpoint and physical cards ship to the US only. See "Meeting documents" |
 
 ## Integration rules (from the docs; enforce in the adapter)
 - Amounts are integer cents, USD only → `Money { minor: bigint, currency: 'USD' }`. Reject any other currency.
@@ -93,7 +93,7 @@ waits on which question is in `specs/tasks/T-0655.md`.
 | 3 Who is the customer | Ezra | — | 2026-11-04 (partial) | Israel Global Pay as holder with customers under it works if each customer funds from its own account and the platform does not act as a money transmitter on their behalf; Crowded discourages one officer paying out hundreds of per diem accounts for unrelated purposes and recommends a foundation or fiscal sponsor |
 | 4 "Related to Israel" | Ezra | — | — | — |
 | 5 Economics | Ezra | — | 2026-11-04 (meeting recording) | Float paid nightly on balances at about 60% of the midpoint of the Fed rate (about 2.5% annualized); interchange up to about 100 bps of card spend depending on volume, with some pass-through costs. Whether the share is negotiable and what the pass-through costs are: not answered |
-| 6 ILS timing | Ezra | — | 2026-11-04 (meeting recording) | About four weeks from Nov 1, to be confirmed with Dave; not in writing. Shekel and international wallets are built but not live |
+| 6 ILS timing | Ezra | — | 2026-11-04 (meeting recording) | About four weeks from Nov 1, to be confirmed with Dave (a Crowded contact named in the recording); not in writing. Shekel and international wallets are built but not live |
 | 7 Umbrella nonprofit | Ezra | — | 2026-11-04 (partial) | Crowded runs two 501(c)(3)s, one general and one military-focused; an LLC can own a nonprofit. Who legally owns the money and who issues donor receipts: not answered |
 | 8 Students | Ezra | — | 2026-11-04 (meeting recording) | Per diem cardholders (students, kollel) need light KYC only: personal ID, date of birth, email, no ID photo. Cardholders outside the US and the ID type accepted for Israeli residents: not stated |
 | 9 Credentials | Zvi | — | — | — |
@@ -111,11 +111,11 @@ Two documents written from the Nov 1 recording: *Crowded Meeting: Key Points for
 Document* (a design proposal, built without Crowded's technical docs). Where they say something the build assumed from the Nov 2 demo, they win;
 where they contradict the Postman inventory on an API fact, the inventory wins until Crowded says otherwise.
 
-**Confirmed:** a fresh US LLC can be the holder (Crowded pushes a new entity through onboarding; text them when applying); both sub-accounts
+**Stated in the recording (second-hand, not in writing; confirm each with Crowded):** a fresh US LLC can be the holder (Crowded pushes a new entity through onboarding; text them when applying); both sub-accounts
 and related entities exist (the port's `platform` / `institution` holder covers both); two nonprofits exist for the umbrella setup.
 
 **Changes what we assumed**
-- *Cards.* Per diem and expense cards work now in USD, including ATMs in Israel, are digital with Apple/Google Wallet, and need light KYC. The
+- *Cards.* Per the recording (to confirm), per diem and expense cards work now in USD, including ATMs in Israel, are digital with Apple/Google Wallet, and need light KYC. The
   API still has no spend-control, PIN or activation endpoint and ships physical cards to the US only (inventory section 7, items 20-23). So
   "not used" is now "possible for digital per diem cards, no spend rules we can set". Whether admins can see per diem transactions was
   inconsistent in the demo. Needs a decision card before any build.
@@ -123,7 +123,7 @@ and related entities exist (the port's `platform` / `institution` holder covers 
   push in from their own bank to unique account details, consent at onboarding to conversion and again for every movement. REQ-INS-023
   collects fees from US parents on the hosted payment page. If the platform holds the account those are third-party funds in its wallet,
   where it briefly owns them and carries the exposure. Question 18 below. Until answered, prefer an institution-held account (setup B or C).
-- *Limits.* Incoming ACH credit about $300,000 a month (stated loosely), incoming Fedwire up to $20,000,000 a day, funding speed wire in hours
+- *Limits (all per the recording, to confirm).* Incoming ACH credit about $300,000 a month (stated loosely), incoming Fedwire up to $20,000,000 a day, funding speed wire in hours
   and ACH 1-2 days, local Israeli money movement up to ILS 2,000 a day (scope unclear). Hosted-page ACH payments are incoming ACH.
 - *Revenue.* Float and interchange are credited to the holder's account nightly from an operations account. T-0654 does not compare credits,
   so it is unaffected. It does compare every outbound debit: if Crowded debits pass-through costs from the account they would be reported as
@@ -132,7 +132,7 @@ and related entities exist (the port's `platform` / `institution` holder covers 
   a suspense case every night.
 - *Reconciliation.* The proposal compares balances as well as transfers nightly; T-0654 compares payments and outbound debits only.
 - *Idempotency.* The proposal says every write carries a key; the API has none on organization, chapter, contact or collection creates
-  (the adapter looks up first). The adapter is right, the proposal is not.
+  (the adapter looks up first). Per the inventory the adapter is right and the proposal's rule does not hold for those calls.
 - *API.* The proposal says no endpoint, webhook or sandbox detail was seen; the Postman inventory has them (79 operations, sandbox, batched
   HMAC webhooks). Still unknown: how a partner is issued a token, the production host, what the MCP server covers, how close the sandbox is.
 
