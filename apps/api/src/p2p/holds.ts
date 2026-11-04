@@ -66,8 +66,8 @@ export class P2pHoldService {
 
   /** The two hours passed: the reserved money goes to the recipient and the send settles. */
   async release(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer> {
-    if (transfer.state !== 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a transfer that is ${transfer.state}`);
-    if (!transfer.holdReleasesAt || Date.parse(transfer.holdReleasesAt) > now.getTime()) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold has not expired yet');
+    if (transfer.state !== 'pending_hold' && transfer.state !== 'pending') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a transfer that is ${transfer.state}`);
+    if (transfer.state === 'pending_hold' && (!transfer.holdReleasesAt || Date.parse(transfer.holdReleasesAt) > now.getTime())) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold has not expired yet');
     const { currency } = transfer.amount;
     const pending = await this.accounts.memberAccount(transfer.fromPartyId!, 'pending', currency);
     const to = await this.accounts.memberAccount(transfer.toPartyId!, 'wallet', currency);
@@ -82,7 +82,8 @@ export class P2pHoldService {
       ],
       metadata: { workflowId, heldUntil: transfer.holdReleasesAt },
     });
-    const released = await this.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold expired' });
+    // A pending row already left its hold (a release that died before it settled): the journal above is the one already posted, and only the settle is left.
+    const released = transfer.state === 'pending' ? transfer : await this.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold expired' });
     return this.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
   }
 
