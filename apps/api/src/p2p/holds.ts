@@ -64,10 +64,17 @@ export class P2pHoldService {
     return this.transfers.apply(transfer.id, 'hold', now, { journalId: journal.id, holdReleasesAt: new Date(now.getTime() + HOLD_MS), reason: 'new counterparty' });
   }
 
+  /** True when the hold's money was already returned to the sender (a cancel that reversed it and died before the cancel was recorded). */
+  async holdReversed(workflowId: string): Promise<boolean> {
+    return (await this.db.query(`select 1 from ledger.journal where idempotency_key = $1`, [`${holdKey(workflowId)}:reversal`])).rows.length > 0;
+  }
+
   /** The two hours passed: the reserved money goes to the recipient and the send settles. */
   async release(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer> {
-    if (transfer.state !== 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a transfer that is ${transfer.state}`);
-    if (!transfer.holdReleasesAt || Date.parse(transfer.holdReleasesAt) > now.getTime()) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold has not expired yet');
+    if (transfer.state !== 'pending_hold' && transfer.state !== 'pending') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a transfer that is ${transfer.state}`);
+    if (transfer.state === 'pending_hold' && (!transfer.holdReleasesAt || Date.parse(transfer.holdReleasesAt) > now.getTime())) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold has not expired yet');
+    // Never pay out of money that went back to the sender: a cancel that reversed the hold and died, or one that raced the release.
+    if (await this.holdReversed(workflowId)) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold was already returned to the sender');
     const { currency } = transfer.amount;
     const pending = await this.accounts.memberAccount(transfer.fromPartyId!, 'pending', currency);
     const to = await this.accounts.memberAccount(transfer.toPartyId!, 'wallet', currency);
@@ -82,7 +89,8 @@ export class P2pHoldService {
       ],
       metadata: { workflowId, heldUntil: transfer.holdReleasesAt },
     });
-    const released = await this.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold expired' });
+    // A pending row already left its hold (a release that died before it settled): the journal above is the one already posted, and only the settle is left.
+    const released = transfer.state === 'pending' ? transfer : await this.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold expired' });
     return this.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
   }
 
