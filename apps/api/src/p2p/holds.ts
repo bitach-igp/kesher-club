@@ -50,17 +50,24 @@ export class P2pHoldService {
     const { currency } = transfer.amount;
     const wallet = await this.accounts.memberAccount(transfer.fromPartyId!, 'wallet', currency);
     const pending = await this.accounts.memberAccount(transfer.fromPartyId!, 'pending', currency);
-    const journal = await this.ledger.post({
-      idempotencyKey: holdKey(workflowId),
-      kind: HOLD_JOURNAL_KIND,
-      transferId: transfer.id,
-      effectiveAt: now,
-      postings: [
-        { accountId: wallet, currency, amountMinor: transfer.amount.minor },
-        { accountId: pending, currency, amountMinor: -transfer.amount.minor },
-      ],
-      metadata: { workflowId, reason: 'new counterparty over the threshold (REQ-PAY-003)' },
-    });
+    let journal;
+    try {
+      journal = await this.ledger.postNoOverdraft({
+        idempotencyKey: holdKey(workflowId),
+        kind: HOLD_JOURNAL_KIND,
+        transferId: transfer.id,
+        effectiveAt: now,
+        postings: [
+          { accountId: wallet, currency, amountMinor: transfer.amount.minor },
+          { accountId: pending, currency, amountMinor: -transfer.amount.minor },
+        ],
+        metadata: { workflowId, reason: 'new counterparty over the threshold (REQ-PAY-003)' },
+      });
+    } catch (e) {
+      // Refused under the sender's wallet lock (T-0544): the hold would overdraw it. The send ends here, nothing moved.
+      if (e instanceof DomainError && e.code === 'INSUFFICIENT_FUNDS') await this.transfers.apply(transfer.id, 'fail', now, { failureCode: e.code, reason: 'refused under the wallet lock' });
+      throw e;
+    }
     return this.transfers.apply(transfer.id, 'hold', now, { journalId: journal.id, holdReleasesAt: new Date(now.getTime() + HOLD_MS), reason: 'new counterparty' });
   }
 

@@ -204,15 +204,28 @@ export class P2pSendService implements SendActivities {
 
   async post(transfer: Transfer, workflowId: string, now: Date): Promise<{ journalId: string }> {
     const from = await this.d.accounts.memberAccount(transfer.fromPartyId!, 'wallet', transfer.amount.currency);
-    const journal = await this.d.ledger.post({
-      idempotencyKey: settleKey(workflowId),
-      kind: P2P_JOURNAL_KIND,
-      transferId: transfer.id,
-      effectiveAt: now,
-      postings: await this.legs(transfer, from),
-      metadata: { workflowId, fromPartyId: transfer.fromPartyId, toPartyId: transfer.toPartyId, ...conversionMetadata(transfer) },
-    });
-    return { journalId: journal.id };
+    try {
+      // The sender's wallet is locked and checked again inside the posting transaction (T-0544): the pre-checks in send() are an
+      // early answer, this is the one that holds when two requests race. The monthly risk limit is counted again under the same lock.
+      const journal = await this.d.ledger.postNoOverdraft(
+        {
+          idempotencyKey: settleKey(workflowId),
+          kind: P2P_JOURNAL_KIND,
+          transferId: transfer.id,
+          effectiveAt: now,
+          postings: await this.legs(transfer, from),
+          metadata: { workflowId, fromPartyId: transfer.fromPartyId, toPartyId: transfer.toPartyId, ...conversionMetadata(transfer) },
+        },
+        (tx) => this.d.limits.recheckRisk(tx, transfer.fromPartyId!, transfer, now),
+      );
+      return { journalId: journal.id };
+    } catch (e) {
+      // Refused under the lock (another request got there first): the send ends here, nothing moved, the client is told why.
+      if (e instanceof DomainError && (e.code === 'INSUFFICIENT_FUNDS' || e.code === 'LIMIT_EXCEEDED')) {
+        await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: e.code, reason: 'refused under the wallet lock' });
+      }
+      throw e;
+    }
   }
 
   /**

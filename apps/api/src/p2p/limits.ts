@@ -7,7 +7,7 @@ import { DomainError, money, type Currency, type Money } from '@kesher/domain';
 import type { EntitlementService } from '../billing/entitlements.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import type { PlanService } from '../billing/plans.ts';
-import type { Database } from '../db.ts';
+import type { Database, SqlClient } from '../db.ts';
 
 export const P2P_ENTITLEMENT = 'p2p.monthlySendMinor';
 export type RiskTier = 'new' | 'standard' | 'trusted';
@@ -84,6 +84,32 @@ export class P2pLimitService {
       risk: { limit: money(riskLimit, amount.currency), used: money(used, amount.currency) },
       ...(entitlement ? { entitlement } : {}),
     };
+  }
+
+  /**
+   * The monthly risk limit once more, under the sender's wallet lock (T-0544): this month's sends counted in creation order up to and
+   * including this one. Two sends begun in parallel both passed the first check; counted in order, the later one sees the earlier one
+   * and is refused when together they exceed the limit, whichever posts first. The plan's own entitlement counter is not rechecked (F17).
+   */
+  async recheckRisk(tx: SqlClient, partyId: string, transfer: { id: string; createdAt: string; amount: Money }, now: Date): Promise<void> {
+    // Every read goes through the posting transaction's own connection (the caller holds it open).
+    const tierRow = await tx.query<{ tier: RiskTier }>('select tier from ops.risk_tier where party_id = $1', [partyId]);
+    const tier = tierRow.rows[0]?.tier ?? DEFAULT_TIER;
+    const limitRow = await tx.query<{ p2p_monthly_minor: string }>('select p2p_monthly_minor::text from ops.risk_limit where tier = $1 and currency = $2', [tier, transfer.amount.currency]);
+    const riskLimit = BigInt(limitRow.rows[0]?.p2p_monthly_minor ?? '0');
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+    const r = await tx.query<{ used: string }>(
+      `select coalesce(sum(amount_minor), 0)::text as used from ops.transfer
+        where kind = 'p2p' and from_party_id = $1 and currency = $2 and created_at >= $3 and state not in ('failed','cancelled','reversed')
+          and (created_at, id) <= ($4::timestamptz, $5::uuid)`,
+      [partyId, transfer.amount.currency, start, transfer.createdAt, transfer.id],
+    );
+    const used = BigInt(r.rows[0]?.used ?? '0');
+    if (used > riskLimit) {
+      const before = used - transfer.amount.minor;
+      const remaining = riskLimit - before < 0n ? 0n : riskLimit - before;
+      throw new DomainError('LIMIT_EXCEEDED', `Only ${remaining} ${transfer.amount.currency} minor units may be sent this month`, { remaining: remaining.toString(), currency: transfer.amount.currency, limitedBy: 'risk' });
+    }
   }
 
   /** Throws LIMIT_EXCEEDED with the remaining amount (REQ-PAY-002). */
