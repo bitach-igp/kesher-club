@@ -13,6 +13,9 @@ adds what a session needs to work here without rediscovering it.
 - Done means the card's tests pass and `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm trace` are
   green, plus `pnpm db:lint` when a migration changed.
 
+## Autopilot
+The card pipeline (scout, code, review, merge gate, revert rule) is the `club-autopilot` skill; run it with `/autopilot`. Progress log: `docs/ops/autopilot-log.md`.
+
 ## Where things live
 - Deterministic workflow bodies (`runLoad`, `runSend`, `runPayout`) live in `apps/api`; `apps/worker`
   hosts them and the sweeps and imports them as `@kesher/api/<path>` (no `.ts` suffix across packages).
