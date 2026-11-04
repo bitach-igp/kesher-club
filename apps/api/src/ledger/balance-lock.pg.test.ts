@@ -84,7 +84,7 @@ run('postNoOverdraft on real Postgres (two or more connections)', () => {
     expect(await ledger.balance(y, 'USD')).toBe(-100_000n);
   });
 
-  it('a card-authorisation-sized debit stays quick under contention (p99 of 200 serial posts under 100 ms on the desktop Postgres)', async () => {
+  it('a card-authorisation-sized debit posts quickly (serial, not under load: p99 of 200 posts under 100 ms; the 300 ms JIT p99 under concurrent load is still to measure)', async () => {
     const partner = await mk('partner_settlement');
     const wallet = await mk('wallet');
     const other = await mk('wallet');

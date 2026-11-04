@@ -268,7 +268,7 @@ export class P2pSendService implements SendActivities {
   }
 
   hold(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer> {
-    return this.d.holds.hold(transfer, workflowId, now);
+    return this.d.holds.hold(transfer, workflowId, now, (tx) => this.d.limits.recheckRisk(tx, transfer.fromPartyId!, transfer, now));
   }
 
   /** A converted hold releases here, at the price fixed when it began; a same-currency one through the hold service. */

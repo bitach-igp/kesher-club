@@ -70,7 +70,7 @@ export class PostgresLedger {
         );
         for (const r of rows.rows) {
           if (r.type !== 'wallet') continue;
-          const debit = input.postings.find((x) => x.accountId === r.id)!.amountMinor;
+          const debit = input.postings.filter((x) => x.accountId === r.id).reduce((n, x) => n + x.amountMinor, 0n);
           const balance = BigInt(r.balance);
           if (balance + debit > 0n) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the wallet for this journal', { available: (balance < 0n ? -balance : 0n).toString(), currency: r.currency });
         }

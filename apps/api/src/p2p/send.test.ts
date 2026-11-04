@@ -526,5 +526,18 @@ describe('T-0544: the sender\'s wallet is locked and checked again where the mon
     expect(await available(a.partyId)).toBe(200_000n);
     expect(await available(d.partyId)).toBe(0n);
   });
+  it('the monthly limit also holds on the hold path: a new-pair send over the threshold, begun after another, is refused where it holds', async () => {
+    const a = await register('+972501000120');
+    const [b, c] = [await register('+972501000121'), await register('+972501000122')];
+    await fund(a, 300_000n);
+    const p2p = app.services.p2p;
+    const at = (n: number) => new Date(NOW.getTime() + n * 1_000);
+    await p2p.begin(input(a, b, 60_000n), 'lock-hlim-a', at(1));
+    await p2p.begin(input(a, c, 60_000n), 'lock-hlim-b', at(2));
+    // The later one holds first, counts the earlier one begun before it (120,000 > the 100,000 cap) and is refused.
+    await expect(runSend(p2p, input(a, c, 60_000n), 'lock-hlim-b', at(3))).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED' });
+    expect(await app.services.transfers.byKey('lock-hlim-b')).toMatchObject({ state: 'failed', failureCode: 'LIMIT_EXCEEDED' });
+    expect((await app.services.accounts.purses(a.partyId)).find((x) => x.currency === 'ILS')!.holds.minor).toBe(0n);
+  });
 });
 

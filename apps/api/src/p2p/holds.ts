@@ -4,7 +4,7 @@
 // waits. A cancel reverses that journal; the release, by the worker when the two hours pass, posts
 // pending(sender) → wallet(recipient) under `{key}:release` and the send settles as any other.
 import { DomainError, type Currency, type Money } from '@kesher/domain';
-import type { Database } from '../db.ts';
+import type { Database, SqlClient } from '../db.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferService } from '../transfers/service.ts';
@@ -46,7 +46,7 @@ export class P2pHoldService {
   }
 
   /** Reserves the money and parks the transfer for two hours. */
-  async hold(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer> {
+  async hold(transfer: Transfer, workflowId: string, now: Date, extraGuard?: (tx: SqlClient) => Promise<void>): Promise<Transfer> {
     const { currency } = transfer.amount;
     const wallet = await this.accounts.memberAccount(transfer.fromPartyId!, 'wallet', currency);
     const pending = await this.accounts.memberAccount(transfer.fromPartyId!, 'pending', currency);
@@ -62,10 +62,10 @@ export class P2pHoldService {
           { accountId: pending, currency, amountMinor: -transfer.amount.minor },
         ],
         metadata: { workflowId, reason: 'new counterparty over the threshold (REQ-PAY-003)' },
-      });
+      }, extraGuard);
     } catch (e) {
       // Refused under the sender's wallet lock (T-0544): the hold would overdraw it. The send ends here, nothing moved.
-      if (e instanceof DomainError && e.code === 'INSUFFICIENT_FUNDS') await this.transfers.apply(transfer.id, 'fail', now, { failureCode: e.code, reason: 'refused under the wallet lock' });
+      if (e instanceof DomainError && (e.code === 'INSUFFICIENT_FUNDS' || e.code === 'LIMIT_EXCEEDED')) await this.transfers.apply(transfer.id, 'fail', now, { failureCode: e.code, reason: 'refused under the wallet lock' });
       throw e;
     }
     return this.transfers.apply(transfer.id, 'hold', now, { journalId: journal.id, holdReleasesAt: new Date(now.getTime() + HOLD_MS), reason: 'new counterparty' });
