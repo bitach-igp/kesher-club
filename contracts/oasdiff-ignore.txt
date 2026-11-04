@@ -25,3 +25,7 @@ GET /admin/cases added the new `kyb_application` enum value to the `items/items/
 GET /admin/cases/{id} added the new `kyb_application` enum value to the `kind` response property for the response status `200`
 POST /admin/cases/{id}/assign added the new `kyb_application` enum value to the `kind` response property for the response status `200`
 POST /admin/cases/{id}/decisions added the new `kyb_application` enum value to the `kind` response property for the response status `200`
+
+# T-0542 (REQ-ESIM-001, REQ-WAL-001): buying an add-on moves wallet money, so it needs a step-up like every other money action, and the quantity is capped at 10. The mobile app, the only client, already supplies a step-up token to its other money routes and sends it here in the same change.
+POST /addon-orders added the new required 'header' request parameter 'X-Step-Up'
+POST /addon-orders the 'quantity' request property's maximum was set to '10'

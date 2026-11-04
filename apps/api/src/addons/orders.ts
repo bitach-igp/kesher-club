@@ -14,6 +14,14 @@ import type { PostgresLedger } from '../ledger/post.ts';
 import { enqueue } from '../transfers/outbox.ts';
 import type { CreditService } from './credit.ts';
 
+/** An order is for 1 to 10 of one item; anything else (a fraction, zero, negative, a string) is a 422, never a 500 or a silent 1. */
+export const MAX_ADDON_QUANTITY = 10;
+export function parseQuantity(q: unknown): number {
+  if (q === undefined) return 1;
+  if (typeof q !== 'number' || !Number.isInteger(q) || q < 1 || q > MAX_ADDON_QUANTITY) throw new DomainError('VALIDATION_FAILED', `Quantity must be a whole number from 1 to ${MAX_ADDON_QUANTITY}`);
+  return q;
+}
+
 export type OrderState = 'created' | 'charged' | 'fulfilling' | 'fulfilled' | 'failed' | 'refunded';
 
 export interface AddonOrder {
@@ -105,12 +113,15 @@ export class AddonOrderService {
 
   /** createAddonOrder: prices from the catalogue, credit from entitlements, then charge. Idempotent by key. */
   async create(input: { idempotencyKey: string; memberPartyId: string; membership?: MembershipRef | undefined; sku: string; quantity?: number; disclosuresAcknowledged?: boolean }, now: Date): Promise<AddonOrder> {
+    const quantity = parseQuantity(input.quantity);
     const existing = await this.byKey(input.idempotencyKey);
-    if (existing) return existing;
+    if (existing) return this.sameRequest(existing, input.memberPartyId, input.sku, quantity);
     const item = await this.catalogueItem(input.sku);
     if (!item || !item.active) throw new DomainError('NOT_FOUND', 'Add-on not available');
     if (item.kind === 'insurance' && !input.disclosuresAcknowledged) throw new DomainError('VALIDATION_FAILED', 'Insurance disclosures must be acknowledged before payment (REQ-INSR-001)');
-    const quantity = input.quantity ?? 1;
+    // Funds are checked on what the member would pay after credit, before the credit is spent and before an order row exists:
+    // a refusal leaves nothing behind and a retry with the same key starts clean.
+    await this.assertFunds(input.memberPartyId, (await this.credit.quote(input.membership, item, quantity, now)).price);
     const id = uuidv7(now);
     const q = await this.credit.apply(input.membership, item, quantity, id, now);
     const cost = money(item.cost.minor * BigInt(quantity), item.cost.currency);
@@ -125,16 +136,31 @@ export class AddonOrderService {
         await enqueue(tx, 'addon_order', id, 'addon_order.created', { sku: item.sku, kind: item.kind, price: q.price, credit: q.credit });
       });
     } catch (e) {
-      if (isPgError(e, PG.UNIQUE_VIOLATION)) return (await this.byKey(input.idempotencyKey))!;
+      if (isPgError(e, PG.UNIQUE_VIOLATION)) return this.sameRequest((await this.byKey(input.idempotencyKey))!, input.memberPartyId, input.sku, quantity);
       throw e;
     }
     return this.charge(id, now);
+  }
+
+  /** A key names one request: the same member, sku and quantity. Anything else is another operation's key (409), never its order. */
+  private sameRequest(order: AddonOrder, memberPartyId: string, sku: string, quantity: number): AddonOrder {
+    if (order.memberPartyId !== memberPartyId || order.sku !== sku || order.quantity !== quantity) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
+    return order;
+  }
+
+  /** The wallet must hold the price (the same check P2P makes). It is a pre-check, not a lock: concurrent orders are F13. */
+  private async assertFunds(memberPartyId: string, price: Money): Promise<void> {
+    if (price.minor <= 0n) return;
+    const purse = (await this.accounts.purses(memberPartyId)).find((p) => p.currency === price.currency);
+    const available = purse?.available.minor ?? 0n;
+    if (available < price.minor) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the wallet for this purchase', { available: available.toString(), currency: price.currency });
   }
 
   /** Posts the charge journal (REQ-MKT-001). Idempotent on the order id. */
   async charge(orderId: string, now: Date): Promise<AddonOrder> {
     const o = await this.must(orderId);
     if (o.state !== 'created') return o;
+    await this.assertFunds(o.memberPartyId, o.price);
     const wallet = await this.accounts.memberAccount(o.memberPartyId, 'wallet', o.price.currency);
     const payable = await this.accounts.systemAccount('addon_payable', o.price.currency);
     const feeIncome = await this.accounts.systemAccount('fee_income', o.price.currency);
