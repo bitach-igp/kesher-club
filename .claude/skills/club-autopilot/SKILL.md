@@ -35,14 +35,18 @@ Read `AGENTS.md` and `CLAUDE.md` first. This skill is the loop, not the rules.
 - Any real-Postgres handoff for the card has a `## Result` with a passing outcome in `handoff/done/` on the branch (a `## Blocked` section is not a pass).
 - Up to date with main (update-branch, then wait for CI again).
 - No open owner decision on the card.
-If a merge is refused, do not work around it: label `ready-to-merge` and leave the PR open; the hourly desktop
+If a merge is refused, do not work around it: label `ready-to-merge` and leave the PR open (apply that label only when the gate above is otherwise fully met; never on a `needs-human` PR, and never mark such a PR done, so the checker skips it); the hourly desktop
 checker merges ready PRs whose card is done and CI is green (see AGENTS.md, "Steps that need the desktop").
 
 ## Real Postgres
 Migrations applying and concurrency races cannot run in the cloud. Commit `handoff/desktop/T-NNNN-slug.md`
 per `handoff/README.md`, push, wait for the checker's PASS on the branch before merging.
 
-## After merging
-- One report line per merge: `card, PR, reviewer verdict, CI`.
-- Append the same line to `docs/ops/autopilot-log.md`. That file is a permitted shared file: add the line in the card's PR (a one-line append; if it conflicts after update-branch, keep both lines).
-- If a merge turns main red: open a revert PR immediately (same gate except the review: the owner's rule, since a revert restores code that was already reviewed), then reopen the card.
+## Before and after merging
+- Before merging, append one line to `docs/ops/autopilot-log.md` in the card's own PR (a one-line append;
+  if it conflicts after update-branch, keep both lines): date, card, PR, reviewer verdict, CI as of the final push.
+  That file is a permitted shared file (a fourth exception to the card's-files-only rule).
+- After merging, report one line: card, PR, reviewer verdict, CI.
+- If a merge turns main red: open a revert PR immediately (same gate except the review: the owner's rule, since a
+  revert restores code that was already reviewed), then reopen the card.
+- Commits also carry the trailers the session gives (Co-Authored-By, Claude-Session).
