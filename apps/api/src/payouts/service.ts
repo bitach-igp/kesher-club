@@ -91,7 +91,7 @@ export interface PayoutActivities {
   expireIfDue(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined>;
   /** True when the vendor has a payout for this transfer (its webhook finishes it). */
   atRail(transfer: Transfer): Promise<boolean>;
-  /** A submitted payout the rail never took, 30 minutes on: failed and reversed once, the payer told, a case opened. Undefined when it is not due. */
+  /** A submitted (or cooled-off, `pending`) payout the rail still refuses 30 minutes after its first attempt: failed and reversed once, the payer told, a case opened. Undefined when it is not due. */
   stranded(transfer: Transfer, now: Date): Promise<Transfer | undefined>;
   /** The journal (from the reserve, or the wallet when nothing was reserved → partner_settlement) and the vendor pull, both keyed by the workflow id. */
   submit(transfer: Transfer, input: PayoutInput, workflowId: string, now: Date): Promise<{ transfer: Transfer; payout: VendorPayout }>;
