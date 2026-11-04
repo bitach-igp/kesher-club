@@ -1288,8 +1288,14 @@ paths:
     post:
       operationId: createAddonOrder
       summary: Buy an add-on; entitlement credits apply automatically
-      description: REQ-MKT-001, REQ-ESIM-001/002, REQ-INSR-001. Idempotent; starts the AddonWorkflow keyed by the Idempotency-Key.
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      description: >-
+        REQ-MKT-001, REQ-ESIM-001/002, REQ-INSR-001 (T-0542). Needs a fresh step-up (STEP_UP_REQUIRED, 401). Idempotent; starts
+        the AddonWorkflow keyed by the Idempotency-Key, which names one request: the same member, sku and quantity, otherwise
+        IDEMPOTENCY_CONFLICT (409). The wallet must hold the price after credit, otherwise INSUFFICIENT_FUNDS (422) and nothing
+        is created or spent. The quantity is a whole number from 1 to 10, otherwise VALIDATION_FAILED (422).
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
       requestBody:
         required: true
         content:
@@ -4993,7 +4999,7 @@ components:
       required: [sku]
       properties:
         sku: { type: string }
-        quantity: { type: integer, minimum: 1, default: 1 }
+        quantity: { type: integer, minimum: 1, maximum: 10, default: 1 }
         disclosuresAcknowledged: { type: boolean, description: Required for insurance (REQ-INSR-001) }
     AddonOrder:
       type: object
