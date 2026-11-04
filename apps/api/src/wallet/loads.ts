@@ -245,6 +245,10 @@ export class LoadService implements LoadActivities {
       const vendor = await this.d.port.getLoad(loadId);
       if (vendor.status === 'failed') return this.fail(transfer, vendor.failureCode ?? 'VENDOR_FAILED', now);
     }
+    // Read the row again and refuse if the hold was reversed: a return that failed the load since the caller's read must
+    // not have a release posted behind it (nothing would repair that journal once the row is failed).
+    if ((await this.d.transfers.get(transfer.id))?.state !== 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', 'The load is no longer held');
+    if ((await this.d.db.query(`select 1 from ledger.journal where idempotency_key = $1`, [`${holdKey(workflowId)}:reversal`])).rows[0]) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold was already reversed');
     // The hold already converted: the release moves the credited amount within the purse currency.
     const { minor, currency } = credited(transfer);
     const pending = await this.destination(transfer, 'pending', currency);
@@ -274,22 +278,27 @@ export class LoadService implements LoadActivities {
 
   /**
    * Fails the load. While the money is held (`pending_hold`, or `pending` once a release has begun) it undoes what is
-   * posted: the hold journal, and the release journal if one exists (a release that posted and then died leaves one).
-   * If the row had in fact moved on (the release won), the reversals are undone and the error stands.
+   * posted: the hold journal and the release journal, each found by its key (a release that posted and then died
+   * leaves one). It decides on the row as it stands now, not on the caller's read, which may be older than a hold that
+   * has posted since. If the row has in fact moved on to keep the money (the release won), the reversals are undone
+   * and the error stands; while it is still held they are left, so a retry finishes the same work.
    */
   async fail(transfer: Transfer, code: string, now: Date): Promise<Transfer> {
     const workflowId = transfer.idempotencyKey;
-    const held = transfer.state === 'pending_hold' || transfer.state === 'pending';
+    const current = (await this.d.transfers.get(transfer.id)) ?? transfer;
+    const held = current.state === 'pending_hold' || current.state === 'pending';
     const reversals: PostedJournal[] = [];
-    if (held && transfer.journalId) reversals.push(await this.d.ledger.reverse(transfer.journalId, `${holdKey(workflowId)}:reversal`));
     if (held) {
-      const posted = await this.d.db.query<{ id: string }>(`select id from ledger.journal where idempotency_key = $1`, [releaseKey(workflowId)]);
-      if (posted.rows[0]) reversals.push(await this.d.ledger.reverse(posted.rows[0].id, `${releaseKey(workflowId)}:reversal`));
+      for (const key of [holdKey(workflowId), releaseKey(workflowId)]) {
+        const posted = await this.d.db.query<{ id: string }>(`select id from ledger.journal where idempotency_key = $1`, [key]);
+        if (posted.rows[0]) reversals.push(await this.d.ledger.reverse(posted.rows[0].id, `${key}:reversal`));
+      }
     }
     try {
       return await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: held ? 'returned during hold' : 'vendor' });
     } catch (e) {
-      if ((await this.d.transfers.get(transfer.id))?.state !== 'failed') for (const r of reversals) await this.d.ledger.reverse(r.id, `${r.idempotencyKey}:undo`);
+      const after = (await this.d.transfers.get(transfer.id))?.state;
+      if (after === 'settled' || after === 'cancelled') for (const r of reversals) await this.d.ledger.reverse(r.id, `${r.idempotencyKey}:undo`);
       throw e;
     }
   }

@@ -217,7 +217,7 @@ describe('TST-WAL-003', () => {
     expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
   });
 
-  it('a return handled from a stale read after the release has won leaves the released load alone (the hold reversal is undone once)', async () => {
+  it('a return handled from a stale read after the release has won leaves the released load alone', async () => {
     const party = uuidv7(MONDAY);
     const key = `ach-race-b-${party}`;
     now = MONDAY;
@@ -228,8 +228,9 @@ describe('TST-WAL-003', () => {
     expect(await purse(party)).toEqual({ available: 2_500n, holds: 0n, settled: 2_500n });
     await expect(loads.fail(stale, 'VENDOR_FAILED', now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
     expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'settled' });
-    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
-    expect(await journals(`${holdKey(key)}:reversal:undo`)).toBe(1);
+    // It decided on the row as it is now (settled), so it reversed nothing and has nothing to undo.
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(0);
+    expect(await journals(`${holdKey(key)}:reversal:undo`)).toBe(0);
     expect(await purse(party)).toEqual({ available: 2_500n, holds: 0n, settled: 2_500n });
   });
 
@@ -286,6 +287,63 @@ describe('TST-WAL-003', () => {
     expect(await job.run()).toMatchObject({ attempted: 1, released: 0, errors: [] });
     expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'failed' });
     expect(await journals(`${releaseKey(key)}:reversal`)).toBe(1);
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+  });
+
+  it('a transient error while a held load is being failed leaves the reversals in place, and the retry finishes the job', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-transient-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 3_300n), key, now);
+    const realApply = transfers.apply.bind(transfers);
+    let failed = false;
+    transfers.apply = async (id, event, at, extra) => {
+      if (event === 'fail' && !failed) {
+        failed = true;
+        throw new Error('connection reset');
+      }
+      return realApply(id, event, at, extra);
+    };
+    try {
+      await expect(loads.fail((await transfers.get(run.transfer.id))!, 'VENDOR_FAILED', now)).rejects.toThrow('connection reset');
+    } finally {
+      transfers.apply = realApply;
+    }
+    // Still held, hold reversed, nothing undone.
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'pending_hold' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await journals(`${holdKey(key)}:reversal:undo`)).toBe(0);
+    // The retry fails it; the money is gone from pending and nothing reached the wallet.
+    expect(await loads.fail((await transfers.get(run.transfer.id))!, 'VENDOR_FAILED', now)).toMatchObject({ state: 'failed' });
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+  });
+
+  it('a fail built from a stale read of the row (before the hold posted) still reverses the hold', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-stale-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 2_200n), key, now);
+    const stale = { ...(await transfers.get(run.transfer.id))!, state: 'submitted' as const };
+    expect(await loads.fail(stale, 'VENDOR_FAILED', now)).toMatchObject({ state: 'failed' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+  });
+
+  it('a release is refused when the hold was already reversed: no release journal is posted behind a return', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-reversed-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 1_700n), key, now);
+    // The return reversed the hold but the row is still in its hold (the process died before the fail).
+    await new PostgresLedger(db).reverse(run.transfer.journalId!, `${holdKey(key)}:reversal`);
+    now = THURSDAY;
+    await expect(loads.release((await transfers.get(run.transfer.id))!, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await journals(releaseKey(key))).toBe(0);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+    // The fail that never happened is finished by the next pass, and nothing is posted twice.
+    expect(await loads.fail((await transfers.get(run.transfer.id))!, 'VENDOR_FAILED', now)).toMatchObject({ state: 'failed' });
     expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
     expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
   });
