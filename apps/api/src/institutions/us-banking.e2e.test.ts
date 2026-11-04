@@ -15,7 +15,7 @@ import type http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { CROWDED_SIGNATURE_HEADER, FakeCrowded } from '@kesher/adapters';
 import { money, uuidv7 } from '@kesher/domain';
 import { SIM_OTP_CODE, SimPasskeyDevice, fixedClock, type AdvanceableClock, type InstitutionBankingPort } from '@kesher/ports';
@@ -226,6 +226,11 @@ afterAll(async () => {
   await close(panel);
   await close(apiServer);
   await db.close();
+});
+
+// A failed assertion must not leave the simulator holding batches for the tests after it.
+afterEach(() => {
+  crowded.outOfOrder = false;
 });
 
 describe.sequential('1. link: the bank approves, the event arrives, money opens only after our KYB (REQ-INS-022)', { timeout: 60_000 }, () => {
