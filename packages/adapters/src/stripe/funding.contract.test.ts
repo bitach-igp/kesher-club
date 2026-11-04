@@ -83,6 +83,34 @@ describe('StripeFundingAdapter specifics', () => {
     expect(e.load.failureCode).toBe('generic_decline');
   });
 
+  it('a returned ACH debit (requires_payment_method with a payment error) is failed, not left waiting for the member', async () => {
+    const { fake, port } = harness();
+    const l = await port.createLoad({ customerId: 'c', method: 'ach', amount, paymentMethodId: 'pm_us_bank_ok' }, 'k');
+    expect(l.status).toBe('on_hold');
+    const hook = fake.settlePaymentIntent(l.loadId, 'returned');
+    const e = await port.parseWebhook(hook.headers, hook.rawBody);
+    expect(e.load.status).toBe('failed');
+    expect(e.load.failureCode).toBe('insufficient_funds');
+    expect((await port.getLoad(l.loadId)).status).toBe('failed');
+  });
+
+  it('a card intent back at requires_payment_method after a declined attempt can be retried, so it is not failed', async () => {
+    const { fake, port } = harness();
+    const l = await port.createLoad({ customerId: 'c', method: 'card', amount, paymentMethodId: 'pm_card_3ds' }, 'k');
+    const hook = fake.settlePaymentIntent(l.loadId, 'returned');
+    const e = await port.parseWebhook(hook.headers, hook.rawBody);
+    expect(e.load.status).toBe('requires_action');
+  });
+
+  it('a fresh requires_payment_method intent with no payment error still waits for the member', async () => {
+    const { fake, port } = harness();
+    const l = await port.createLoad({ customerId: 'c', method: 'card', amount, paymentMethodId: 'pm_card_3ds' }, 'k');
+    const hook = fake.settlePaymentIntent(l.loadId, 'reset');
+    const e = await port.parseWebhook(hook.headers, hook.rawBody);
+    expect(e.load.status).toBe('requires_action');
+    expect(e.load.failureCode).toBeUndefined();
+  });
+
   it('refuses a webhook whose amount differs from the load it created', async () => {
     const { fake, port } = harness();
     const l = await port.createLoad({ customerId: 'c', method: 'card', amount, paymentMethodId: 'pm_card_ok' }, 'k');

@@ -11,10 +11,11 @@ import { FundingError, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type Advancea
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
+import { FakeStripe, StripeFundingAdapter } from '@kesher/adapters';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { holdKey, loadState, LoadService, releaseKey, settleKey, type LoadView } from './loads.ts';
+import { holdKey, loadState, LoadService, releaseKey, runLoad, settleKey, type LoadView } from './loads.ts';
 
 const seedTransfer = (db: { query: (t: string, p?: readonly unknown[]) => Promise<unknown> }, f: { id: string; kind: string; state: string; market: string; at: Date }) =>
   db.query(
@@ -431,6 +432,30 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     expect(await purse('USD', party)).toEqual({ available: 0n, holds: 0n });
   });
 
+  it('the stale-load sweep also picks up a load held for the bank\'s hold days, so a return during the hold is found (F05)', async () => {
+    const old = new Date(NOW.getTime() - 3_600_000);
+    const [held, settled] = [uuidv7(), uuidv7()];
+    await seedTransfer(db, { id: held, kind: 'load', state: 'pending_hold', market: 'US', at: old });
+    await seedTransfer(db, { id: settled, kind: 'load', state: 'settled', market: 'US', at: old });
+    const stale = (await app.services.loads.stale(NOW, 60_000, 1000)).map((t) => t.id);
+    expect(stale).toContain(held);
+    expect(stale).not.toContain(settled);
+  });
+
+  it('held loads do not starve the submitted ones: with a small limit the submitted load comes first', async () => {
+    const old = new Date(NOW.getTime() - 7_200_000);
+    const older = new Date(NOW.getTime() - 9_000_000);
+    const [held, submitted] = [uuidv7(), uuidv7()];
+    await seedTransfer(db, { id: held, kind: 'load', state: 'pending_hold', market: 'US', at: older });
+    await seedTransfer(db, { id: submitted, kind: 'load', state: 'submitted', market: 'US', at: old });
+    // Earlier tests in this file leave stale submitted loads of their own, so ask for exactly as many as exist.
+    const submittedCount = Number((await db.query<{ n: number }>(`select count(*)::int as n from ops.transfer where kind = 'load' and state = 'submitted' and market = 'US' and updated_at <= $1`, [new Date(NOW.getTime() - 60_000)])).rows[0]!.n);
+    const firstPage = (await app.services.loads.stale(NOW, 60_000, submittedCount)).map((t) => t.id);
+    expect(firstPage).toContain(submitted);
+    expect(firstPage).not.toContain(held); // the limit is filled by submitted loads; the held one waits
+    expect((await app.services.loads.stale(NOW, 60_000, submittedCount + 1)).map((t) => t.id)).toContain(held);
+  });
+
   it('the stale-load sweep sees only this market\'s loads, so it asks only this market\'s provider (T-0028)', async () => {
     const old = new Date(NOW.getTime() - 3_600_000);
     const [us, il] = [uuidv7(), uuidv7()];
@@ -442,3 +467,59 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
   });
 
 });
+
+describe('a returned ACH debit through the real Stripe adapter (T-0539, F05)', () => {
+  const HOLD_END = new Date('2026-11-05T09:00:00Z'); // Monday + 3 business days
+  const clock = fixedClock(NOW.toISOString()) as AdvanceableClock;
+  // One fake for the file's tests: its ids advance like Stripe's, so two loads never share a vendor id.
+  let shared: { fake: FakeStripe; svc: LoadService } | undefined;
+  const stripe = () => {
+    if (shared) return shared;
+    const fake = new FakeStripe({ secretKey: 'sk_test_fake_key', webhookSecret: 'whsec_fake_signing_secret', clock });
+    const port = new StripeFundingAdapter({ secretKey: 'sk_test_fake_key', webhookSecret: 'whsec_fake_signing_secret', fetch: fake.fetch, clock });
+    const s = app.services;
+    shared = { fake, svc: new LoadService({ db, port, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider: 'stripe' }) };
+    return shared;
+  };
+  const heldLoad = async (svc: LoadService, party: string, key: string) => {
+    const run = await runLoad(svc, { payerPartyId: party, memberPartyId: party, method: 'ach', amount: money(8_000n, 'USD'), paymentMethodId: 'pm_us_bank_ok' }, key, NOW);
+    return { run, loadId: (await svc.vendorLoadOf(run.transfer.id))! };
+  };
+  const journals = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [key])).rows[0]!.n;
+  const newParty = async () => {
+    const party = uuidv7(NOW);
+    await app.services.accounts.provisionMember(party);
+    return party;
+  };
+
+  it('the payment_failed webhook fails the held load and reverses the hold once; a repeat changes nothing', async () => {
+    const { fake, svc } = stripe();
+    const party = await newParty();
+    const key = `stripe-ach-hook-${party}`;
+    const { run, loadId } = await heldLoad(svc, party, key);
+    expect(run.transfer).toMatchObject({ state: 'pending_hold' });
+    const hook = fake.settlePaymentIntent(loadId, 'returned');
+    const v = await svc.webhookVerifier().verify(hook.headers, hook.rawBody, NOW);
+    expect(v.ok).toBe(true);
+    const event = { provider: 'funding', eventId: v.eventId, receivedAt: NOW.toISOString(), signatureOk: true, payload: v.payload };
+    expect(await svc.applyWebhook(event, NOW)).toMatchObject({ state: 'failed', failureCode: 'insufficient_funds' });
+    expect(await svc.applyWebhook(event, NOW)).toMatchObject({ state: 'failed' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await available(party)).toBe(0n);
+  });
+
+  it('with the webhook lost, the release on the hold date asks Stripe, fails the load and credits nothing', async () => {
+    const { fake, svc } = stripe();
+    const party = await newParty();
+    const key = `stripe-ach-lost-${party}`;
+    const { run, loadId } = await heldLoad(svc, party, key);
+    fake.settlePaymentIntent(loadId, 'returned'); // the bank returned it; nobody told us
+    const after = await svc.release((await app.services.transfers.get(run.transfer.id))!, HOLD_END);
+    expect(after).toMatchObject({ state: 'failed', failureCode: 'insufficient_funds' });
+    expect(await journals(releaseKey(key))).toBe(0);
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await available(party)).toBe(0n);
+    await expect(svc.release(after, HOLD_END)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+  });
+});
+

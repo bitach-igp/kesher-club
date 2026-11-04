@@ -41,8 +41,9 @@ export class ReleaseHoldsJob {
     for (const t of due) {
       report.attempted += 1;
       try {
-        await this.loads.release(t, now);
-        report.released += 1;
+        // A hold the vendor returned is failed by the release, not credited: count only what reached the wallet.
+        const after = await this.loads.release(t, now);
+        if (after.state === 'settled') report.released += 1;
       } catch (e) {
         report.errors.push({ transferId: t.id, error: (e as Error).message.slice(0, 200) });
       }

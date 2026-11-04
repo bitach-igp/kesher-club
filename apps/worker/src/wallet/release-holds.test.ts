@@ -5,7 +5,7 @@
 // in its own hold account and released into its own account the same way.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
-import { BillingSimulator, FundingSimulator, fixedClock } from '@kesher/ports';
+import { BillingSimulator, FundingError, FundingSimulator, fixedClock } from '@kesher/ports';
 import { StaticFlags } from '@kesher/api/billing/capabilities';
 import { MembershipService } from '@kesher/api/billing/memberships';
 import { PlanService } from '@kesher/api/billing/plans';
@@ -14,6 +14,7 @@ import { PostgresLedger } from '@kesher/api/ledger/post';
 import { TransferService } from '@kesher/api/transfers/service';
 import { holdKey, LoadService, releaseKey, runLoad, settleKey, type LoadInput } from '@kesher/api/wallet/loads';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
+import { LoadWorkflow, STALE_AFTER_MS } from './load-workflow.ts';
 import { ReleaseHoldsJob } from './release-holds.ts';
 
 let db: TestDatabase;
@@ -110,6 +111,241 @@ describe('TST-WAL-003', () => {
     now = THURSDAY;
     const report = await job.run();
     expect(report.attempted).toBe(0);
+  });
+
+  it('an ACH returned on day 2 whose webhook never arrived is failed at the release date, never credited to the wallet (F05)', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-lost-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 7_000n), key, now);
+    const loadId = (await loads.vendorLoadOf(run.transfer.id))!;
+    // Tuesday: the bank returns the debit. The vendor knows; our webhook endpoint never hears of it.
+    const w = sim.webhookFor(loadId, 'failed');
+    await sim.parseWebhook(w.headers, w.rawBody);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 7_000n, settled: 7_000n });
+
+    now = THURSDAY;
+    const report = await job.run();
+    expect(report).toMatchObject({ attempted: 1, released: 0, errors: [] });
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'failed', failureCode: 'VENDOR_FAILED' });
+    expect(await journals(releaseKey(key))).toBe(0);
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    // The member is told through the transfer's failed event.
+    expect((await transfers.history(run.transfer.id)).map((e) => e.to)).toEqual(['created', 'submitted', 'pending_hold', 'failed']);
+
+    // A second cycle, and a replayed release, post nothing more.
+    now = new Date(now.getTime() + 60_000);
+    expect(await job.run()).toMatchObject({ attempted: 0, released: 0 });
+    await expect(loads.release((await transfers.get(run.transfer.id))!, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+  });
+
+  it('the vendor saying the return during the hold, by webhook or by the sweep, reaches the same end state; a vendor outage at release credits nothing', async () => {
+    const [a, b] = [uuidv7(MONDAY), uuidv7(MONDAY)];
+    now = MONDAY;
+    const [runA, runB] = [await runLoad(loads, ach(a, 3_000n), `ach-hook-${a}`, now), await runLoad(loads, ach(b, 3_000n), `ach-sweep-${b}`, now)];
+    for (const r of [runA, runB]) {
+      const id = (await loads.vendorLoadOf(r.transfer.id))!;
+      const w = sim.webhookFor(id, 'failed');
+      await sim.parseWebhook(w.headers, w.rawBody);
+    }
+    // A: the webhook reaches us. B: the sweep asks the vendor (what the worker's resume does).
+    const idA = (await loads.vendorLoadOf(runA.transfer.id))!;
+    const verifier = loads.webhookVerifier();
+    const hook = sim.webhookFor(idA, 'failed');
+    const v = await verifier.verify(hook.headers, hook.rawBody, now);
+    const viaHook = await loads.applyWebhook({ provider: 'funding', eventId: v.eventId, receivedAt: now.toISOString(), signatureOk: true, payload: v.payload }, now);
+    const wf = new LoadWorkflow(loads, sim, () => now);
+    now = new Date(MONDAY.getTime() + STALE_AFTER_MS + 1); // the held load is past the stale window
+    const swept = await wf.sweep();
+    expect(swept.failed).toBeGreaterThanOrEqual(1);
+    expect(swept.errors).toEqual([]);
+    const viaSweep = (await transfers.get(runB.transfer.id))!;
+    now = MONDAY;
+    expect(viaHook).toMatchObject({ state: 'failed', failureCode: 'VENDOR_FAILED' });
+    expect(viaSweep).toMatchObject({ state: 'failed', failureCode: 'VENDOR_FAILED' });
+    expect(await purse(a)).toEqual(await purse(b));
+    expect(await purse(a)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+
+    // The vendor cannot be asked on the release date: the hold stays, the money is not released blind.
+    const c = uuidv7(MONDAY);
+    now = MONDAY;
+    const runC = await runLoad(loads, ach(c, 4_000n), `ach-out-${c}`, now);
+    const realGet = sim.getLoad.bind(sim);
+    sim.getLoad = async () => {
+      throw new FundingError('PROVIDER_UNAVAILABLE', 'down');
+    };
+    now = THURSDAY;
+    const report = await job.run();
+    sim.getLoad = realGet;
+    expect(report.released).toBe(0);
+    expect(report.errors.some((e) => e.transferId === runC.transfer.id)).toBe(true);
+    expect(await purse(c)).toEqual({ available: 0n, holds: 4_000n, settled: 4_000n });
+    expect(await transfers.get(runC.transfer.id)).toMatchObject({ state: 'pending_hold' });
+    // Back up: the next cycle releases it.
+    expect(await job.run()).toMatchObject({ released: 1 });
+    expect(await purse(c)).toEqual({ available: 4_000n, holds: 0n, settled: 4_000n });
+  });
+
+  it('a return that lands between the vendor check and the release does not leave money in the wallet (the release journal is reversed once)', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-race-a-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 6_000n), key, now);
+    // The load is failed (webhook or sweep) just as the release gets to the row lock.
+    const realApply = transfers.apply.bind(transfers);
+    let injected = false;
+    transfers.apply = async (id, event, at, extra) => {
+      if (event === 'release_hold' && !injected) {
+        injected = true;
+        await loads.fail((await transfers.get(id))!, 'VENDOR_FAILED', at);
+      }
+      return realApply(id, event, at, extra);
+    };
+    now = THURSDAY;
+    try {
+      await expect(loads.release((await transfers.get(run.transfer.id))!, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    } finally {
+      transfers.apply = realApply;
+    }
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'failed' });
+    expect(await journals(releaseKey(key))).toBe(1);
+    expect(await journals(`${releaseKey(key)}:reversal`)).toBe(1);
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+  });
+
+  it('a return handled from a stale read after the release has won leaves the released load alone', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-race-b-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 2_500n), key, now);
+    const stale = (await transfers.get(run.transfer.id))!; // still pending_hold in this reader's hands
+    now = THURSDAY;
+    await loads.release(stale, now);
+    expect(await purse(party)).toEqual({ available: 2_500n, holds: 0n, settled: 2_500n });
+    await expect(loads.fail(stale, 'VENDOR_FAILED', now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'settled' });
+    // It decided on the row as it is now (settled), so it reversed nothing and has nothing to undo.
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(0);
+    expect(await journals(`${holdKey(key)}:reversal:undo`)).toBe(0);
+    expect(await purse(party)).toEqual({ available: 2_500n, holds: 0n, settled: 2_500n });
+  });
+
+  it('a return that lands after the release moved the row to pending, before it settled, undoes both the hold and the release', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-race-c-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 5_500n), key, now);
+    const realApply = transfers.apply.bind(transfers);
+    let injected = false;
+    transfers.apply = async (id, event, at, extra) => {
+      if (event === 'settle' && !injected) {
+        injected = true;
+        await loads.fail((await transfers.get(id))!, 'VENDOR_FAILED', at); // the row is pending: the release journal is posted
+      }
+      return realApply(id, event, at, extra);
+    };
+    now = THURSDAY;
+    try {
+      await expect(loads.release((await transfers.get(run.transfer.id))!, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    } finally {
+      transfers.apply = realApply;
+    }
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'failed' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await journals(`${releaseKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+  });
+
+  it('a release journal orphaned by a crash is reversed when the vendor later reports the return', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-orphan-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 4_200n), key, now);
+    const realApply = transfers.apply.bind(transfers);
+    transfers.apply = async (id, event, at, extra) => {
+      if (event === 'release_hold') throw new Error('process died');
+      return realApply(id, event, at, extra);
+    };
+    now = THURSDAY;
+    try {
+      await expect(loads.release((await transfers.get(run.transfer.id))!, now)).rejects.toThrow('process died');
+    } finally {
+      transfers.apply = realApply;
+    }
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'pending_hold' });
+    expect(await journals(releaseKey(key))).toBe(1); // posted, the row never moved
+    expect(await purse(party)).toEqual({ available: 4_200n, holds: 0n, settled: 4_200n }); // wallet credited by the orphan
+
+    // The bank returns the debit; the next cycle finds out.
+    const loadId = (await loads.vendorLoadOf(run.transfer.id))!;
+    const w = sim.webhookFor(loadId, 'failed');
+    await sim.parseWebhook(w.headers, w.rawBody);
+    expect(await job.run()).toMatchObject({ attempted: 1, released: 0, errors: [] });
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'failed' });
+    expect(await journals(`${releaseKey(key)}:reversal`)).toBe(1);
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+  });
+
+  it('a transient error while a held load is being failed leaves the reversals in place, and the retry finishes the job', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-transient-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 3_300n), key, now);
+    const realApply = transfers.apply.bind(transfers);
+    let failed = false;
+    transfers.apply = async (id, event, at, extra) => {
+      if (event === 'fail' && !failed) {
+        failed = true;
+        throw new Error('connection reset');
+      }
+      return realApply(id, event, at, extra);
+    };
+    try {
+      await expect(loads.fail((await transfers.get(run.transfer.id))!, 'VENDOR_FAILED', now)).rejects.toThrow('connection reset');
+    } finally {
+      transfers.apply = realApply;
+    }
+    // Still held, hold reversed, nothing undone.
+    expect(await transfers.get(run.transfer.id)).toMatchObject({ state: 'pending_hold' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await journals(`${holdKey(key)}:reversal:undo`)).toBe(0);
+    // The retry fails it; the money is gone from pending and nothing reached the wallet.
+    expect(await loads.fail((await transfers.get(run.transfer.id))!, 'VENDOR_FAILED', now)).toMatchObject({ state: 'failed' });
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+  });
+
+  it('a fail built from a stale read of the row (before the hold posted) still reverses the hold', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-stale-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 2_200n), key, now);
+    const stale = { ...(await transfers.get(run.transfer.id))!, state: 'submitted' as const };
+    expect(await loads.fail(stale, 'VENDOR_FAILED', now)).toMatchObject({ state: 'failed' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+  });
+
+  it('a release is refused when the hold was already reversed: no release journal is posted behind a return', async () => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-reversed-${party}`;
+    now = MONDAY;
+    const run = await runLoad(loads, ach(party, 1_700n), key, now);
+    // The return reversed the hold but the row is still in its hold (the process died before the fail).
+    await new PostgresLedger(db).reverse(run.transfer.journalId!, `${holdKey(key)}:reversal`);
+    now = THURSDAY;
+    await expect(loads.release((await transfers.get(run.transfer.id))!, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await journals(releaseKey(key))).toBe(0);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
+    // The fail that never happened is finished by the next pass, and nothing is posted twice.
+    expect(await loads.fail((await transfers.get(run.transfer.id))!, 'VENDOR_FAILED', now)).toMatchObject({ state: 'failed' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await purse(party)).toEqual({ available: 0n, holds: 0n, settled: 0n });
   });
 
   it('an institution\'s ACH pull is held in its own hold account and released into its own account on Thursday (T-0617)', async () => {
