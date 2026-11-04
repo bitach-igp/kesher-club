@@ -52,6 +52,13 @@ export interface CrowdedBankingOverride {
   warn?: (message: string) => void;
   /** The HTTP transport; tests inject a fake Crowded. */
   fetch?: typeof globalThis.fetch;
+  /**
+   * Adapter options the config has no key for yet (T-0659 "Not done"): the sub-account contact, Kesher's collection
+   * counterparty and the payer's consent. A caller such as the T-0660 e2e supplies them; production config keys come later.
+   */
+  subAccountEmail?: string;
+  collectionCounterpartyRef?: string;
+  payer?: { ip: string; consented: true };
 }
 
 /** Said when CROWDED_BINDING=live is set: the env switch changes the label here, not the approval record. */
@@ -85,6 +92,9 @@ export function createRegistry(
     const adapter = new CrowdedInstitutionBankingAdapter({
       client: new CrowdedClient({ baseUrl: banking.baseUrl, token: banking.token.reveal(), ...(banking.fetch ? { fetch: banking.fetch } : {}) }),
       ...(ledger ? { ledger } : {}),
+      ...(banking.subAccountEmail ? { subAccountEmail: banking.subAccountEmail } : {}),
+      ...(banking.collectionCounterpartyRef ? { collectionCounterpartyRef: banking.collectionCounterpartyRef } : {}),
+      ...(banking.payer ? { payer: banking.payer } : {}),
       // Without a verifier the adapter refuses every webhook; this is the same HMAC the /webhooks/crowded receiver checks.
       verifyWebhookSignature: (headers, rawBody) => verifyCrowdedSignature({ header: crowdedHeaderValue(headers, CROWDED_SIGNATURE_HEADER), rawBody, secrets }) === undefined,
     });

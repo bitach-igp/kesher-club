@@ -4,6 +4,7 @@ import http from 'node:http';
 import type { SimulatorHost} from './host.ts';
 import { type Simulators } from './host.ts';
 import { assistantRoute, type DemoAssistant } from './assistant.ts';
+import type { CrowdedHttpSimulator } from './crowded-http.ts';
 import { OidcIssuer } from './oidc.ts';
 
 type Json = Record<string, unknown> | unknown[] | string | number | boolean | null;
@@ -30,6 +31,8 @@ export interface PanelContext {
   jobs?: PanelJobs | undefined;
   /** The demo assistant (T-1017), an OAuth client of the API's authorization server. */
   assistant?: DemoAssistant | undefined;
+  /** Crowded's API over HTTP under /crowded/api/v1, and its control hooks under /crowded/control (T-0660). */
+  crowded?: CrowdedHttpSimulator | undefined;
 }
 
 const json = (status: number, body: Json): PanelResponse => ({ status, body });
@@ -48,9 +51,13 @@ export async function handle(host: SimulatorHost, method: string, url: string, r
     const r = await assistantRoute(ctx.assistant, method, u.pathname.slice('/assistant'.length), u.searchParams);
     if (r) return { status: r.status, body: r.body as Json, ...(r.contentType ? { contentType: r.contentType } : {}), ...(r.headers ? { headers: r.headers } : {}) };
   }
+  // Crowded's API and its control hooks (T-0660). Before the JSON parse below: the route reads its own body and answers 400 for one that is not JSON.
+  if (parts[0] === 'crowded' && ctx.crowded) {
+    return ctx.crowded.route({ method, path: u.pathname.slice('/crowded'.length), search: u.search, headers: ctx.headers ?? {}, rawBody });
+  }
   const body = rawBody ? (JSON.parse(rawBody) as Record<string, unknown>) : {};
 
-  if (method === 'GET' && parts.length === 0) return { status: 200, body: panelHtml(host), contentType: 'text/html; charset=utf-8' };
+  if (method === 'GET' && parts.length === 0) return { status: 200, body: panelHtml(host, ctx.crowded), contentType: 'text/html; charset=utf-8' };
   if (method === 'GET' && parts[0] === 'health') return json(200, { ok: true, clock: host.clock.now().toISOString(), startedAt: host.startedAt });
   if (method === 'GET' && parts[0] === 'ports' && parts.length === 1) return json(200, host.ports());
   if (parts[0] === 'ports' && parts[1]) {
@@ -92,7 +99,7 @@ export async function handle(host: SimulatorHost, method: string, url: string, r
   return json(404, { error: 'not_found' });
 }
 
-export function createServer(host: SimulatorHost, opts: { jobs?: PanelJobs; assistant?: DemoAssistant } = {}): http.Server {
+export function createServer(host: SimulatorHost, opts: { jobs?: PanelJobs; assistant?: DemoAssistant; crowded?: CrowdedHttpSimulator } = {}): http.Server {
   const oidc = OidcIssuer.create();
   return http.createServer(async (req, res) => {
     let raw = '';
@@ -100,7 +107,7 @@ export function createServer(host: SimulatorHost, opts: { jobs?: PanelJobs; assi
     for await (const chunk of req) raw += chunk;
     let out: PanelResponse;
     try {
-      out = await handle(host, req.method ?? 'GET', req.url ?? '/', raw, { oidc: await oidc, headers: req.headers, jobs: opts.jobs, assistant: opts.assistant });
+      out = await handle(host, req.method ?? 'GET', req.url ?? '/', raw, { oidc: await oidc, headers: req.headers, jobs: opts.jobs, assistant: opts.assistant, crowded: opts.crowded });
     } catch (e) {
       out = json(400, { error: 'bad_request', detail: (e as Error).message });
     }
@@ -117,8 +124,15 @@ function serialisable(v: unknown): Json {
   return JSON.parse(JSON.stringify(v ?? null, (_k, x: unknown) => (typeof x === 'bigint' ? x.toString() : typeof x === 'symbol' ? (x.description ?? 'symbol') : x))) as Json;
 }
 
-function panelHtml(host: SimulatorHost): string {
+function panelHtml(host: SimulatorHost, crowded?: CrowdedHttpSimulator): string {
   const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
+  // Crowded's control hooks (T-0660) post to /crowded/control/<name>; the form carries its own URL, the port hooks build theirs from data-cap.
+  const crowdedSection = crowded
+    ? `<h2>Crowded over HTTP</h2><p>API at <code>/crowded/api/v1</code>. Webhook batches go to the URLs registered with <code>node tools/crowded-webhooks.mjs create --simulator</code>.</p>${crowded
+        .controls()
+        .map((c) => `<form data-url="/crowded/control/${c.name}"><strong>${esc(c.name)}</strong> <small>${esc(c.describe)}</small><br>${c.args.map((a) => `<input name="${a}" placeholder="${a}">`).join(' ')}<button>run</button><pre></pre></form>`)
+        .join('')}`
+    : '';
   const rows = host
     .ports()
     .map((p) => {
@@ -137,8 +151,9 @@ function panelHtml(host: SimulatorHost): string {
 <p>Every provider port, bound in <code>sim</code> mode for US and IL. Fixtures are deterministic inputs; hooks drive webhooks and decisions.
 <button id="adv" data-ms="60000">+1 min</button> <button id="adv2" data-ms="86400000">+1 day</button></p>
 <table><tr><th>Port</th><th>Flags</th><th>Fixtures</th><th>Hooks</th></tr>${rows}</table>
+${crowdedSection}
 <script>
-for (const f of document.querySelectorAll('form')) f.addEventListener('submit', async (e) => { e.preventDefault(); const body = Object.fromEntries(new FormData(f)); const r = await fetch('/ports/' + f.dataset.cap + '/hooks/' + f.dataset.hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); f.querySelector('pre').textContent = JSON.stringify(await r.json(), null, 2); });
+for (const f of document.querySelectorAll('form')) f.addEventListener('submit', async (e) => { e.preventDefault(); const body = Object.fromEntries(new FormData(f)); const r = await fetch(f.dataset.url || '/ports/' + f.dataset.cap + '/hooks/' + f.dataset.hook, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }); f.querySelector('pre').textContent = JSON.stringify(await r.json(), null, 2); });
 for (const b of [document.getElementById('adv'), document.getElementById('adv2')]) b.addEventListener('click', async () => { const r = await fetch('/clock/advance', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ms: Number(b.dataset.ms) }) }); document.getElementById('clock').textContent = (await r.json()).now; });
 </script>`;
 }
