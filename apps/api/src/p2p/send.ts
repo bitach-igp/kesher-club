@@ -263,6 +263,7 @@ export class P2pSendService implements SendActivities {
     if (!transfer.conversion) return this.d.holds.release(transfer, workflowId, now);
     if (transfer.state !== 'pending_hold' && transfer.state !== 'pending') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a transfer that is ${transfer.state}`);
     if (transfer.state === 'pending_hold' && (!transfer.holdReleasesAt || Date.parse(transfer.holdReleasesAt) > now.getTime())) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold has not expired yet');
+    if (await this.d.holds.holdReversed(workflowId)) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold was already returned to the sender');
     const pending = await this.d.accounts.memberAccount(transfer.fromPartyId!, 'pending', transfer.amount.currency);
     const journal = await this.d.ledger.post({
       idempotencyKey: releaseKey(workflowId),

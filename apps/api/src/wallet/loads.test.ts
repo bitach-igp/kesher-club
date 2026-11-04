@@ -513,6 +513,18 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     expect(await count(settleKey('load-pending-sweep-1'))).toBe(0);
   });
 
+  it('a pending load is swept ahead of loads still in their hold, even when more held loads are older than the limit (T-0543)', async () => {
+    const [held1, held2, held3, pending] = [uuidv7(), uuidv7(), uuidv7(), uuidv7()];
+    const ancient = new Date(NOW.getTime() - 30 * 86_400_000);
+    for (const id of [held1, held2, held3]) await seedTransfer(db, { id, kind: 'load', state: 'pending_hold', market: 'US', at: ancient });
+    await seedTransfer(db, { id: pending, kind: 'load', state: 'pending', market: 'US', at: new Date(NOW.getTime() - 86_400_000) });
+    // The limit is the number of rows that must come first (submitted or pending): the held ones, however old, wait behind them.
+    const first = Number((await db.query<{ n: number }>(`select count(*)::int as n from ops.transfer where kind = 'load' and market = 'US' and state in ('submitted', 'pending') and updated_at <= $1`, [new Date(NOW.getTime() - 60_000)])).rows[0]!.n);
+    const page = (await app.services.loads.stale(NOW, 60_000, first)).map((t) => t.id);
+    expect(page).toContain(pending);
+    for (const id of [held1, held2, held3]) expect(page).not.toContain(id);
+  });
+
   it('the stale-load sweep sees only this market\'s loads, so it asks only this market\'s provider (T-0028)', async () => {
     const old = new Date(NOW.getTime() - 3_600_000);
     const [us, il] = [uuidv7(), uuidv7()];

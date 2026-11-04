@@ -424,4 +424,47 @@ describe('T-0543: a send left in pending is finished once, never posted twice (F
     expect(await journalCount(releaseKey(key))).toBe(1);
     expect(await available(b.partyId)).toBe(60_000n + 1_000n);
   });
+
+  it('the converted-currency release finishes a pending row too: the member is credited once at the price fixed when it began', async () => {
+    const a = await register('+972501000096');
+    const c = await register('+972501000097');
+    await fund(a, 50_000n, 'USD');
+    await app.services.preferences.set(c.partyId, 'ILS', NOW);
+    const key = 'pending-xccy-1';
+    const body = { toPartyId: c.partyId, amount: usd('20000') };
+    // The earlier test in this file left the second published rate current from a minute on; price the hold then.
+    const at = new Date(NOW.getTime() + 5 * MIN);
+    const held = await app.services.p2p.send(a.partyId, body, key, at);
+    expect(held).toMatchObject({ state: 'pending_hold', rateVersion: expect.any(Number) });
+    const received = BigInt((held as { received: { minor: string } }).received.minor);
+    expect(received).toBeGreaterThan(0n);
+    const later = new Date(at.getTime() + HOLD_MS);
+    await crashAtSettle(() => app.services.p2p.send(a.partyId, body, key, later));
+    expect((await app.services.transfers.get(held.id))!.state).toBe('pending');
+    expect(await available(c.partyId, 'ILS')).toBe(received); // the release journal already credited it
+    expect(await app.services.p2p.send(a.partyId, body, key, later)).toMatchObject({ id: held.id, state: 'settled', received: { minor: received.toString(), currency: 'ILS' } });
+    expect(await available(c.partyId, 'ILS')).toBe(received); // the retry added nothing
+    expect(await journalCount(releaseKey(key))).toBe(1);
+    expect(await journalCount(settleKey(key))).toBe(0);
+  });
+
+  it('a hold that went back to the sender (a cancel that died after reversing it) is never paid out to the recipient', async () => {
+    const a = await register('+972501000098');
+    const b = await register('+972501000099');
+    await fund(a, 100_000n);
+    const key = 'pending-cancelled-1';
+    const body = { toPartyId: b.partyId, amount: ils('60000') };
+    const held = await send(a, body, key);
+    const id = (held.body as { id: string }).id;
+    const t = (await app.services.transfers.get(id))!;
+    expect(await available(a.partyId)).toBe(40_000n);
+    // The cancel reversed the hold (the money is back with the sender) and died before the transfer was marked cancelled.
+    await app.services.ledger.reverse(t.journalId!, `${holdKey(key)}:reversal`);
+    expect(await available(a.partyId)).toBe(100_000n);
+    await expect(app.services.p2p.send(a.partyId, body, key, new Date(NOW.getTime() + HOLD_MS))).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await journalCount(releaseKey(key))).toBe(0);
+    expect(await available(b.partyId)).toBe(0n);
+    expect(await available(a.partyId)).toBe(100_000n);
+  });
 });
+

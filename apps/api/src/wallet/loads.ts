@@ -361,7 +361,7 @@ export class LoadService implements LoadActivities {
     // institution's ACH pull is one too (T-0617); a deposit recorded off a statement (T-0614) never met the vendor.
     const r = await this.d.db.query<{ id: string }>(`select t.id from ops.transfer t
         where (t.kind = 'load' or (t.kind = 'deposit' and exists (select 1 from ops.external_ref r where r.entity_type = 'transfer' and r.entity_id = t.id and r.provider = $4)))
-          and t.state in ('submitted', 'pending_hold', 'pending') and t.updated_at <= $1 and t.market = $3 order by (t.state in ('pending_hold', 'pending')), t.updated_at limit $2`,
+          and t.state in ('submitted', 'pending_hold', 'pending') and t.updated_at <= $1 and t.market = $3 order by (t.state = 'pending_hold'), t.updated_at limit $2`,
       [new Date(now.getTime() - olderThanMs), limit, this.d.transfers.market, this.d.provider]);
     const out: Transfer[] = [];
     for (const row of r.rows) {
