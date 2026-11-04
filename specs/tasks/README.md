@@ -68,6 +68,7 @@
 | [T-0309](T-0309.md) | BIL | M04 accepts a funder's invite | REQ-BIL-003 | 13 |
 | [T-0310](T-0310.md) | BIL | The funder's memberships, and cancelling one in two taps | REQ-BIL-004 | 14 |
 | [T-0311](T-0311.md) | BIL | P13 billing in funder mode | REQ-BIL-004 | 14 |
+| [T-0312](T-0312.md) | BIL | Fix: creating a membership needs step-up, the flag and the member's consent | REQ-BIL-002, REQ-BIL-003 | fix |
 | [T-0401](T-0401.md) | CRD | KYC sessions and tiers over KycPort (simulator) | — | 4 |
 | [T-0402](T-0402.md) | CRD | Virtual card issue within 60 s of T2 approval; details token only | REQ-CRD-001, REQ-CRD-002 | 5 |
 | [T-0403](T-0403.md) | CRD | JIT authorisation decision, fail closed, p99 < 300 ms | REQ-CRD-003 | 5 |
@@ -118,6 +119,14 @@
 | [T-0536](T-0536.md) | WAL | Members see each purse's transactions | REQ-WAL-008 | 14 |
 | [T-0537](T-0537.md) | WAL | A funder sees a funded member's activity: transactions, spend by category, cards | REQ-WAL-009 | 14 |
 | [T-0538](T-0538.md) | WAL | P06 child detail in funder mode | REQ-WAL-009 | 14 |
+| [T-0539](T-0539.md) | WAL | Fix: a returned or failed ACH load is failed, never released to the wallet | REQ-WAL-003, REQ-LED-004 | fix |
+| [T-0540](T-0540.md) | PO | Fix: reserve payout funds while a payout waits for cool-off or approval | REQ-PO-001, REQ-WAL-001 | fix |
+| [T-0541](T-0541.md) | PO | Fix: a payout hit by a rail outage is retried, not stranded | REQ-PO-002 | fix |
+| [T-0542](T-0542.md) | ESIM | Fix: add-on orders get a funds check, step-up and a validated quantity | REQ-ESIM-001, REQ-WAL-001 | fix |
+| [T-0543](T-0543.md) | PAY | Fix: a P2P send left pending is finished once, never posted twice | REQ-PAY-003, REQ-PAY-005 | fix |
+| [T-0544](T-0544.md) | LED | Fix: balance and limit checks hold a per-wallet lock, real-Postgres concurrency test | REQ-WAL-001, REQ-PAY-002, REQ-CRD-003 | fix |
+| [T-0545](T-0545.md) | PO | Fix: payout approval thresholds, no orphaned member payouts, no splitting | REQ-PO-001, REQ-INS-020 | fix |
+| [T-0546](T-0546.md) | FX | Fix: FX rate sanity bound and expiry; conversions reserve before the vendor call | REQ-FX-001, REQ-FX-003, REQ-FX-004 | fix |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
@@ -174,6 +183,8 @@
 | [T-0654](T-0654.md) | INS | Nightly reconciliation of linked US accounts | REQ-INS-026 | later |
 | [T-0655](T-0655.md) | INS | Crowded go-live kit: vendor questions, runbook, webhook registration | REQ-INS-025, REQ-INS-026 | later |
 | [T-0656](T-0656.md) | INS | Evaluate Crowded ILS transfers as a USD→ILS route (spike) | REQ-FX-001, REQ-FX-003, REQ-PO-001 | later |
+| [T-0657](T-0657.md) | INS | Fix: Crowded lookups match on our institution id, not the name | REQ-INS-022, REQ-INS-023 | fix |
+| [T-0658](T-0658.md) | INS | Fix: US funding re-checks the kill switch, KYB and account before every send | REQ-INS-024, REQ-INS-022 | fix |
 | [T-0659](T-0659.md) | INS | Go-live wiring: Crowded adapter by config, secrets passed, keys persisted | REQ-INS-022, REQ-INS-025 | go-live |
 | [T-0660](T-0660.md) | INS | Crowded HTTP simulator and an end-to-end run of the US-banking flows | REQ-INS-022, REQ-INS-023, REQ-INS-024, REQ-INS-025 | go-live |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
@@ -238,4 +249,5 @@
 | [T-1015](T-1015.md) | AGT | Authorization server 2: passkey consent creates the grant and a one-time code | REQ-AGT-010 | 13 |
 | [T-1016](T-1016.md) | AGT | Authorization server 3: token endpoint, PKCE, rotating refresh tokens | REQ-AGT-011 | 13 |
 | [T-1017](T-1017.md) | AGT | App consent screen and a demo assistant client | REQ-AGT-010 | 13 |
+| [T-1018](T-1018.md) | AGT | Fix: an approved agent purchase is single-use and bound to its merchant | REQ-AGT-006, REQ-CRD-008 | fix |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
