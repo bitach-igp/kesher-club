@@ -11,3 +11,4 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 |---|---|---|---|---|
 | 2026-11-04 | T-0659 | #193 | Opus APPROVE (after 1 fix round) | green |
 | 2026-11-04 | T-0660 | #195 | Opus APPROVE (after 1 fix round) | green |
+| 2026-11-04 | T-0656 | (PR pending) | Sonnet pending | pending |
