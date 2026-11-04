@@ -108,3 +108,20 @@ waits on which question is in `specs/tasks/T-0655.md`.
 with the token and secret redacted. Run by a person on the desktop, never from CI. It needs `CROWDED_BASE_URL`,
 `CROWDED_API_TOKEN` and `CROWDED_WEBHOOK_SECRET` in the environment; none is ever printed. Crowded has no test
 delivery in sandbox: use the replay endpoint on a delivered event to exercise the receiver.
+
+## Run it locally (no sandbox key needed)
+The Crowded HTTP simulator (T-0660, `apps/simulators/src/crowded-http.ts`) serves the in-memory Crowded under
+`/crowded/api/v1` and signs and POSTs webhook batches to the URL registered with it. One command runs the whole
+US-banking flow against it: the API on `PROVIDER_INSTITUTION_BANKING=crowded`, the real registration script, the link,
+fee, ACH and wrong-signature cases:
+
+```
+pnpm --filter @kesher/api exec vitest run src/institutions/us-banking.e2e.test.ts
+```
+
+To point the registration script at a simulator you started yourself, pass `--simulator`: it is the only way it accepts
+an `http://localhost` base URL, and an `http://localhost` receiver URL only when the base URL is localhost too (the
+receiver URL's shape is the same for both schemes: host, optional `/v1`, then `/webhooks/crowded`). The secret's name
+here is `CROWDED_WEBHOOK_SECRET`, singular, as above.
+The simulator's control panel (`/`, when the Crowded simulator is mounted) can decide an application, pay a collection,
+settle or return an ACH, send a batch again, hold batches and release them newest first, and sign with a wrong key.

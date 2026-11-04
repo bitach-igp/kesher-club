@@ -13,7 +13,11 @@
     "@kesher/ports": "workspace:*",
     "zod": "^4.6.7"
   },
+  "devDependencies": {
+    "@kesher/adapters": "workspace:*"
+  },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./crowded-http": "./src/crowded-http.ts"
   }
 }

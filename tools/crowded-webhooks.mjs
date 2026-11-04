@@ -6,6 +6,12 @@
 //   node tools/crowded-webhooks.mjs create --url https://webhooks.example/webhooks/crowded [--dry-run]   (the webhook host's edge forwards /webhooks/*)
 //   node tools/crowded-webhooks.mjs delete --id <webhookId> --yes [--dry-run]
 //
+// --simulator (T-0660) points the script at the local Crowded simulator (apps/simulators, /crowded/api/v1): an http://localhost base URL
+// is accepted with this flag, and an http://localhost receiver URL only when the base URL is localhost too, so a local receiver is never
+// registered against a remote Crowded. Every other host still has to be https; the flag changes nothing for them. For both schemes the
+// receiver URL is the same shape: the host, then an optional /v1, then /webhooks/crowded.
+//   CROWDED_BASE_URL=http://localhost:4010/crowded/api/v1 node tools/crowded-webhooks.mjs create --url http://localhost:8080/webhooks/crowded --simulator
+//
 // Environment (never printed, never logged):
 //   CROWDED_API_TOKEN       bearer token for the management API (required except with --dry-run)
 //   CROWDED_BASE_URL        e.g. https://sandbox-api.crowdedfinance.com/api/v1 (required; there is no production default)
@@ -36,19 +42,31 @@ const die = (msg) => {
 };
 
 const dry = flag('dry-run');
+const simulator = flag('simulator');
+// The simulator is the only plain-http peer, and only on this machine: exactly the host `localhost`, with or without a port.
+const LOCALHOST_HTTP = /^http:\/\/localhost(:\d{1,5})?(\/|$)/;
 const base = (process.env.CROWDED_BASE_URL ?? '').replace(/\/+$/, '');
 const token = process.env.CROWDED_API_TOKEN ?? '';
 const secret = process.env.CROWDED_WEBHOOK_SECRET ?? '';
+// The base URL is https, or — with --simulator — http://localhost.
+const baseOk = /^https:\/\/[^/\s]+/.test(base) || (simulator && LOCALHOST_HTTP.test(base));
+// The receiver URL is one shape for both schemes: host, optional /v1, then /webhooks/crowded. An http://localhost host
+// needs --simulator and an http://localhost base, so a local receiver is never registered against a remote Crowded.
+const receiverOk = (url) => {
+  const m = /^(https:\/\/[^/\s]+|http:\/\/localhost(:\d{1,5})?)(\/v1)?\/webhooks\/crowded$/.exec(url);
+  if (!m) return false;
+  return m[1].startsWith('https:') || (simulator && LOCALHOST_HTTP.test(base));
+};
 
-if (!['list', 'create', 'delete'].includes(cmd ?? '')) die('usage: crowded-webhooks.mjs list | create --url <https url> | delete --id <id> --yes   [--dry-run]');
-if (!/^https:\/\/[^/]+/.test(base)) die('CROWDED_BASE_URL must be an https URL (there is no production default)');
+if (!['list', 'create', 'delete'].includes(cmd ?? '')) die('usage: crowded-webhooks.mjs list | create --url <https url> | delete --id <id> --yes   [--dry-run] [--simulator]');
+if (!baseOk) die('CROWDED_BASE_URL must be an https URL (there is no production default); http://localhost only with --simulator');
 if (!dry && !token) die('CROWDED_API_TOKEN is not set');
 
 let request;
 if (cmd === 'list') request = { method: 'GET', path: '/webhooks' };
 else if (cmd === 'create') {
   const url = value('url') ?? '';
-  if (!/^https:\/\/[^/\s]+(\/v1)?\/webhooks\/crowded$/.test(url)) die('--url must be https and end in /webhooks/crowded (or /v1/webhooks/crowded)');
+  if (!receiverOk(url)) die('--url must be https and end in /webhooks/crowded (or /v1/webhooks/crowded); an http://localhost receiver only with --simulator and an http://localhost CROWDED_BASE_URL');
   if (!/^[A-Za-z0-9_\-+/=]{32,128}$/.test(secret)) die('CROWDED_WEBHOOK_SECRET must be 32-128 characters of A-Za-z0-9_-+/=');
   request = { method: 'POST', path: '/webhooks', body: { url, events: EVENTS, deliveryMode: 'at_least_once', description: 'Kesher receiver', secret } };
 } else {
