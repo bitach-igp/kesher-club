@@ -144,6 +144,12 @@ export class FxService {
       if (existing.kind !== 'fx' || existing.fromPartyId !== partyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
       if (existing.state === 'settled') return this.settledView(existing);
       if (existing.state === 'failed') throw failedConversion(existing);
+      // The settle journal posted and the process died before the transfer settled: finish it with that journal. Nothing is reserved,
+      // asked of the vendor, returned or failed again, whatever the state of the quote by now.
+      if (existing.state === 'submitted') {
+        const posted = await this.journalIdOf(settleKey(key));
+        if (posted) return this.settledView(await this.d.transfers.apply(existing.id, 'settle', now, { journalId: posted }));
+      }
     }
     const held = await this.quoteById(b.quoteId);
     if (!held || held.partyId !== partyId || (held.spentKey !== undefined && held.spentKey !== key)) {
@@ -204,6 +210,9 @@ export class FxService {
   }
 
   private async void(t: Transfer, code: string, reason: string, now: Date): Promise<Transfer> {
+    // A conversion whose settle journal already posted has paid out: it is settled, never failed with its reserve returned.
+    const posted = await this.journalIdOf(settleKey(t.idempotencyKey));
+    if (posted) return this.d.transfers.apply(t.id, 'settle', now, { journalId: posted });
     await this.unreserve(t);
     return this.d.transfers.apply(t.id, 'fail', now, { failureCode: code, reason });
   }

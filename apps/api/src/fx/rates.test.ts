@@ -7,6 +7,7 @@
 // checked at the door.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
+import { uuidv7 } from '@kesher/domain';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { createApp, type App } from '../app.ts';
@@ -172,7 +173,10 @@ describe('T-0546: a feed rate that jumps is refused, and a manual rate runs out 
     expect((await r.history('USD/ILS')).map((x) => [x.version, x.status])).toEqual([[2, 'active'], [1, 'superseded']]);
     expect(await cases()).toEqual([{ kind: 'fx_rate_deviation', severity: 'high', n: 1 }]);
     await expect(r.publishFromPort('USD/ILS', 37_000_000n, t(11 * 60_000))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    // A feed that keeps offering a wrong value, even a different one, keeps one case per active rate; the case carries the latest offer.
+    await expect(r.publishFromPort('USD/ILS', 36_900_000n, t(12 * 60_000 - 1))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
     expect(await cases()).toEqual([{ kind: 'fx_rate_deviation', severity: 'high', n: 1 }]);
+    expect((await db2.query<{ payload: { offeredMid: string } }>(`select payload from ops.case where kind = 'fx_rate_deviation'`)).rows[0]!.payload.offeredMid).toBe('36.900000');
     // One basis point past the bound the other way is refused too; a halving as well.
     await expect(r.publishFromPort('USD/ILS', 3_672_000n, t(12 * 60_000))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' }); // -10.01%
     // The old rate runs out on its own (safe failure): the feed stays refused, quotes are refused.
@@ -195,6 +199,28 @@ describe('T-0546: a feed rate that jumps is refused, and a manual rate runs out 
     const taken = (await r.publishFromPort('USD/ILS', 3_960_000n, past))!;
     expect(taken).toMatchObject({ source: 'port', status: 'active', midScaled: 3_960_000n });
     expect((await r.history('USD/ILS', 2)).map((x) => [x.source, x.status])).toEqual([['port', 'active'], ['manual', 'superseded']]);
+  });
+
+  it('a manual rate active before the cap existed (no valid_until) lapses 24 hours after its activation', async () => {
+    const base = t(48 * 3_600_000);
+    // How such a row looks: active, manual, valid_until null, activated two days ago.
+    await db2.query(`update ops.fx_rate set status = 'superseded', superseded_at = $1 where pair = 'USD/ILS' and status = 'active'`, [base]);
+    const v = Number((await db2.query<{ v: number }>(`select coalesce(max(version), 0) + 1 as v from ops.fx_rate where pair = 'USD/ILS'`)).rows[0]!.v);
+    await db2.query(
+      `insert into ops.fx_rate (id, pair, version, mid_scaled, source, status, valid_from, valid_until, proposed_by, reason, created_at, activated_at) values ($1, 'USD/ILS', $2, '3900000', 'manual', 'active', $3, null, 'auth0|old', 'legacy', $3, $3)`,
+      [uuidv7(base), v, new Date(base.getTime() - 2 * 86_400_000)],
+    );
+    expect(await r.current('USD/ILS', base)).toBeUndefined(); // 48 hours old: lapsed
+    const taken = await r.publishFromPort('USD/ILS', 3_910_000n, base);
+    expect(taken).toMatchObject({ source: 'port', status: 'active' });
+    // And one activated 23 hours ago still holds and blocks the feed.
+    await db2.query(`update ops.fx_rate set status = 'superseded', superseded_at = $1 where pair = 'USD/ILS' and status = 'active'`, [base]);
+    await db2.query(
+      `insert into ops.fx_rate (id, pair, version, mid_scaled, source, status, valid_from, valid_until, proposed_by, reason, created_at, activated_at) values ($1, 'USD/ILS', $2, '3900000', 'manual', 'active', $3, null, 'auth0|old', 'legacy', $3, $3)`,
+      [uuidv7(base), v + 2, new Date(base.getTime() - 23 * 3_600_000)],
+    );
+    expect((await r.current('USD/ILS', base))?.midScaled).toBe(3_900_000n);
+    expect(await r.publishFromPort('USD/ILS', 3_910_000n, base)).toBeUndefined();
   });
 });
 

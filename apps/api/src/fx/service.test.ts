@@ -311,6 +311,46 @@ describe('T-0520: a failed vendor leg closes the conversion (SEQ-08)', () => {
       expect(await unreserved('fx-t0546-rej')).toBe(1);
     });
 
+    it('a crash after the settle journal posted (before the transfer settled) is finished by a retry or the sweep: never reserved again, never returned', async () => {
+      await ready();
+      const { svc } = scripted();
+      const before = await purseUsd();
+      const transfers = app.services.transfers;
+      const real = transfers.apply.bind(transfers);
+      const crashOnce = async () => {
+        let boom = true;
+        transfers.apply = async (id, event, at, extra) => {
+          if (event === 'settle' && boom) {
+            boom = false;
+            throw new Error('db down');
+          }
+          return real(id, event, at, extra);
+        };
+      };
+      // (a) a retry with the same key finishes it.
+      const q = await svc.quote(trader, usd10, 'fx-t0546-crash-q', t0);
+      await crashOnce();
+      await expect(svc.convert(trader, { quoteId: q.quoteId }, 'fx-t0546-crash', t0)).rejects.toThrow('db down');
+      transfers.apply = real;
+      const t = (await transfers.byKey('fx-t0546-crash'))!;
+      expect(t.state).toBe('submitted');
+      expect(await journals('fx-t0546-crash')).toBe(1);
+      const later = new Date(t0.getTime() + STALE_CONVERSION_MS + 1); // the quote has expired by now
+      expect(await svc.convert(trader, { quoteId: q.quoteId }, 'fx-t0546-crash', later)).toMatchObject({ status: 'settled' });
+      expect((await transfers.get(t.id))!.state).toBe('settled');
+      expect(await unreserved('fx-t0546-crash')).toBe(0);
+      expect(await purseUsd()).toEqual({ available: before.available - 1_000n, holds: before.holds });
+      // (b) the stale sweep settles it rather than failing it and returning the reserve.
+      const q2 = await svc.quote(trader, usd10, 'fx-t0546-crash2-q', t0);
+      await crashOnce();
+      await expect(svc.convert(trader, { quoteId: q2.quoteId }, 'fx-t0546-crash2', t0)).rejects.toThrow('db down');
+      transfers.apply = real;
+      const swept = await svc.voidStale(new Date(t0.getTime() + STALE_CONVERSION_MS + 1));
+      expect(swept.filter((x) => x.idempotencyKey === 'fx-t0546-crash2').map((x) => x.state)).toEqual(['settled']);
+      expect(await unreserved('fx-t0546-crash2')).toBe(0);
+      expect(await purseUsd()).toEqual({ available: before.available - 2_000n, holds: before.holds });
+    });
+
     it('an outage keeps the amount reserved while the same key can still retry; the stale sweep returns it once', async () => {
       await ready();
       const { port, svc } = scripted();

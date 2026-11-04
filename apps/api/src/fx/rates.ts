@@ -57,6 +57,7 @@ interface Row {
   status: RateStatus;
   valid_from: string | Date | null;
   valid_until: string | Date | null;
+  activated_at?: string | Date | null;
   approval_id: string | null;
   proposed_by: string;
   reason: string | null;
@@ -126,7 +127,8 @@ export class RateService {
   /** The active rate for the pair, if it is valid now; a port rate past its window is not. */
   async current(pair: RatePair, now: Date): Promise<ClubRate | undefined> {
     const r = await this.db.query<Row>(
-      `select * from ops.fx_rate where pair = $1 and status = 'active' and (valid_from is null or valid_from <= $2) and (valid_until is null or valid_until > $2)`,
+      `select * from ops.fx_rate where pair = $1 and status = 'active' and (valid_from is null or valid_from <= $2)
+         and (valid_until > $2 or (valid_until is null and not (source = 'manual' and coalesce(activated_at, valid_from, created_at) + interval '24 hours' <= $2)))`,
       [pair, now],
     );
     return r.rows[0] ? toRate(r.rows[0]) : undefined;
@@ -163,7 +165,9 @@ export class RateService {
     const out = await this.db.transaction(async (tx) => {
       const active = await tx.query<Row>(`select * from ops.fx_rate where pair = $1 and status = 'active' for update`, [pair]);
       const cur = active.rows[0];
-      if (cur?.source === 'manual' && !(cur.valid_until && new Date(cur.valid_until).getTime() <= now.getTime())) return { kind: 'manual' as const };
+      // A manual rate stands until it lapses: its valid_until, or (a row active before the cap existed) 24 hours after its activation.
+      const manualUntil = cur?.source === 'manual' ? (cur.valid_until ? new Date(cur.valid_until).getTime() : new Date(cur.activated_at ?? cur.valid_from ?? cur.created_at).getTime() + MANUAL_RATE_MAX_MS) : 0;
+      if (cur?.source === 'manual' && manualUntil > now.getTime()) return { kind: 'manual' as const };
       if (cur) {
         const old = BigInt(cur.mid_scaled);
         const move = midScaled > old ? midScaled - old : old - midScaled;
@@ -178,10 +182,10 @@ export class RateService {
     if (out.kind === 'manual') return undefined;
     if (out.kind === 'refused') {
       const movedBps = ((midScaled > out.old ? midScaled - out.old : out.old - midScaled) * 10_000n) / out.old;
-      // Outside the transaction (it ended): the case must survive the throw. One case per distinct offered value and active version.
+      // Outside the transaction (it ended): the case must survive the throw. One case per active rate (a feed that keeps offering wrong values keeps one open case, carrying the latest offer).
       await this.db.query(
-        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'fx_rate_deviation', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-        [uuidv7(now), `fx_rate_deviation:${pair}:v${out.version}:${midScaled}`, JSON.stringify({ pair, activeVersion: out.version, activeMid: formatRate(out.old), offeredMid: formatRate(midScaled), movedBps: movedBps.toString(), boundBps: MAX_RATE_MOVE_BPS.toString(), summary: `The feed offered ${pair} ${formatRate(midScaled)}, ${movedBps.toString()} bp from the active ${formatRate(out.old)}; refused` }), now],
+        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'fx_rate_deviation', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do update set payload = excluded.payload`,
+        [uuidv7(now), `fx_rate_deviation:${pair}:v${out.version}`, JSON.stringify({ pair, activeVersion: out.version, activeMid: formatRate(out.old), offeredMid: formatRate(midScaled), movedBps: movedBps.toString(), boundBps: MAX_RATE_MOVE_BPS.toString(), summary: `The feed offered ${pair} ${formatRate(midScaled)}, ${movedBps.toString()} bp from the active ${formatRate(out.old)}; refused` }), now],
       );
       throw new DomainError('VALIDATION_FAILED', `The feed rate for ${pair} moved ${movedBps.toString()} bp, more than the ${MAX_RATE_MOVE_BPS.toString()} bp allowed; the active rate is kept`, { pair });
     }
