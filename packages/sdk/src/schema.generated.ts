@@ -3839,7 +3839,7 @@ export interface components {
             readonly validFrom?: string;
             /**
              * Format: date-time
-             * @description Absent on a manual rate
+             * @description A port rate holds 15 minutes; a manual rate at most 24 hours from its activation (T-0546); past it the feed takes over
              */
             readonly validUntil?: string;
             readonly version: number;
