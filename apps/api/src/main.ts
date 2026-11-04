@@ -12,7 +12,7 @@ import { importSigningKey } from './auth/tokens.ts';
 import { loadApiConfig, type ApiConfig } from './config.ts';
 import { createPiiCipher } from './crypto/pii.ts';
 import { createPgDatabase } from './pg.ts';
-import { createRegistry } from './registry.ts';
+import { createRegistry, crowdedWebhookSecrets, overridesFromConfig } from './registry.ts';
 import { createServer } from './server.ts';
 
 /** How long SIGTERM waits for in-flight requests; ECS gives 30 s before SIGKILL, so this leaves room. */
@@ -25,7 +25,7 @@ export interface RunningApi {
   shutdown(): Promise<void>;
 }
 
-export const log = (event: string, fields: Record<string, string | number | boolean> = {}): void => {
+export const log = (event: string, fields: Record<string, string | number | boolean | Record<string, string>> = {}): void => {
   process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), service: 'api', event, ...fields })}\n`);
 };
 
@@ -35,7 +35,8 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
   try {
     const pii = createPiiCipher({ dataKey: config.PII_DATA_KEY, indexKey: config.PII_INDEX_KEY });
     const signingKey = await importSigningKey(JSON.parse(config.JWT_SIGNING_KEY.reveal()) as JWK, config.JWT_SIGNING_KID);
-    const { registry } = createRegistry(config.PROVIDER_MODE_DEFAULT);
+    // The banking port's provider is chosen by config (T-0659); its idempotency keys live in Postgres so a restart loses none.
+    const { registry, providers } = createRegistry(config.PROVIDER_MODE_DEFAULT, undefined, overridesFromConfig(config, db, (message) => log('warning', { message })));
     const app = createApp({
       db,
       registry,
@@ -45,6 +46,8 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
       identity: new PostgresIdentityRepository(db, pii),
       pii,
       staffJwks: config.STAFF_JWKS,
+      // The receiver at /webhooks/crowded verifies with these; with none (the simulator) it refuses every delivery.
+      crowdedWebhookSecrets: crowdedWebhookSecrets(config),
       ...(config.MEMBER_APP_URL ? { oauth: { consentUrl: `${config.MEMBER_APP_URL.replace(/\/$/, '')}/connect` } } : {}),
     });
     const server = createServer(app);
@@ -53,7 +56,7 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
       server.listen(config.PORT, () => resolve());
     });
     const port = (server.address() as AddressInfo).port;
-    log('listening', { port, market: config.MARKET, providers: config.PROVIDER_MODE_DEFAULT });
+    log('listening', { port, market: config.MARKET, mode: config.PROVIDER_MODE_DEFAULT, providers });
     let closing: Promise<void> | undefined;
     return {
       port,

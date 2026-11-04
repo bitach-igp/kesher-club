@@ -2,15 +2,24 @@
 // PGlite's wire server and runs one cycle of every job; the real entry point runs as a child process
 // under plain `node --experimental-strip-types`, the way the container starts it.
 import { spawn } from 'node:child_process';
-import { generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createHmac, generateKeyPairSync, randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { PGlite } from '@electric-sql/pglite';
 import { PGLiteSocketServer } from '@electric-sql/pglite-socket';
+import { createPgDatabase } from '@kesher/api/pg';
+import { dispatch } from '@kesher/api/server';
 import { createMigratedPGlite } from '@kesher/api/test-db';
 import { ConfigError } from '@kesher/domain';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type { JobDeps } from './jobs.ts';
 import { main } from './main.ts';
+
+// A pass-through spy: the real pool is still created, and a test can assert that a refused start never reached it.
+vi.mock('@kesher/api/pg', async (importOriginal) => {
+  const original = await importOriginal<{ createPgDatabase: typeof createPgDatabase }>();
+  return { ...original, createPgDatabase: vi.fn(original.createPgDatabase) };
+});
 
 const WORKER_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /** Migrating a fresh PGlite takes seconds, and well over vitest's 10 s hook default when every package tests at once. */
@@ -91,6 +100,123 @@ describe('main (T-0022)', () => {
     const err = await main(partial).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).missing).toEqual(['PII_INDEX_KEY']);
+  });
+});
+
+// T-0659 (REQ-INS-022): the worker takes the same per-port provider choice as the API, and logs it at start-up.
+describe('Crowded wiring (T-0659)', () => {
+  const TOKEN = 'crowded-api-token-do-not-print';
+  const CURRENT = 'whsec-current-do-not-print';
+  const PREVIOUS = 'whsec-previous-do-not-print';
+  const crowdedEnv = (extra: Record<string, string> = {}) => ({
+    ...env,
+    PROVIDER_INSTITUTION_BANKING: 'crowded',
+    CROWDED_BASE_URL: 'https://crowded.test/api/v1',
+    CROWDED_API_TOKEN: TOKEN,
+    CROWDED_WEBHOOK_SECRETS: `${CURRENT},${PREVIOUS}`,
+    ...extra,
+  });
+  /** Boots the worker with no jobs, keeps the registry it was built on, and stops it. */
+  const boot = async (e: Record<string, string>) => {
+    const lines: Line[] = [];
+    let registry: JobDeps['registry'] | undefined;
+    const worker = await main(e, {
+      log: (event, fields) => lines.push({ event, fields }),
+      buildJobs: (deps) => {
+        registry = deps.registry;
+        return [];
+      },
+    });
+    await worker.shutdown();
+    return { lines, registry: registry! };
+  };
+  const started = (lines: Line[]) => lines.find((l) => l.event === 'started')!.fields;
+
+  it('binds the banking port to Crowded when configured, and every other port stays on its simulator', async () => {
+    const { registry } = await boot(crowdedEnv());
+    for (const market of ['IL', 'US'] as const) {
+      expect(registry.bindingFor('institution-banking', market)).toMatchObject({ provider: 'crowded', mode: 'sandbox' });
+      expect(registry.bindingFor('funding', market)).toMatchObject({ provider: 'simulator', mode: 'sim' });
+    }
+  });
+
+  it('on the simulator (the default) the banking port stays on its simulator', async () => {
+    const { registry, lines } = await boot(env);
+    expect(registry.bindingFor('institution-banking', 'US')).toMatchObject({ provider: 'simulator', mode: 'sim' });
+    expect(started(lines)).toMatchObject({ mode: 'sim', providers: '{"institution-banking":"sim"}' });
+  });
+
+  it('logs the mode and the provider per port at start-up, and never the token or a secret', async () => {
+    const { lines } = await boot(crowdedEnv());
+    expect(started(lines)).toMatchObject({ market: 'IL', mode: 'sim', providers: '{"institution-banking":"crowded"}', jobs: 0 });
+    expect(JSON.parse(String(started(lines)['providers']))).toEqual({ 'institution-banking': 'crowded' });
+    for (const s of [TOKEN, CURRENT, PREVIOUS]) expect(JSON.stringify(lines)).not.toContain(s);
+    expect(lines.filter((l) => l.event === 'warning')).toEqual([]);
+  });
+
+  it('binds live only with CROWDED_BINDING=live, and then warns that the approval is not applied by an env switch', async () => {
+    const { registry, lines } = await boot(crowdedEnv({ CROWDED_BINDING: 'live' }));
+    expect(registry.bindingFor('institution-banking', 'US')).toMatchObject({ provider: 'crowded', mode: 'live' });
+    const warning = lines.find((l) => l.event === 'warning');
+    expect(String(warning?.fields['message'])).toMatch(/provider_binding approval in ops\.approval_request is not applied by an env switch/);
+    expect(JSON.stringify(lines)).not.toContain(TOKEN);
+  });
+
+  it('refuses a partial Crowded environment before opening anything', async () => {
+    const { CROWDED_API_TOKEN: _t, ...partial } = crowdedEnv();
+    const lines: Line[] = [];
+    vi.mocked(createPgDatabase).mockClear();
+    const err = await main(partial, { log: (event, fields) => lines.push({ event, fields }) }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).missing).toEqual(['CROWDED_API_TOKEN']);
+    // Nothing was opened: no Postgres pool was created and no lifecycle line was written.
+    expect(createPgDatabase).not.toHaveBeenCalled();
+    expect(lines).toEqual([]);
+  });
+
+  describe('the webhook receiver the worker builds', () => {
+    const sign = (secret: string, body: string) => `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`;
+    const batch = (eventId: string) => JSON.stringify({ events: [{ eventId, eventType: 'platform.ping', version: '1.0', timestamp: '2026-11-03T09:59:00Z', context: { partnerId: 'p1' }, data: {} }] });
+    const post = async (app: JobDeps['app'], body: string, signature: string) => (await dispatch(app, { method: 'POST', url: '/v1/webhooks/crowded', headers: { 'content-type': 'application/json', 'x-webhook-signature': signature }, rawBody: body })).status;
+    /** Boots the worker, runs use against the app it built while its pool is open, and stops it. */
+    const withApp = async (e: Record<string, string>, use: (app: JobDeps['app']) => Promise<void>) => {
+      let app: JobDeps['app'] | undefined;
+      const worker = await main(e, { log: () => undefined, buildJobs: (deps) => ((app = deps.app), []) });
+      try {
+        await use(app!);
+      } finally {
+        await worker.shutdown();
+      }
+    };
+
+    beforeAll(async () => {
+      // The receiver answers 404 until institutions.usBanking is on; the flag's approval and audit rows are not what is under test.
+      await lite.exec(`set session_replication_role = replica;
+        insert into ops.flag_state (key, value, changed_at, approval_id, audit_id) values ('institutions.usBanking', true, now(), gen_random_uuid(), gen_random_uuid());
+        reset session_replication_role;`);
+    });
+    afterAll(async () => {
+      await lite.exec(`delete from ops.flag_state where key = 'institutions.usBanking'`);
+    });
+
+    it('is given the configured secrets: the current and the previous one verify, the simulator\'s signature does not', async () => {
+      await withApp(crowdedEnv(), async (app) => {
+        const a = batch('worker-current');
+        expect(await post(app, a, sign(CURRENT, a))).toBe(200);
+        const b = batch('worker-previous');
+        expect(await post(app, b, sign(PREVIOUS, b))).toBe(200);
+        const c = batch('worker-sim');
+        expect(await post(app, c, 'sha256=sim')).toBe(401);
+        expect(await post(app, c, sign('whsec-the-simulators-own', c))).toBe(401);
+      });
+    });
+
+    it('on the simulator (the default) no secret is configured, so every delivery is refused', async () => {
+      await withApp(env, async (app) => {
+        const body = batch('worker-default');
+        expect(await post(app, body, sign(CURRENT, body))).toBe(401);
+      });
+    });
   });
 });
 

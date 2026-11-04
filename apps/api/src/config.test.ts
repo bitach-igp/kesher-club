@@ -95,3 +95,107 @@ describe('API and worker config (T-0020)', () => {
     expect(thrown(() => loadApiConfig({ ...env, APP_ENV: 'prod' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: simulators are not allowed in production/);
   });
 });
+
+// T-0659 (REQ-INS-022, REQ-INS-025): the banking port is a per-port override, not a new global mode.
+const TOKEN = 'crowded-api-token-do-not-print';
+const WH_SECRET = 'whsec-current-do-not-print';
+const WH_PREVIOUS = 'whsec-previous-do-not-print';
+const crowded = { PROVIDER_INSTITUTION_BANKING: 'crowded', CROWDED_BASE_URL: 'https://sandbox-api.crowdedfinance.com/api/v1', CROWDED_API_TOKEN: TOKEN, CROWDED_WEBHOOK_SECRETS: WH_SECRET };
+
+describe('Crowded banking override (T-0659)', () => {
+  it('defaults to the simulator, needs no Crowded key, and leaves PROVIDER_MODE_DEFAULT sim-only', () => {
+    const c = loadApiConfig(env);
+    expect(c.PROVIDER_INSTITUTION_BANKING).toBe('sim');
+    expect(c.CROWDED_API_TOKEN).toBeUndefined();
+    expect(thrown(() => loadApiConfig({ ...env, ...crowded, PROVIDER_MODE_DEFAULT: 'sandbox' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: only sim/);
+  });
+
+  it('loads a full Crowded set for the API and the worker, the token and secrets as Secrets', () => {
+    const c = loadApiConfig({ ...env, ...crowded, CROWDED_WEBHOOK_SECRETS: `${WH_SECRET}, ${WH_PREVIOUS}` });
+    expect(c.PROVIDER_INSTITUTION_BANKING).toBe('crowded');
+    expect(c.CROWDED_BASE_URL).toBe(crowded.CROWDED_BASE_URL);
+    expect(c.CROWDED_API_TOKEN).toBeInstanceOf(Secret);
+    expect(c.CROWDED_API_TOKEN?.reveal()).toBe(TOKEN);
+    expect(c.CROWDED_WEBHOOK_SECRETS?.map((s) => s.reveal())).toEqual([WH_SECRET, WH_PREVIOUS]);
+    const { PORT: _port, ...workerEnv } = env;
+    expect(loadWorkerConfig({ ...workerEnv, ...crowded }).PROVIDER_INSTITUTION_BANKING).toBe('crowded');
+    expect(JSON.stringify(c)).not.toContain(TOKEN);
+    expect(JSON.stringify(c)).not.toContain(WH_SECRET);
+  });
+
+  it('refuses crowded with a partial Crowded environment, naming what is missing', () => {
+    for (const key of ['CROWDED_BASE_URL', 'CROWDED_API_TOKEN', 'CROWDED_WEBHOOK_SECRETS']) {
+      const e = thrown(() => loadApiConfig({ ...env, ...crowded, [key]: undefined }));
+      expect(e.missing).toEqual([key]);
+    }
+    expect(thrown(() => loadApiConfig({ ...env, PROVIDER_INSTITUTION_BANKING: 'crowded' })).missing).toEqual(['CROWDED_BASE_URL', 'CROWDED_API_TOKEN', 'CROWDED_WEBHOOK_SECRETS']);
+  });
+
+  it('refuses a partial set even while the banking port stays on the simulator', () => {
+    const { CROWDED_WEBHOOK_SECRETS: _w, ...partial } = crowded;
+    const e = thrown(() => loadApiConfig({ ...env, ...partial, PROVIDER_INSTITUTION_BANKING: 'sim' }));
+    expect(e.missing).toEqual(['CROWDED_WEBHOOK_SECRETS']);
+    expect(e.message).not.toContain(TOKEN);
+  });
+
+  it('accepts a full Crowded set while the banking port stays on the simulator, and ignores it', () => {
+    for (const e of [{ ...env, ...crowded, PROVIDER_INSTITUTION_BANKING: 'sim' }, { ...env, CROWDED_BASE_URL: crowded.CROWDED_BASE_URL, CROWDED_API_TOKEN: TOKEN, CROWDED_WEBHOOK_SECRETS: WH_SECRET }]) {
+      const c = loadApiConfig(e);
+      expect(c.PROVIDER_INSTITUTION_BANKING).toBe('sim');
+      expect(c.CROWDED_BASE_URL).toBe(crowded.CROWDED_BASE_URL);
+      expect(c.CROWDED_API_TOKEN?.reveal()).toBe(TOKEN);
+      expect(JSON.stringify(c)).not.toContain(TOKEN);
+    }
+    const { PORT: _port, ...workerEnv } = env;
+    expect(loadWorkerConfig({ ...workerEnv, ...crowded, PROVIDER_INSTITUTION_BANKING: 'sim' }).PROVIDER_INSTITUTION_BANKING).toBe('sim');
+  });
+
+  it('CROWDED_BINDING is sandbox unless set to live, and is not part of the Crowded set', () => {
+    expect(loadApiConfig(env).CROWDED_BINDING).toBe('sandbox');
+    expect(loadApiConfig({ ...env, ...crowded }).CROWDED_BINDING).toBe('sandbox');
+    expect(loadApiConfig({ ...env, ...crowded, CROWDED_BINDING: 'live' }).CROWDED_BINDING).toBe('live');
+    // Alone it names no credential, so it does not trigger the partial-set refusal.
+    expect(loadApiConfig({ ...env, CROWDED_BINDING: 'live' }).CROWDED_BINDING).toBe('live');
+    expect(thrown(() => loadApiConfig({ ...env, ...crowded, CROWDED_BINDING: 'prod' })).invalid.join()).toMatch(/CROWDED_BINDING/);
+  });
+
+  it('reports a half-set Crowded credential alongside other config errors, not behind them', () => {
+    const { CROWDED_WEBHOOK_SECRETS: _w, ...partial } = crowded;
+    const e = thrown(() => loadApiConfig({ ...env, ...partial, MARKET: 'FR' }));
+    expect(e.invalid.join()).toMatch(/MARKET/);
+    expect(e.missing).toEqual(['CROWDED_WEBHOOK_SECRETS']);
+    const { MARKET: _m, ...noMarket } = env;
+    expect(thrown(() => loadApiConfig({ ...noMarket, PROVIDER_INSTITUTION_BANKING: 'crowded' })).missing).toEqual(['MARKET', 'CROWDED_BASE_URL', 'CROWDED_API_TOKEN', 'CROWDED_WEBHOOK_SECRETS']);
+    // Nothing is reported twice when the schema already named it.
+    expect(thrown(() => loadApiConfig({ ...env, ...partial })).missing).toEqual(['CROWDED_WEBHOOK_SECRETS']);
+    // The simulator with no Crowded key at all is untouched.
+    expect(thrown(() => loadApiConfig({ ...env, MARKET: 'FR' })).missing).toEqual([]);
+  });
+
+  it('refuses an unknown banking provider and a base URL that is not https', () => {
+    expect(thrown(() => loadApiConfig({ ...env, PROVIDER_INSTITUTION_BANKING: 'stripe' })).invalid.join()).toMatch(/PROVIDER_INSTITUTION_BANKING/);
+    for (const CROWDED_BASE_URL of ['http://sandbox-api.crowdedfinance.com/api/v1', 'sandbox-api.crowdedfinance.com', 'ftp://crowded.example', 'https://']) {
+      const e = thrown(() => loadApiConfig({ ...env, ...crowded, CROWDED_BASE_URL }));
+      expect(e.invalid.join()).toMatch(/CROWDED_BASE_URL/);
+      expect(e.message).not.toContain(TOKEN);
+    }
+  });
+
+  it('takes one or two webhook secrets, and refuses none, three or an empty entry', () => {
+    expect(loadApiConfig({ ...env, ...crowded }).CROWDED_WEBHOOK_SECRETS).toHaveLength(1);
+    for (const CROWDED_WEBHOOK_SECRETS of ['a,b,c', `${WH_SECRET},`, `,${WH_SECRET}`, `${WH_SECRET},,${WH_PREVIOUS}`, `${WH_SECRET},${WH_SECRET}`]) {
+      const e = thrown(() => loadApiConfig({ ...env, ...crowded, CROWDED_WEBHOOK_SECRETS }));
+      expect(e.invalid.join()).toMatch(/CROWDED_WEBHOOK_SECRETS/);
+      expect(e.message).not.toContain(WH_SECRET);
+    }
+  });
+
+  it('never puts the token or a webhook secret in an error, whatever else is wrong', () => {
+    const e = thrown(() => loadApiConfig({ ...env, ...crowded, CROWDED_WEBHOOK_SECRETS: `${WH_SECRET},${WH_PREVIOUS},extra`, CROWDED_BASE_URL: 'http://x.example', MARKET: 'FR' }));
+    for (const s of [TOKEN, WH_SECRET, WH_PREVIOUS]) {
+      expect(e.message).not.toContain(s);
+      expect(JSON.stringify([e.missing, e.invalid])).not.toContain(s);
+    }
+    expect(String(loadApiConfig({ ...env, ...crowded }).CROWDED_API_TOKEN)).toBe('[redacted]');
+  });
+});
