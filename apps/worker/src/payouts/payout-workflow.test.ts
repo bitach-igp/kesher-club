@@ -124,7 +124,7 @@ describe('T-0541: a payout hit by a rail outage is retried, not stranded (F10)',
   let t2: TransferService;
   let l2: PostgresLedger;
   let a2: AccountService;
-  const rail = { down: false, calls: 0 };
+  const rail = { down: false, calls: 0, acceptThenTimeout: false };
   const T = new Date('2026-11-12T09:00:00Z');
   const c2 = fixedClock(T.toISOString()) as AdvanceableClock;
   const vendorRef = async (id: string) => (await db2.query<{ n: number }>(`select count(*)::int as n from ops.external_ref where entity_type = 'transfer' and entity_id = $1 and provider = 'simulator'`, [id])).rows[0]!.n;
@@ -148,6 +148,12 @@ describe('T-0541: a payout hit by a rail outage is retried, not stranded (F10)',
       createPayout: async (x, k) => {
         rail.calls += 1;
         if (rail.down) throw new PayoutError('PROVIDER_UNAVAILABLE', 'rail down');
+        // The vendor takes the payout and our answer is lost (a timeout after acceptance): it will hand the same payout back for the same key.
+        if (rail.acceptThenTimeout) {
+          rail.acceptThenTimeout = false;
+          await sim.createPayout(x, k);
+          throw new PayoutError('PROVIDER_UNAVAILABLE', 'timeout after the vendor accepted');
+        }
         return sim.createPayout(x, k);
       },
       getPayout: (x) => sim.getPayout(x),
@@ -227,6 +233,52 @@ describe('T-0541: a payout hit by a rail outage is retried, not stranded (F10)',
     expect(await wf2.sweep()).toMatchObject({ attempted: 1, submitted: 1, errors: [] });
     expect((await t2.byKey(key))!).toMatchObject({ state: 'pending', journalId: expect.any(String) });
     expect(await vendorRef((await t2.byKey(key))!.id)).toBe(1);
+  });
+
+  it('the vendor took the payout but its answer was lost: thirty-one minutes on, the retry gets the same payout back and nothing is refunded', async () => {
+    const a = await funded(100_000n);
+    const key = `po-lost-${a}`;
+    rail.down = false;
+    rail.acceptThenTimeout = true;
+    await expect(ask(a, key, 30_000n)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    const t = (await t2.byKey(key))!;
+    expect(t.state).toBe('submitted');
+    expect(await vendorRef(t.id)).toBe(0);
+    expect(await avail(a)).toBe(70_000n);
+    c2.advance(31 * 60_000);
+    // Past the thirty minutes, the vendor is asked once more first; it answers, so the payout is not given up on.
+    expect(await wf2.sweep()).toMatchObject({ attempted: 1, errors: [] });
+    expect(await vendorRef(t.id)).toBe(1);
+    expect((await t2.get(t.id))!.state).toBe('submitted');
+    expect(await jr(`${settleKey(key)}:reversal`)).toBe(0);
+    expect(await avail(a)).toBe(70_000n);
+    expect((await db2.query<{ n: number }>(`select count(*)::int as n from ops.case where kind = 'payout_stranded' and payload->>'transferId' = $1`, [t.id])).rows[0]!.n).toBe(0);
+  });
+
+  it('a payout that cooled off and then met a persistent outage is failed and reversed too, measured from its first attempt (not from the cool-off)', async () => {
+    const a = await funded(500_000n);
+    const key = `po-cooldead-${a}`;
+    rail.down = false;
+    expect((await ask(a, key, 300_000n)).state).toBe('cooling_off');
+    expect(await avail(a)).toBe(200_000n); // reserved while it cools off
+    c2.advance(COOL_OFF_MS);
+    rail.down = true;
+    // First attempt after the cool-off: the outage. Despite the day it waited, it is not given up on yet.
+    const first = await wf2.sweep();
+    expect(first.errors).toHaveLength(1);
+    const t = (await t2.byKey(key))!;
+    expect(t.state).toBe('pending');
+    expect(t.journalId).toBeUndefined();
+    expect(await jr(settleKey(key))).toBe(1);
+    c2.advance(35 * 60_000);
+    await wf2.sweep();
+    expect(await t2.get(t.id)).toMatchObject({ state: 'failed', failureCode: 'PROVIDER_UNAVAILABLE' });
+    expect(await avail(a)).toBe(500_000n);
+    expect(await jr(`${settleKey(key)}:reversal`)).toBe(1);
+    expect(await jr(`${key}:unreserve`)).toBe(1);
+    rail.down = false;
+    expect(await wf2.sweep()).toMatchObject({ attempted: 0 });
+    expect(await avail(a)).toBe(500_000n);
   });
 });
 

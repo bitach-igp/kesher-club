@@ -116,13 +116,9 @@ export async function runPayout(a: PayoutActivities, input: PayoutInput, workflo
   let t = await a.begin(input, workflowId, now);
   const replayed = t.state !== 'created';
   if (t.state === 'settled' || t.state === 'failed' || t.state === 'cancelled' || t.state === 'reversed') return { workflowId, transfer: t, replayed };
-  if (t.state === 'submitted') {
-    // At the rail already: its webhook finishes it. Otherwise the rail was down when it was submitted and the vendor never got it:
-    // ask again under the same key (the journal is posted once, the vendor is asked once), or give up once it has stayed down 30 minutes.
-    if (await a.atRail(t)) return { workflowId, transfer: t, replayed };
-    const dead = await a.stranded(t, now);
-    if (dead) return { workflowId, transfer: dead, replayed };
-  }
+  // At the rail already: its webhook finishes it. Otherwise (a `submitted` payout with no vendor ref) the rail was down, or its answer
+  // was lost: it is asked again under the same key below (the journal is posted once, the vendor makes one payout).
+  if (t.state === 'submitted' && (await a.atRail(t))) return { workflowId, transfer: t, replayed };
   // Past the hold and already at the rail: the webhook finishes it.
   if (t.state === 'pending' && t.journalId) return { workflowId, transfer: t, replayed };
   if (t.state === 'pending_hold') {
@@ -144,7 +140,18 @@ export async function runPayout(a: PayoutActivities, input: PayoutInput, workflo
     const gone = await a.reserve(t, input, now);
     return gone ? { workflowId, transfer: gone, replayed } : { workflowId, transfer: t, waiting: 'approval', replayed };
   }
-  const r = await a.submit(t, input, workflowId, now);
+  let r;
+  try {
+    r = await a.submit(t, input, workflowId, now);
+  } catch (e) {
+    // The rail answered "unavailable" to this attempt too. Only now, 30 minutes after the first attempt, is the payout given up on: the
+    // vendor was asked once more first (it may have taken the payout and lost its answer, or be back), so a payout it holds is never refunded.
+    if (e instanceof DomainError && e.code === 'PROVIDER_UNAVAILABLE') {
+      const dead = await a.stranded(t, now);
+      if (dead) return { workflowId, transfer: dead, replayed };
+    }
+    throw e;
+  }
   t = r.transfer;
   if (r.payout.status === 'settled') t = await a.settle(t, now);
   else if (r.payout.status === 'failed') t = await a.fail(t, r.payout.failureReason ?? 'PAYOUT_FAILED', now);
@@ -279,13 +286,16 @@ export class PayoutService implements PayoutActivities {
   }
 
   async stranded(transfer: Transfer, now: Date): Promise<Transfer | undefined> {
-    if (transfer.state !== 'submitted' || now.getTime() - Date.parse(transfer.updatedAt) < STRANDED_AFTER_MS) return undefined;
-    const failed = await this.fail(transfer, 'PROVIDER_UNAVAILABLE', now, 'the rail stayed down for 30 minutes');
+    if (transfer.state !== 'submitted' && transfer.state !== 'pending') return undefined;
+    // Thirty minutes from the first attempt: the settle journal is posted by it (the transfer's own age would count a cool-off or an approval wait).
+    const first = await this.d.db.query<{ effective_at: string | Date }>(`select effective_at from ledger.journal where idempotency_key = $1`, [settleKey(transfer.idempotencyKey)]);
+    if (!first.rows[0] || now.getTime() - new Date(first.rows[0].effective_at).getTime() < STRANDED_AFTER_MS) return undefined;
+    // The case first (deduped): a crash after the fail must still leave ops the signal.
     await this.d.db.query(
       `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'payout_stranded', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
       [uuidv7(now), `payout_stranded:${transfer.id}`, JSON.stringify({ transferId: transfer.id, runbook: 'RUN-01', summary: 'A payout the rail never took in 30 minutes was failed and reversed' }), now],
     );
-    return failed;
+    return this.fail(transfer, 'PROVIDER_UNAVAILABLE', now, 'the rail stayed down for 30 minutes');
   }
 
   async expireIfDue(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined> {
@@ -405,7 +415,9 @@ export class PayoutService implements PayoutActivities {
 
   async fail(transfer: Transfer, code: string, now: Date, reason = 'rail failed'): Promise<Transfer> {
     let reversalJournalId: string | undefined;
-    if (transfer.journalId) reversalJournalId = (await this.d.ledger.reverse(transfer.journalId, `${settleKey(transfer.idempotencyKey)}:reversal`)).id;
+    // The payout journal, by key when the transfer does not carry it (a cooled-off payout the rail never took stays `pending` with its journal posted).
+    const posted = transfer.journalId ?? (await this.journalIdOf(settleKey(transfer.idempotencyKey)));
+    if (posted) reversalJournalId = (await this.d.ledger.reverse(posted, `${settleKey(transfer.idempotencyKey)}:reversal`)).id;
     await this.unreserve(transfer);
     const t = await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason, ...(reversalJournalId ? { reversalJournalId } : {}) });
     await this.tellPayer(t, code, now);
