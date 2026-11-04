@@ -23,7 +23,7 @@ Read `AGENTS.md` and `CLAUDE.md` first. This skill is the loop, not the rules.
    `apps/api/src/routes.ts`, `HEADER_OPS` in `packages/sdk/src/client.ts`; say so in the PR). Run
    `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm trace` (plus `pnpm db:lint` for a migration) before pushing.
 3. **Review**: a fresh subagent given the card and the PR diff only, never your reasoning. Opus for money paths
-   (T-0539..T-0546, T-0312, T-0658, T-1018, T-0659, T-0660), Sonnet otherwise. It reports: does it do what the
+   (as of 2026-11-04: T-0539..T-0546, T-0312, T-0658, T-1018, T-0659, T-0660; any card that moves money or touches auth), Sonnet otherwise. It reports: does it do what the
    card asks, bugs and edge cases, weak tests, changes outside the card; then `APPROVE` or `CHANGES NEEDED`.
    At most two fix rounds; then label the PR `needs-human`, leave it open, move on.
 4. **Parallelism**: scout the next card while CI runs on the current one; code one card at a time, each on its
@@ -32,11 +32,11 @@ Read `AGENTS.md` and `CLAUDE.md` first. This skill is the loop, not the rules.
 ## Merge gate (all must hold)
 - Every required check green (re-run once if flaky; never merge on red or pending).
 - Reviewer said APPROVE on the final diff (re-review after any fix commit).
-- Any real-Postgres handoff for the card has a PASS in `handoff/done/` on the branch.
+- Any real-Postgres handoff for the card has a `## Result` with a passing outcome in `handoff/done/` on the branch (a `## Blocked` section is not a pass).
 - Up to date with main (update-branch, then wait for CI again).
 - No open owner decision on the card.
 If a merge is refused, do not work around it: label `ready-to-merge` and leave the PR open; the hourly desktop
-checker merges ready PRs with green CI.
+checker merges ready PRs whose card is done and CI is green (see AGENTS.md, "Steps that need the desktop").
 
 ## Real Postgres
 Migrations applying and concurrency races cannot run in the cloud. Commit `handoff/desktop/T-NNNN-slug.md`
@@ -44,5 +44,5 @@ per `handoff/README.md`, push, wait for the checker's PASS on the branch before 
 
 ## After merging
 - One report line per merge: `card, PR, reviewer verdict, CI`.
-- Append the same line to `docs/ops/autopilot-log.md`; the log update rides in each card's PR.
-- If a merge turns main red: open a revert PR immediately (same gate except the review), then reopen the card.
+- Append the same line to `docs/ops/autopilot-log.md`. That file is a permitted shared file: add the line in the card's PR (a one-line append; if it conflicts after update-branch, keep both lines).
+- If a merge turns main red: open a revert PR immediately (same gate except the review: the owner's rule, since a revert restores code that was already reviewed), then reopen the card.

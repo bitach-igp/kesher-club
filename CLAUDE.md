@@ -14,7 +14,7 @@ adds what a session needs to work here without rediscovering it.
   green, plus `pnpm db:lint` when a migration changed.
 
 ## Autopilot
-The card pipeline (scout, code, review, merge gate, revert rule) is the `club-autopilot` skill; run it with `/autopilot`. Progress log: `docs/ops/autopilot-log.md`.
+The card pipeline (scout, code, review, merge gate, revert rule) is the `club-autopilot` skill; run it with `/autopilot`. Progress log: `docs/ops/autopilot-log.md` (a permitted shared file, one line appended per card in its PR).
 
 ## Where things live
 - Deterministic workflow bodies (`runLoad`, `runSend`, `runPayout`) live in `apps/api`; `apps/worker`
