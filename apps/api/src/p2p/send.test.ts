@@ -468,3 +468,76 @@ describe('T-0543: a send left in pending is finished once, never posted twice (F
   });
 });
 
+describe('T-0544: the sender\'s wallet is locked and checked again where the money moves (F13)', () => {
+  const input = (from: Member, to: Member, minor: bigint) => ({ fromPartyId: from.partyId, toPartyId: to.partyId, amount: { minor, currency: 'ILS' as const } });
+  const journalCount = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [key])).rows[0]!.n;
+
+  it('a second full-balance send that got past the pre-checks is refused where it posts: nothing moves, the send ends failed, the wallet is not overdrawn', async () => {
+    const a = await register('+972501000110');
+    const b = await register('+972501000111');
+    const c = await register('+972501000112');
+    await fund(a, 40_000n);
+    // Two sends of the whole balance, both through begin (so both passed the pre-checks of send(), which a race does too).
+    expect((await send(a, { toPartyId: b.partyId, amount: ils('40000') }, 'lock-first-1')).body).toMatchObject({ state: 'settled' });
+    await expect(runSend(app.services.p2p, input(a, c, 40_000n), 'lock-second-1', NOW)).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
+    const t = (await app.services.transfers.byKey('lock-second-1'))!;
+    expect(t).toMatchObject({ state: 'failed', failureCode: 'INSUFFICIENT_FUNDS' });
+    expect(await journalCount(settleKey('lock-second-1'))).toBe(0);
+    expect(await available(a.partyId)).toBe(0n);
+    expect(await available(b.partyId)).toBe(40_000n);
+    expect(await available(c.partyId)).toBe(0n);
+    // A retry with the same key does not post it later either.
+    await expect(app.services.p2p.send(a.partyId, { toPartyId: c.partyId, amount: ils('40000') }, 'lock-second-1', NOW)).resolves.toMatchObject({ state: 'failed' });
+    expect(await available(a.partyId)).toBe(0n);
+  });
+
+  it('a held send (new pair over the threshold) is refused the same way when the wallet is already spent', async () => {
+    const a = await register('+972501000113');
+    const b = await register('+972501000114');
+    await fund(a, 60_000n);
+    // Spend 20,000 first so the 60,000 hold no longer fits.
+    expect((await send(a, { toPartyId: b.partyId, amount: ils('20000') }, 'lock-spend-1')).body).toMatchObject({ state: 'settled' });
+    const c = await register('+972501000115');
+    await expect(runSend(app.services.p2p, input(a, c, 60_000n), 'lock-hold-1', NOW)).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
+    expect(await app.services.transfers.byKey('lock-hold-1')).toMatchObject({ state: 'failed', failureCode: 'INSUFFICIENT_FUNDS' });
+    expect(await available(a.partyId)).toBe(40_000n);
+    expect((await app.services.accounts.purses(a.partyId)).find((p) => p.currency === 'ILS')!.holds.minor).toBe(0n);
+  });
+
+  it('the monthly limit holds across sends begun together: counted in creation order, the one that would pass the cap is refused, whichever posts first', async () => {
+    const a = await register('+972501000116');
+    const [b, c, d] = [await register('+972501000117'), await register('+972501000118'), await register('+972501000119')];
+    await fund(a, 300_000n);
+    // The new tier may send 100,000 (₪1,000) a month. Three sends of 50,000 are begun (all passed send()'s check), then posted out of order.
+    const p2p = app.services.p2p;
+    const at = (n: number) => new Date(NOW.getTime() + n * 1_000);
+    const [ta, tb, tc] = [
+      await p2p.begin(input(a, b, 50_000n), 'lock-lim-a', at(1)),
+      await p2p.begin(input(a, c, 50_000n), 'lock-lim-b', at(2)),
+      await p2p.begin(input(a, d, 50_000n), 'lock-lim-c', at(3)),
+    ];
+    expect([ta.state, tb.state, tc.state]).toEqual(['created', 'created', 'created']);
+    // The third, posting first, counts the two begun before it and is refused.
+    await expect(runSend(p2p, input(a, d, 50_000n), 'lock-lim-c', at(4))).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED' });
+    expect(await app.services.transfers.byKey('lock-lim-c')).toMatchObject({ state: 'failed', failureCode: 'LIMIT_EXCEEDED' });
+    // The first two together are exactly the cap.
+    expect((await runSend(p2p, input(a, b, 50_000n), 'lock-lim-a', at(5))).transfer.state).toBe('settled');
+    expect((await runSend(p2p, input(a, c, 50_000n), 'lock-lim-b', at(6))).transfer.state).toBe('settled');
+    expect(await available(a.partyId)).toBe(200_000n);
+    expect(await available(d.partyId)).toBe(0n);
+  });
+  it('the monthly limit also holds on the hold path: a new-pair send over the threshold, begun after another, is refused where it holds', async () => {
+    const a = await register('+972501000120');
+    const [b, c] = [await register('+972501000121'), await register('+972501000122')];
+    await fund(a, 300_000n);
+    const p2p = app.services.p2p;
+    const at = (n: number) => new Date(NOW.getTime() + n * 1_000);
+    await p2p.begin(input(a, b, 60_000n), 'lock-hlim-a', at(1));
+    await p2p.begin(input(a, c, 60_000n), 'lock-hlim-b', at(2));
+    // The later one holds first, counts the earlier one begun before it (120,000 > the 100,000 cap) and is refused.
+    await expect(runSend(p2p, input(a, c, 60_000n), 'lock-hlim-b', at(3))).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED' });
+    expect(await app.services.transfers.byKey('lock-hlim-b')).toMatchObject({ state: 'failed', failureCode: 'LIMIT_EXCEEDED' });
+    expect((await app.services.accounts.purses(a.partyId)).find((x) => x.currency === 'ILS')!.holds.minor).toBe(0n);
+  });
+});
+

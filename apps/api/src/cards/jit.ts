@@ -195,31 +195,39 @@ export class JitService {
       if (!e.allowed) return done(decline('LIMIT_EXCEEDED'));
     }
 
-    const journal = await this.d.ledger.post({
-      idempotencyKey: holdKey(req.authId),
-      kind: 'auth_hold',
-      effectiveAt: now,
-      postings: await this.holdLegs(funding, req.amount, pending),
-      metadata: {
-        cardId: card.id,
-        authId: req.authId,
-        mcc: req.merchant.mcc,
-        country: req.merchant.country,
-        channel: req.channel,
-        ...(req.tokenId ? { tokenId: req.tokenId } : {}),
-        ...(req.agentic ? { agentic: true } : {}),
-        ...(funding.conversion
-          ? {
-              fx_rate_version: funding.conversion.rate.version,
-              fx_rate_id: funding.conversion.rate.rateId,
-              fx_markup_bps: Number(funding.conversion.markupBps),
-              rate: rateString(funding.conversion.rate.rateScaled),
-              paidFrom: toWire(money(funding.conversion.gross + funding.conversion.markup, funding.currency)),
-              markup: toWire(money(funding.conversion.markup, funding.currency)),
-            }
-          : {}),
-      },
-    });
+    // The funding wallet is locked and checked again inside the posting transaction (T-0544): the balance read above is the early answer,
+    // this one holds when two authorisations for one wallet race (REQ-CRD-003). Held only for the check and the writes.
+    let journal;
+    try {
+      journal = await this.d.ledger.postNoOverdraft({
+        idempotencyKey: holdKey(req.authId),
+        kind: 'auth_hold',
+        effectiveAt: now,
+        postings: await this.holdLegs(funding, req.amount, pending),
+        metadata: {
+          cardId: card.id,
+          authId: req.authId,
+          mcc: req.merchant.mcc,
+          country: req.merchant.country,
+          channel: req.channel,
+          ...(req.tokenId ? { tokenId: req.tokenId } : {}),
+          ...(req.agentic ? { agentic: true } : {}),
+          ...(funding.conversion
+            ? {
+                fx_rate_version: funding.conversion.rate.version,
+                fx_rate_id: funding.conversion.rate.rateId,
+                fx_markup_bps: Number(funding.conversion.markupBps),
+                rate: rateString(funding.conversion.rate.rateScaled),
+                paidFrom: toWire(money(funding.conversion.gross + funding.conversion.markup, funding.currency)),
+                markup: toWire(money(funding.conversion.markup, funding.currency)),
+              }
+            : {}),
+        },
+      });
+    } catch (e) {
+      if (e instanceof DomainError && e.code === 'INSUFFICIENT_FUNDS') return done(decline('INSUFFICIENT_FUNDS'));
+      throw e;
+    }
     if (active && capped) await this.d.entitlements.consume(active, CARD_SPEND_ENTITLEMENT, req.amount.minor, holdKey(req.authId), now);
     if (approvalToSpend) await this.d.intents.consumeAgentPurchase(approvalToSpend, req.authId);
     return done({ approve: true, holdAmount: req.amount }, journal.id);

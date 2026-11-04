@@ -1,7 +1,7 @@
 // JIT authorisation (T-0403, REQ-CRD-003) end to end: the processor's signed request through
 // POST /jit/card-authorizations, every decline reason, the hold journal on approval, replay, the
 // plan's card entitlement, the velocity rule, and the fail-closed paths (a throw, a slow dependency).
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { type CardIssuingPort, type CardIssuingSimulator, type JitAuthorizationRequest } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
@@ -77,6 +77,25 @@ describe('declines', () => {
     const before = await bal(pending);
     expect((await authorize({ amount: 100_000n })).body).toEqual({ result: 'DECLINED', reason: 'INSUFFICIENT_FUNDS' });
     expect(await bal(pending)).toBe(before);
+  });
+
+  it('T-0544: a wallet drained between the early balance read and the hold is declined INSUFFICIENT_FUNDS where it posts; nothing is held', async () => {
+    const real = app.services.ledger.postNoOverdraft.bind(app.services.ledger);
+    const spy = vi.spyOn(app.services.ledger, 'postNoOverdraft').mockImplementationOnce(async (input, guard) => {
+      // The race: another authorisation spends the whole purse after this one passed the early check.
+      const partner = await app.services.accounts.systemAccount('partner_settlement', 'ILS');
+      const have = await app.services.ledger.balance(wallet, 'ILS');
+      await app.services.ledger.post({ idempotencyKey: `drain:${input.idempotencyKey}`, kind: 'p2p', postings: [{ accountId: wallet, currency: 'ILS', amountMinor: -have }, { accountId: partner, currency: 'ILS', amountMinor: have }] });
+      return real(input, guard);
+    });
+    const before = await bal(pending);
+    const r = await authorize({ amount: 1_000n });
+    spy.mockRestore();
+    expect(r.body).toEqual({ result: 'DECLINED', reason: 'INSUFFICIENT_FUNDS' });
+    expect(await bal(pending)).toBe(before);
+    // Put the purse back for the tests that follow.
+    const partner = await app.services.accounts.systemAccount('partner_settlement', 'ILS');
+    await app.services.ledger.post({ idempotencyKey: 'refill:noa', kind: 'load', postings: [{ accountId: partner, currency: 'ILS', amountMinor: 50_000n }, { accountId: wallet, currency: 'ILS', amountMinor: -50_000n }] });
   });
 
   it('LIMIT_EXCEEDED against the daily and monthly limits, counting what is already held today', async () => {

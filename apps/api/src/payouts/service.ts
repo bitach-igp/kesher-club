@@ -333,17 +333,24 @@ export class PayoutService implements PayoutActivities {
     if ((purse?.available.minor ?? 0n) < input.amount.minor) return this.fail(transfer, 'INSUFFICIENT_FUNDS', now, 'the funds were spent before they were reserved');
     const wallet = await this.d.accounts.memberAccount(input.partyId, 'wallet', 'ILS');
     const pending = await this.d.accounts.memberAccount(input.partyId, 'pending', 'ILS');
-    await this.d.ledger.post({
-      idempotencyKey: key,
-      kind: PAYOUT_JOURNAL_KIND,
-      transferId: transfer.id,
-      effectiveAt: now,
-      postings: [
-        { accountId: wallet, currency: 'ILS', amountMinor: input.amount.minor },
-        { accountId: pending, currency: 'ILS', amountMinor: -input.amount.minor },
-      ],
-      metadata: { workflowId: transfer.idempotencyKey, reason: 'payout waiting (T-0540)' },
-    });
+    try {
+      // Locked and checked again inside the posting transaction (T-0544): the purse read above is the early answer, this one holds
+      // when two requests for one wallet race.
+      await this.d.ledger.postNoOverdraft({
+        idempotencyKey: key,
+        kind: PAYOUT_JOURNAL_KIND,
+        transferId: transfer.id,
+        effectiveAt: now,
+        postings: [
+          { accountId: wallet, currency: 'ILS', amountMinor: input.amount.minor },
+          { accountId: pending, currency: 'ILS', amountMinor: -input.amount.minor },
+        ],
+        metadata: { workflowId: transfer.idempotencyKey, reason: 'payout waiting (T-0540)' },
+      });
+    } catch (e) {
+      if (e instanceof DomainError && e.code === 'INSUFFICIENT_FUNDS') return this.fail(transfer, 'INSUFFICIENT_FUNDS', now, 'the funds were spent before they were reserved');
+      throw e;
+    }
     return undefined;
   }
 

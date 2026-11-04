@@ -44,12 +44,50 @@ export class PostgresLedger {
   }
 
   async post(input: JournalInput): Promise<PostedJournal> {
+    return this.write(input);
+  }
+
+  /**
+   * Posts like `post`, but a member wallet the journal DEBITS is locked and checked inside the posting transaction (T-0544, F13):
+   * its balance after the journal may not be below zero, otherwise INSUFFICIENT_FUNDS with `available` and `currency`. The check
+   * comes after the idempotency replay (a replayed key answers its first journal whatever the wallet holds now) and after the lock,
+   * so two requests for one wallet are serialised and exactly one of two full-balance debits succeeds. Locks are taken in account-id
+   * order, so journals touching the same wallets cannot deadlock. `extraGuard` runs under the same locks, before anything is
+   * written (a limit that must hold across parallel requests). A caller must not hold the lock across a vendor call: the
+   * transaction is only the check and the writes.
+   */
+  async postNoOverdraft(input: JournalInput, extraGuard?: (tx: SqlClient) => Promise<void>): Promise<PostedJournal> {
+    const debited = [...new Set(input.postings.filter((x) => x.amountMinor > 0n).map((x) => x.accountId))].sort();
+    return this.write(input, async (tx) => {
+      for (const id of debited) await tx.query(`select pg_advisory_xact_lock(hashtextextended($1, 0))`, [`wallet:${id}`]);
+      // The key may have been posted while this request waited for the lock: that journal is the answer, no check, no second write.
+      if (await this.findByKey(tx, input.idempotencyKey)) return false;
+      if (debited.length > 0) {
+        const rows = await tx.query<{ id: string; type: string; currency: Currency; balance: string }>(
+          `select a.id::text as id, a.type::text as type, a.currency::text as currency, coalesce(b.balance_minor, 0)::text as balance
+             from ledger.account a left join ops.account_balance b on b.account_id = a.id where a.id = any($1::uuid[])`,
+          [debited],
+        );
+        for (const r of rows.rows) {
+          if (r.type !== 'wallet') continue;
+          const debit = input.postings.filter((x) => x.accountId === r.id).reduce((n, x) => n + x.amountMinor, 0n);
+          const balance = BigInt(r.balance);
+          if (balance + debit > 0n) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the wallet for this journal', { available: (balance < 0n ? -balance : 0n).toString(), currency: r.currency });
+        }
+      }
+      if (extraGuard) await extraGuard(tx);
+      return true;
+    });
+  }
+
+  private async write(input: JournalInput, guard?: (tx: SqlClient) => Promise<boolean>): Promise<PostedJournal> {
     validate(input);
     const existing = await this.findByKey(this.db, input.idempotencyKey);
     if (existing) return existing;
     const id = uuidv7();
     try {
       await this.db.transaction(async (tx) => {
+        if (guard && !(await guard(tx))) return;
         if (input.reversesId) {
           const target = await tx.query('select 1 from ledger.journal where id = $1', [input.reversesId]);
           if (target.rowCount === 0) throw new DomainError('NOT_FOUND', 'Reversal target missing');
@@ -59,18 +97,24 @@ export class PostgresLedger {
            values ($1, $2, $3, $4, $5, $6, $7)`,
           [id, input.idempotencyKey, input.kind, input.transferId ?? null, input.reversesId ?? null, input.effectiveAt ?? new Date(), JSON.stringify(input.metadata ?? {})],
         );
+        // The postings go in as given; the balance rows are then updated in account-id order. Two journals touching the same pair of
+        // accounts in opposite orders would otherwise take the balance row locks in opposite orders and deadlock (40P01).
+        const lastPosting = new Map<string, string>();
         for (const p of input.postings) {
           const r = await tx.query<{ id: string }>(
             `insert into ledger.posting (journal_id, account_id, currency, amount_minor) values ($1, $2, $3, $4) returning id::text as id`,
             [id, p.accountId, p.currency, p.amountMinor.toString()],
           );
+          lastPosting.set(p.accountId, r.rows[0]!.id);
+        }
+        for (const p of [...input.postings].sort((x, y) => (x.accountId < y.accountId ? -1 : x.accountId > y.accountId ? 1 : 0))) {
           await tx.query(
             `insert into ops.account_balance (account_id, balance_minor, last_posting_id, version) values ($1, $2, $3, 1)
              on conflict (account_id) do update
                set balance_minor = ops.account_balance.balance_minor + excluded.balance_minor,
                    last_posting_id = excluded.last_posting_id,
                    version = ops.account_balance.version + 1`,
-            [p.accountId, p.amountMinor.toString(), r.rows[0]!.id],
+            [p.accountId, p.amountMinor.toString(), lastPosting.get(p.accountId)!],
           );
         }
       });
