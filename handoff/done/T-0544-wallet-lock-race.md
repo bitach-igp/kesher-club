@@ -18,3 +18,4 @@ PASS, 2026-11-05 00:06 Asia/Jerusalem, desktop runner worktree at b98ed7d. `dock
 - Step 5: install done in 4.6s (pnpm v10.28.0).
 - Step 6: `src/ledger/balance-lock.pg.test.ts (5 tests) 2597ms` - Test Files 1 passed (1), Tests 5 passed (5); p99 test (200 serial posts under 100 ms) 2052ms total. No failures, no 40P01.
 - Step 7: container removed.
+- Re-run 2026-11-05 00:15 Asia/Jerusalem on 1b1b25b (after 2cd0a21 changed post.ts debit summing): migrations `ok` for all 9 schemas; `balance-lock.pg.test.ts (5 tests) 3005ms`, Tests 5 passed (5).
