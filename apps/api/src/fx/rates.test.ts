@@ -13,7 +13,7 @@ import { createApp, type App } from '../app.ts';
 import { STAFF_AUDIENCE, STAFF_ISSUER } from '../admin/staff-token.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { formatRate, invert, parseRate, PORT_RATE_TTL_MS, type RateService } from './rates.ts';
+import { formatRate, invert, MANUAL_RATE_MAX_MS, MAX_RATE_MOVE_BPS, parseRate, PORT_RATE_TTL_MS, type RateService } from './rates.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -144,3 +144,57 @@ describe('TST-ADM-003: finance publishes manual rates with two approvers', () =>
     expect((await call('POST', `/v1/admin/fx/rates/${crypto.randomUUID()}/approve`, finB)).body).toMatchObject({ status: 404 });
   });
 });
+
+describe('T-0546: a feed rate that jumps is refused, and a manual rate runs out (F44)', () => {
+  let db2: TestDatabase;
+  let r: RateService;
+  const T0 = new Date('2026-11-12T09:00:00Z');
+  const t = (ms: number) => new Date(T0.getTime() + ms);
+  const finance = (n: string) => ({ partyId: `00000000-0000-7000-8000-0000000000${n}`, role: 'finance', subject: `auth0|fin-${n}` });
+  const cases = async () => (await db2.query<{ kind: string; severity: string; n: number }>(`select kind, severity, count(*)::int as n from ops.case where kind = 'fx_rate_deviation' group by kind, severity`)).rows;
+
+  beforeAll(async () => {
+    db2 = await createTestDatabase();
+    const a = createApp({ db: db2, registry: new SimulatorHost().registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => T0 });
+    r = a.services.rates;
+  }, 60_000);
+  afterAll(async () => db2.close());
+
+  it('a mid that moves more than the bound is refused: the old rate stays active, one case is opened, a repeat opens no second', async () => {
+    expect(MAX_RATE_MOVE_BPS).toBe(1_000n);
+    const v1 = (await r.publishFromPort('USD/ILS', 3_710_000n, T0))!;
+    // Exactly +10% is inside the bound.
+    const v2 = (await r.publishFromPort('USD/ILS', 4_081_000n, t(5 * 60_000)))!;
+    expect(v2.version).toBe(2);
+    // 37.0 (a decimal slip, 10x) is refused: nothing is published, the cause is reported to the caller.
+    await expect(r.publishFromPort('USD/ILS', 37_000_000n, t(10 * 60_000))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect((await r.current('USD/ILS', t(10 * 60_000)))?.id).toBe(v2.id);
+    expect((await r.history('USD/ILS')).map((x) => [x.version, x.status])).toEqual([[2, 'active'], [1, 'superseded']]);
+    expect(await cases()).toEqual([{ kind: 'fx_rate_deviation', severity: 'high', n: 1 }]);
+    await expect(r.publishFromPort('USD/ILS', 37_000_000n, t(11 * 60_000))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(await cases()).toEqual([{ kind: 'fx_rate_deviation', severity: 'high', n: 1 }]);
+    // One basis point past the bound the other way is refused too; a halving as well.
+    await expect(r.publishFromPort('USD/ILS', 3_672_000n, t(12 * 60_000))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' }); // -10.01%
+    // The old rate runs out on its own (safe failure): the feed stays refused, quotes are refused.
+    await expect(r.rateFor('USD', 'ILS', t(21 * 60_000))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    // A sane mid is accepted again.
+    expect((await r.publishFromPort('USD/ILS', 3_900_000n, t(22 * 60_000)))?.version).toBe(3);
+    expect(v1.version).toBe(1);
+  });
+
+  it('a manual rate lasts at most 24 hours; until then it blocks the feed, after it the feed takes over', async () => {
+    expect(MANUAL_RATE_MAX_MS).toBe(24 * 3_600_000);
+    const base = t(2 * 3_600_000);
+    const { rate } = await r.propose('USD/ILS', 3_950_000n, finance('01'), 'Bank of Israel fixing', base);
+    const active = await r.approve(rate.id, finance('02'), base);
+    expect(active.rate).toMatchObject({ status: 'active', source: 'manual', validUntil: new Date(base.getTime() + MANUAL_RATE_MAX_MS).toISOString() });
+    expect(await r.publishFromPort('USD/ILS', 3_960_000n, new Date(base.getTime() + 3_600_000))).toBeUndefined(); // blocked while it stands
+    expect((await r.rateFor('USD', 'ILS', new Date(base.getTime() + 23 * 3_600_000))).rateScaled).toBe(3_950_000n);
+    const past = new Date(base.getTime() + MANUAL_RATE_MAX_MS + 1);
+    await expect(r.rateFor('USD', 'ILS', past)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    const taken = (await r.publishFromPort('USD/ILS', 3_960_000n, past))!;
+    expect(taken).toMatchObject({ source: 'port', status: 'active', midScaled: 3_960_000n });
+    expect((await r.history('USD/ILS', 2)).map((x) => [x.source, x.status])).toEqual([['port', 'active'], ['manual', 'superseded']]);
+  });
+});
+

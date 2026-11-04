@@ -101,6 +101,9 @@ export function rateString(rateScaled: bigint): string {
 }
 
 export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
+/** The amount moves wallet → pending under this key before the vendor is called (T-0546, F51); `unreserveKey` reverses it, once. */
+export const reserveKey = (workflowId: string): string => `${workflowId}:reserve`;
+export const unreserveKey = (workflowId: string): string => `${workflowId}:unreserve`;
 
 export class FxService {
   private readonly d: Deps;
@@ -153,8 +156,10 @@ export class FxService {
       throw new DomainError('QUOTE_EXPIRED', 'This quote expired after 30 seconds; get a fresh one', { quoteId: b.quoteId, expiredAt: held.quote.expiresAt });
     }
     const q = held.quote;
+    // A retry of a conversion already reserved has its amount out of `available` already: the check is for the first try.
+    const alreadyReserved = existing !== undefined && (await this.journalIdOf(reserveKey(key))) !== undefined;
     const purse = (await this.d.accounts.purses(partyId)).find((p) => p.currency === q.from.currency)!;
-    if (purse.available.minor < q.from.minor) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the purse to convert', { available: purse.available.minor.toString(), currency: q.from.currency });
+    if (!alreadyReserved && purse.available.minor < q.from.minor) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the purse to convert', { available: purse.available.minor.toString(), currency: q.from.currency });
     // Spend the quote under this key before anything moves; a conversion under another key that got there
     // first (on this instance or another) wins it.
     const claimed = await this.d.db.query(`update ops.fx_quote set spent_key = $2, spent_at = coalesce(spent_at, $3) where id = $1 and (spent_key is null or spent_key = $2)`, [q.quoteId, key, now]);
@@ -162,6 +167,9 @@ export class FxService {
 
     let t: Transfer = existing ?? (await this.d.transfers.create({ idempotencyKey: key, kind: 'fx', fromPartyId: partyId, toPartyId: partyId, amount: q.from }, now));
     if (t.state === 'created') t = await this.d.transfers.apply(t.id, 'submit', now);
+    // The amount leaves `available` before the vendor is asked (wallet → pending): a card authorisation or another conversion during
+    // the call cannot spend it. The journal below posts from pending; a void returns it once. Idempotent by key.
+    await this.reserve(partyId, q.from, t, key, now);
     // The vendor leg is the hedge: a fresh vendor quote at its own rate, converted under the same key.
     let conversion;
     try {
@@ -196,7 +204,35 @@ export class FxService {
   }
 
   private async void(t: Transfer, code: string, reason: string, now: Date): Promise<Transfer> {
+    await this.unreserve(t);
     return this.d.transfers.apply(t.id, 'fail', now, { failureCode: code, reason });
+  }
+
+  private async journalIdOf(key: string): Promise<string | undefined> {
+    return (await this.d.db.query<{ id: string }>(`select id from ledger.journal where idempotency_key = $1`, [key])).rows[0]?.id;
+  }
+
+  private async reserve(partyId: string, from: Money, t: Transfer, key: string, now: Date): Promise<void> {
+    if (await this.journalIdOf(reserveKey(key))) return;
+    const wallet = await this.d.accounts.memberAccount(partyId, 'wallet', from.currency);
+    const pending = await this.d.accounts.memberAccount(partyId, 'pending', from.currency);
+    await this.d.ledger.post({
+      idempotencyKey: reserveKey(key),
+      kind: FX_JOURNAL_KIND,
+      transferId: t.id,
+      effectiveAt: now,
+      postings: [
+        { accountId: wallet, currency: from.currency, amountMinor: from.minor },
+        { accountId: pending, currency: from.currency, amountMinor: -from.minor },
+      ],
+      metadata: { workflowId: key, reason: 'conversion at the vendor (T-0546)' },
+    });
+  }
+
+  /** Returns the reserve to the wallet, once (the reversal key is idempotent). Nothing to do when nothing was reserved. */
+  private async unreserve(t: Transfer): Promise<void> {
+    const id = await this.journalIdOf(reserveKey(t.idempotencyKey));
+    if (id) await this.d.ledger.reverse(id, unreserveKey(t.idempotencyKey));
   }
 
   /** The member's plan's markup, or the default without an active plan. */
@@ -215,7 +251,8 @@ export class FxService {
    */
   private async post(partyId: string, q: FxQuote, held: HeldQuote, conversionId: string, vendorRateScaled: bigint, vendorTotal: Money, transferId: string, key: string, now: Date) {
     const { from, total, markup, markupBps, rateScaled, quoteId } = q;
-    const walletFrom = await this.d.accounts.memberAccount(partyId, 'wallet', from.currency);
+    // The from side pays out of the reserve (pending), which convert() posted before the vendor was called.
+    const walletFrom = await this.d.accounts.memberAccount(partyId, 'pending', from.currency);
     const walletTo = await this.d.accounts.memberAccount(partyId, 'wallet', total.currency);
     const positionFrom = await this.d.accounts.systemAccount('fx_position', from.currency);
     const positionTo = await this.d.accounts.systemAccount('fx_position', total.currency);

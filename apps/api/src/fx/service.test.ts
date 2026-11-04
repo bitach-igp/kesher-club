@@ -36,6 +36,13 @@ const advance = (ms: number) => {
   host.clock.advance(ms);
   now = new Date(now.getTime() + ms);
 };
+/** Finance holds the club rate at 3.70 from `when` (two approvers); a manual rate lasts 24 hours (T-0546), so a test that runs days on sets its own. */
+async function holdManual(when: Date) {
+  const s = app.services;
+  const proposed = await s.rates.propose('USD/ILS', 3_700_000n, { partyId: uuidv7(when), role: 'finance', subject: 'auth0|finance-a' }, 'Fixing', when);
+  await s.rates.approve(proposed.rate.id, { partyId: uuidv7(when), role: 'finance' }, when);
+  return proposed.rate;
+}
 const purse = async (currency: 'USD' | 'ILS') => (await app.services.accounts.purses(member)).find((p) => p.currency === currency)!.available.minor;
 const systemBalance = async (type: string, currency: string) => BigInt((await db.query<{ b: string }>(`select coalesce(sum(p.amount_minor), 0)::text as b from ledger.posting p join ledger.account a on a.id = p.account_id where a.type = $1 and a.currency = $2`, [type, currency])).rows[0]!.b);
 
@@ -115,7 +122,7 @@ describe('TST-FX-002: the markup on the journal', () => {
       { type: 'fx_position', currency: 'ILS', amount_minor: '37100' },
       { type: 'wallet', currency: 'ILS', amount_minor: '-36822' },
       { type: 'fx_position', currency: 'USD', amount_minor: '-10000' },
-      { type: 'wallet', currency: 'USD', amount_minor: '10000' },
+      { type: 'pending', currency: 'USD', amount_minor: '10000' }, // paid out of the reserve taken before the vendor call (T-0546)
     ]);
     expect(await systemBalance('fee_income', 'ILS')).toBe(-278n);
     expect(await systemBalance('fx_position', 'ILS')).toBe(37_100n);
@@ -176,11 +183,10 @@ describe('TST-FX-003/004: the club rate behind every quote', () => {
     const meta = (await db.query<{ metadata: Record<string, unknown> }>(`select metadata from ledger.journal where id = $1`, [t.journalId])).rows[0]!.metadata;
     // The member got the club rate; the vendor filled at its own 3.71, and the journal says both.
     expect(meta).toMatchObject({ fx_rate_version: v2.version, fx_rate_id: v2.id, rate: '3.800000', vendor: { rate: '3.710000' } });
-    // A manual rate holds past any window: finance sets 3.70 and a quote a day later uses it.
-    const fin = { partyId: uuidv7(later), role: 'finance', subject: 'auth0|finance-a' };
-    const proposed = await s.rates.propose('USD/ILS', 3_700_000n, fin, 'Fixing', later);
-    await s.rates.approve(proposed.rate.id, { partyId: uuidv7(later), role: 'finance' }, later);
-    const dayLater = new Date(later.getTime() + 24 * 60 * 60_000);
+    // A manual rate holds past the port window, for at most 24 hours (T-0546): finance sets 3.70 and a quote 23 hours later uses it; a quote after 24 hours is refused.
+    const proposed = { rate: await holdManual(later) };
+    const dayLater = new Date(later.getTime() + 23 * 60 * 60_000);
+    await expect(s.fx.quote(member, { from: { minor: '10000', currency: 'USD' }, to: 'ILS' }, 'fx-manual-lapsed', new Date(later.getTime() + 24 * 60 * 60_000 + 1))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
     expect(await s.fx.quote(member, { from: { minor: '10000', currency: 'USD' }, to: 'ILS' }, 'fx-manual-1', dayLater)).toMatchObject({ rate: '3.700000', rateVersion: proposed.rate.version, total: { minor: '36722', currency: 'ILS' } });
   });
 });
@@ -191,7 +197,12 @@ describe('T-0520: a failed vendor leg closes the conversion (SEQ-08)', () => {
     const sim = host.simulators.fx;
     const port = {
       mode: 'ok' as 'ok' | 'outage' | 'reject',
-      quote: (input: Parameters<FxPort['quote']>[0]) => sim.quote(input),
+      /** Runs inside the vendor call (T-0546): what the member can do while the conversion is out at the vendor. */
+      during: undefined as undefined | (() => Promise<void>),
+      async quote(input: Parameters<FxPort['quote']>[0]) {
+        await port.during?.();
+        return sim.quote(input);
+      },
       async convert(quoteId: string, key: string) {
         if (port.mode === 'outage') throw new FxError('PROVIDER_UNAVAILABLE', 'scripted outage');
         if (port.mode === 'reject') throw new FxError('VALIDATION_FAILED', 'scripted reject');
@@ -206,8 +217,9 @@ describe('T-0520: a failed vendor leg closes the conversion (SEQ-08)', () => {
   const usd10 = { from: { minor: '1000', currency: 'USD' }, to: 'ILS' };
 
   it('a reject fails the conversion and voids the quote with no journal; a replay answers the same', async () => {
-    // Two days on, under the manual 3.70 rate an earlier test left active (a manual rate never runs out).
+    // Two days on: finance holds the manual 3.70 rate again (the earlier one lapsed after 24 hours).
     const t0 = new Date(NOW.getTime() + 2 * 86_400_000);
+    await holdManual(t0);
     const { port, svc } = scripted();
     const q = await svc.quote(member, usd10, 'fx-t0520-reject-q', t0);
     port.mode = 'reject';
@@ -222,8 +234,9 @@ describe('T-0520: a failed vendor leg closes the conversion (SEQ-08)', () => {
   });
 
   it('an outage stays retryable while the quote lives and settles once; after the quote expired the retry fails it', async () => {
-    // Two days on, under the manual 3.70 rate an earlier test left active (a manual rate never runs out).
+    // Two days on: finance holds the manual 3.70 rate again (the earlier one lapsed after 24 hours).
     const t0 = new Date(NOW.getTime() + 2 * 86_400_000);
+    await holdManual(t0);
     const { port, svc } = scripted();
     const q = await svc.quote(member, usd10, 'fx-t0520-retry-q', t0);
     port.mode = 'outage';
@@ -242,9 +255,83 @@ describe('T-0520: a failed vendor leg closes the conversion (SEQ-08)', () => {
     expect(await journals('fx-t0520-late')).toBe(0);
   });
 
-  it('the sweep fails a conversion still submitted once its quote cannot be alive, and only then, once', async () => {
-    // Two days on, under the manual 3.70 rate an earlier test left active (a manual rate never runs out).
+  describe('T-0546: the amount is reserved before the vendor call (F51)', () => {
+    /** Its own member, so the stale sweep (which voids every stuck conversion) and earlier tests cannot move its purse. */
+    let trader = '';
+    beforeAll(async () => {
+      const s = app.services;
+      trader = uuidv7(NOW);
+      await s.accounts.provisionMember(trader);
+      await s.ledger.post({
+        idempotencyKey: `fund:t0546:${trader}`,
+        kind: 'load',
+        postings: [
+          { accountId: await s.accounts.systemAccount('partner_settlement', 'USD'), currency: 'USD', amountMinor: 100_000n },
+          { accountId: await s.accounts.memberAccount(trader, 'wallet', 'USD'), currency: 'USD', amountMinor: -100_000n },
+        ],
+      });
+    });
+    const purseUsd = async () => {
+      const p = (await app.services.accounts.purses(trader)).find((x) => x.currency === 'USD')!;
+      return { available: p.available.minor, holds: p.holds.minor };
+    };
+    const unreserved = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [`${key}:unreserve`])).rows[0]!.n;
     const t0 = new Date(NOW.getTime() + 2 * 86_400_000);
+    const ready = async () => {
+      if (!(await app.services.rates.current('USD/ILS', t0))) await holdManual(t0);
+    };
+
+    it('while the vendor is called the amount is out of `available`; a settled conversion posts from the reserve and leaves nothing held', async () => {
+      await ready();
+      const { port, svc } = scripted();
+      const before = await purseUsd();
+      const q = await svc.quote(trader, usd10, 'fx-t0546-ok-q', t0);
+      let during: { available: bigint; holds: bigint } | undefined;
+      port.during = async () => {
+        during = await purseUsd();
+      };
+      expect(await svc.convert(trader, { quoteId: q.quoteId }, 'fx-t0546-ok', t0)).toMatchObject({ status: 'settled' });
+      expect(during).toEqual({ available: before.available - 1_000n, holds: before.holds + 1_000n });
+      expect(await purseUsd()).toEqual({ available: before.available - 1_000n, holds: before.holds });
+      expect(await unreserved('fx-t0546-ok')).toBe(0);
+    });
+
+    it('a vendor reject returns the reserve once, a replay does not return it again', async () => {
+      await ready();
+      const { port, svc } = scripted();
+      const before = await purseUsd();
+      const q = await svc.quote(trader, usd10, 'fx-t0546-rej-q', t0);
+      port.mode = 'reject';
+      await expect(svc.convert(trader, { quoteId: q.quoteId }, 'fx-t0546-rej', t0)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      expect(await purseUsd()).toEqual(before);
+      expect(await unreserved('fx-t0546-rej')).toBe(1);
+      port.mode = 'ok';
+      await expect(svc.convert(trader, { quoteId: q.quoteId }, 'fx-t0546-rej', t0)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      expect(await purseUsd()).toEqual(before);
+      expect(await unreserved('fx-t0546-rej')).toBe(1);
+    });
+
+    it('an outage keeps the amount reserved while the same key can still retry; the stale sweep returns it once', async () => {
+      await ready();
+      const { port, svc } = scripted();
+      const before = await purseUsd();
+      const q = await svc.quote(trader, usd10, 'fx-t0546-out-q', t0);
+      port.mode = 'outage';
+      await expect(svc.convert(trader, { quoteId: q.quoteId }, 'fx-t0546-out', t0)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+      expect(await purseUsd()).toEqual({ available: before.available - 1_000n, holds: before.holds + 1_000n });
+      const swept = await svc.voidStale(new Date(t0.getTime() + STALE_CONVERSION_MS + 1));
+      expect(swept.map((x) => x.idempotencyKey)).toContain('fx-t0546-out');
+      expect(await purseUsd()).toEqual(before);
+      expect(await unreserved('fx-t0546-out')).toBe(1);
+      expect((await svc.voidStale(new Date(t0.getTime() + 2 * STALE_CONVERSION_MS))).map((x) => x.idempotencyKey)).not.toContain('fx-t0546-out');
+      expect(await unreserved('fx-t0546-out')).toBe(1);
+    });
+  });
+
+  it('the sweep fails a conversion still submitted once its quote cannot be alive, and only then, once', async () => {
+    // Two days on: finance holds the manual 3.70 rate again (the earlier one lapsed after 24 hours).
+    const t0 = new Date(NOW.getTime() + 2 * 86_400_000);
+    await holdManual(t0);
     const { port, svc } = scripted();
     const q = await svc.quote(member, usd10, 'fx-t0520-stale-q', t0);
     port.mode = 'outage';
@@ -267,9 +354,12 @@ describe('T-0522: quotes are rows, so any API instance converts them (TST-FX-001
     return new FxService({ db, port: host.simulators.fx, rates: s.rates, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, plans: s.plans, flags: s.flags });
   };
   const usd10 = { from: { minor: '1000', currency: 'USD' }, to: 'ILS' };
-  // Three days on, under the manual 3.70 rate an earlier test left active.
+  // Three days on: finance holds the manual 3.70 rate again (the earlier ones lapsed after 24 hours).
   const t0 = new Date(NOW.getTime() + 3 * 86_400_000);
   const at = (ms: number) => new Date(t0.getTime() + ms);
+  beforeAll(async () => {
+    await holdManual(t0);
+  });
 
   it('a quote issued by one instance converts on another; the same key is the same quote and the same conversion on either', async () => {
     const [a, b] = [instance(), instance()];
