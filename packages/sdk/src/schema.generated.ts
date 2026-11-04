@@ -1864,6 +1864,29 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/fee-batches/{batchId}/us-collection": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Collect a USD fee batch from US funders on the provider's payment page
+         * @description REQ-INS-023 (T-0652). Finance staff and admins of the institution; the US account must be approved and open in KYB. Each listed fee item
+         *     of the batch gets a payment page for its funder; the money lands in the institution's own US account and nothing posts to Kesher's ledger.
+         *     Safe to repeat: the provider's keys are the item and the batch. The funder's contact is sent to the provider and not stored. An item is
+         *     marked paid only when the provider says so (never from a webhook body).
+         */
+        readonly post: operations["collectFeeBatchInUs"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/fee-items": {
         readonly parameters: {
             readonly query?: never;
@@ -7862,6 +7885,58 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["InstitutionDashboard"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly collectFeeBatchInUs: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly batchId: string;
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly funders: readonly {
+                        /** Format: email */
+                        readonly email: string;
+                        /** Format: uuid */
+                        readonly feeItemId: string;
+                        /** @description International format */
+                        readonly mobile: string;
+                        readonly name: string;
+                    }[];
+                };
+            };
+        };
+        readonly responses: {
+            /** @description One payment page for each fee item */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        /** Format: uuid */
+                        readonly batchId: string;
+                        readonly items: readonly {
+                            /** Format: uuid */
+                            readonly feeItemId: string;
+                            /** Format: uri */
+                            readonly paymentUrl: string;
+                            /** @enum {string} */
+                            readonly status: "collecting" | "paid";
+                        }[];
+                    };
                 };
             };
             readonly default: components["responses"]["Problem"];

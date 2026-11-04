@@ -1,4 +1,4 @@
-h1:yO8Z1pwO1d7d5NOprAgK/ls2vEnxF+fk9TyiteBr+Jc=
+h1:qHGGQ2FgCNeM67sms4g58MTeTeieN4OvhKHiDD+Dgwg=
 0001_init.sql h1:JG6O+KzBGryTso9G88hAhZ0xHkiUIAq9t3nVJkY5ix8=
 0002_allowance.sql h1:Q+8fviRxwHwnDpVGRKk3reSjfT6v/TF0R74S5bL6XFo=
 0003_institution_onboarding.sql h1:jtM6a6UzbbLc5HUeWMz3mpmg+eUhtCj1KKsyyr6oBVA=
@@ -11,3 +11,4 @@ h1:yO8Z1pwO1d7d5NOprAgK/ls2vEnxF+fk9TyiteBr+Jc=
 0010_staff_invite.sql h1:lsCJZSUsCxUsBu2jr0bxQRLmhkqhNhtgv8QGhbdMsQU=
 0011_institution_us_banking.sql h1:+TxDfXKQOlqSbqn+SeCRWvQM7SwVX5dvwYq1ZkiYPGc=
 0012_us_funding.sql h1:dCdyqxL9vsvuIUXsHfsUTMsTq27LZWkexMEvSvgz5Eo=
+0013_fee_external_payment.sql h1:Xu+YuR9KKsKaClD7e3uxdXnO7MGB9ODrwtfxFuFwY+A=
