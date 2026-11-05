@@ -35,6 +35,10 @@ export const canApprove = (run: RunSummary, role: Role): boolean => run.status =
 export const earlierRun = (runs: readonly RunSummary[], scheduleId: string, date: string): RunSummary | undefined =>
   runs.find((r) => r.scheduleId === scheduleId && r.runDate === date && r.status !== 'preview');
 
+/** A run over ₪5,000.00 waits for a second finance approver (REQ-INS-004), as the workflow decides it: shekel runs only. */
+export const SECOND_APPROVER_MINOR = 500_000n;
+export const needsSecondApprover = (total: Money): boolean => total.currency === 'ILS' && total.minor > SECOND_APPROVER_MINOR;
+
 export type PreviewView = { kind: 'preview'; run: RunResult; total: Money } | { kind: 'off' } | { kind: 'error'; code: string };
 
 export type RunView =
