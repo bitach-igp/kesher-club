@@ -340,16 +340,16 @@ export class PayoutService implements PayoutActivities {
    * A member's payout that waits (cooling off, or for an approver) moves its amount wallet → pending, so `available` drops at
    * once and the same money cannot be spent twice; the payout later posts from pending. Idempotent by key. When the purse no
    * longer holds the amount (it was spent before the reserve existed) the payout fails instead of overdrawing. An institution's
-   * payout is not reserved here (its balance is a single account: a follow-up).
+   * payout reserves master → `payout_reserve` instead (`reserveInstitution`).
    */
   async reserve(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined> {
-    if (input.source.kind === 'institution') return undefined;
     // The caller's read may be older than the payout: one that ended meanwhile (failed, cancelled, settled) takes no new reserve, which
     // nothing would release.
     const fresh = await this.d.transfers.get(transfer.id);
     if (!fresh || fresh.state === 'settled' || fresh.state === 'failed' || fresh.state === 'cancelled' || fresh.state === 'reversed') return undefined;
     const key = reserveKey(transfer.idempotencyKey);
     if (await this.journalIdOf(key)) return undefined;
+    if (input.source.kind === 'institution') return this.reserveInstitution(transfer, input, key, now);
     const purse = (await this.d.accounts.purses(input.partyId)).find((p) => p.currency === 'ILS');
     if ((purse?.available.minor ?? 0n) < input.amount.minor) return this.fail(transfer, 'INSUFFICIENT_FUNDS', now, 'the funds were spent before they were reserved');
     const wallet = await this.d.accounts.memberAccount(input.partyId, 'wallet', 'ILS');
@@ -375,6 +375,44 @@ export class PayoutService implements PayoutActivities {
     return undefined;
   }
 
+  /**
+   * An institution's waiting payout sets its money aside, `institution_master` → `payout_reserve` (T-0550): the master is what is
+   * available, so another payout, an allowance run or the credit check no longer sees it, while the institution still owns it (the
+   * statement, export and dashboard count the reserve, T-0555). The funds check runs again inside the posting transaction, under the
+   * master's lock, so two payouts racing for the last of it cannot both reserve.
+   */
+  private async reserveInstitution(transfer: Transfer, input: PayoutInput, key: string, now: Date): Promise<Transfer | undefined> {
+    const spent = 'the funds were spent before they were reserved';
+    const master = await this.d.accounts.institutionAccount(input.partyId, 'ILS');
+    const reserve = await this.d.accounts.institutionPayoutReserveAccount(input.partyId, 'ILS');
+    if ((await this.d.accounts.institutionBalance(input.partyId, 'ILS')).minor < input.amount.minor) return this.fail(transfer, 'INSUFFICIENT_FUNDS', now, spent);
+    try {
+      await this.d.ledger.postNoOverdraft(
+        {
+          idempotencyKey: key,
+          kind: PAYOUT_JOURNAL_KIND,
+          transferId: transfer.id,
+          effectiveAt: now,
+          postings: [
+            { accountId: master, currency: 'ILS', amountMinor: input.amount.minor },
+            { accountId: reserve, currency: 'ILS', amountMinor: -input.amount.minor },
+          ],
+          // No institutionId: moving money between the institution's own accounts is not a statement or export row.
+          metadata: { workflowId: transfer.idempotencyKey, reason: 'institution payout waiting (T-0550)' },
+        },
+        async (tx) => {
+          const b = await tx.query<{ balance: string }>('select coalesce(balance_minor, 0)::text as balance from ops.account_balance where account_id = $1', [master]);
+          // The master is credit-normal: its ledger balance is negative while it holds money; debiting the amount must not take it past zero.
+          if (BigInt(b.rows[0]?.balance ?? '0') + input.amount.minor > 0n) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the institution account for this payout');
+        },
+      );
+    } catch (e) {
+      if (e instanceof DomainError && e.code === 'INSUFFICIENT_FUNDS') return this.fail(transfer, 'INSUFFICIENT_FUNDS', now, spent);
+      throw e;
+    }
+    return undefined;
+  }
+
   /** Returns the reserve to the wallet, once (the reversal key is idempotent). Nothing to do when nothing was reserved. */
   private async unreserve(transfer: Transfer): Promise<void> {
     const id = await this.journalIdOf(reserveKey(transfer.idempotencyKey));
@@ -393,8 +431,13 @@ export class PayoutService implements PayoutActivities {
     const institution = input.source.kind === 'institution';
     // A member's payout that waited posts from its reserve; one that did not (it went straight to the rail, or it was already
     // waiting before the reserve existed) posts from the wallet as before.
-    const reserved = !institution && !!(await this.journalIdOf(reserveKey(workflowId)));
-    const wallet = institution ? await this.d.accounts.institutionAccount(input.partyId, 'ILS') : await this.d.accounts.memberAccount(input.partyId, reserved ? 'pending' : 'wallet', 'ILS');
+    const reserved = !!(await this.journalIdOf(reserveKey(workflowId)));
+    // An institution's that waited posts from its payout reserve (T-0550), one that did not from the master.
+    const wallet = institution
+      ? reserved
+        ? await this.d.accounts.institutionPayoutReserveAccount(input.partyId, 'ILS')
+        : await this.d.accounts.institutionAccount(input.partyId, 'ILS')
+      : await this.d.accounts.memberAccount(input.partyId, reserved ? 'pending' : 'wallet', 'ILS');
     const partner = await this.d.accounts.systemAccount('partner_settlement', 'ILS');
     const journal = await this.d.ledger.post({
       idempotencyKey: settleKey(workflowId),
@@ -605,7 +648,7 @@ export class PayoutService implements PayoutActivities {
     const r = await this.d.db.query<{ id: string }>(
       `select t.id from ops.transfer t where t.kind = 'payout' and (
           (t.state = 'pending_hold' and t.hold_releases_at <= $1)
-          or (t.state = 'pending_hold' and t.hold_releases_at > $1 and not exists (select 1 from org.institution i where i.id = t.from_party_id)
+          or (t.state = 'pending_hold' and t.hold_releases_at > $1
               and not exists (select 1 from ledger.journal j where j.idempotency_key = t.idempotency_key || ':reserve'))
           or (t.state in ('created', 'pending') and t.journal_id is null and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and a.status = 'approved'))
           or (t.state = 'submitted' and t.journal_id is not null and t.updated_at <= $1::timestamptz - ($4 * interval '1 millisecond')
