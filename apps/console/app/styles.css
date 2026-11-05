@@ -4,6 +4,7 @@
 :root {
   --radius: var(--radius-md);
   --gutter: var(--layout-gutter-web);
+  color-scheme: light dark;
   --focus-ring: var(--border-width-focus) solid var(--color-border-focus);
 }
 * { box-sizing: border-box; }
@@ -59,5 +60,5 @@ button:disabled { opacity: .6; cursor: default; }
 /* Form fields */
 .field { display: grid; gap: var(--space-1); margin-block-end: var(--space-3); }
 .field label { font-size: var(--typography-caption-font-size); color: var(--color-text-secondary); }
-input, select, textarea { font: inherit; padding: var(--space-2) var(--space-3); border: var(--border-width-input) solid var(--color-border-strong); border-radius: var(--radius); background: var(--color-bg-surface); color: var(--color-text-primary); }
+input:not([type=radio]):not([type=checkbox]):not([type=file]), select, textarea { font: inherit; padding: var(--space-2) var(--space-3); border: var(--border-width-input) solid var(--color-border-strong); border-radius: var(--radius); background: var(--color-bg-surface); color: var(--color-text-primary); }
 input[aria-invalid="true"], .field.invalid input { border: var(--border-width-error) solid var(--color-status-danger); }
