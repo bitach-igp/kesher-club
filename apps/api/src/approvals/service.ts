@@ -102,11 +102,16 @@ export class ApprovalService {
     return r;
   }
 
+  /** Marks an open request expired, once: the one place this write lives. A request already decided is left as it is. */
+  async expire(requestId: string, now: Date): Promise<void> {
+    await this.db.query(`update ops.approval_request set status = 'expired', decided_at = $2 where id = $1 and status in ('pending','awaiting_second_approval')`, [requestId, now]);
+  }
+
   async decide(requestId: string, by: Approver, decision: 'approve' | 'reject', now: Date, reason?: string): Promise<ApprovalRequest> {
     const pre = await this.get(requestId);
     if (!pre) throw new DomainError('NOT_FOUND', 'Approval request not found');
     if ((pre.status === 'pending' || pre.status === 'awaiting_second_approval') && Date.parse(pre.expiresAt) <= now.getTime()) {
-      await this.db.query(`update ops.approval_request set status = 'expired', decided_at = $2 where id = $1 and status in ('pending','awaiting_second_approval')`, [requestId, now]);
+      await this.expire(requestId, now);
       throw new DomainError('IDEMPOTENCY_CONFLICT', 'Request expired');
     }
     return this.db.transaction(async (tx) => {
