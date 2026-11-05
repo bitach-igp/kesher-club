@@ -34,3 +34,15 @@ FAIL (2026-11-06 01:15 Asia/Jerusalem, Kesher desktop checker on zvislaptop, bra
 - Passwords: none of masterpw, app-pw-1, jit-pw-1, ro-pw-1, mig/pw:1 appears in the output of steps 4 to 6.
 Likely fix (left to the card session, not applied here): before roles.sql line 29, make the master a member of club_migrator
 (e.g. `grant club_migrator to current_user` in step 1, or run that statement `set role club_migrator`), then re-request this handoff.
+
+## Result (run 2)
+PASS (2026-11-06, Kesher desktop checker on zvislaptop, branch @ 5e2a63c, Docker 29.9.2, postgres:16, fresh container).
+- Fix 5e2a63c: step 1 makes the master an inheriting member of club_migrator (`with inherit true, set false`) before roles.sql.
+  Checked first by hand: a SET-only grant is still refused at roles.sql:29; the inherit grant passes; the superuser path grants nothing.
+- Steps 1 to 4 ok. Step 5 exit 0: `ok   roles`, `ok   passwords and grants`, then `ok` for ledger, identity, org, billing,
+  legal, addons, notify, audit, agent, and `ok   migrate`.
+- Step 6 exit 0: the same `ok` lines; each schema reports `No migration files to execute` (idempotent).
+- Step 7: `0` (club_app logs in and reads ledger.journal). Step 8: `1`. Step 9: `1`.
+- Step 10: `ERROR:  permission denied for table journal` (ledger insert-only for club_app).
+- Master's membership in club_migrator after the run: inherit t, set f.
+- Step 11 ok. None of the five passwords appears in the output of steps 4 to 6.
