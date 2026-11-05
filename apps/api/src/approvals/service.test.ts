@@ -98,6 +98,20 @@ describe('an institution cannot split a payout to stay under the threshold (T-05
   });
 });
 
+describe('ApprovalService.expire (T-0549)', () => {
+  it('marks an open request expired once and leaves a decided one as it is', async () => {
+    const open = await approvals.request({ kind: 'payout', subject: 'payout:exp-1', scope: 'org_2', requestedBy: finance1, amount: money(800_000n, 'ILS') }, now);
+    await approvals.expire(open.id, now);
+    expect((await approvals.get(open.id))!.status).toBe('expired');
+    await approvals.expire(open.id, new Date(now.getTime() + 1000));
+    expect((await approvals.get(open.id))!.status).toBe('expired');
+    const done = await approvals.request({ kind: 'payout', subject: 'payout:exp-2', scope: 'org_2', requestedBy: finance1, amount: money(100_000n, 'ILS') }, now);
+    expect(done.status).toBe('approved');
+    await approvals.expire(done.id, now);
+    expect((await approvals.get(done.id))!.status).toBe('approved');
+  });
+});
+
 describe('ApprovalService (REQ-ADM-002)', () => {
   it('a money flag flip needs two distinct admins; with one approval the flag stays unchanged', async () => {
     const r = await approvals.request({ kind: 'flag_flip', subject: 'wallet.enabled', scope: 'platform', requestedBy: admin1, payload: { from: false, to: true } }, now);
