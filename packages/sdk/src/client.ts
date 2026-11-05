@@ -64,7 +64,7 @@ export interface ClientOptions {
 
 /** Operations whose contract declares Idempotency-Key / X-Step-Up. A test keeps this in sync with the YAML. */
 const HEADER_OPS: Record<string, { idempotency: boolean; stepUp: boolean }> = {
-  'post /memberships': { idempotency: true, stepUp: false },
+  'post /memberships': { idempotency: true, stepUp: true },
   'post /memberships/{id}/cancel': { idempotency: true, stepUp: false },
   'post /institution-applications': { idempotency: true, stepUp: false },
   'post /institution-applications/{id}/signatories': { idempotency: true, stepUp: false },
