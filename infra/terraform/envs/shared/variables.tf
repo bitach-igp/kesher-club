@@ -33,7 +33,7 @@ variable "github_repository" {
 
 variable "ecr_repositories" {
   type    = list(string)
-  default = ["api", "worker", "admin"]
+  default = ["api", "worker", "admin", "migrate"]
 }
 
 variable "state_bucket_name" {

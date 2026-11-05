@@ -36,3 +36,14 @@ output "preview_parameter_prefix" {
   description = "SSM prefix infra/preview reads."
   value       = "/kesher/staging/preview/"
 }
+
+output "migrate_task" {
+  description = "What `aws ecs run-task` needs to prepare the database (T-0044): the task definition, the cluster, the private subnets and the security group."
+  value = {
+    task_definition = module.migrate.task_definition_family
+    cluster         = aws_ecs_cluster.this.name
+    subnets         = module.network.private_subnet_ids
+    security_group  = module.migrate.security_group_id
+    container       = module.migrate.container_name
+  }
+}
