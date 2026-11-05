@@ -5,6 +5,7 @@
 // and queues a push to the payer.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
+import { decideKyb, verifiedPayoutAccount } from '../test-institution.ts';
 import { fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type NotifySimulator, type PayoutSimulator } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
@@ -483,5 +484,64 @@ describe('T-0540: a payout that waits has its funds reserved (REQ-PO-001, REQ-WA
     expect(await ask(party, key, 200_000n)).toMatchObject({ state: 'processing' });
     expect(await journals(reserveKey(key))).toBe(0);
     expect(await purse(party)).toEqual({ available: 300_000n, holds: 0n });
+  });
+});
+
+describe('T-0554: an institution payout whose approval is rejected or runs out ends (REQ-PO-001, REQ-INS-020)', () => {
+  const requester = uuidv7(NOW);
+  const finance2 = { partyId: uuidv7(NOW), role: 'finance' };
+  async function funded(minor: bigint) {
+    const inst = uuidv7(now);
+    await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Example', 'IL')`, [inst]);
+    await decideKyb(db, inst);
+    await verifiedPayoutAccount(db, inst, IL, 'Yeshivat Example');
+    const master = await app.services.accounts.institutionAccount(inst, 'ILS');
+    const partner = await app.services.accounts.systemAccount('partner_settlement', 'ILS');
+    await app.services.ledger.post({ idempotencyKey: `inst-fund-${inst}`, kind: 'deposit', postings: [{ accountId: partner, currency: 'ILS', amountMinor: minor }, { accountId: master, currency: 'ILS', amountMinor: -minor }] });
+    return inst;
+  }
+  const ask = (inst: string, key: string, minor: bigint) =>
+    app.services.payouts.request(inst, { payee: { iban: IL, name: 'Yeshivat Example' }, amount: { minor: minor.toString(), currency: 'ILS' }, reference: 'transfer' }, key, now, { kind: 'institution', requestedBy: requester, requesterRole: 'finance' });
+  const owned = async (inst: string) => (await app.services.accounts.institutionBalance(inst, 'ILS')).minor;
+  const sweep = async (keys: string[]) => {
+    const out = [];
+    for (const t of (await app.services.payouts.resumable(now)).filter((x) => keys.includes(x.idempotencyKey))) out.push((await runPayout(app.services.payouts, await app.services.payouts.inputFor(t), t.idempotencyKey, now)).transfer);
+    return out;
+  };
+
+  it('an approval that runs out fails the payout once with APPROVAL_EXPIRED and ends the approval; the institution\'s money is untouched', async () => {
+    const inst = await funded(1_000_000n);
+    const key = `po-inst-exp-${inst}`;
+    const r = await ask(inst, key, 600_000n);
+    // A new payee over the threshold cools off for a day first (unchanged); then it waits for its second approver.
+    expect(r).toMatchObject({ state: 'cooling_off' });
+    advance(COOL_OFF_MS + 60_000);
+    await sweep([key]);
+    const waiting = (await app.services.transfers.byKey(key))!;
+    expect((await app.services.payouts.view(waiting)).state).toBe('awaiting_second_approval');
+    expect(await owned(inst)).toBe(1_000_000n);
+    expect((await app.services.payouts.resumable(now)).map((t) => t.idempotencyKey)).not.toContain(key);
+    advance(8 * 86_400_000);
+    const ended = (await sweep([key])).find((t) => t.idempotencyKey === key)!;
+    expect(ended).toMatchObject({ state: 'failed', failureCode: 'APPROVAL_EXPIRED' });
+    const t = (await app.services.transfers.byKey(key))!;
+    expect((await app.services.approvals.find('payout', t.id))!.status).toBe('expired');
+    expect(await owned(inst)).toBe(1_000_000n);
+    // A second sweep finds nothing more to do for it.
+    expect((await app.services.payouts.resumable(now)).map((x) => x.idempotencyKey)).not.toContain(key);
+    expect((await app.services.transfers.byKey(key))!.state).toBe('failed');
+  });
+
+  it('a rejected approval fails the payout with REJECTED', async () => {
+    const inst = await funded(1_000_000n);
+    const key = `po-inst-rej-${inst}`;
+    await ask(inst, key, 600_000n);
+    const t = (await app.services.transfers.byKey(key))!;
+    const req = (await app.services.approvals.find('payout', t.id))!;
+    await app.services.approvals.decide(req.id, finance2, 'reject', now, 'wrong payee');
+    advance(COOL_OFF_MS + 60_000);
+    const ended = (await sweep([key])).find((x) => x.idempotencyKey === key)!;
+    expect(ended).toMatchObject({ state: 'failed', failureCode: 'REJECTED' });
+    expect(await owned(inst)).toBe(1_000_000n);
   });
 });
