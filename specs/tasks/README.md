@@ -131,10 +131,12 @@
 | [T-0547](T-0547.md) | WAL | Fix: a fail racing a hold leaves no hold journal; UNKNOWN_LOAD stops stalling | REQ-WAL-003, REQ-LED-004 | fix |
 | [T-0548](T-0548.md) | ESIM | Fix: a stuck add-on order is charged on replay; the missing tests | REQ-ESIM-001, REQ-WAL-001 | fix |
 | [T-0549](T-0549.md) | PO | Fix: payout reserve hardening and one place for approval expiry | REQ-PO-001, REQ-WAL-001 | fix |
-| [T-0550](T-0550.md) | PO | Fix: institution payouts reserve their money and their approvals expire | REQ-PO-001, REQ-INS-020 | fix |
+| [T-0550](T-0550.md) | PO | Fix: institution payouts reserve their money (after T-0554, T-0555) | REQ-PO-001, REQ-INS-020 | fix |
 | [T-0551](T-0551.md) | FX | Fix: void-stale reports failed only; deviation case reopens; one 24 h constant | REQ-FX-001, REQ-FX-003, REQ-FX-004 | fix |
 | [T-0552](T-0552.md) | LED | Fix: reversals carry the transfer they undo | REQ-LED-001, REQ-LED-004 | fix |
 | [T-0553](T-0553.md) | PO | Fix: stranded payouts, test independence and the provider-change case | REQ-PO-002 | fix |
+| [T-0554](T-0554.md) | PO | Fix: institution payout approvals expire | REQ-PO-001, REQ-INS-020 | fix |
+| [T-0555](T-0555.md) | LED | Fix: institution payout-reserve account, counted as the institution's own money | REQ-PO-001, REQ-INS-006, REQ-INS-017, REQ-INS-021 | fix |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
