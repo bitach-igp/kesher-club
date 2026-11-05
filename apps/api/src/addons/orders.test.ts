@@ -245,14 +245,14 @@ describe('replays, races and a re-checked charge (T-0548, follow-up of T-0542)',
   });
 
   it('a charge that posted but never moved the order is finished on replay, even though the wallet no longer holds the price', async () => {
-    const { memberPartyId, wallet } = await member(false, 2_500n);
+    const { memberPartyId } = await member(false, 2_500n);
     const crash = vi.spyOn(orders, 'transition').mockRejectedValueOnce(new Error('crashed after the journal'));
     await expect(orders.create({ idempotencyKey: 'r-6-paid', memberPartyId, sku }, now)).rejects.toThrow('crashed');
     crash.mockRestore();
     const stuck = (await orders.byKey('r-6-paid'))!;
     expect(stuck.state).toBe('created');
     expect(await chargeJournal(stuck.id)).toBe(1);
-    expect(-(await ledger.balance(wallet, 'USD'))).toBe(0n); // the price has left the wallet already
+    expect((await accounts.purses(memberPartyId)).find((p) => p.currency === 'USD')!.available.minor).toBe(0n); // the price has left the wallet already
     const replay = await orders.create({ idempotencyKey: 'r-6-paid', memberPartyId, sku }, now);
     expect(replay).toMatchObject({ id: stuck.id, state: 'charged' });
     expect(await chargeJournal(stuck.id)).toBe(1);

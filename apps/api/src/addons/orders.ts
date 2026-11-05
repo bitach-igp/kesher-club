@@ -166,22 +166,23 @@ export class AddonOrderService {
     const o = await this.must(orderId);
     if (o.state !== 'created') return o;
     // A charge already posted (a crash between the journal and the state) is not paid for twice, and the member is not refused for the
-    // money that has already left their wallet.
+    // money that has already left their wallet: only the state moves.
     const posted = (await this.db.query<{ id: string }>(`select id from ledger.journal where idempotency_key = $1`, [`addon:${o.id}:charge`])).rows[0];
-    if (posted) return this.transition(o.id, 'charged', now, { chargeJournalId: posted.id });
-    await this.assertFunds(o.memberPartyId, o.price);
-    const wallet = await this.accounts.memberAccount(o.memberPartyId, 'wallet', o.price.currency);
-    const payable = await this.accounts.systemAccount('addon_payable', o.price.currency);
-    const feeIncome = await this.accounts.systemAccount('fee_income', o.price.currency);
-    const commission = o.price.minor - o.cost.minor;
-    const postings = [
-      { accountId: wallet, currency: o.price.currency, amountMinor: o.price.minor },
-      { accountId: payable, currency: o.price.currency, amountMinor: -o.cost.minor },
-      { accountId: feeIncome, currency: o.price.currency, amountMinor: -commission },
-    ].filter((p) => p.amountMinor !== 0n);
-    let journalId: string | undefined;
-    if (postings.length >= 2) {
-      journalId = (await this.ledger.post({ idempotencyKey: `addon:${o.id}:charge`, kind: 'addon', postings, metadata: { orderId: o.id, sku: o.sku, listPriceMinor: o.listPrice.minor.toString(), creditMinor: o.credit.minor.toString() } })).id;
+    let journalId: string | undefined = posted?.id;
+    if (!posted) {
+      await this.assertFunds(o.memberPartyId, o.price);
+      const wallet = await this.accounts.memberAccount(o.memberPartyId, 'wallet', o.price.currency);
+      const payable = await this.accounts.systemAccount('addon_payable', o.price.currency);
+      const feeIncome = await this.accounts.systemAccount('fee_income', o.price.currency);
+      const commission = o.price.minor - o.cost.minor;
+      const postings = [
+        { accountId: wallet, currency: o.price.currency, amountMinor: o.price.minor },
+        { accountId: payable, currency: o.price.currency, amountMinor: -o.cost.minor },
+        { accountId: feeIncome, currency: o.price.currency, amountMinor: -commission },
+      ].filter((p) => p.amountMinor !== 0n);
+      if (postings.length >= 2) {
+        journalId = (await this.ledger.post({ idempotencyKey: `addon:${o.id}:charge`, kind: 'addon', postings, metadata: { orderId: o.id, sku: o.sku, listPriceMinor: o.listPrice.minor.toString(), creditMinor: o.credit.minor.toString() } })).id;
+      }
     }
     try {
       return await this.transition(o.id, 'charged', now, journalId ? { chargeJournalId: journalId } : {});
