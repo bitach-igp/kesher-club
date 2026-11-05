@@ -298,7 +298,8 @@ export class PayoutService implements PayoutActivities {
   }
 
   async atRail(transfer: Transfer): Promise<boolean> {
-    return (await this.d.db.query(`select 1 from ops.external_ref where entity_type = 'transfer' and entity_id = $1 and provider = $2`, [transfer.id, this.d.provider])).rows.length > 0;
+    // Any provider's ref counts: a payout the old rail took before the market changed provider is at a rail, and sending it again on the new one could pay twice.
+    return (await this.d.db.query(`select 1 from ops.external_ref where entity_type = 'transfer' and entity_id = $1`, [transfer.id])).rows.length > 0;
   }
 
   async stranded(transfer: Transfer, now: Date): Promise<Transfer | undefined> {
@@ -608,11 +609,11 @@ export class PayoutService implements PayoutActivities {
               and not exists (select 1 from ledger.journal j where j.idempotency_key = t.idempotency_key || ':reserve'))
           or (t.state in ('created', 'pending') and t.journal_id is null and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and a.status = 'approved'))
           or (t.state = 'submitted' and t.journal_id is not null and t.updated_at <= $1::timestamptz - ($4 * interval '1 millisecond')
-              and not exists (select 1 from ops.external_ref x where x.entity_type = 'transfer' and x.entity_id = t.id and x.provider = $5))
+              and not exists (select 1 from ops.external_ref x where x.entity_type = 'transfer' and x.entity_id = t.id))
           or (t.state in ('created', 'pending') and t.journal_id is null and not exists (select 1 from org.institution i where i.id = t.from_party_id)
               and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and (a.status in ('rejected', 'expired') or (a.status in ('pending', 'awaiting_second_approval') and a.expires_at <= $1))))
        ) and t.market = $3 order by t.created_at limit $2`,
-      [now, limit, this.d.transfers.market, RETRY_AFTER_MS, this.d.provider],
+      [now, limit, this.d.transfers.market, RETRY_AFTER_MS],
     );
     const out: Transfer[] = [];
     for (const row of r.rows) {
