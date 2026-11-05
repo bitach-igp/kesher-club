@@ -137,6 +137,7 @@
 | [T-0553](T-0553.md) | PO | Fix: stranded payouts, test independence and the provider-change case | REQ-PO-002 | fix |
 | [T-0554](T-0554.md) | PO | Fix: institution payout approvals expire | REQ-PO-001, REQ-INS-020 | fix |
 | [T-0555](T-0555.md) | LED | Fix: institution payout-reserve account, counted as the institution's own money | REQ-PO-001, REQ-INS-006, REQ-INS-017, REQ-INS-021 | fix |
+| [T-0661](T-0661.md) | INS | Fix: an allowance payment cannot overdraw the institution's account | REQ-INS-003, REQ-INS-008 | fix |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
