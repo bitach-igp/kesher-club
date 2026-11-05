@@ -90,8 +90,10 @@ describe('API and worker config (T-0020)', () => {
     }
   });
 
-  it('runs on simulators only until ADR-006 wires a vendor, and never on simulators in production', () => {
-    expect(thrown(() => loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: only sim/);
+  it('takes sim or sandbox as the environment label, refuses live, and never allows simulators in production', () => {
+    expect(loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox' }).PROVIDER_MODE_DEFAULT).toBe('sandbox');
+    expect(loadWorkerConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox' }).PROVIDER_MODE_DEFAULT).toBe('sandbox');
+    expect(thrown(() => loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'live' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: only sim or sandbox/);
     expect(thrown(() => loadApiConfig({ ...env, APP_ENV: 'prod' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: simulators are not allowed in production/);
   });
 });
@@ -103,11 +105,21 @@ const WH_PREVIOUS = 'whsec-previous-do-not-print';
 const crowded = { PROVIDER_INSTITUTION_BANKING: 'crowded', CROWDED_BASE_URL: 'https://sandbox-api.crowdedfinance.com/api/v1', CROWDED_API_TOKEN: TOKEN, CROWDED_WEBHOOK_SECRETS: WH_SECRET };
 
 describe('Crowded banking override (T-0659)', () => {
-  it('defaults to the simulator, needs no Crowded key, and leaves PROVIDER_MODE_DEFAULT sim-only', () => {
+  it('defaults to the simulator and needs no Crowded key', () => {
     const c = loadApiConfig(env);
     expect(c.PROVIDER_INSTITUTION_BANKING).toBe('sim');
     expect(c.CROWDED_API_TOKEN).toBeUndefined();
-    expect(thrown(() => loadApiConfig({ ...env, ...crowded, PROVIDER_MODE_DEFAULT: 'sandbox' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: only sim/);
+    expect(loadApiConfig({ ...env, ...crowded, PROVIDER_MODE_DEFAULT: 'sandbox' }).PROVIDER_INSTITUTION_BANKING).toBe('crowded');
+  });
+
+  it('does not refuse a PROVIDER_* key it does not know: Terraform injects PROVIDER_WEBHOOK_SECRETS as an ECS secret (T-0040)', () => {
+    expect(loadApiConfig({ ...env, PROVIDER_WEBHOOK_SECRETS: 'whsec-not-read-yet' }).PROVIDER_INSTITUTION_BANKING).toBe('sim');
+    expect(loadWorkerConfig({ ...env, PROVIDER_WEBHOOK_SECRETS: 'whsec-not-read-yet' }).MARKET).toBe('IL');
+    expect(loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox', PROVIDER_INSTITUTION_BANKING: 'sim' }).PROVIDER_INSTITUTION_BANKING).toBe('sim');
+  });
+
+  it('an empty PROVIDER_* value counts as not set, as every other key does (T-0040)', () => {
+    expect(loadApiConfig({ ...env, PROVIDER_INSTITUTION_BANKING: '' }).PROVIDER_INSTITUTION_BANKING).toBe('sim');
   });
 
   it('loads a full Crowded set for the API and the worker, the token and secrets as Secrets', () => {
