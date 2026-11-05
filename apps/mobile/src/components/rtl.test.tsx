@@ -5,10 +5,15 @@
 // line height grows with the font. The Hebrew render checks what react-native-web can show in jsdom.
 import fs from 'node:fs';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { applyLayoutDirection, LocaleProvider, onward, type LayoutDirection, type Locale } from '../i18n.ts';
+import { money } from '@kesher/domain';
+import { cleanup, fireEvent } from '@testing-library/react';
+import { Badge } from './Badge.tsx';
+import { BalanceHero } from './BalanceHero.tsx';
 import { ListRow } from './ListRow.tsx';
+import { TabBar } from './TabBar.tsx';
 import { OtpInput } from './OtpInput.tsx';
 import { TextField } from './TextField.tsx';
 import { MAX_FONT_SCALE, scaledLineHeight, Txt } from './Txt.tsx';
@@ -105,4 +110,55 @@ describe('Hebrew', () => {
 
   // The banner's bar uses borderStartWidth; react-native-web resolves start to a physical edge in jsdom,
   // so its mirroring is held by the source scan above rather than by a render here.
+});
+
+describe('redesign primitives mirror, keep money exact and are reachable (T-0671)', () => {
+  afterEach(cleanup);
+  const big = money(123_456_789_012_345_678n, 'ILS');
+  const tabs = [
+    { key: 'home', label: 'Home', glyph: '⌂' },
+    { key: 'card', label: 'Card', glyph: '▭' },
+    { key: 'help', label: 'Help', glyph: '?' },
+  ];
+
+  it('BalanceHero shows a bigint amount in both currencies without losing a digit, in English and Hebrew', () => {
+    const { unmount } = wrap('en', <BalanceHero label="Balance" ils={big} usd={money(9_007_199_254_740_993n, 'USD')} testID="hero" />);
+    const en = screen.getByTestId('hero').textContent ?? '';
+    expect(en).toContain('1,234,567,890,123,456.78');
+    expect(en).toContain('90,071,992,547,409.93');
+    unmount();
+    wrap('he', <BalanceHero label="יתרה" ils={big} testID="hero-he" />);
+    expect(screen.getByTestId('hero-he').textContent).toContain('1,234,567,890,123,456.78');
+    expect(getComputedStyle(screen.getByTestId('hero-he')).direction).toBe('rtl');
+  });
+
+  it('BalanceHero is a labelled summary a screen reader reads as one line', () => {
+    wrap('en', <BalanceHero label="Balance" ils={money(250_000n, 'ILS')} testID="hero" />);
+    const hero = screen.getByTestId('hero');
+    expect(hero.getAttribute('aria-label')).toMatch(/Balance.*2,500\.00/);
+  });
+
+  it('TabBar marks the active tab, calls back with the key, and gives every tab a 44 point target', () => {
+    const picked: string[] = [];
+    wrap('en', <TabBar items={tabs} active="card" onSelect={(k) => picked.push(k)} testID="tabs" />);
+    const items = screen.getAllByRole('tab');
+    expect(items.map((e) => e.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false']);
+    for (const e of items) expect(parseFloat(getComputedStyle(e).minHeight)).toBeGreaterThanOrEqual(44);
+    fireEvent.click(items[2]!);
+    expect(picked).toEqual(['help']);
+  });
+
+  it('TabBar lists the tabs in reading order in both locales (the row itself mirrors)', () => {
+    const { unmount } = wrap('he', <TabBar items={tabs.map((t) => ({ ...t, label: `ת-${t.key}` }))} active="home" onSelect={() => undefined} testID="tabs-he" />);
+    expect(screen.getAllByRole('tab').map((e) => e.textContent)).toEqual(['⌂ת-home', '▭ת-card', '?ת-help']);
+    expect(getComputedStyle(screen.getByTestId('tabs-he')).direction).toBe('rtl');
+    unmount();
+    wrap('en', <TabBar items={tabs} active="home" onSelect={() => undefined} testID="tabs-en" />);
+    expect(getComputedStyle(screen.getByTestId('tabs-en')).direction).toBe('ltr');
+  });
+
+  it('Badge has a brand tone', () => {
+    wrap('en', <Badge label="New" tone="brand" testID="badge" />);
+    expect(screen.getByTestId('badge').textContent).toBe('New');
+  });
 });
