@@ -2,7 +2,7 @@
 
 `.github/workflows/release.yml` (T-0030) builds the `api`, `worker`, `admin` and `migrate` images (the last prepares the database, `docs/setup/database.md`) for one commit that
 is already on `main`. It pushes them to club-shared's ECR as `sha-<first 12 characters of the commit>`.
-That tag is what staging and prod deploy: their roots run `${ecr_registry}/kesher/{api,worker,admin}:${image_tag}`.
+That tag is what staging and prod deploy: their roots run `${ecr_registry}/kesher/{api,worker,admin}:${image_tag}`; the database task runs `kesher/migrate:${image_tag}`.
 
 - **Credentials.** The workflow gets them from GitHub OIDC, the way `preview.yml` does, so no access key
   exists anywhere.

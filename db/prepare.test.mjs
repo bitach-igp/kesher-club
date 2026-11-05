@@ -1,7 +1,7 @@
 // Tests for db/prepare.mjs (T-0044). Run with `node --test db/`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { migratorUrl, planPrepare, REQUIRED, ROLE_SQL, run } from './prepare.mjs';
+import { childEnv, migratorUrl, planPrepare, REQUIRED, ROLE_SQL, run } from './prepare.mjs';
 
 const PASSWORDS = { DB_APP_PASSWORD: 'app-pw-secret', DB_JIT_PASSWORD: 'jit-pw-secret', DB_READONLY_PASSWORD: 'ro-pw-secret', DB_MIGRATOR_PASSWORD: 'mig/pw:with@odd#chars?' };
 const ENV = { PGHOST: 'db.internal', PGPORT: '5432', PGDATABASE: 'club', PGSSLMODE: 'verify-full', PGSSLROOTCERT: '/app/db/certs/rds-global-bundle.pem', PGUSER: 'master', PGPASSWORD: 'master-pw-secret', ...PASSWORDS };
@@ -26,7 +26,17 @@ test('every missing key is named, and nothing runs', () => {
   assert.equal(ran, false);
 });
 
-test('no password is in any step argument, in the SQL, or in the migrator step beyond its ATLAS_URL', () => {
+test('each step gets only the environment it needs: the migration never sees the master or the other roles\' passwords', () => {
+  const full = { ...ENV, PATH: '/usr/bin', HOME: '/tmp', UNRELATED: 'x' };
+  const [roles, passwords, migrate] = planPrepare(full).map((s) => childEnv(s, full));
+  assert.equal(roles.PGPASSWORD, 'master-pw-secret');
+  assert.equal(roles.DB_APP_PASSWORD, undefined);
+  assert.equal(passwords.DB_JIT_PASSWORD, 'jit-pw-secret');
+  assert.equal(passwords.UNRELATED, undefined);
+  assert.deepEqual(Object.keys(migrate).sort(), ['ATLAS_URL', 'HOME', 'PATH']);
+});
+
+test('no password is in any step input or psql argument; the migrator password appears only in atlas\'s URL, which is its step env', () => {
   const secrets = [...Object.values(PASSWORDS), ENV.PGPASSWORD];
   for (const step of planPrepare(ENV)) {
     const visible = JSON.stringify({ args: step.args, input: step.input ?? '' });

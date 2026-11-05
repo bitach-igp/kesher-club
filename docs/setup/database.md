@@ -11,8 +11,15 @@ each safe to repeat:
 | `passwords and grants` | RDS master user | the four roles' passwords from Secrets Manager; `CONNECT` on the database for all four and `CREATE` for `club_migrator` (`roles.sql` revokes `CONNECT` from PUBLIC and grants it to nobody, so without this step no service could log in and the migrator could not create a schema) |
 | `migrate` | `club_migrator` | `db/migrate.mjs`: every schema in dependency order with Atlas (pinned 1.3.8 in the image) |
 
-No password is an argument, a statement or a log line: psql reads each one from its environment (`\getenv`) and the
-migrator's URL travels in `ATLAS_URL`. A missing key stops the task before anything runs and names itself.
+No password is printed, written into a statement or given to psql as an argument: psql reads each one from its environment
+(`\getenv`). The one place a password is an argument is `atlas migrate apply --url`, because the migrator's password is part of
+its connection URL; that process lives only inside the task's container, and Atlas does not print it. Each step is given only the
+variables it needs (the migration step never sees the master credentials or the other roles' passwords). A missing key stops the
+task before anything runs and names itself.
+
+Known residual: Postgres logs a statement that fails with `log_min_error_statement` (default `error`), and `ALTER ROLE … PASSWORD`
+carries the literal. It can only fail if a role is missing, which step 1 prevents. If you ever see that step fail, treat the
+database log as holding that password and rotate it.
 
 ## Secrets
 
@@ -35,7 +42,7 @@ The RDS master secret is created and rotated by RDS; the task reads it directly.
 
 ```sh
 aws ecs run-task --cluster <cluster> --task-definition <task_definition> --launch-type FARGATE \
-  --network-configuration "awsvpcConfiguration={subnets=[<subnets>],securityGroups=[<security_group>],assignPublicIp=DISABLED}"
+  --network-configuration '{"awsvpcConfiguration":{"subnets":[<subnets>],"securityGroups":[<security_groups>],"assignPublicIp":"DISABLED"}}'
 ```
 
 The task's log group is `/kesher/kesher-<env>-migrate`. It prints `ok   <step>` per step and exits non-zero on the first

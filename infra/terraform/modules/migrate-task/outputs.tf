@@ -18,3 +18,12 @@ output "container_name" {
 output "log_group_name" {
   value = aws_cloudwatch_log_group.this.name
 }
+
+output "network_configuration" {
+  description = "The awsvpcConfiguration to run the task with: private subnets, this security group, never a public IP."
+  value = {
+    subnets          = var.subnet_ids
+    security_groups  = [aws_security_group.this.id]
+    assign_public_ip = false
+  }
+}

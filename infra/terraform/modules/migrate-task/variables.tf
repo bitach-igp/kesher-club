@@ -7,6 +7,11 @@ variable "vpc_id" {
   type = string
 }
 
+variable "subnet_ids" {
+  description = "The private subnets the task runs in."
+  type        = list(string)
+}
+
 variable "vpc_cidr" {
   description = "The VPC range the task may reach on 443 (ECR, Secrets Manager and Logs endpoints)."
   type        = string

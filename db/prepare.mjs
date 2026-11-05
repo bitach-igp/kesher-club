@@ -7,8 +7,11 @@
 //      leaves out: it revokes CONNECT from PUBLIC and grants it to nobody, so without step 2 no service role could log in
 //      and club_migrator could not create a schema;
 //   3. migrate.mjs as club_migrator, every schema in dependency order.
-// No secret is ever an argument, a statement or a log line: psql reads each password from its environment with \getenv, and
-// the migrator's URL travels in ATLAS_URL. Missing configuration stops it before anything runs. Tests: node --test db/.
+// No secret is printed or put in a statement or a psql argument: psql reads each password from its environment with \getenv. The
+// migrator's password is in the connection URL, which migrate.mjs hands to `atlas migrate apply --url`, so it is an argument of
+// that one process inside the task's own container (never logged; Atlas redacts it in its output). Each step gets only the
+// environment it needs: the migration step never sees the master credentials or the other roles' passwords.
+// Missing configuration stops it before anything runs. Tests: node --test db/.
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +21,11 @@ const ROOT = path.resolve(path.dirname(SELF), '..');
 
 /** Everything the task is given. Nothing has a default: a missing key names itself and stops the run. */
 export const REQUIRED = ['PGHOST', 'PGPORT', 'PGDATABASE', 'PGSSLMODE', 'PGUSER', 'PGPASSWORD', 'DB_APP_PASSWORD', 'DB_JIT_PASSWORD', 'DB_READONLY_PASSWORD', 'DB_MIGRATOR_PASSWORD'];
+
+/** What every step may be told that is not a secret: where the database is and how to verify it. */
+const CONNECTION = ['PGHOST', 'PGPORT', 'PGDATABASE', 'PGSSLMODE', 'PGSSLROOTCERT'];
+/** Always passed: the shell basics a child process needs. */
+const BASICS = ['PATH', 'HOME', 'LANG'];
 
 /** The statements of step 2. Static text: every value comes from the environment through psql, so a password is never in it. */
 export const ROLE_SQL = [
@@ -48,18 +56,17 @@ export function migratorUrl(env) {
 }
 
 /**
- * The steps, in order, without running anything. `input` is psql's standard input; `env` is what the child gets on top of the
- * process environment. No step's arguments, input or extra env hold a password except step 3's ATLAS_URL, which exists only to
- * reach the child's environment.
+ * The steps, in order, without running anything. `input` is psql's standard input; `pass` names the variables the child gets from
+ * the task's environment, `env` adds its own. No step's input holds a password, and no argument but atlas's `--url` does (see above).
  */
 export function planPrepare(env = process.env, root = ROOT) {
   const missing = REQUIRED.filter((k) => !env[k]);
   if (missing.length > 0) throw new Error(`Missing configuration: ${missing.join(', ')}`);
   const psql = ['-X', '-q', '-v', 'ON_ERROR_STOP=1'];
   return [
-    { name: 'roles', command: 'psql', args: [...psql, '-f', path.join(root, 'db/roles.sql')] },
-    { name: 'passwords and grants', command: 'psql', args: psql, input: ROLE_SQL },
-    { name: 'migrate', command: 'node', args: [path.join(root, 'db/migrate.mjs')], env: { ATLAS_URL: migratorUrl(env) } },
+    { name: 'roles', command: 'psql', args: [...psql, '-f', path.join(root, 'db/roles.sql')], pass: [...BASICS, ...CONNECTION, 'PGUSER', 'PGPASSWORD'] },
+    { name: 'passwords and grants', command: 'psql', args: psql, input: ROLE_SQL, pass: [...BASICS, ...CONNECTION, 'PGUSER', 'PGPASSWORD', 'DB_APP_PASSWORD', 'DB_JIT_PASSWORD', 'DB_READONLY_PASSWORD', 'DB_MIGRATOR_PASSWORD'] },
+    { name: 'migrate', command: 'node', args: [path.join(root, 'db/migrate.mjs')], pass: BASICS, env: { ATLAS_URL: migratorUrl(env) } },
   ];
 }
 
@@ -76,10 +83,15 @@ export function run(env = process.env, exec = defaultExec, root = ROOT) {
   return results;
 }
 
+/** The child's environment: only what the step names, plus its own additions. */
+export function childEnv(step, env) {
+  return { ...Object.fromEntries(step.pass.filter((k) => env[k] !== undefined).map((k) => [k, env[k]])), ...(step.env ?? {}) };
+}
+
 function defaultExec(step, env) {
   return spawnSync(step.command, step.args, {
     cwd: ROOT,
-    env: { ...env, ...(step.env ?? {}) },
+    env: childEnv(step, env),
     input: step.input,
     stdio: [step.input === undefined ? 'ignore' : 'pipe', 'inherit', 'inherit'],
   });

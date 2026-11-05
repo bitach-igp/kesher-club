@@ -251,6 +251,7 @@ module "migrate" {
   source                = "../../modules/migrate-task"
   name                  = "${local.name}-migrate"
   vpc_id                = module.network.vpc_id
+  subnet_ids            = module.network.private_subnet_ids
   vpc_cidr              = module.network.vpc_cidr
   image                 = "${var.ecr_registry}/kesher/migrate:${var.image_tag}"
   rds_security_group_id = module.rds.security_group_id

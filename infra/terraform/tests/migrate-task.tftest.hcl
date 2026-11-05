@@ -11,6 +11,7 @@ mock_provider "aws" {
 variables {
   name                  = "kesher-test-migrate"
   vpc_id                = "vpc-00000000000000000"
+  subnet_ids            = ["subnet-0000000000000000a", "subnet-0000000000000000b"]
   vpc_cidr              = "10.10.0.0/16"
   image                 = "111111111111.dkr.ecr.us-east-1.amazonaws.com/kesher/migrate:test"
   rds_security_group_id = "sg-0000000000000000a"
@@ -69,5 +70,15 @@ run "migrate_task" {
   assert {
     condition     = aws_cloudwatch_log_group.this.kms_key_id == var.log_kms_key_arn
     error_message = "the log group is CMK-encrypted"
+  }
+
+  assert {
+    condition     = output.network_configuration.assign_public_ip == false && output.network_configuration.subnets == var.subnet_ids
+    error_message = "the task is run in the private subnets with no public IP"
+  }
+
+  assert {
+    condition     = toset(flatten([for s in data.aws_iam_policy_document.secrets.statement : s.resources if contains(s.actions, "secretsmanager:GetSecretValue")])) == toset(concat([var.master_secret_arn], values(var.secrets)))
+    error_message = "the execution role reads exactly the master secret and the four passwords"
   }
 }
