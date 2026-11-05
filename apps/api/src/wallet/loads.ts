@@ -377,9 +377,9 @@ export class LoadService implements LoadActivities {
   }
 
   /** Loads the vendor has not finished: submitted, or held for the bank's hold days (a return can come during it), longer than `olderThanMs` ago. The worker asks the vendor about them. */
-  /** True once a case exists for a held load the vendor does not know. */
+  /** True while a case people have not decided exists for a held load the vendor does not know; a resolved or dismissed one lets it be asked again. */
   async unknownLoadOpen(transferId: string): Promise<boolean> {
-    return Boolean((await this.d.db.query(`select 1 from ops.case where dedupe_key = $1`, [unknownLoadKey(transferId)])).rows[0]);
+    return Boolean((await this.d.db.query(`select 1 from ops.case where dedupe_key = $1 and status in ('open', 'investigating')`, [unknownLoadKey(transferId)])).rows[0]);
   }
 
   private async openUnknownLoadCase(transfer: Transfer, loadId: string, now: Date): Promise<void> {

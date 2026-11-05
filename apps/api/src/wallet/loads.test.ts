@@ -476,6 +476,7 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     it('a held load the vendor does not know opens one case and is not asked again', async () => {
       expect((await achLoad('load-unknown-1')).status).toBe(201);
       const t = (await app.services.transfers.byKey('load-unknown-1'))!;
+      const beforeAvailable = await available();
       const ask = vi.spyOn(host.simulators.funding, 'getLoad').mockRejectedValue(new FundingError('UNKNOWN_LOAD', 'no such load'));
       expect((await app.services.loads.release(t, NOW)).state).toBe('pending_hold');
       expect((await app.services.loads.release(t, NOW)).state).toBe('pending_hold');
@@ -483,6 +484,12 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
       ask.mockRestore();
       expect((await db.query(`select 1 from ops.case where kind = 'load_unknown' and dedupe_key = $1`, [`load-unknown:${t.id}`])).rows).toHaveLength(1);
       expect(await app.services.loads.unknownLoadOpen(t.id)).toBe(true);
+      // Nothing was credited while the case was open; once people resolve it the vendor is asked again and the load goes on.
+      expect(await available()).toBe(beforeAvailable);
+      await db.query(`update ops.case set status = 'resolved' where dedupe_key = $1`, [`load-unknown:${t.id}`]);
+      expect(await app.services.loads.unknownLoadOpen(t.id)).toBe(false);
+      expect((await app.services.loads.release(t, NOW)).state).toBe('settled');
+      expect(await available()).toBe(beforeAvailable + 3_000n);
     });
   });
 
