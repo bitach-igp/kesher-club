@@ -3,7 +3,7 @@
 // already there"; a retry keeps its key; balances render from bigint per locale; refusals read as sentences.
 import { describe, expect, it } from 'vitest';
 import { COPY } from './i18n.ts';
-import { attemptFor, balanceText, cardKey, errorKey, filterFrom, nextHref, placedText, toggle, toQuery, type RosterMember } from './roster.ts';
+import { attemptFor, balanceText, cardKey, cardTone, errorKey, filterFrom, nextHref, placedText, statusTone, toggle, toQuery, type RosterMember } from './roster.ts';
 
 const COHORT = '0190a0a0-0000-7000-8000-00000000c0c0';
 const avi: RosterMember = { id: '0190a0a0-0000-7000-8000-000000000a01', name: 'Avi', status: 'active', card: 'frozen', balances: [{ minor: '9007199254740993', currency: 'ILS' }, { minor: '0', currency: 'USD' }], planCode: 'ohr-club' };
@@ -45,3 +45,12 @@ describe('T-0639 I04 roster', () => {
     for (const code of ['NOT_FOUND', 'VALIDATION_FAILED', 'FORBIDDEN', 'INTERNAL']) for (const locale of ['en', 'he'] as const) expect(COPY[locale][errorKey(code)]).toMatch(/\.$/);
   });
 });
+
+describe('T-0676 roster status pills', () => {
+  it('every member status and card state has a tone, and the tone is never the only signal (the word stays)', () => {
+    expect(['invited', 'verified', 'active', 'declined', 'removed'].map((x) => statusTone(x as RosterMember['status']))).toEqual(['warn', 'ok', 'ok', 'bad', 'neutral']);
+    expect(['none', 'inactive', 'active', 'frozen'].map((x) => cardTone(x as RosterMember['card']))).toEqual(['neutral', 'warn', 'ok', 'bad']);
+    for (const k of ['roster.status.invited', 'roster.status.declined', 'roster.card.frozen', 'roster.card.none']) expect(COPY.he[k as keyof typeof COPY.en]).toBeTruthy();
+  });
+});
+
