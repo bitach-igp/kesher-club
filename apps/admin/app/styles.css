@@ -33,7 +33,7 @@ th, td { text-align: start; padding: var(--space-2) 10px; border-bottom: var(--b
 th { color: var(--color-text-secondary); font-weight: var(--font-weight-semibold); font-size: var(--typography-micro-font-size); text-transform: uppercase; }
 
 /* Tags (status pills): a word, never colour alone */
-.tag { display: inline-block; padding: 2px var(--space-2); border-radius: var(--radius-full); font-size: var(--typography-micro-font-size); background: var(--color-bg-sunken); }
+.tag { display: inline-block; padding: 2px var(--space-2); border-radius: var(--radius-full); font-size: var(--typography-caption-font-size); background: var(--color-bg-sunken); }
 .tag.red, .tag.breached, .tag.critical, .tag.high { background: var(--color-status-danger-subtle); color: var(--color-status-danger); }
 .tag.amber, .tag.medium, .tag.degraded, .tag.blocked { background: var(--color-status-warning-subtle); color: var(--color-status-warning); }
 .tag.green, .tag.live, .tag.closed, .tag.ready { background: var(--color-status-success-subtle); color: var(--color-status-success); }
