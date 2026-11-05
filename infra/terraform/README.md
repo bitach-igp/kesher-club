@@ -65,9 +65,10 @@ replica, web apps on CloudFront. Staging is the same shape on db.t4g.large, one 
    ```
    Later applies (and all CI applies) use the default `kesher-deploy`, which the CI role may
    assume. Prod additionally takes `break_glass_principal_arns`.
-5. Set secret values. Terraform creates only the containers under `kesher/<env>/…`; load each with
-   `aws secretsmanager put-secret-value` from the vendor dashboard. `tfvars` never hold secrets
-   and the RDS master password is generated and rotated by RDS itself.
+5. Set secret values. Terraform creates only the containers under `kesher/<env>/…`. Generate and load the
+   key material with `node tools/secrets/index.mjs --env <env> --region <region>` and load each vendor secret
+   from its dashboard; `docs/setup/secrets.md` lists every container, its source and its rotation. `tfvars` never
+   hold secrets and the RDS master password is generated and rotated by RDS itself.
 6. Client VPN: create the Identity Center application for the VPN, paste its SAML metadata into
    `identity_center_saml_metadata`, re-apply. The admin app is reachable only through the VPN
    (internal ALB in private subnets).
