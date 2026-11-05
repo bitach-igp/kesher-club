@@ -79,6 +79,25 @@ export function statusBanner(card: Card): { key: CopyKey; tone: 'danger' | 'info
   return undefined;
 }
 
+/**
+ * What the card illustration shows (T-0674): the type, the last four digits and nothing else (no number, expiry or code ever
+ * reaches this screen), dimmed with a label over it while the card is frozen, not yet activated or closed.
+ */
+export interface CardArt {
+  state: Card['status'];
+  typeKey: CopyKey;
+  masked: string;
+  dimmed: boolean;
+  overlayKey?: CopyKey;
+}
+export function cardArt(card: Card): CardArt {
+  const base = { state: card.status, typeKey: `card.type.${card.type}` as CopyKey, masked: `•••• ${card.last4}` };
+  if (card.status === 'frozen') return { ...base, dimmed: true, overlayKey: 'card.art.frozen' };
+  if (card.status === 'inactive') return { ...base, dimmed: true, overlayKey: 'card.status.inactive' };
+  if (card.status === 'closed') return { ...base, dimmed: true, overlayKey: 'card.status.closed' };
+  return { ...base, dimmed: false };
+}
+
 export function shippingView(card: Card): ShippingView | undefined {
   if (card.type !== 'physical') return undefined;
   return { shipped: Boolean(card.shipping?.trackingUrl), trackingUrl: card.shipping?.trackingUrl, activated: card.status !== 'inactive', pinSet: card.shipping?.pinSet ?? false };

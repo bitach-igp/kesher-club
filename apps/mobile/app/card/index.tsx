@@ -2,6 +2,7 @@
 // details (through the processor's component) and physical ordering or activation. Nothing on this
 // screen is card data.
 import { useEffect, useMemo } from 'react';
+import { StyleSheet, View } from 'react-native';
 import { uuidv7 } from '@kesher/domain';
 import { useApi } from '../../src/api.ts';
 import { Badge, Banner, Button, Card, EmptyState, ListRow, Screen, Skeleton, Txt } from '../../src/components/index.ts';
@@ -9,7 +10,8 @@ import { useDevice } from '../../src/device.ts';
 import { t, useLocale } from '../../src/i18n.ts';
 import { useStore } from '../../src/model.ts';
 import { useRouter } from '../../src/navigation.ts';
-import { createCardModel, shippingView, statusBanner, type CardModel } from './card.model.ts';
+import { useTheme } from '../../src/theme.ts';
+import { cardArt, createCardModel, shippingView, statusBanner, type CardModel } from './card.model.ts';
 
 export function useCardModel(): CardModel {
   const api = useApi();
@@ -63,6 +65,7 @@ export function CardHomeView({ model }: { model: CardModel }) {
       {s.error ? <Banner tone="danger" body={t(s.error, locale)} /> : null}
       {s.notice ? <Banner tone="success" body={t(s.notice, locale)} /> : null}
       {banner ? <Banner tone={banner.tone} body={t(banner.key, locale)} testID={`card-banner-${card.status}`} /> : null}
+      <CardArtView card={card} />
       <Card>
         <ListRow title={t(`card.status.${card.status}`, locale)} trailing={card.last4} />
         {shipping?.shipped && !shipping.activated ? <ListRow title={t('card.physical.ordered', locale)} {...(shipping.trackingUrl ? { subtitle: shipping.trackingUrl } : {})} /> : null}
@@ -95,3 +98,38 @@ export function CardHomeView({ model }: { model: CardModel }) {
     </Screen>
   );
 }
+
+/**
+ * The card illustration: navy face, the type and last four; while frozen, not activated or closed the face turns to the muted text colour
+ * (never `opacity`, which would dim the text too) and a status chip sits on it. White on the muted face is 6.1:1 light, and the dark
+ * theme's onAction on it 8.1:1.
+ */
+function CardArtView({ card }: { card: Parameters<typeof cardArt>[0] }) {
+  const th = useTheme();
+  const locale = useLocale();
+  const art = cardArt(card);
+  return (
+    <View
+      testID="card-art"
+      accessible
+      accessibilityLabel={`${t(art.typeKey, locale)}. ${t('card.ending', locale, { last4: card.last4 })}${art.overlayKey ? `. ${t(art.overlayKey, locale)}` : ''}`}
+      style={[styles.art, { backgroundColor: art.dimmed ? th.color.text.secondary : th.color.action.primary, borderRadius: th.radius.card, padding: th.space[5], gap: th.space[6] }]}
+    >
+      <Txt variant="caption" tone="onAction">
+        {t(art.typeKey, locale)}
+      </Txt>
+      <Txt variant="title2" tone="onAction" tabular>
+        {art.masked}
+      </Txt>
+      {art.overlayKey ? (
+        <View style={[styles.overlay, { backgroundColor: th.color.bg.surface, borderRadius: th.radius.sm, paddingHorizontal: th.space[2] }]} testID="card-art-overlay">
+          <Txt variant="micro" tone="primary">
+            {t(art.overlayKey, locale)}
+          </Txt>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({ art: { alignSelf: 'stretch' }, overlay: { alignSelf: 'flex-start' } });
