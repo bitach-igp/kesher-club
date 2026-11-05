@@ -69,6 +69,7 @@
 | [T-0310](T-0310.md) | BIL | The funder's memberships, and cancelling one in two taps | REQ-BIL-004 | 14 |
 | [T-0311](T-0311.md) | BIL | P13 billing in funder mode | REQ-BIL-004 | 14 |
 | [T-0312](T-0312.md) | BIL | Fix: creating a membership needs step-up, the flag and the member's consent | REQ-BIL-002, REQ-BIL-003 | fix |
+| [T-0313](T-0313.md) | BIL | Fix: one non-cancelled membership per member, enforced by the database | REQ-BIL-002, REQ-BIL-003 | fix |
 | [T-0401](T-0401.md) | CRD | KYC sessions and tiers over KycPort (simulator) | — | 4 |
 | [T-0402](T-0402.md) | CRD | Virtual card issue within 60 s of T2 approval; details token only | REQ-CRD-001, REQ-CRD-002 | 5 |
 | [T-0403](T-0403.md) | CRD | JIT authorisation decision, fail closed, p99 < 300 ms | REQ-CRD-003 | 5 |
@@ -127,6 +128,13 @@
 | [T-0544](T-0544.md) | LED | Fix: balance and limit checks hold a per-wallet lock, real-Postgres concurrency test | REQ-WAL-001, REQ-PAY-002, REQ-CRD-003 | fix |
 | [T-0545](T-0545.md) | PO | Fix: payout approval thresholds, no orphaned member payouts, no splitting | REQ-PO-001, REQ-INS-020 | fix |
 | [T-0546](T-0546.md) | FX | Fix: FX rate sanity bound and expiry; conversions reserve before the vendor call | REQ-FX-001, REQ-FX-003, REQ-FX-004 | fix |
+| [T-0547](T-0547.md) | WAL | Fix: a fail racing a hold leaves no hold journal; UNKNOWN_LOAD stops stalling | REQ-WAL-003, REQ-LED-004 | fix |
+| [T-0548](T-0548.md) | ESIM | Fix: a stuck add-on order is charged on replay; the missing tests | REQ-ESIM-001, REQ-WAL-001 | fix |
+| [T-0549](T-0549.md) | PO | Fix: payout reserve hardening and one place for approval expiry | REQ-PO-001, REQ-WAL-001 | fix |
+| [T-0550](T-0550.md) | PO | Fix: institution payouts reserve their money and their approvals expire | REQ-PO-001, REQ-INS-020 | fix |
+| [T-0551](T-0551.md) | FX | Fix: void-stale reports failed only; deviation case reopens; one 24 h constant | REQ-FX-001, REQ-FX-003, REQ-FX-004 | fix |
+| [T-0552](T-0552.md) | LED | Fix: reversals carry the transfer and the original effective time | REQ-LED-001, REQ-LED-004 | fix |
+| [T-0553](T-0553.md) | PO | Fix: stranded payouts, test independence and the provider-change case | REQ-PO-002 | fix |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
 | [T-0603](T-0603.md) | INS | RLS + consent grant | REQ-INS-005 | 8 |
