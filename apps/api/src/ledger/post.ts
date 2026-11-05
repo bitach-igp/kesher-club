@@ -137,7 +137,8 @@ export class PostgresLedger {
 
   /**
    * Reverses exactly once by posting the negated postings (invariant 4). Idempotent by key. The reversal belongs to the original's transfer
-   * (so it shows with it) and takes the original's effective time unless the caller names one (T-0552).
+   * (so it shows with it). It is dated when it is posted, not when the original was: statements, exports and history group by effective
+   * time, and a correction must not rewrite a month already sent. A caller that needs another date names it (T-0552).
    */
   async reverse(journalId: string, idempotencyKey: string, opts: { effectiveAt?: Date } = {}): Promise<PostedJournal> {
     const target = await this.findById(journalId);
@@ -147,7 +148,7 @@ export class PostgresLedger {
       kind: 'reversal',
       reversesId: journalId,
       ...(target.transferId ? { transferId: target.transferId } : {}),
-      effectiveAt: opts.effectiveAt ?? new Date(target.effectiveAt),
+      ...(opts.effectiveAt ? { effectiveAt: opts.effectiveAt } : {}),
       postings: target.postings.map((p) => ({ ...p, amountMinor: -p.amountMinor })),
     });
   }
