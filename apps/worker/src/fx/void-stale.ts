@@ -25,6 +25,7 @@ export class VoidStaleConversionsJob {
   async run(): Promise<VoidStaleReport> {
     const now = this.clock();
     const voided = await this.fx.voidStale(now);
-    return { ranAt: now.toISOString(), voided: voided.map((t) => t.id) };
+    // `voidStale` settles a conversion whose settle journal had already posted; only the ones it failed are voided.
+    return { ranAt: now.toISOString(), voided: voided.filter((t) => t.state === 'failed').map((t) => t.id) };
   }
 }

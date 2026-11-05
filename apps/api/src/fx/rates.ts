@@ -128,8 +128,8 @@ export class RateService {
   async current(pair: RatePair, now: Date): Promise<ClubRate | undefined> {
     const r = await this.db.query<Row>(
       `select * from ops.fx_rate where pair = $1 and status = 'active' and (valid_from is null or valid_from <= $2)
-         and (valid_until > $2 or (valid_until is null and not (source = 'manual' and coalesce(activated_at, valid_from, created_at) + interval '24 hours' <= $2)))`,
-      [pair, now],
+         and (valid_until > $2 or (valid_until is null and not (source = 'manual' and coalesce(activated_at, valid_from, created_at) + ($3::double precision * interval '1 millisecond') <= $2)))`,
+      [pair, now, MANUAL_RATE_MAX_MS],
     );
     return r.rows[0] ? toRate(r.rows[0]) : undefined;
   }
@@ -184,7 +184,7 @@ export class RateService {
       const movedBps = ((midScaled > out.old ? midScaled - out.old : out.old - midScaled) * 10_000n) / out.old;
       // Outside the transaction (it ended): the case must survive the throw. One case per active rate (a feed that keeps offering wrong values keeps one open case, carrying the latest offer).
       await this.db.query(
-        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'fx_rate_deviation', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do update set payload = excluded.payload`,
+        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'fx_rate_deviation', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do update set payload = excluded.payload, status = case when ops.case.status in ('resolved', 'dismissed') then 'open' else ops.case.status end`,
         [uuidv7(now), `fx_rate_deviation:${pair}:v${out.version}`, JSON.stringify({ pair, activeVersion: out.version, activeMid: formatRate(out.old), offeredMid: formatRate(midScaled), movedBps: movedBps.toString(), boundBps: MAX_RATE_MOVE_BPS.toString(), summary: `The feed offered ${pair} ${formatRate(midScaled)}, ${movedBps.toString()} bp from the active ${formatRate(out.old)}; refused` }), now],
       );
       throw new DomainError('VALIDATION_FAILED', `The feed rate for ${pair} moved ${movedBps.toString()} bp, more than the ${MAX_RATE_MOVE_BPS.toString()} bp allowed; the active rate is kept`, { pair });
