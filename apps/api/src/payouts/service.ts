@@ -340,7 +340,7 @@ export class PayoutService implements PayoutActivities {
    * A member's payout that waits (cooling off, or for an approver) moves its amount wallet → pending, so `available` drops at
    * once and the same money cannot be spent twice; the payout later posts from pending. Idempotent by key. When the purse no
    * longer holds the amount (it was spent before the reserve existed) the payout fails instead of overdrawing. An institution's
-   * payout is not reserved here (its balance is a single account: a follow-up).
+   * payout reserves master → `payout_reserve` instead (`reserveInstitution`).
    */
   async reserve(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined> {
     // The caller's read may be older than the payout: one that ended meanwhile (failed, cancelled, settled) takes no new reserve, which
@@ -375,7 +375,6 @@ export class PayoutService implements PayoutActivities {
     return undefined;
   }
 
-  /** Returns the reserve to the wallet, once (the reversal key is idempotent). Nothing to do when nothing was reserved. */
   /**
    * An institution's waiting payout sets its money aside, `institution_master` → `payout_reserve` (T-0550): the master is what is
    * available, so another payout, an allowance run or the credit check no longer sees it, while the institution still owns it (the
@@ -414,6 +413,7 @@ export class PayoutService implements PayoutActivities {
     return undefined;
   }
 
+  /** Returns the reserve to the wallet, once (the reversal key is idempotent). Nothing to do when nothing was reserved. */
   private async unreserve(transfer: Transfer): Promise<void> {
     const id = await this.journalIdOf(reserveKey(transfer.idempotencyKey));
     if (id) await this.d.ledger.reverse(id, unreserveKey(transfer.idempotencyKey));
