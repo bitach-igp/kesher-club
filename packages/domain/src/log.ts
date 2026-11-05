@@ -19,26 +19,35 @@ export type LogFields = Partial<
   Record<(typeof NUMBER_FIELDS)[number], number> & Record<(typeof TEXT_FIELDS)[number], string> & Record<(typeof ID_FIELDS)[number], string> & Record<(typeof MAP_FIELDS)[number], Record<string, string> | string>
 >;
 
-/** A request or trace id: hex, letters, digits and dashes only, 8 to 64 characters. Anything else is not echoed. */
-export const ID_SHAPE = /^[A-Za-z0-9-]{8,64}$/;
-const IDENTIFIER = /^[a-z][a-z0-9_.-]{0,63}$/i;
+/**
+ * A request or trace id: letters, digits and dashes, 8 to 40 characters (a UUID is 36), and not only digits and dashes. Anything
+ * else is not echoed.
+ */
+export const ID_SHAPE = /^(?![\d-]+$)[A-Za-z0-9-]{8,40}$/;
+const IDENTIFIER = /^[a-z][a-z0-9_-]{0,39}$/i;
 
 const REDACTIONS: readonly [RegExp, string][] = [
+  // key=value and key: value for the names that carry secrets, whatever the value looks like
+  [/\b(token|secret|password|passwd|pwd|api[_-]?key|apikey|authorization|auth|credential|otp|pin|cvv|cvc)(\s*[=:]\s*)(?:(?:Bearer|Basic|Token)\s+)?\S+/gi, '$1$2[redacted]'],
   [/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, '[token]'], // a JWT
   [/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '[token]'],
+  [/\b(?:sk|pk|rk|tok|whsec|xox[a-z])_[A-Za-z0-9_]{6,}/gi, '[secret]'], // vendor key prefixes
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[email]'],
-  [/\b(?:\d[ -]?){13,19}\b/g, '[pan]'], // a card number, with or without spaces
+  [/(?:\p{Nd}[ -]?){12,}\p{Nd}/gu, '[pan]'], // a card number with separators, in any script's digits
   [/\b[A-Fa-f0-9]{32,}\b/g, '[secret]'], // a hex key or digest
   [/\b[A-Za-z0-9+/_-]{32,}={0,2}(?![A-Za-z0-9])/g, '[secret]'], // a long base64 or token-like run
-  [/\b\d{4,8}\b/g, '[digits]'], // an OTP or a PIN, and any other short number in text
+  [/\p{Nd}{4,}/gu, '[digits]'], // an OTP, a PIN, a phone or national id: any run of four or more digits in text
 ];
 
-/** Scrubs free text. Applied to every string value except identifiers, which are validated instead. */
+/** Scrubs free text, then shortens it: a secret cannot straddle the cut. */
 export function scrub(text: string): string {
-  let out = text.length > 500 ? `${text.slice(0, 500)}…` : text;
+  let out = text;
   for (const [pattern, replacement] of REDACTIONS) out = out.replace(pattern, replacement);
-  return out;
+  return out.length > 500 ? `${out.slice(0, 500)}…` : out;
 }
+
+/** A name that is an identifier and survives the scrub unchanged; anything else is not echoed. */
+const safeName = (value: unknown): string => (typeof value === 'string' && IDENTIFIER.test(value) && scrub(value) === value ? value : '[invalid]');
 
 export interface Logger {
   (event: string, fields?: LogFields): void;
@@ -71,7 +80,7 @@ export function createLogger(options: LoggerOptions): Logger {
       level: levelFor(event, fields),
       service: options.service,
       ...(options.market ? { market: options.market } : {}),
-      event: IDENTIFIER.test(event) ? event : '[invalid]',
+      event: safeName(event),
     };
     const dropped: string[] = [];
     for (const [name, value] of Object.entries(fields as Record<string, unknown>)) {
@@ -85,12 +94,12 @@ export function createLogger(options: LoggerOptions): Logger {
       } else if ((MAP_FIELDS as readonly string[]).includes(name)) {
         const entries = typeof value === 'object' && value !== null ? Object.entries(value as Record<string, unknown>) : [];
         if (typeof value === 'string') line[name] = scrub(value);
-        else line[name] = Object.fromEntries(entries.map(([k, v]) => [IDENTIFIER.test(k) ? k : '[invalid]', typeof v === 'string' && IDENTIFIER.test(v) ? v : '[invalid]']));
+        else line[name] = Object.fromEntries(entries.map(([k, v]) => [safeName(k), safeName(v)]));
       } else {
         dropped.push(name);
       }
     }
-    if (dropped.length > 0) line['dropped'] = dropped.map((n) => (IDENTIFIER.test(n) ? n : '[invalid]'));
+    if (dropped.length > 0) line['dropped'] = dropped.map(safeName);
     write(JSON.stringify(line));
   };
   return Object.assign(logger, { service: options.service });

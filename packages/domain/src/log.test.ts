@@ -50,6 +50,13 @@ describe('createLogger', () => {
       'a'.repeat(40),
       'deadbeef'.repeat(8),
       'c2VjcmV0LWtleS1tYXRlcmlhbC10aGF0LWlzLWxvbmc=',
+      '972501234567', // a phone number: 12 digits
+      '123456789', // a 9-digit national id
+      '12345678901234567890123', // a 23-digit run
+      '４２４２４２４２４２４２４２４２', // fullwidth digits
+      '٤٢٤٢٤٢٤٢', // Arabic-Indic digits
+      'sk_live_51HxyzABCDEF',
+      'whsec_abcdef123456',
     ];
     for (const field of ['message', 'error', 'route', 'job', 'code', 'signal', 'mode', 'method'] as const) {
       for (const secret of secrets) {
@@ -57,9 +64,30 @@ describe('createLogger', () => {
         log('probe', { [field]: `before ${secret} after` });
         const out = lines.join();
         expect(out, `${field}: ${secret}`).not.toContain(secret);
-        expect(out, `${field}: ${secret}`).not.toMatch(/4242|dana\.levi|eyJhbG|abcdefghijklmnop|deadbeef|c2VjcmV0/);
+        expect(out, `${field}: ${secret}`).not.toMatch(/4242|dana\.levi|eyJhbG|abcdefghijklmnop|deadbeef|c2VjcmV0|9725012|123456789|４２|٤٢|sk_live|whsec_abc/);
       }
     }
+  });
+
+  it('key=value secrets are masked whatever the value looks like', () => {
+    for (const text of ['token=abc123XYZ', 'api_key=sk-short', 'password: hunter2', 'Authorization = Basic dXNlcjpwYXNz', 'otp=12']) {
+      const out = scrub(`failed with ${text} here`);
+      expect(out, text).not.toMatch(/abc123XYZ|sk-short|hunter2|dXNlcjpwYXNz|=\s*12\b/);
+      expect(out, text).toContain('[redacted]');
+    }
+  });
+
+  it('scrubs before it shortens: a secret straddling the cut leaves no fragment', () => {
+    const out = scrub(`${'x '.repeat(248)}4242424242424242 tail`);
+    expect(out).not.toMatch(/4242|42/);
+  });
+
+  it('a secret cannot hide in the event name, a dropped field name or the provider map', () => {
+    const { log, lines } = capture();
+    log('tok_live_abcdef123456');
+    log('request', { ...({ 'sk_live_51HxyzABCDEF': 1, 'whsec_abcdef123456': 2 } as object) });
+    log('listening', { providers: { 'sk_live_51HxyzABCDEF': 'whsec_abcdef123456', 'institution-banking': 'tok_live_abcdef123456' } });
+    expect(lines.join()).not.toMatch(/sk_live|whsec_|tok_live/);
   });
 
   it('echoes an identifier only in its strict shape', () => {
@@ -67,6 +95,9 @@ describe('createLogger', () => {
     log('request', { requestId: '0190f3c2-7a1b-7c3d-8e4f-0123456789ab', traceId: '4bf92f3577b34da6a3ce929d0e0e4736' });
     expect(last()).toMatchObject({ requestId: '0190f3c2-7a1b-7c3d-8e4f-0123456789ab', traceId: '4bf92f3577b34da6a3ce929d0e0e4736' });
     log('request', { requestId: 'a b; drop table', traceId: '4242 4242 4242 4242' });
+    expect(last()).toMatchObject({ requestId: '[invalid]', traceId: '[invalid]' });
+    // digits alone, and anything longer than a UUID, are not ids
+    log('request', { requestId: '4242424242424242', traceId: 'a'.repeat(41) });
     expect(last()).toMatchObject({ requestId: '[invalid]', traceId: '[invalid]' });
   });
 
@@ -93,7 +124,7 @@ describe('scrub', () => {
     expect(scrub('listening in 12 ms')).toBe('listening in 12 ms');
   });
 
-  it('masks any 4 to 8 digit number in text: an OTP cannot be told from another number, so numbers belong in the numeric fields', () => {
+  it('masks any run of four or more digits in text: an OTP cannot be told from another number, so numbers belong in the numeric fields', () => {
     expect(scrub('listening on port 3000')).toBe('listening on port [digits]');
   });
 });

@@ -78,7 +78,11 @@ export function createServer(app: App, log?: Logger): http.Server {
       } catch {
         // an unparsable URL is logged as unmatched
       }
-      log?.('request', { requestId, method, route, status, durationMs: Date.now() - startedAt });
+      try {
+        log?.('request', { requestId, method, route, status, durationMs: Date.now() - startedAt });
+      } catch {
+        // a logging failure never fails the response, which has already been sent
+      }
     };
     // The body is kept as the bytes that arrived: a signature is over them, and decoding them first would change them.
     const chunks: Buffer[] = [];
