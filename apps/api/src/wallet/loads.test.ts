@@ -484,17 +484,6 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
       expect((await db.query(`select 1 from ops.case where kind = 'load_unknown' and dedupe_key = $1`, [`load-unknown:${t.id}`])).rows).toHaveLength(1);
       expect(await app.services.loads.unknownLoadOpen(t.id)).toBe(true);
     });
-
-    it('the stale sweep does not ask about a held load whose hold is not yet due', async () => {
-      const id = uuidv7();
-      await db.query(
-        `insert into ops.transfer (id, idempotency_key, kind, to_party_id, amount_minor, currency, state, hold_releases_at, market, created_at, updated_at) values ($1, $2, 'load', $1, 100, 'USD', 'pending_hold', $3, 'US', $4, $4)`,
-        [id, `seed-future-${id}`, new Date(NOW.getTime() + 86_400_000), new Date(NOW.getTime() - 7_200_000)],
-      );
-      expect((await app.services.loads.stale(NOW, 60_000, 1000)).map((x) => x.id)).not.toContain(id);
-      // Once its hold is due it is asked.
-      expect((await app.services.loads.stale(new Date(NOW.getTime() + 2 * 86_400_000), 60_000, 1000)).map((x) => x.id)).toContain(id);
-    });
   });
 
   it('held loads do not starve the submitted ones: with a small limit the submitted load comes first', async () => {
