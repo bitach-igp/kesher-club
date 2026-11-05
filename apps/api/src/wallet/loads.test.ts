@@ -5,7 +5,7 @@
 // release job is tested in the worker). TST-WAL-006: a load names the purse it credits; into the other
 // currency it converts at the club rate, priced once, and a missing or stale rate refuses it before the
 // vendor is asked. Over the funding simulator and PGlite with a real passkey and step-up.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { FundingError, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
@@ -440,6 +440,57 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     const stale = (await app.services.loads.stale(NOW, 60_000, 1000)).map((t) => t.id);
     expect(stale).toContain(held);
     expect(stale).not.toContain(settled);
+  });
+
+  describe('a fail racing a hold, and a load the vendor does not know (T-0547)', () => {
+    const holds = async () => (await app.services.accounts.purses(member)).find((p) => p.currency === 'USD')!.holds.minor;
+    const reversals = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [`${holdKey(key)}:reversal`])).rows[0]!.n;
+    const achLoad = (key: string) => load({ method: 'ach', paymentMethodId: 'pm_bank', amount: { minor: '3000', currency: 'USD' } }, key);
+
+    it('a fail between the hold journal and the row moving to held reverses the journal; a fail before the journal posts is repaired by the hold itself', async () => {
+      // (b) The fail runs after the hold journal is posted and before the row says held: it sees `submitted` and must still reverse it.
+      const before = await holds();
+      const realApply = app.services.transfers.apply.bind(app.services.transfers);
+      const spy = vi.spyOn(app.services.transfers, 'apply').mockImplementation(async (id, event, now, extra) => {
+        if (event === 'hold') await app.services.loads.fail((await app.services.transfers.get(id))!, 'RETURNED', NOW);
+        return realApply(id, event, now, extra);
+      });
+      await achLoad('load-race-b-1');
+      spy.mockRestore();
+      expect((await app.services.transfers.byKey('load-race-b-1'))!.state).toBe('failed');
+      expect(await holds()).toBe(before);
+      expect(await reversals('load-race-b-1')).toBe(1);
+      // (a) The fail runs before the journal exists: nothing to reverse then, so the hold, finding the row failed, reverses its own journal.
+      const realPost = app.services.ledger.post.bind(app.services.ledger);
+      const post = vi.spyOn(app.services.ledger, 'post').mockImplementation(async (input) => {
+        if (input.idempotencyKey === holdKey('load-race-a-1')) await app.services.loads.fail((await app.services.transfers.byKey('load-race-a-1'))!, 'RETURNED', NOW);
+        return realPost(input);
+      });
+      await achLoad('load-race-a-1');
+      post.mockRestore();
+      expect((await app.services.transfers.byKey('load-race-a-1'))!.state).toBe('failed');
+      expect(await holds()).toBe(before);
+      expect(await reversals('load-race-a-1')).toBe(1);
+    });
+
+    it('a held load the vendor does not know opens one case and is not asked again', async () => {
+      expect((await achLoad('load-unknown-1')).status).toBe(201);
+      const t = (await app.services.transfers.byKey('load-unknown-1'))!;
+      const beforeAvailable = await available();
+      const ask = vi.spyOn(host.simulators.funding, 'getLoad').mockRejectedValue(new FundingError('UNKNOWN_LOAD', 'no such load'));
+      expect((await app.services.loads.release(t, NOW)).state).toBe('pending_hold');
+      expect((await app.services.loads.release(t, NOW)).state).toBe('pending_hold');
+      expect(ask).toHaveBeenCalledTimes(1);
+      ask.mockRestore();
+      expect((await db.query(`select 1 from ops.case where kind = 'load_unknown' and dedupe_key = $1`, [`load-unknown:${t.id}`])).rows).toHaveLength(1);
+      expect(await app.services.loads.unknownLoadOpen(t.id)).toBe(true);
+      // Nothing was credited while the case was open; once people resolve it the vendor is asked again and the load goes on.
+      expect(await available()).toBe(beforeAvailable);
+      await db.query(`update ops.case set status = 'resolved' where dedupe_key = $1`, [`load-unknown:${t.id}`]);
+      expect(await app.services.loads.unknownLoadOpen(t.id)).toBe(false);
+      expect((await app.services.loads.release(t, NOW)).state).toBe('settled');
+      expect(await available()).toBe(beforeAvailable + 3_000n);
+    });
   });
 
   it('held loads do not starve the submitted ones: with a small limit the submitted load comes first', async () => {

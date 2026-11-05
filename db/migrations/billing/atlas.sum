@@ -1,5 +1,6 @@
-h1:dONZHifNiD+IKezbSSI5/wKXCz+clPyirO4uZaeknDc=
+h1:cPaHnXCrpj/XkaiIa0irPLYvOMiFbEisVlzpsR2Wuco=
 0001_init.sql h1:ToqPB4YSXq1MqDySDHUZHtvA7ACUXoBUdTSEHsNC/X8=
 0002_plan_version_approval.sql h1:PT1ZB+DtXLdVtNNmaF9P/cHehVZpJ3hEUON75+NQqVI=
 0003_funder_invite.sql h1:RRKn7l+Dq+K0Z3yAiR/uCSmQHXuMZ4qMW2Cnng1+Hp4=
 0004_membership_cancel_at.sql h1:ZRT4MqhK9XUJE70vS/DsLQ3INeGceqF7v3OeG06P9gY=
+0005_one_membership_per_member.sql h1:tn6i1gFqtokeAR/y6yXGjM3KEX1L9ukkJmOHttUwVlY=
