@@ -99,7 +99,11 @@ export function CardHomeView({ model }: { model: CardModel }) {
   );
 }
 
-/** The card illustration: navy face, the type and last four, dimmed with the status label over it while frozen, not activated or closed. */
+/**
+ * The card illustration: navy face, the type and last four; while frozen, not activated or closed the face turns to the muted text colour
+ * (never `opacity`, which would dim the text too) and a status chip sits on it. White on the muted face is 6.1:1 light, and the dark
+ * theme's onAction on it 8.1:1.
+ */
 function CardArtView({ card }: { card: Parameters<typeof cardArt>[0] }) {
   const th = useTheme();
   const locale = useLocale();
@@ -109,7 +113,7 @@ function CardArtView({ card }: { card: Parameters<typeof cardArt>[0] }) {
       testID="card-art"
       accessible
       accessibilityLabel={`${t(art.typeKey, locale)}. ${t('card.ending', locale, { last4: card.last4 })}${art.overlayKey ? `. ${t(art.overlayKey, locale)}` : ''}`}
-      style={[styles.art, { backgroundColor: th.color.action.primary, borderRadius: th.radius.card, padding: th.space[5], gap: th.space[6], opacity: art.dimmed ? 0.55 : 1 }]}
+      style={[styles.art, { backgroundColor: art.dimmed ? th.color.text.secondary : th.color.action.primary, borderRadius: th.radius.card, padding: th.space[5], gap: th.space[6] }]}
     >
       <Txt variant="caption" tone="onAction">
         {t(art.typeKey, locale)}
@@ -129,4 +133,3 @@ function CardArtView({ card }: { card: Parameters<typeof cardArt>[0] }) {
 }
 
 const styles = StyleSheet.create({ art: { alignSelf: 'stretch' }, overlay: { alignSelf: 'flex-start' } });
-
