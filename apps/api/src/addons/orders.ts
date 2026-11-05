@@ -115,7 +115,8 @@ export class AddonOrderService {
   async create(input: { idempotencyKey: string; memberPartyId: string; membership?: MembershipRef | undefined; sku: string; quantity?: number; disclosuresAcknowledged?: boolean }, now: Date): Promise<AddonOrder> {
     const quantity = parseQuantity(input.quantity);
     const existing = await this.byKey(input.idempotencyKey);
-    if (existing) return this.sameRequest(existing, input.memberPartyId, input.sku, quantity);
+    // An order the key already made but that never got its charge (a crash between the row and the charge) is charged on the replay.
+    if (existing) return this.chargeIfCreated(this.sameRequest(existing, input.memberPartyId, input.sku, quantity), now);
     const item = await this.catalogueItem(input.sku);
     if (!item || !item.active) throw new DomainError('NOT_FOUND', 'Add-on not available');
     if (item.kind === 'insurance' && !input.disclosuresAcknowledged) throw new DomainError('VALIDATION_FAILED', 'Insurance disclosures must be acknowledged before payment (REQ-INSR-001)');
@@ -136,10 +137,14 @@ export class AddonOrderService {
         await enqueue(tx, 'addon_order', id, 'addon_order.created', { sku: item.sku, kind: item.kind, price: q.price, credit: q.credit });
       });
     } catch (e) {
-      if (isPgError(e, PG.UNIQUE_VIOLATION)) return this.sameRequest((await this.byKey(input.idempotencyKey))!, input.memberPartyId, input.sku, quantity);
+      if (isPgError(e, PG.UNIQUE_VIOLATION)) return this.chargeIfCreated(this.sameRequest((await this.byKey(input.idempotencyKey))!, input.memberPartyId, input.sku, quantity), now);
       throw e;
     }
     return this.charge(id, now);
+  }
+
+  private chargeIfCreated(order: AddonOrder, now: Date): Promise<AddonOrder> | AddonOrder {
+    return order.state === 'created' ? this.charge(order.id, now) : order;
   }
 
   /** A key names one request: the same member, sku and quantity. Anything else is another operation's key (409), never its order. */
@@ -174,7 +179,14 @@ export class AddonOrderService {
     if (postings.length >= 2) {
       journalId = (await this.ledger.post({ idempotencyKey: `addon:${o.id}:charge`, kind: 'addon', postings, metadata: { orderId: o.id, sku: o.sku, listPriceMinor: o.listPrice.minor.toString(), creditMinor: o.credit.minor.toString() } })).id;
     }
-    return this.transition(o.id, 'charged', now, journalId ? { chargeJournalId: journalId } : {});
+    try {
+      return await this.transition(o.id, 'charged', now, journalId ? { chargeJournalId: journalId } : {});
+    } catch (e) {
+      // Two callers charging the same order: the journal is keyed by the order, so the second finds it already charged.
+      const now2 = await this.must(orderId);
+      if (e instanceof DomainError && e.code === 'IDEMPOTENCY_CONFLICT' && now2.state !== 'created') return now2;
+      throw e;
+    }
   }
 
   async transition(orderId: string, to: OrderState, now: Date, extra: { chargeJournalId?: string; refundJournalId?: string; fulfilment?: Record<string, unknown>; failureCode?: string; reason?: string } = {}): Promise<AddonOrder> {
