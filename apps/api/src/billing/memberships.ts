@@ -2,6 +2,7 @@
 // ops.external_ref) and pins the plan version. Status mirrors the vendor via webhooks (T-0303).
 // T-0310 (REQ-BIL-004): the funder lists the memberships they pay for and cancels one at the end of the paid period;
 // until then it stays active and reads as ending on `cancelAt`, and the member keeps every unit of money loaded.
+import { createHash } from 'node:crypto';
 import { DomainError, uuidv7, type Currency, type Money } from '@kesher/domain';
 import { BillingError, type BillingPort } from '@kesher/ports';
 import { isPgError, PG, type Database } from '../db.ts';
@@ -54,6 +55,14 @@ export class MembershipService {
     // A key is its funder's: another caller reusing it is a conflict, never the first caller's membership handed back.
     if (existing && existing.funderPartyId !== input.funderPartyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'That idempotency key was used for another request');
     if (existing) return existing;
+    // A key whose subscription was ended because the member was taken is never sent to the vendor again: the vendor would replay the ended one.
+    if ((await this.db.query(`select 1 from ops.external_ref where entity_type = 'membership_lost_key' and external_id = $1`, [input.idempotencyKey])).rows[0]) {
+      throw new DomainError('IDEMPOTENCY_CONFLICT', 'That request was refused because the member already had a membership; use a new Idempotency-Key');
+    }
+    // Before any vendor call, so the common conflict never starts a subscription (the index below settles the true race).
+    if ((await this.db.query(`select 1 from billing.membership where member_party_id = $1 and status <> 'cancelled' limit 1`, [input.memberPartyId])).rows[0]) {
+      throw new DomainError('IDEMPOTENCY_CONFLICT', 'That member already has a membership');
+    }
     const pinned = input.planVersion === undefined ? undefined : await this.plans.get(input.planCode, input.planVersion);
     if (input.planVersion !== undefined && !pinned) throw new DomainError('NOT_FOUND', `No plan version ${input.planCode} v${input.planVersion}`);
     const plan = pinned ?? (await this.plans.current(input.planCode, now));
@@ -84,7 +93,7 @@ export class MembershipService {
         // made above is ended at once, so no recurring charge is left, and the caller is told the member is taken.
         const winner = await this.byKey(input.idempotencyKey);
         if (winner) return winner;
-        await this.billing.cancel(subscriptionId, 'now', `${input.idempotencyKey}:lost`).catch(() => undefined);
+        await this.endLostSubscription(input.idempotencyKey, input.memberPartyId, subscriptionId, now);
         throw new DomainError('IDEMPOTENCY_CONFLICT', 'That member already has a membership');
       }
       throw e;
@@ -112,9 +121,23 @@ export class MembershipService {
       if (e instanceof DomainError && e.code === 'NOT_FOUND') throw new DomainError('VALIDATION_FAILED', `${input.planCode} is not a plan on offer`);
       throw e;
     }
-    const held = await this.db.query(`select 1 from billing.membership where member_party_id = $1 and status <> 'cancelled' limit 1`, [input.memberPartyId]);
-    if (held.rows[0]) throw new DomainError('IDEMPOTENCY_CONFLICT', 'That member already has a membership');
     return this.create({ idempotencyKey: input.idempotencyKey, memberPartyId: input.memberPartyId, funderPartyId: input.callerPartyId, funderEmail: input.funderEmail, planCode: input.planCode, ...(input.termMonths !== undefined ? { termMonths: input.termMonths } : {}) }, now);
+  }
+
+  /**
+   * The subscription a lost race made is ended at once. The key is remembered (so a retry is refused rather than replaying the ended
+   * subscription) and, if the vendor could not be told, a case is opened: that subscription would keep billing with no membership.
+   */
+  private async endLostSubscription(key: string, memberPartyId: string, subscriptionId: string, now: Date): Promise<void> {
+    await this.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('membership_lost_key', $1, 'stripe', $2) on conflict do nothing`, [uuidv7(now), key]);
+    try {
+      await this.billing.cancel(subscriptionId, 'now', `lost:${createHash('sha256').update(key).digest('hex').slice(0, 40)}`);
+    } catch (e) {
+      await this.db.query(
+        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'membership_orphan_subscription', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
+        [uuidv7(now), `membership-orphan:${subscriptionId}`, { memberPartyId, subscriptionId, reason: e instanceof Error ? e.message.slice(0, 200) : 'cancel failed' }, now],
+      );
+    }
   }
 
   async get(id: string): Promise<Membership | undefined> {

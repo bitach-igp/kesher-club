@@ -53,7 +53,7 @@ beforeAll(async () => {
   const offHost = new SimulatorHost();
   off = createApp({ ...base, registry: offHost.registry, flags: new StaticFlags(undefined, { 'billing.stripe': false }) });
   let n = 0;
-  for (const who of ['ben', 'dana', 'tal', 'eli', 'self', 'gil']) people[who] = await person(app, `+14155550${100 + n++}`);
+  for (const who of ['ben', 'dana', 'tal', 'eli', 'self', 'gil', 'zed']) people[who] = await person(app, `+14155550${100 + n++}`);
   people['offBen'] = await person(off, '+14155550199');
   await app.services.plans.ensurePlan('demo-club-us', 'Demo Club US');
   await app.services.plans.createVersion({ planCode: 'demo-club-us', price: money(4_900n, 'USD'), termMonths: 10, entitlements: {}, effectiveFrom: new Date('2026-01-01T00:00:00Z') });
@@ -126,22 +126,46 @@ describe('POST /memberships (T-0312)', () => {
   });
 });
 describe('the database refuses a second open membership for a member (T-0313)', () => {
-  it('two creates for one member under different keys: one membership, the second\'s subscription ended at once; a cancelled one does not block a new start', async () => {
+  it('a second create for a member who holds one is refused before the vendor is called; a cancelled one does not block a new start', async () => {
     const member = people['tal']!.partyId;
     const funder = people['ben']!.partyId;
     const make = (key: string) => app.services.memberships.create({ idempotencyKey: key, memberPartyId: member, funderPartyId: funder, funderEmail: 'ben@example.com', planCode: 'demo-club-us' }, NOW);
-    const cancel = vi.spyOn(billing, 'cancel');
+    const create = vi.spyOn(billing, 'createSubscription');
     const first = await make('race-key-0001');
     await expect(make('race-key-0002')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
     expect(await memberships(member)).toBe(1);
-    expect(cancel).toHaveBeenCalledTimes(1);
-    expect(cancel.mock.calls[0]![1]).toBe('now');
+    expect(create).toHaveBeenCalledTimes(1);
     // The same key repeated is the same membership, not a conflict.
     expect((await make('race-key-0001')).id).toBe(first.id);
-    cancel.mockRestore();
+    create.mockRestore();
     await app.services.memberships.setStatus(first.id, 'cancelled', NOW);
     expect((await make('race-key-0003')).id).not.toBe(first.id);
     expect(await memberships(member)).toBe(2);
+  });
+  it('a lost race: the subscription it made is ended, its key is refused afterwards (no replay of the ended one), and a cancel that fails opens a case', async () => {
+    const member = people['zed']!.partyId;
+    const funder = people['ben']!.partyId;
+    const make = (key: string) => app.services.memberships.create({ idempotencyKey: key, memberPartyId: member, funderPartyId: funder, funderEmail: 'ben@example.com', planCode: 'demo-club-us' }, NOW);
+    // The pre-check passed; another request then wins the member while this one is at the vendor: the index settles it.
+    const real = billing.createSubscription.bind(billing);
+    const create = vi.spyOn(billing, 'createSubscription').mockImplementationOnce(async (...args) => {
+      await make('winner-key-0001');
+      return real(...args);
+    });
+    const cancel = vi.spyOn(billing, 'cancel').mockRejectedValueOnce(new Error('vendor down'));
+    await expect(make('lost-key-0001')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel.mock.calls[0]![2].length).toBeLessThanOrEqual(128);
+    expect(await memberships(member)).toBe(1);
+    expect((await db.query(`select 1 from ops.case where kind = 'membership_orphan_subscription'`)).rows).toHaveLength(1);
+    // The winner ends; the lost key is still refused, and the vendor is not asked (it would replay the ended subscription).
+    const winner = (await app.services.memberships.byKey('winner-key-0001'))!;
+    await app.services.memberships.setStatus(winner.id, 'cancelled', NOW);
+    create.mockClear();
+    await expect(make('lost-key-0001')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(create).not.toHaveBeenCalled();
+    create.mockRestore();
+    cancel.mockRestore();
   });
 });
 
