@@ -3,7 +3,7 @@
 // is scheduled +24 h in cooling_off with nothing moved; amounts over the two-person threshold wait in
 // awaiting_second_approval; a settled webhook settles once; a failed webhook reverses the journal once
 // and queues a push to the payer.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type NotifySimulator, type PayoutSimulator } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
@@ -76,6 +76,9 @@ beforeAll(async () => {
   await runLoad(s.loads, { payerPartyId: member, memberPartyId: member, method: 'card', amount: money(2_000_000n, 'ILS'), paymentMethodId: 'pm_ok' }, 'po-fund', now);
 }, 60_000);
 afterAll(async () => db.close());
+afterEach(() => vi.restoreAllMocks());
+/** Engine-level tests need a member payout a second approver must decide, which a request no longer lets in (T-0545); they skip that one refusal. */
+const allowBigMemberPayouts = () => vi.spyOn(app.services.payouts as unknown as { refuseUnapprovable: () => void }, 'refuseUnapprovable').mockImplementation(() => undefined);
 
 describe('TST-PO-001: the payee', () => {
   it('refuses a bad checksum, a foreign account, a missing name and a name the bank does not know, before any money', async () => {
@@ -154,7 +157,17 @@ describe('TST-PO-002: cooling off, approval, settlement and reversal', () => {
     expect((await db.query<{ first_settled_at: string | null }>(`select first_settled_at from ops.payee where party_id = $1 and iban = $2`, [member, IL2])).rows[0]!.first_settled_at).toBeNull();
   });
 
+  it('a member payout over the two-person threshold is refused at request time with the limit, and nothing is reserved; at the threshold it goes through (T-0545, F42)', async () => {
+    const before = await available();
+    const r = await payout({ amount: { minor: '500001', currency: 'ILS' } }, 'po-over-1');
+    expect(r.status).toBe(422);
+    expect(r.body).toMatchObject({ code: 'VALIDATION_FAILED', limit: { minor: '500000', currency: 'ILS' } });
+    expect(await app.services.transfers.byKey('po-over-1')).toBeUndefined();
+    expect(await available()).toBe(before);
+  });
+
   it('over the two-person threshold the payout waits for a finance approver; approved, it submits; a forged webhook is refused', async () => {
+    allowBigMemberPayouts();
     const r = await payout({ amount: { minor: '600000', currency: 'ILS' } }, 'po-big-1');
     expect(r.body).toMatchObject({ state: 'awaiting_second_approval', amount: { minor: '600000', currency: 'ILS' } });
     const id = (r.body as PayoutView).id;
@@ -294,6 +307,7 @@ describe('T-0540: a payout that waits has its funds reserved (REQ-PO-001, REQ-WA
   });
 
   it('an approval that expires fails the payout and releases the reserve once; a payout that cooled off and was approved posts from the reserve', async () => {
+    allowBigMemberPayouts();
     const party = await newMember(900_000n);
     const key = `po-res-3-${party}`;
     expect(await ask(party, key, 600_000n)).toMatchObject({ state: 'cooling_off' });
@@ -334,6 +348,7 @@ describe('T-0540: a payout that waits has its funds reserved (REQ-PO-001, REQ-WA
   }
 
   it('a finance rejection of a member payout fails it and returns the reserve once, however many sweeps run', async () => {
+    allowBigMemberPayouts();
     const { party, key, id } = await waitingForApprover('rej');
     const req = (await app.services.approvals.find('payout', id))!;
     await app.services.approvals.decide(req.id, { partyId: FINANCE, role: 'finance' }, 'reject', now, 'not this one');
@@ -350,6 +365,7 @@ describe('T-0540: a payout that waits has its funds reserved (REQ-PO-001, REQ-WA
   });
 
   it('a decision attempted after the approval ran out is refused, and the payout still fails and returns its reserve', async () => {
+    allowBigMemberPayouts();
     const { party, key, id } = await waitingForApprover('late');
     advance(7 * 86_400_000 + 60_000);
     const req = (await app.services.approvals.find('payout', id))!;
@@ -362,6 +378,7 @@ describe('T-0540: a payout that waits has its funds reserved (REQ-PO-001, REQ-WA
   });
 
   it('an expiry marks the approval expired and tells the payer once', async () => {
+    allowBigMemberPayouts();
     const { key, id } = await waitingForApprover('exp');
     const before = notifySim().sent.length;
     advance(7 * 86_400_000 + 60_000);
