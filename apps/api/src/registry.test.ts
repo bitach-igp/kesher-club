@@ -33,14 +33,23 @@ describe('createRegistry (T-0021, T-0659)', () => {
     expect(providers).toEqual({ 'institution-banking': 'sim' });
   });
 
+  it('sandbox is the same registry under the staging label; live and anything else are refused (T-0040)', () => {
+    const { registry, simulators, providers } = createRegistry('sandbox');
+    expect(registry.resolve('institution-banking', 'US')).toBe(simulators.simulators['institution-banking']);
+    expect(providers).toEqual({ 'institution-banking': 'sim' });
+    expect(() => createRegistry('live')).toThrow(/not accepted/);
+  });
+
   it('sim with an empty override list is the same registry', () => {
     const { registry, simulators } = createRegistry('sim', systemClock(), {});
     expect(registry.resolve('institution-banking', 'US')).toBe(simulators.simulators['institution-banking']);
   });
 
-  it('still refuses any other global mode: the override is per port, not a new mode', () => {
-    expect(() => createRegistry('sandbox', systemClock(), { institutionBanking: override() })).toThrow(/provider mode "sandbox"/);
-    expect(() => createRegistry('live')).toThrow(/provider mode "live"/);
+  it('the override is per port: sandbox labels the environment and the override still binds only its port; live is refused', () => {
+    const { registry, simulators } = createRegistry('sandbox', systemClock(), { institutionBanking: override() });
+    expect(registry.bindingFor('institution-banking', 'US')).toMatchObject({ provider: 'crowded' });
+    expect(registry.resolve('esim', 'US')).toBe(simulators.simulators['esim']);
+    expect(() => createRegistry('live')).toThrow(/Provider mode "live"/);
   });
 
   it('crowded binds institution-banking, in both markets, to the Crowded adapter', () => {
