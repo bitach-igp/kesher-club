@@ -116,6 +116,33 @@ describe('PostgresLedger.post()', () => {
     expect((await ledger.reverse(j.id, 'rev-p2p-9')).id).toBe(r.id);
   });
 
+  it('a reversal belongs to the original\'s transfer and is dated when it is posted, not backdated, unless the caller names a time (T-0552)', async () => {
+    const transferId = uuidv7();
+    await db.query(
+      `insert into ops.transfer (id, idempotency_key, kind, to_party_id, amount_minor, currency, state, market, created_at, updated_at) values ($1, $2, 'p2p', $1, 500, 'USD', 'settled', 'IL', now(), now())`,
+      [transferId, `seed-rev-${transferId}`],
+    );
+    const when = new Date('2026-10-01T08:00:00Z');
+    const j = await ledger.post({ idempotencyKey: 'rev-t-1', kind: 'p2p', transferId, effectiveAt: when, postings: [p('wallet:dani', 500n), p('wallet:noa', -500n)] });
+    const r = await ledger.reverse(j.id, 'rev-t-1:reversal');
+    expect(r).toMatchObject({ kind: 'reversal', reversesId: j.id, transferId });
+    // Posted now: a statement for the original's month is not rewritten by the correction.
+    expect(r.effectiveAt).not.toBe(when.toISOString());
+    expect(Date.parse(r.effectiveAt)).toBeGreaterThan(when.getTime());
+    // A caller's own time wins; a replay answers the same reversal.
+    const later = new Date('2026-11-02T08:00:00Z');
+    const j2 = await ledger.post({ idempotencyKey: 'rev-t-2', kind: 'p2p', transferId, effectiveAt: when, postings: [p('wallet:dani', 40n), p('wallet:noa', -40n)] });
+    const r2 = await ledger.reverse(j2.id, 'rev-t-2:reversal', { effectiveAt: later });
+    expect(r2.effectiveAt).toBe(later.toISOString());
+    expect((await ledger.reverse(j2.id, 'rev-t-2:reversal')).id).toBe(r2.id);
+    const again = await ledger.reverse(j2.id, 'rev-t-2:reversal', { effectiveAt: new Date('2026-12-24T00:00:00Z') });
+    expect(again).toMatchObject({ id: r2.id, effectiveAt: later.toISOString() }); // a replay keeps the first time
+    // A journal with no transfer reverses with none.
+    const j3 = await ledger.post({ idempotencyKey: 'rev-t-3', kind: 'p2p', postings: [p('wallet:dani', 5n), p('wallet:noa', -5n)] });
+    expect((await ledger.reverse(j3.id, 'rev-t-3:reversal')).transferId).toBeUndefined();
+    expect((await ledger.totals()).get('USD')).toBe(0n);
+  });
+
   it('validates before touching the database: zero legs, single leg, unknown reversal target', async () => {
     await expect(ledger.post({ idempotencyKey: 'z', kind: 'x', postings: [p('wallet:noa', 0n), p('fee_income', 0n)] })).rejects.toBeInstanceOf(DomainError);
     await expect(ledger.post({ idempotencyKey: 's', kind: 'x', postings: [p('wallet:noa', 1n)] })).rejects.toMatchObject({ code: 'UNBALANCED' });
