@@ -13,7 +13,7 @@ import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { runLoad } from '../wallet/loads.ts';
-import { COOL_OFF_MS, runPayout, settleKey, type PayoutView } from './service.ts';
+import { COOL_OFF_MS, RETRY_AFTER_MS, runPayout, settleKey, type PayoutView } from './service.ts';
 
 const seedTransfer = (db: { query: (t: string, p?: readonly unknown[]) => Promise<unknown> }, f: { id: string; kind: string; state: string; market: string; at: Date }) =>
   db.query(
@@ -205,29 +205,59 @@ describe('TST-PO-002: cooling off, approval, settlement and reversal', () => {
   });
 
   it('a replay of a payout the rail never took asks the rail again (503, no second journal); thirty minutes on it fails and reverses once and the member is told (T-0541)', async () => {
-    const t = (await app.services.transfers.byKey('po-outage-1'))!;
+    // Its own outage payout, so the test does not lean on an earlier one.
+    expect((await payout({ payee: { iban: IL3, name: 'OUTAGE' }, amount: { minor: '50000', currency: 'ILS' } }, 'po-outage-2')).body).toMatchObject({ status: 503 });
+    const t = (await app.services.transfers.byKey('po-outage-2'))!;
     expect(t.state).toBe('submitted');
     const before = await available();
     const pushes = notifySim().sent.length;
     // Replayed with the same key while the rail is still down: the vendor is asked again, the answer is the outage, nothing doubles.
-    expect((await payout({ payee: { iban: IL3, name: 'OUTAGE' }, amount: { minor: '50000', currency: 'ILS' } }, 'po-outage-1')).body).toMatchObject({ status: 503, code: 'PROVIDER_UNAVAILABLE' });
-    expect(await journals(settleKey('po-outage-1'))).toBe(1);
+    expect((await payout({ payee: { iban: IL3, name: 'OUTAGE' }, amount: { minor: '50000', currency: 'ILS' } }, 'po-outage-2')).body).toMatchObject({ status: 503, code: 'PROVIDER_UNAVAILABLE' });
+    expect(await journals(settleKey('po-outage-2'))).toBe(1);
     expect(await available()).toBe(before);
     expect((await app.services.transfers.get(t.id))!.state).toBe('submitted');
     // Past thirty minutes with no vendor payout: failed, reversed once, the payer told.
     advance(31 * 60_000);
     await signInAgain();
-    const r = await payout({ payee: { iban: IL3, name: 'OUTAGE' }, amount: { minor: '50000', currency: 'ILS' } }, 'po-outage-1');
+    const r = await payout({ payee: { iban: IL3, name: 'OUTAGE' }, amount: { minor: '50000', currency: 'ILS' } }, 'po-outage-2');
     expect(r.body).toMatchObject({ id: t.id, state: 'reversed' });
     expect(await available()).toBe(before + 50_000n);
-    expect(await journals(`${settleKey('po-outage-1')}:reversal`)).toBe(1);
+    expect(await journals(`${settleKey('po-outage-2')}:reversal`)).toBe(1);
     expect(await app.services.transfers.get(t.id)).toMatchObject({ state: 'failed', failureCode: 'PROVIDER_UNAVAILABLE' });
     expect(notifySim().sent.slice(pushes).filter((n) => n.template === 'money.payout_failed')).toHaveLength(1);
     // Again: nothing more happens.
-    await payout({ payee: { iban: IL3, name: 'OUTAGE' }, amount: { minor: '50000', currency: 'ILS' } }, 'po-outage-1');
+    await payout({ payee: { iban: IL3, name: 'OUTAGE' }, amount: { minor: '50000', currency: 'ILS' } }, 'po-outage-2');
     expect(await available()).toBe(before + 50_000n);
-    expect(await journals(`${settleKey('po-outage-1')}:reversal`)).toBe(1);
+    expect(await journals(`${settleKey('po-outage-2')}:reversal`)).toBe(1);
     expect((await db.query<{ n: number }>(`select count(*)::int as n from ops.case where kind = 'payout_stranded' and payload->>'transferId' = $1`, [t.id])).rows[0]!.n).toBe(1);
+  });
+
+  it('the 30 minutes are counted from the first attempt to the second: at 29:59 the payout is still retried, at 30:00 it is failed and reversed (T-0541)', async () => {
+    expect((await payout({ payee: { iban: IL3, name: 'OUTAGE' }, amount: { minor: '50000', currency: 'ILS' } }, 'po-outage-3')).body).toMatchObject({ status: 503 });
+    const t = (await app.services.transfers.byKey('po-outage-3'))!;
+    const payouts = app.services.payouts;
+    advance(30 * 60_000 - 1_000);
+    await expect(runPayout(payouts, await payouts.inputFor(t), 'po-outage-3', now)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect((await app.services.transfers.get(t.id))!.state).toBe('submitted');
+    advance(1_000);
+    const out = await runPayout(payouts, await payouts.inputFor(t), 'po-outage-3', now);
+    expect(out.transfer.state).toBe('failed');
+    expect(await app.services.transfers.get(t.id)).toMatchObject({ state: 'failed', failureCode: 'PROVIDER_UNAVAILABLE' });
+    expect(await journals(`${settleKey('po-outage-3')}:reversal`)).toBe(1);
+  });
+
+  it('a payout the old rail took is at a rail whatever the current provider: it is not sent again, and the sweep does not list it', async () => {
+    await signInAgain();
+    expect((await payout({ payee: { iban: IL3, name: 'OUTAGE' }, amount: { minor: '50000', currency: 'ILS' } }, 'po-outage-4')).body).toMatchObject({ status: 503 });
+    const t = (await app.services.transfers.byKey('po-outage-4'))!;
+    const payouts = app.services.payouts;
+    expect(await payouts.atRail(t)).toBe(false);
+    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('transfer', $1, 'previous-rail', $2)`, [t.id, `old-po-${t.id}`]);
+    expect(await payouts.atRail(t)).toBe(true);
+    advance(RETRY_AFTER_MS + 1_000);
+    expect((await payouts.resumable(now)).map((x) => x.id)).not.toContain(t.id);
+    const out = await runPayout(payouts, await payouts.inputFor(t), 'po-outage-4', now);
+    expect(out.transfer.state).toBe('submitted');
   });
 
   it('the payout sweep resumes only this market\'s payouts, on this market\'s rail (T-0028)', async () => {
