@@ -9,7 +9,7 @@ import { money } from '@kesher/domain';
 import type { Account, CapabilityState, Card, CardsApi, KycApi, KycStatus, ServiceStatus, Transaction, WalletApi } from '../../src/api.ts';
 import { t } from '../../src/i18n.ts';
 import { memoryRouter } from '../../src/navigation.ts';
-import { createHomeModel, declinedCopy, filterTransactions, frozenCard, groupByDay, incidentBanner, kycCard, purseRows, quickActions, signedAmount } from './home.model.ts';
+import { createHomeModel, declinedCopy, filterTransactions, frozenCard, greeting, groupByDay, heroActions, heroOf, incidentBanner, kycCard, purseRows, quickActions, signedAmount } from './home.model.ts';
 
 const NOW = new Date('2026-11-10T09:00:00Z');
 const acc = (id: string, currency: 'ILS' | 'USD', available: string, holds = '0'): Account => ({ id, currency, settled: { minor: (BigInt(available) + BigInt(holds)).toString(), currency }, holds: { minor: holds, currency }, available: { minor: available, currency } });
@@ -252,3 +252,45 @@ describe('Your name on Home (T-0532)', () => {
     expect(down.store.get()).toMatchObject({ mode: 'ready', displayName: undefined });
   });
 });
+
+describe('the redesigned home: hero, four quick actions, greeting (T-0672)', () => {
+  const ok: ServiceStatus = { capabilities: { wallet: 'ok', p2p: 'ok', fx: 'ok', card: 'ok' }, incident: null } as unknown as ServiceStatus;
+
+  it('the hero carries the shekel and dollar balances for a funded member, exact past 2^53', () => {
+    const h = heroOf([acc('a-ils', 'ILS', '123456789012345678'), acc('a-usd', 'USD', '9007199254740993')]);
+    expect(h.empty).toBe(false);
+    expect(h.ils).toEqual(money(123_456_789_012_345_678n, 'ILS'));
+    expect(h.usd).toEqual(money(9_007_199_254_740_993n, 'USD'));
+  });
+
+  it('a new member (no purse, or purses at zero with nothing on hold) gets the empty state with a zero shekel hero', () => {
+    for (const accounts of [[], [acc('a-ils', 'ILS', '0'), acc('a-usd', 'USD', '0')]]) {
+      const h = heroOf(accounts);
+      expect(h.empty).toBe(true);
+      expect(h.ils).toEqual(money(0n, 'ILS'));
+    }
+    expect(heroOf([acc('a-ils', 'ILS', '0', '5000')]).empty).toBe(false);
+  });
+
+  it('the hero shows the dollar balance only when the member has a dollar purse', () => {
+    expect(heroOf([acc('a-ils', 'ILS', '100')]).usd).toBeUndefined();
+  });
+
+  it('four quick actions in order (add, send, convert, card), each only while its capability is ok', () => {
+    expect(heroActions(ok).map((q) => q.action)).toEqual(['add', 'send', 'convert', 'card']);
+    expect(heroActions({ ...ok, capabilities: { ...ok.capabilities, fx: 'degraded', card: 'off' } } as ServiceStatus).map((q) => q.action)).toEqual(['add', 'send']);
+    expect(heroActions(undefined)).toEqual([]);
+    expect(quickActions(ok).map((q) => q.action)).toContain('requests');
+  });
+
+  it('the greeting uses the name others see, or a plain hello when none is set; en and he both exist', () => {
+    expect(greeting('Avi E.')).toEqual({ key: 'home.greeting', vars: { name: 'Avi E.' } });
+    expect(greeting(undefined)).toEqual({ key: 'home.greeting.anon', vars: {} });
+    expect(t('home.greeting', 'en', { name: 'Avi E.' })).toBe('Hi, Avi E.');
+    expect(t('home.greeting', 'he', { name: 'אבי' })).toContain('אבי');
+    expect(t('home.hero.label', 'en')).toBeTruthy();
+    expect(t('home.empty.title', 'he')).toBeTruthy();
+    expect(t('home.empty.body', 'en')).toBeTruthy();
+  });
+});
+
