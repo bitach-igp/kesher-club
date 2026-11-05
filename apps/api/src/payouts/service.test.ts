@@ -412,6 +412,41 @@ describe('T-0540: a payout that waits has its funds reserved (REQ-PO-001, REQ-WA
     expect(await journals(settleKey(key))).toBe(0);
   });
 
+  it('a run that died between the hold and the reserve is reserved by the next pass while it still cools off, so the money cannot be spent meanwhile (T-0549)', async () => {
+    const party = await newMember(400_000n);
+    const key = `po-res-crash-${party}`;
+    const crash = vi.spyOn(app.services.payouts, 'reserve').mockRejectedValueOnce(new Error('died before the reserve'));
+    await expect(ask(party, key, 300_000n)).rejects.toThrow('died before');
+    crash.mockRestore();
+    const t = (await app.services.transfers.byKey(key))!;
+    expect(t.state).toBe('pending_hold');
+    expect(await journals(reserveKey(key))).toBe(0);
+    expect(await purse(party)).toEqual({ available: 400_000n, holds: 0n });
+    // The cool-off is nowhere near over, yet the sweep finds it and the run reserves.
+    expect((await app.services.payouts.resumable(now)).map((x) => x.id)).toContain(t.id);
+    const out = await run(key);
+    expect(out).toMatchObject({ waiting: 'cooling_off' });
+    expect(await journals(reserveKey(key))).toBe(1);
+    expect(await purse(party)).toEqual({ available: 100_000n, holds: 300_000n });
+    // Reserved, so no longer swept on every pass, and the same money cannot be spent again.
+    expect((await app.services.payouts.resumable(now)).map((x) => x.id)).not.toContain(t.id);
+    await expect(ask(party, `po-res-crash-2-${party}`, 200_000n, poPayee(IL2, 'FAIL'))).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
+  });
+
+  it('a payout that ended meanwhile takes no new reserve from a stale read', async () => {
+    const party = await newMember(500_000n);
+    const key = `po-res-ended-${party}`;
+    await db.query(`insert into ops.payee (id, party_id, iban, iban_last4, name, bank_code, validated_at, created_at) values ($1, $2, $3, '9999', 'Yeshivat Example', null, $4, $4)`, [uuidv7(now), party, IL, now]);
+    const payeeId = (await db.query<{ id: string }>(`select id from ops.payee where party_id = $1`, [party])).rows[0]!.id;
+    const input = { partyId: party, source: { kind: 'member' as const }, payeeId, payee: { iban: IL, name: 'Yeshivat Example' }, amount: money(300_000n, 'ILS'), reference: 'ended' };
+    const payouts = app.services.payouts;
+    const stale = await payouts.coolOff(await payouts.begin(input, key, now), now); // nothing reserved
+    await payouts.fail(stale, 'CANCELLED_BY_TEST', now, 'ended');
+    expect(await payouts.reserve(stale, input, now)).toBeUndefined();
+    expect(await journals(reserveKey(key))).toBe(0);
+    expect(await purse(party)).toEqual({ available: 500_000n, holds: 0n });
+  });
+
   it('a payout that goes straight to the rail reserves nothing and posts from the wallet as before', async () => {
     const party = await newMember(500_000n);
     const key = `po-res-4-${party}`;

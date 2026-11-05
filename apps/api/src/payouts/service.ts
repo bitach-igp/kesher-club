@@ -123,7 +123,11 @@ export async function runPayout(a: PayoutActivities, input: PayoutInput, workflo
   // Past the hold and already at the rail: the webhook finishes it.
   if (t.state === 'pending' && t.journalId) return { workflowId, transfer: t, replayed };
   if (t.state === 'pending_hold') {
-    if (!t.holdReleasesAt || Date.parse(t.holdReleasesAt) > now.getTime()) return { workflowId, transfer: t, waiting: 'cooling_off', replayed };
+    if (!t.holdReleasesAt || Date.parse(t.holdReleasesAt) > now.getTime()) {
+      // Still cooling off: a payout whose run died between the hold and the reserve is reserved now rather than at the end of the cool-off.
+      const gone = await a.reserve(t, input, now);
+      return gone ? { workflowId, transfer: gone, replayed } : { workflowId, transfer: t, waiting: 'cooling_off', replayed };
+    }
     // The cool-off is over. A payout waiting before it was reserved (a crash between the hold and the reserve, or one older than the
     // reserve) is reserved now, or failed if the money has gone.
     const gone = await a.reserve(t, input, now);
@@ -321,7 +325,7 @@ export class PayoutService implements PayoutActivities {
     // Fail first (this releases the reserve), mark the approval after: a crash between leaves a lapsed approval the sweep still finds.
     const code = req.status === 'rejected' ? REJECTED : APPROVAL_EXPIRED;
     const failed = await this.fail(transfer, code, now, req.status === 'rejected' ? 'approval rejected' : 'approval expired');
-    if (open) await this.d.db.query(`update ops.approval_request set status = 'expired', decided_at = $2 where id = $1 and status in ('pending', 'awaiting_second_approval')`, [req.id, now]);
+    if (open) await this.d.approvals.expire(req.id, now);
     return failed;
   }
 
@@ -339,6 +343,10 @@ export class PayoutService implements PayoutActivities {
    */
   async reserve(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined> {
     if (input.source.kind === 'institution') return undefined;
+    // The caller's read may be older than the payout: one that ended meanwhile (failed, cancelled, settled) takes no new reserve, which
+    // nothing would release.
+    const fresh = await this.d.transfers.get(transfer.id);
+    if (!fresh || fresh.state === 'settled' || fresh.state === 'failed' || fresh.state === 'cancelled' || fresh.state === 'reversed') return undefined;
     const key = reserveKey(transfer.idempotencyKey);
     if (await this.journalIdOf(key)) return undefined;
     const purse = (await this.d.accounts.purses(input.partyId)).find((p) => p.currency === 'ILS');
@@ -596,6 +604,8 @@ export class PayoutService implements PayoutActivities {
     const r = await this.d.db.query<{ id: string }>(
       `select t.id from ops.transfer t where t.kind = 'payout' and (
           (t.state = 'pending_hold' and t.hold_releases_at <= $1)
+          or (t.state = 'pending_hold' and t.hold_releases_at > $1 and not exists (select 1 from org.institution i where i.id = t.from_party_id)
+              and not exists (select 1 from ledger.journal j where j.idempotency_key = t.idempotency_key || ':reserve'))
           or (t.state in ('created', 'pending') and t.journal_id is null and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and a.status = 'approved'))
           or (t.state = 'submitted' and t.journal_id is not null and t.updated_at <= $1::timestamptz - ($4 * interval '1 millisecond')
               and not exists (select 1 from ops.external_ref x where x.entity_type = 'transfer' and x.entity_id = t.id and x.provider = $5))
