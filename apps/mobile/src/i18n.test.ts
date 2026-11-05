@@ -22,4 +22,11 @@ describe('Hebrew copy (T-0013)', () => {
     const offenders = (Object.entries(COPY.he) as [CopyKey, string][]).filter(([, v]) => LTR_FORCING.test(v)).map(([k]) => k);
     expect(offenders).toEqual([]);
   });
+
+  it('no Hebrew string is the English one left untranslated, except the listed payment-method names (T-0678)', () => {
+    const same = (Object.keys(COPY.en) as CopyKey[]).filter((k) => COPY.he[k] === COPY.en[k] && /[A-Za-z]{3,}/.test(COPY.en[k].replace(/\{\w+\}/g, '')));
+    // Brand names of payment methods, written the same in Hebrew.
+    expect(same.sort()).toEqual(['fund.method.apple_pay', 'fund.method.google_pay']);
+  });
 });
+
