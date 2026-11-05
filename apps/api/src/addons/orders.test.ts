@@ -2,7 +2,7 @@
 // Given a $25 eSIM with $20 cost: addon_payable $20 and fee_income $5.
 // TST-ESIM-002: the monthly data credit applies automatically at checkout. Given a 5 GB credit,
 // when buying 5 GB, the price is $0.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { BillingSimulator, SIM_OTP_CODE, SimPasskeyDevice } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
@@ -198,6 +198,102 @@ describe('a funds check, a validated quantity and a request-bound key (T-0542, F
   });
 });
 
+describe('replays, races and a re-checked charge (T-0548, follow-up of T-0542)', () => {
+  const sku = 'esim:airalo:IL-5GB-30D';
+  const chargeJournal = async (id: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [`addon:${id}:charge`])).rows[0]!.n;
+
+  it('an order left in created by a crash is charged when its key is replayed, once', async () => {
+    const { memberPartyId } = await member(false, 10_000n);
+    const crash = vi.spyOn(orders, 'charge').mockRejectedValueOnce(new Error('crashed before the charge'));
+    await expect(orders.create({ idempotencyKey: 'r-1-crash', memberPartyId, sku }, now)).rejects.toThrow('crashed');
+    crash.mockRestore();
+    const stuck = (await orders.byKey('r-1-crash'))!;
+    expect(stuck.state).toBe('created');
+    expect(await chargeJournal(stuck.id)).toBe(0);
+    const replay = await orders.create({ idempotencyKey: 'r-1-crash', memberPartyId, sku }, now);
+    expect(replay).toMatchObject({ id: stuck.id, state: 'charged' });
+    expect(await chargeJournal(stuck.id)).toBe(1);
+    expect((await orders.create({ idempotencyKey: 'r-1-crash', memberPartyId, sku }, now)).state).toBe('charged');
+    expect(await chargeJournal(stuck.id)).toBe(1);
+  });
+
+  it('funds that drained between create and charge are re-checked: the charge is refused, the order stays created, nothing posts', async () => {
+    const { memberPartyId, wallet } = await member(false, 2_500n);
+    const crash = vi.spyOn(orders, 'charge').mockRejectedValueOnce(new Error('crashed before the charge'));
+    await expect(orders.create({ idempotencyKey: 'r-2-drain', memberPartyId, sku }, now)).rejects.toThrow('crashed');
+    crash.mockRestore();
+    const stuck = (await orders.byKey('r-2-drain'))!;
+    // Another purchase spends the wallet.
+    const partner = await accounts.systemAccount('partner_settlement', 'USD');
+    await ledger.post({ idempotencyKey: 'r-2-spend', kind: 'p2p', postings: [{ accountId: wallet, currency: 'USD', amountMinor: 2_500n }, { accountId: partner, currency: 'USD', amountMinor: -2_500n }] });
+    await expect(orders.create({ idempotencyKey: 'r-2-drain', memberPartyId, sku }, now)).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
+    expect((await orders.get(stuck.id))!.state).toBe('created');
+    expect(await chargeJournal(stuck.id)).toBe(0);
+  });
+
+  it('two creates racing on one key: the loser, finding the unique key taken, returns the winner\'s order and never makes a second', async () => {
+    const { memberPartyId } = await member(false, 10_000n);
+    const first = await orders.create({ idempotencyKey: 'r-3-race', memberPartyId, sku }, now);
+    // The loser did not see the winner's row on its first read.
+    const real = orders.byKey.bind(orders);
+    const seen = vi.spyOn(orders, 'byKey').mockImplementationOnce(async () => undefined).mockImplementation(real);
+    const second = await orders.create({ idempotencyKey: 'r-3-race', memberPartyId, sku }, now);
+    seen.mockRestore();
+    expect(second.id).toBe(first.id);
+    expect((await db.query(`select 1 from addons.addon_order where idempotency_key = 'r-3-race'`)).rows).toHaveLength(1);
+    expect(await chargeJournal(first.id)).toBe(1);
+  });
+
+  it('a charge that posted but never moved the order is finished on replay, even though the wallet no longer holds the price', async () => {
+    const { memberPartyId } = await member(false, 2_500n);
+    const crash = vi.spyOn(orders, 'transition').mockRejectedValueOnce(new Error('crashed after the journal'));
+    await expect(orders.create({ idempotencyKey: 'r-6-paid', memberPartyId, sku }, now)).rejects.toThrow('crashed');
+    crash.mockRestore();
+    const stuck = (await orders.byKey('r-6-paid'))!;
+    expect(stuck.state).toBe('created');
+    expect(await chargeJournal(stuck.id)).toBe(1);
+    expect((await accounts.purses(memberPartyId)).find((p) => p.currency === 'USD')!.available.minor).toBe(0n); // the price has left the wallet already
+    const replay = await orders.create({ idempotencyKey: 'r-6-paid', memberPartyId, sku }, now);
+    expect(replay).toMatchObject({ id: stuck.id, state: 'charged' });
+    expect(await chargeJournal(stuck.id)).toBe(1);
+  });
+
+  it('two callers charging one created order both end on the charged order, with one journal', async () => {
+    const { memberPartyId } = await member(false, 10_000n);
+    const crash = vi.spyOn(orders, 'charge').mockRejectedValueOnce(new Error('crashed before the charge'));
+    await expect(orders.create({ idempotencyKey: 'r-7-two', memberPartyId, sku }, now)).rejects.toThrow('crashed');
+    crash.mockRestore();
+    const stuck = (await orders.byKey('r-7-two'))!;
+    const [a, b] = await Promise.all([orders.charge(stuck.id, now), orders.charge(stuck.id, now)]);
+    expect([a.state, b.state]).toEqual(['charged', 'charged']);
+    expect(await chargeJournal(stuck.id)).toBe(1);
+  });
+
+  it('a replay does not spend the credit again', async () => {
+    const { memberPartyId, membership } = await member(true, 10_000n);
+    const crash = vi.spyOn(orders, 'charge').mockRejectedValueOnce(new Error('crashed before the charge'));
+    await expect(orders.create({ idempotencyKey: 'r-8-credit', memberPartyId, membership, sku: 'esim:airalo:IL-10GB-30D' }, now)).rejects.toThrow('crashed');
+    crash.mockRestore();
+    const afterCreate = (await entitlements.can(membership!, 'esim.dataGb', 1n, now)).remaining;
+    await orders.create({ idempotencyKey: 'r-8-credit', memberPartyId, membership, sku: 'esim:airalo:IL-10GB-30D' }, now);
+    await orders.create({ idempotencyKey: 'r-8-credit', memberPartyId, membership, sku: 'esim:airalo:IL-10GB-30D' }, now);
+    expect((await entitlements.can(membership!, 'esim.dataGb', 1n, now)).remaining).toBe(afterCreate);
+  });
+
+  it('the top quantity, 10, orders and is priced for ten', async () => {
+    const { memberPartyId } = await member(false, 50_000n);
+    const o = await orders.create({ idempotencyKey: 'r-4-ten', memberPartyId, sku, quantity: 10 }, now);
+    expect(o).toMatchObject({ state: 'charged', quantity: 10, price: money(25_000n, 'USD') });
+  });
+
+  it('a refused order leaves nothing for the vendor: no row, no event queued for it', async () => {
+    const { memberPartyId } = await member(false, 0n);
+    const before = (await db.query<{ n: number }>(`select count(*)::int as n from ops.outbox`)).rows[0]!.n;
+    await expect(orders.create({ idempotencyKey: 'r-5-empty', memberPartyId, sku }, now)).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
+    expect((await db.query<{ n: number }>(`select count(*)::int as n from ops.outbox`)).rows[0]!.n).toBe(before);
+  });
+});
+
 describe('POST /addon-orders needs a step-up like every money route (T-0542)', () => {
   const T = new Date('2026-11-10T09:00:00Z');
   let app: App;
@@ -247,8 +343,10 @@ describe('POST /addon-orders needs a step-up like every money route (T-0542)', (
   });
 
   it('an empty wallet over HTTP is 422 INSUFFICIENT_FUNDS', async () => {
-    // $100 funded, $25 spent above: three more 5 GB eSIMs use the remaining $75 exactly, then there is nothing left.
-    const drain = await order({ sku: 'esim:airalo:IL-5GB-30D', quantity: 3 }, 'http-3-drain-wallet', { 'x-step-up': stepUp });
+    // Spend whatever the wallet holds on $25 eSIMs (however many earlier tests ordered), then there is nothing left.
+    const left = (await accounts.purses(partyId)).find((p) => p.currency === 'USD')!.available.minor;
+    expect(left >= 2_500n && left <= 25_000n).toBe(true);
+    const drain = await order({ sku: 'esim:airalo:IL-5GB-30D', quantity: Number(left / 2_500n) }, 'http-3-drain-wallet', { 'x-step-up': stepUp });
     expect(drain.status).toBe(201);
     const r = await order({ sku: 'esim:airalo:IL-5GB-30D' }, 'http-3-empty-wallet', { 'x-step-up': stepUp });
     expect(r.body).toMatchObject({ status: 422, code: 'INSUFFICIENT_FUNDS' });
