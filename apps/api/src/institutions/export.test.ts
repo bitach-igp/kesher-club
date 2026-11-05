@@ -128,3 +128,32 @@ describe('TST-INS-006: the monthly export', () => {
     expect(Buffer.from(exportFile(e, 'csv').base64, 'base64').toString('utf8')).toBe(csv);
   });
 });
+
+describe('money set aside for a payout is not a movement in the export (T-0555, REQ-INS-006)', () => {
+  const RESX = uuidv7(new Date('2026-11-01T00:00:00Z'));
+
+  it('a reserve and its release are no row; the payout is one row, when it goes out of the reserve; totals follow', async () => {
+    await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Reserve', 'IL')`, [RESX]);
+    const master = await accounts.institutionAccount(RESX, 'ILS');
+    const reserve = await accounts.institutionPayoutReserveAccount(RESX, 'ILS');
+    const partner = await accounts.systemAccount('partner_settlement', 'ILS');
+    const post = (key: string, kind: string, at: string, legs: [string, bigint][], metadata: Record<string, unknown> = {}) =>
+      ledger.post({ idempotencyKey: key, kind, effectiveAt: new Date(at), postings: legs.map(([accountId, amountMinor]) => ({ accountId, currency: 'ILS' as const, amountMinor })), metadata: { institutionId: RESX, ...metadata } });
+    await post('rx-deposit', 'deposit', '2026-11-01T10:00:00Z', [[partner, 1_000_000n], [master, -1_000_000n]], { rail: 'wire', bankReference: 'W1' });
+    // ₪4,000 set aside and set free again: no row at all.
+    const set = await post('rx-reserve-1', 'payout_reserve', '2026-11-04T10:00:00Z', [[master, 400_000n], [reserve, -400_000n]]);
+    await ledger.reverse(set.id, 'rx-reserve-1:unreserve', { effectiveAt: new Date('2026-11-05T10:00:00Z') });
+    // ₪3,000 set aside and still waiting: no row yet.
+    await post('rx-reserve-2', 'payout_reserve', '2026-11-06T10:00:00Z', [[master, 300_000n], [reserve, -300_000n]]);
+    let e = await monthlyExport(db, RESX, '2026-11', 'ILS');
+    expect(e.rows.map((r) => r.kind)).toEqual(['deposit']);
+    expect(e.totals.payoutsOut.minor).toBe(0n);
+    // The payout goes out of the reserve: one payout row, ₪3,000 out.
+    await post('rx-payout', 'payout', '2026-11-12T10:00:00Z', [[reserve, 300_000n], [partner, -300_000n]], { payeeName: 'Yeshivat', payeeLast4: '9999', reference: 'tuition' });
+    e = await monthlyExport(db, RESX, '2026-11', 'ILS');
+    expect(e.rows.map((r) => [r.kind, r.amount.minor])).toEqual([['deposit', 1_000_000n], ['payout', -300_000n]]);
+    expect(e.totals.payoutsOut.minor).toBe(-300_000n);
+    expect(e.totals.net.minor).toBe(700_000n);
+  });
+});
+

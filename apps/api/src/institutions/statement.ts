@@ -29,25 +29,35 @@ export interface Statement {
   opening: Money;
   rows: StatementRow[];
   closing: Money;
+  /** Of the closing balance, the part set aside for payouts waiting on their approver (T-0555): still the institution's, not available. */
+  reserved: Money;
 }
 
 const WORDS: Record<string, string> = { deposit: 'Deposit', allowance: 'Allowance', fee: 'Fee collected', payout: 'Payout', reversal: 'Reversal', ach_pull: 'Bank pull', credit_draw: 'Credit draw' };
 
-export async function statement(db: Database, accounts: Pick<AccountService, 'institutionAccount'>, institutionId: string, month: string, currency: Currency): Promise<Statement> {
+export async function statement(db: Database, accounts: Pick<AccountService, 'institutionAccount' | 'institutionPayoutReserveAccount'>, institutionId: string, month: string, currency: Currency): Promise<Statement> {
   const { start, end } = monthBounds(month);
-  const account = await accounts.institutionAccount(institutionId, currency);
-  // The account is credit-normal: a credit (a negative posting) is money arriving, so every amount is negated.
+  const master = await accounts.institutionAccount(institutionId, currency);
+  const reserve = await accounts.institutionPayoutReserveAccount(institutionId, currency);
+  const both = [master, reserve];
+  // The institution's money is its master account plus its payout reserve (T-0555). Both are credit-normal: a credit (a negative
+  // posting) is money arriving, so every amount is negated. Money moving between the two is not a movement.
   const before = await db.query<{ total: string }>(
-    `select coalesce(-sum(p.amount_minor), 0)::text as total from ledger.posting p join ledger.journal j on j.id = p.journal_id where p.account_id = $1 and j.effective_at < $2`,
-    [account, start],
+    `select coalesce(-sum(p.amount_minor), 0)::text as total from ledger.posting p join ledger.journal j on j.id = p.journal_id where p.account_id = any($1::uuid[]) and j.effective_at < $2`,
+    [both, start],
   );
   const r = await db.query<{ journal_id: string; kind: string; effective_at: string | Date; metadata: Record<string, unknown>; amount: string }>(
     `select j.id as journal_id, j.kind, j.effective_at, j.metadata, (-sum(p.amount_minor))::text as amount
        from ledger.posting p join ledger.journal j on j.id = p.journal_id
-      where p.account_id = $1 and j.effective_at >= $2 and j.effective_at < $3
+      where p.account_id = any($1::uuid[]) and j.effective_at >= $2 and j.effective_at < $3
       group by j.id, j.kind, j.effective_at, j.metadata
+     having sum(p.amount_minor) <> 0
       order by j.effective_at, j.id`,
-    [account, start, end],
+    [both, start, end],
+  );
+  const held = await db.query<{ total: string }>(
+    `select coalesce(-sum(p.amount_minor), 0)::text as total from ledger.posting p join ledger.journal j on j.id = p.journal_id where p.account_id = $1 and j.effective_at < $2`,
+    [reserve, end],
   );
   const opening = BigInt(before.rows[0]?.total ?? '0');
   let balance = opening;
@@ -57,7 +67,7 @@ export async function statement(db: Database, accounts: Pick<AccountService, 'in
     const description = typeof x.metadata['description'] === 'string' ? x.metadata['description'] : (WORDS[x.kind] ?? x.kind.replace(/_/g, ' '));
     return { date: new Date(x.effective_at).toISOString().slice(0, 10), journalId: x.journal_id, kind: x.kind, description, amount: money(amount, currency), balance: money(balance, currency) };
   });
-  return { institutionId, month, currency, opening: money(opening, currency), rows, closing: money(balance, currency) };
+  return { institutionId, month, currency, opening: money(opening, currency), rows, closing: money(balance, currency), reserved: money(BigInt(held.rows[0]?.total ?? '0'), currency) };
 }
 
 export const STATEMENT_HEADERS = ['date', 'journal_id', 'kind', 'description', 'amount_minor', 'balance_minor', 'currency', 'amount', 'balance'] as const;
@@ -72,6 +82,8 @@ export function statementCells(s: Statement): string[][] {
     line(start.toISOString().slice(0, 10), 'opening', s.opening, s.opening),
     ...s.rows.map((x) => [x.date, x.journalId, x.kind, x.description, x.amount.minor.toString(), x.balance.minor.toString(), s.currency, format(x.amount), format(x.balance)]),
     line(last, 'closing', money(s.closing.minor - s.opening.minor, s.currency), s.closing),
+    // Of the closing balance, what is set aside for payouts waiting on their approver (T-0555).
+    line(last, 'reserved', s.reserved, s.reserved),
   ];
 }
 
@@ -96,6 +108,7 @@ export function statementFile(s: Statement, fmt: 'csv' | 'xlsx') {
     rows: s.rows.length,
     opening: toWire(s.opening),
     closing: toWire(s.closing),
+    reserved: toWire(s.reserved),
   };
 }
 
@@ -105,9 +118,10 @@ const wire = (s: Statement) => ({
   opening: toWire(s.opening),
   rows: s.rows.map((x) => ({ ...x, amount: toWire(x.amount), balance: toWire(x.balance) })),
   closing: toWire(s.closing),
+  reserved: toWire(s.reserved),
 });
 
-export function statementHandlers(db: Database, accounts: Pick<AccountService, 'institutionAccount'>, staffOf: StaffOf): Record<string, Handler> {
+export function statementHandlers(db: Database, accounts: Pick<AccountService, 'institutionAccount' | 'institutionPayoutReserveAccount'>, staffOf: StaffOf): Record<string, Handler> {
   /** Finance staff and admins of this institution; other staff 403, another institution 404. */
   const read = async (req: Parameters<Handler>[0]): Promise<Statement> => {
     const p = requireRole(req, 'org_staff', 'org_admin', 'org_finance');

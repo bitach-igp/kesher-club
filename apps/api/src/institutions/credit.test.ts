@@ -183,3 +183,19 @@ describe('institution credit limits (T-0616, TST-INS-008)', () => {
     expect(await balance(inst)).toBe(0n);
   });
 });
+
+describe('money set aside for a payout is not credit headroom (T-0555)', () => {
+  it('headroom is the available master balance plus the limit: reserved money lowers it by exactly the reserve', async () => {
+    const inst = await institution(1_000_000n);
+    const s = app.services;
+    const before = await s.institutionCredit.headroom(inst, 'ILS', 'no-workflow');
+    expect(before.balance.minor).toBe(1_000_000n);
+    const master = await s.accounts.institutionAccount(inst, 'ILS');
+    const reserve = await s.accounts.institutionPayoutReserveAccount(inst, 'ILS');
+    await s.ledger.post({ idempotencyKey: `reserve:${inst}`, kind: 'payout_reserve', effectiveAt: NOW, postings: [{ accountId: master, currency: 'ILS', amountMinor: 400_000n }, { accountId: reserve, currency: 'ILS', amountMinor: -400_000n }] });
+    const after = await s.institutionCredit.headroom(inst, 'ILS', 'no-workflow');
+    expect(after.balance.minor).toBe(600_000n);
+    expect((await s.accounts.institutionReserved(inst, 'ILS')).minor).toBe(400_000n);
+  });
+});
+

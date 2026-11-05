@@ -59,7 +59,7 @@ interface ExportQueryRow {
 
 /**
  * Reads the institution's postings for the month: the institution's own account's side (T-0613; the
- * shared institution_master for journals from before it) of every allowance and
+ * shared institution_master for journals from before it, and its payout reserve, T-0555) of every allowance and
  * fee journal tagged with the institution, and of every reversal of one (a reversal carries no
  * metadata of its own; it is found through the journal it reverses). The member is the owner of the
  * wallet the same journal touched, so allowances, which tag only the institution, still name them.
@@ -67,14 +67,15 @@ interface ExportQueryRow {
 export async function monthlyExport(db: Database, institutionId: string, month: string, currency: Currency): Promise<MonthlyExport> {
   const { start, end } = monthBounds(month);
   const r = await db.query<ExportQueryRow>(
-    `select j.id as journal_id, j.kind, o.kind as reversed_kind, j.effective_at, p.amount_minor::text, j.metadata,
+    `select j.id as journal_id, j.kind, o.kind as reversed_kind, j.effective_at, sum(p.amount_minor)::text as amount_minor, j.metadata,
             w.owner_party_id as member_party_id,
             (select m.member_name from org.member m where m.institution_id = $1::uuid and m.member_party_id = w.owner_party_id order by m.updated_at desc limit 1) as member_name
        from ledger.journal j
        left join ledger.journal o on o.id = j.reverses_id
        join ledger.posting p on p.journal_id = j.id
-       -- The institution's own account (T-0613), or the shared one journals posted to before it existed.
-       join ledger.account a on a.id = p.account_id and a.type = 'institution_master' and a.currency = $4 and (a.owner_party_id = $1::uuid or a.owner_party_id = $5::uuid)
+       -- The institution's own account (T-0613), or the shared one journals posted to before it existed; and its payout reserve (T-0555),
+       -- which is still the institution's money: a journal moving money between the two nets to nothing and is not a row.
+       join ledger.account a on a.id = p.account_id and a.type in ('institution_master', 'payout_reserve') and a.currency = $4 and (a.owner_party_id = $1::uuid or a.owner_party_id = $5::uuid)
        left join lateral (
          select a2.owner_party_id from ledger.posting p2 join ledger.account a2 on a2.id = p2.account_id
           where p2.journal_id = j.id and a2.type in ('wallet', 'pending') and a2.owner_party_id is not null
@@ -84,6 +85,8 @@ export async function monthlyExport(db: Database, institutionId: string, month: 
        ) w on true
       where (j.metadata->>'institutionId' = $1::text or (j.kind = 'reversal' and o.metadata->>'institutionId' = $1::text))
         and j.effective_at >= $2 and j.effective_at < $3
+      group by j.id, j.kind, o.kind, j.effective_at, j.metadata, w.owner_party_id
+     having sum(p.amount_minor) <> 0
       order by j.effective_at, j.id`,
     [institutionId, start, end, currency, SYSTEM_OWNER],
   );

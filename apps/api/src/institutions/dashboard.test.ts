@@ -72,3 +72,25 @@ describe('the institution dashboard (TST-INS-017, T-0634)', () => {
     expect((await get('member')).status).toBe(403);
   });
 });
+
+describe('the dashboard counts money set aside for a payout as the institution\'s (T-0555, REQ-INS-017)', () => {
+  it('owned = available + reserved: setting money aside lowers available, not what the institution owns', async () => {
+    const RESD = uuidv7(NOW);
+    await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Reserve', 'IL')`, [RESD]);
+    const partyId = uuidv7(NOW);
+    await db.query(`insert into org.staff (party_id, institution_id, role) values ($1, $2, 'finance')`, [partyId, RESD]);
+    tokens['resd'] = (await app.services.tokens.issue({ partyId, deviceId: 'web', roles: ['member', 'org_finance'] })).accessToken;
+    const { accounts, ledger } = app.services;
+    const master = await accounts.institutionAccount(RESD, 'ILS');
+    const reserve = await accounts.institutionPayoutReserveAccount(RESD, 'ILS');
+    const partner = await accounts.systemAccount('partner_settlement', 'ILS');
+    await ledger.post({ idempotencyKey: 'resd-deposit', kind: 'deposit', effectiveAt: NOW, postings: [{ accountId: partner, currency: 'ILS', amountMinor: 1_000_000n }, { accountId: master, currency: 'ILS', amountMinor: -1_000_000n }] });
+    const ils = (rows: { minor: string; currency: string }[]) => rows.find((m) => m.currency === 'ILS')!.minor;
+    let d = (await get('resd', RESD)).body as Dashboard;
+    expect([ils(d.balances), ils(d.available), ils(d.reserved)]).toEqual(['1000000', '1000000', '0']);
+    await ledger.post({ idempotencyKey: 'resd-reserve', kind: 'payout_reserve', effectiveAt: NOW, postings: [{ accountId: master, currency: 'ILS', amountMinor: 250_000n }, { accountId: reserve, currency: 'ILS', amountMinor: -250_000n }] });
+    d = (await get('resd', RESD)).body as Dashboard;
+    expect([ils(d.balances), ils(d.available), ils(d.reserved)]).toEqual(['1000000', '750000', '250000']);
+  });
+});
+
