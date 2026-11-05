@@ -316,8 +316,8 @@ export class PayoutService implements PayoutActivities {
   }
 
   async expireIfDue(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined> {
-    // An institution's payout keeps waiting as before (nothing was reserved for it); a member's ends with its approval.
-    if (input.source.kind === 'institution') return undefined;
+    // A payout whose approval was rejected or ran out ends, a member's and an institution's alike (T-0554). An institution's has nothing
+    // reserved yet (T-0550), so the fail only ends the transfer; its finance staff see it in the console's payout list.
     const req = await this.d.approvals.find('payout', transfer.id);
     if (!req) return undefined;
     const open = req.status === 'pending' || req.status === 'awaiting_second_approval';
@@ -610,7 +610,7 @@ export class PayoutService implements PayoutActivities {
           or (t.state in ('created', 'pending') and t.journal_id is null and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and a.status = 'approved'))
           or (t.state = 'submitted' and t.journal_id is not null and t.updated_at <= $1::timestamptz - ($4 * interval '1 millisecond')
               and not exists (select 1 from ops.external_ref x where x.entity_type = 'transfer' and x.entity_id = t.id))
-          or (t.state in ('created', 'pending') and t.journal_id is null and not exists (select 1 from org.institution i where i.id = t.from_party_id)
+          or (t.state in ('created', 'pending') and t.journal_id is null
               and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and (a.status in ('rejected', 'expired') or (a.status in ('pending', 'awaiting_second_approval') and a.expires_at <= $1))))
        ) and t.market = $3 order by t.created_at limit $2`,
       [now, limit, this.d.transfers.market, RETRY_AFTER_MS],
