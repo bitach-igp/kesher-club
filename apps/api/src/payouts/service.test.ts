@@ -13,6 +13,8 @@ import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import { monthlyExport } from '../institutions/export.ts';
+import { statement } from '../institutions/statement.ts';
 import { runLoad } from '../wallet/loads.ts';
 import { COOL_OFF_MS, RETRY_AFTER_MS, runPayout, settleKey, type PayoutView } from './service.ts';
 
@@ -502,34 +504,40 @@ describe('T-0554: an institution payout whose approval is rejected or runs out e
   }
   const ask = (inst: string, key: string, minor: bigint) =>
     app.services.payouts.request(inst, { payee: { iban: IL, name: 'Yeshivat Example' }, amount: { minor: minor.toString(), currency: 'ILS' }, reference: 'transfer' }, key, now, { kind: 'institution', requestedBy: requester, requesterRole: 'finance' });
+  /** What the institution can use: its master account. */
   const owned = async (inst: string) => (await app.services.accounts.institutionBalance(inst, 'ILS')).minor;
+  const reservedOf = async (inst: string) => (await app.services.accounts.institutionReserved(inst, 'ILS')).minor;
+  const journalCount = async (k: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [k])).rows[0]!.n;
   const sweep = async (keys: string[]) => {
     const out = [];
     for (const t of (await app.services.payouts.resumable(now)).filter((x) => keys.includes(x.idempotencyKey))) out.push((await runPayout(app.services.payouts, await app.services.payouts.inputFor(t), t.idempotencyKey, now)).transfer);
     return out;
   };
 
-  it('an approval that runs out fails the payout once with APPROVAL_EXPIRED and ends the approval; the institution\'s money is untouched', async () => {
+  it('an approval that runs out fails the payout once with APPROVAL_EXPIRED, ends the approval and gives the set-aside money back once', async () => {
     const inst = await funded(1_000_000n);
     const key = `po-inst-exp-${inst}`;
     const r = await ask(inst, key, 600_000n);
     // A new payee over the threshold cools off for a day first (unchanged); then it waits for its second approver.
     expect(r).toMatchObject({ state: 'cooling_off' });
+    expect([await owned(inst), await reservedOf(inst)]).toEqual([400_000n, 600_000n]); // set aside from the first moment it waits
     advance(COOL_OFF_MS + 60_000);
     await sweep([key]);
     const waiting = (await app.services.transfers.byKey(key))!;
     expect((await app.services.payouts.view(waiting)).state).toBe('awaiting_second_approval');
-    expect(await owned(inst)).toBe(1_000_000n);
+    expect([await owned(inst), await reservedOf(inst)]).toEqual([400_000n, 600_000n]);
     expect((await app.services.payouts.resumable(now)).map((t) => t.idempotencyKey)).not.toContain(key);
     advance(8 * 86_400_000);
     const ended = (await sweep([key])).find((t) => t.idempotencyKey === key)!;
     expect(ended).toMatchObject({ state: 'failed', failureCode: 'APPROVAL_EXPIRED' });
     const t = (await app.services.transfers.byKey(key))!;
     expect((await app.services.approvals.find('payout', t.id))!.status).toBe('expired');
-    expect(await owned(inst)).toBe(1_000_000n);
+    expect([await owned(inst), await reservedOf(inst)]).toEqual([1_000_000n, 0n]);
+    expect(await journalCount(`${key}:unreserve`)).toBe(1);
     // A second sweep finds nothing more to do for it.
     expect((await app.services.payouts.resumable(now)).map((x) => x.idempotencyKey)).not.toContain(key);
     expect((await app.services.transfers.byKey(key))!.state).toBe('failed');
+    expect(await journalCount(`${key}:unreserve`)).toBe(1);
   });
 
   it('a rejected approval fails the payout with REJECTED', async () => {
@@ -542,6 +550,64 @@ describe('T-0554: an institution payout whose approval is rejected or runs out e
     advance(COOL_OFF_MS + 60_000);
     const ended = (await sweep([key])).find((x) => x.idempotencyKey === key)!;
     expect(ended).toMatchObject({ state: 'failed', failureCode: 'REJECTED' });
-    expect(await owned(inst)).toBe(1_000_000n);
+    expect([await owned(inst), await reservedOf(inst)]).toEqual([1_000_000n, 0n]);
+    expect(await journalCount(`${key}:unreserve`)).toBe(1);
+  });
+  it('money set aside for a waiting payout cannot be spent again: another payout that would need it is refused INSUFFICIENT_FUNDS (T-0550)', async () => {
+    const inst = await funded(1_000_000n);
+    await ask(inst, `po-inst-hold-a-${inst}`, 600_000n);
+    expect([await owned(inst), await reservedOf(inst)]).toEqual([400_000n, 600_000n]);
+    await expect(ask(inst, `po-inst-hold-b-${inst}`, 500_000n)).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
+    // What is left is still usable: a payout within it is accepted.
+    expect(await ask(inst, `po-inst-hold-c-${inst}`, 100_000n)).toBeDefined();
+  });
+
+  it('once approved, the payout posts from the reserve once; while it waited the statement and export showed no payout, afterwards one (T-0550, T-0555)', async () => {
+    const inst = await funded(1_000_000n);
+    const key = `po-inst-go-${inst}`;
+    await ask(inst, key, 600_000n);
+    const monthOf = (d: Date) => d.toISOString().slice(0, 7);
+    const reserveMonth = monthOf(now);
+    const payoutRows = async (month: string) => ({
+      statement: (await statement(db, app.services.accounts, inst, month, 'ILS')).rows.filter((r) => r.kind === 'payout').length,
+      export: (await monthlyExport(db, inst, month, 'ILS')).rows.filter((r) => r.kind === 'payout').length,
+    });
+    expect(await payoutRows(reserveMonth)).toEqual({ statement: 0, export: 0 });
+    expect((await statement(db, app.services.accounts, inst, reserveMonth, 'ILS')).closing.minor).toBe(1_000_000n); // what it owns is unchanged
+    advance(COOL_OFF_MS + 60_000);
+    await sweep([key]);
+    const t = (await app.services.transfers.byKey(key))!;
+    const req = (await app.services.approvals.find('payout', t.id))!;
+    await app.services.approvals.decide(req.id, finance2, 'approve', now, 'checked');
+    const out = (await sweep([key])).find((x) => x.idempotencyKey === key)!;
+    expect(['submitted', 'pending']).toContain(out.state);
+    expect([await owned(inst), await reservedOf(inst)]).toEqual([400_000n, 0n]); // the reserve paid it out
+    expect(await journalCount(settleKey(key))).toBe(1);
+    await sweep([key]); // a replay posts nothing more
+    expect(await journalCount(settleKey(key))).toBe(1);
+    const months = [...new Set([reserveMonth, monthOf(now)])];
+    let rows = { statement: 0, export: 0 };
+    for (const m of months) {
+      const r = await payoutRows(m);
+      rows = { statement: rows.statement + r.statement, export: rows.export + r.export };
+    }
+    expect(rows).toEqual({ statement: 1, export: 1 });
+  });
+
+  it('a payout the rail fails after it was posted from the reserve gives the money back to the master once', async () => {
+    const inst = await funded(1_000_000n);
+    const key = `po-inst-fail-${inst}`;
+    await ask(inst, key, 600_000n);
+    advance(COOL_OFF_MS + 60_000);
+    await sweep([key]);
+    const t = (await app.services.transfers.byKey(key))!;
+    const req = (await app.services.approvals.find('payout', t.id))!;
+    await app.services.approvals.decide(req.id, finance2, 'approve', now, 'checked');
+    await sweep([key]);
+    expect(await reservedOf(inst)).toBe(0n);
+    await app.services.payouts.fail((await app.services.transfers.byKey(key))!, 'ACCOUNT_CLOSED', now, 'bank refused');
+    expect([await owned(inst), await reservedOf(inst)]).toEqual([1_000_000n, 0n]);
+    expect(await journalCount(`${settleKey(key)}:reversal`)).toBe(1);
+    expect(await journalCount(`${key}:unreserve`)).toBe(1);
   });
 });

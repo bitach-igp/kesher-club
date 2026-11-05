@@ -100,7 +100,9 @@ describe('institution payouts (T-0527)', () => {
     const r = await pay(staff.one, '600000', 'inst-po-2');
     const id = (r.body as Item).id;
     expect(r.body).toMatchObject({ state: 'awaiting_second_approval', requiredApprovals: 2, approvedBy: [{ displayName: 'Finance •••• 0001' }] });
-    expect(await balance()).toBe(1_800_000n);
+    // The ₪6,000 is set aside while it waits (T-0550): not available, still the institution's.
+    expect(await balance()).toBe(1_200_000n);
+    expect((await app.services.accounts.institutionReserved(INST, 'ILS')).minor).toBe(600_000n);
     const self = await call(staff.one, 'POST', `/v1/payouts/${id}/approve`, undefined, 'approve-self-1');
     expect([self.status, (self.body as { code: string }).code]).toEqual([409, 'IDEMPOTENCY_CONFLICT']);
     expect((await call({ access: staff.two.access, stepUp: '' }, 'POST', `/v1/payouts/${id}/approve`, undefined, 'approve-2-nostep')).body).toMatchObject({ code: 'STEP_UP_REQUIRED' });
