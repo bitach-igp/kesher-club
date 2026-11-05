@@ -79,7 +79,14 @@ export class MembershipService {
         await tx.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('membership', $1, 'stripe', $2)`, [id, subscriptionId]);
       });
     } catch (e) {
-      if (isPgError(e, PG.UNIQUE_VIOLATION)) return (await this.byKey(input.idempotencyKey))!;
+      if (isPgError(e, PG.UNIQUE_VIOLATION)) {
+        // The same key racing itself: the winner's membership. Otherwise the member got another membership first (T-0313): the subscription
+        // made above is ended at once, so no recurring charge is left, and the caller is told the member is taken.
+        const winner = await this.byKey(input.idempotencyKey);
+        if (winner) return winner;
+        await this.billing.cancel(subscriptionId, 'now', `${input.idempotencyKey}:lost`).catch(() => undefined);
+        throw new DomainError('IDEMPOTENCY_CONFLICT', 'That member already has a membership');
+      }
       throw e;
     }
     return (await this.byKey(input.idempotencyKey))!;

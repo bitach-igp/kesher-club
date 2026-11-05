@@ -125,3 +125,23 @@ describe('POST /memberships (T-0312)', () => {
     create.mockRestore();
   });
 });
+describe('the database refuses a second open membership for a member (T-0313)', () => {
+  it('two creates for one member under different keys: one membership, the second\'s subscription ended at once; a cancelled one does not block a new start', async () => {
+    const member = people['tal']!.partyId;
+    const funder = people['ben']!.partyId;
+    const make = (key: string) => app.services.memberships.create({ idempotencyKey: key, memberPartyId: member, funderPartyId: funder, funderEmail: 'ben@example.com', planCode: 'demo-club-us' }, NOW);
+    const cancel = vi.spyOn(billing, 'cancel');
+    const first = await make('race-key-0001');
+    await expect(make('race-key-0002')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await memberships(member)).toBe(1);
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(cancel.mock.calls[0]![1]).toBe('now');
+    // The same key repeated is the same membership, not a conflict.
+    expect((await make('race-key-0001')).id).toBe(first.id);
+    cancel.mockRestore();
+    await app.services.memberships.setStatus(first.id, 'cancelled', NOW);
+    expect((await make('race-key-0003')).id).not.toBe(first.id);
+    expect(await memberships(member)).toBe(2);
+  });
+});
+
