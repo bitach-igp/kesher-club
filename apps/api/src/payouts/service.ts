@@ -12,6 +12,7 @@ import { DomainError, fromWire, money, toWire, type Money } from '@kesher/domain
 import { PayoutError, type NotifyPort, type Payout as VendorPayout, type PayoutPort } from '@kesher/ports';
 import { uuidv7 } from '@kesher/domain';
 import type { ApprovalService } from '../approvals/service.ts';
+import { approversRequired, SECOND_APPROVER_THRESHOLD_ILS_MINOR } from '../approvals/service.ts';
 import type { IdentityRepository } from '../auth/repository.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
@@ -222,10 +223,21 @@ export class PayoutService implements PayoutActivities {
     // An institution pays out only what its own account holds (T-0613); never below zero.
     const available = source.kind === 'institution' ? (await this.d.accounts.institutionBalance(partyId, 'ILS')).minor : (await this.d.accounts.purses(partyId)).find((p) => p.currency === 'ILS')!.available.minor;
     if (available < amount.minor) throw new DomainError('INSUFFICIENT_FUNDS', source.kind === 'institution' ? 'Not enough in the institution account for this payout' : 'Not enough in the purse for this payout', { available: available.toString(), currency: 'ILS' });
+    this.refuseUnapprovable(source, amount);
     const { payee, isNew } = await this.ensurePayee(partyId, check, now);
     const input: PayoutInput = { partyId, source, payeeId: payee.id, payee: { iban: payee.iban, name: payee.name }, amount, reference: b.reference.trim() };
     const run = await runPayout(this, input, key, now);
     return { ...(await this.view(run.transfer)), newPayee: isNew };
+  }
+
+  /**
+   * A member has no second approver to ask: a payout that would need one is refused at request time rather than left waiting for nobody
+   * (T-0545, F42). An institution's has its finance staff.
+   */
+  private refuseUnapprovable(source: PayoutSource, amount: Money): void {
+    if (source.kind === 'member' && approversRequired('payout', amount) > 1) {
+      throw new DomainError('VALIDATION_FAILED', 'A payout this size needs a second approver, which a member payout does not have', { limit: { minor: SECOND_APPROVER_THRESHOLD_ILS_MINOR.toString(), currency: 'ILS' } });
+    }
   }
 
   /** Our checks, then the vendor's (name against the account). A payee seen before is not re-asked. */

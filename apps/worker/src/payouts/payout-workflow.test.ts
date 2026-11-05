@@ -1,6 +1,6 @@
 // PayoutWorkflow (T-0510, REQ-PO-001/002): the sweep resumes a payout whose 24 h cooling-off ended, or
 // whose second approval landed, exactly once; what is still waiting stays; reruns are replays.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
 import { fixedClock, NotifySimulator, PayoutError, PayoutSimulator, type AdvanceableClock, type PayoutPort } from '@kesher/ports';
 import { ApprovalService } from '@kesher/api/approvals/service';
@@ -48,6 +48,8 @@ beforeAll(async () => {
   approvals = new ApprovalService(db);
   payouts = new PayoutService({ db, port: new PayoutSimulator(clock), ledger, accounts, transfers, approvals, identity, notify: new NotifySimulator(), flags: new StaticFlags(undefined, { 'payouts.nium': true }), provider: 'simulator', kyb: new KybGate(new InstitutionKyb(db, approvals, new AuditService(db))), payoutAccounts: new PayoutAccounts(db, new AuditService(db)) });
   wf = new PayoutWorkflow(payouts, () => clock.now());
+  // The sweep tests need a member payout that waits for a second approver, which a request no longer lets in (T-0545): they skip that one refusal.
+  vi.spyOn(payouts as unknown as { refuseUnapprovable: () => void }, 'refuseUnapprovable').mockImplementation(() => undefined);
 }, 60_000);
 afterAll(async () => db.close());
 
