@@ -63,8 +63,8 @@ describe('dist/css/tokens.css', () => {
       expect(manualDark, name).toMatch(new RegExp(`${name}: #[0-9A-F]{6,8};`));
       expect(systemDark, name).toMatch(new RegExp(`${name}: #[0-9A-F]{6,8};`));
     }
-    expect(root).toContain('--color-bg-canvas: #FBF8F3;');
-    expect(manualDark).toContain('--color-bg-canvas: #0E1523;');
+    expect(root).toContain('--color-bg-canvas: #F4F7FB;');
+    expect(manualDark).toContain('--color-bg-canvas: #0D1426;');
     expect(manualDark).toContain('--color-money-in: #5CC98A;');
   });
 

@@ -5,7 +5,7 @@ Style Dictionary 5. Task T-0006.
 
 **Change a token here and it changes everywhere.** `tokens.json` is the only place a colour,
 size, radius, shadow, duration or type style is defined. Web, console, admin and mobile all read
-the generated outputs; nobody hand-types `#1E5BD8` or `16px` in app code.
+the generated outputs; nobody hand-types `#293B8F` or `16px` in app code.
 
 ## Files
 
