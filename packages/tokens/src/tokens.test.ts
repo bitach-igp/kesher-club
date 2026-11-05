@@ -120,7 +120,7 @@ describe('modes', () => {
     const expanded = expandModes(source) as Record<string, Record<string, Record<string, Record<string, { $value: unknown }>>>>;
     expect(expanded.light?.color?.money?.in?.$value).toBe('{light.color.status.success}');
     expect(expanded.dark?.color?.money?.in?.$value).toBe('{dark.color.status.success}');
-    expect(expanded.dark?.color?.bg?.canvas?.$value).toBe('#0E1523');
+    expect(expanded.dark?.color?.bg?.canvas?.$value).toBe('#0D1426');
     expect(expanded.color).toBeUndefined();
     expect(expanded.space).toBeDefined();
   });

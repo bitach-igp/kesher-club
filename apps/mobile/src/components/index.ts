@@ -8,3 +8,5 @@ export { ListRow } from './ListRow.tsx';
 export { Screen, Card, EmptyState, Skeleton } from './Screen.tsx';
 export { Toggle } from './Toggle.tsx';
 export { QrCode } from './QrCode.tsx';
+export { BalanceHero } from './BalanceHero.tsx';
+export { TabBar, type TabItem } from './TabBar.tsx';

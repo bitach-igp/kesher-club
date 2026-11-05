@@ -2,6 +2,7 @@
 // (see README.md: a one-line adapter maps `useRouter` from expo-router onto this interface).
 // Keeping the seam lets the view models and tests run without the Expo SDK.
 import { createContext, useContext } from 'react';
+import type { CopyKey } from './i18n.ts';
 
 export type Href = string;
 
@@ -45,3 +46,24 @@ export function href(path: string, params: Record<string, string | undefined> = 
     .join('&');
   return q ? `${path}?${q}` : path;
 }
+
+/** The five bottom tabs (T-0673): each is the root of a screen group that already exists, so no route moves and every deep link still lands where it did. */
+export interface TabDef {
+  key: 'home' | 'card' | 'club' | 'pay' | 'help';
+  /** The first route segment of every screen the tab owns. */
+  root: string;
+  href: Href;
+  label: CopyKey;
+  glyph: string;
+}
+export const TABS: readonly TabDef[] = [
+  { key: 'home', root: '(tabs)', href: '/(tabs)/home', label: 'tabs.home', glyph: '⌂' },
+  { key: 'card', root: 'card', href: '/card', label: 'tabs.card', glyph: '▭' },
+  { key: 'club', root: 'club', href: '/club', label: 'tabs.club', glyph: '◇' },
+  { key: 'pay', root: 'pay', href: '/pay', label: 'tabs.pay', glyph: '↗' },
+  { key: 'help', root: 'help', href: '/help', label: 'tabs.help', glyph: '?' },
+];
+
+/** The tab a route belongs to, or undefined for a screen outside the tabs (sign-in, add money, wallet detail, settings). */
+export const activeTab = (segments: readonly string[]): TabDef['key'] | undefined => TABS.find((t) => t.root === segments[0])?.key;
+
