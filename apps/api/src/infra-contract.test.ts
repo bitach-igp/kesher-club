@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { apiConfigSchema, loadApiConfig, workerConfigSchema } from './config.ts';
+import { apiConfigSchema, loadApiConfig, loadWorkerConfig, PROVIDER_PORTS, workerConfigSchema } from './config.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = (p: string): string => fs.readFileSync(path.join(ROOT, p), 'utf8');
@@ -79,9 +79,21 @@ describe('the process config and Terraform agree (T-0025)', () => {
         // APP_ENV is `local.env` in the roots that share a locals block, so the environment names it here.
         const chosen = { APP_ENV: appEnv, PROVIDER_MODE_DEFAULT: value('PROVIDER_MODE_DEFAULT') };
         expect(chosen.PROVIDER_MODE_DEFAULT).toBeTruthy();
-        const attempt = () => loadApiConfig({ ...VALID, ...chosen } as Record<string, string>);
-        if (bootsToday) expect(attempt).not.toThrow();
-        else expect(attempt).toThrow(/PROVIDER_MODE_DEFAULT/);
+        const raw = { ...VALID, ...chosen } as Record<string, string>;
+        for (const load of [loadApiConfig, loadWorkerConfig]) {
+          if (bootsToday) expect(() => load(raw)).not.toThrow();
+          // Refused for `live` itself, not for any other reason: the same environment with `sandbox` loads.
+          else {
+            expect(() => load(raw)).toThrow(/PROVIDER_MODE_DEFAULT: only sim or sandbox/);
+            expect(() => load({ ...raw, PROVIDER_MODE_DEFAULT: 'sandbox' })).not.toThrow();
+          }
+        }
+      });
+
+      it('passes no PROVIDER_* key the config does not know, which would stop the boot (T-0040)', () => {
+        const known = new Set(['PROVIDER_MODE_DEFAULT', ...Object.values(PROVIDER_PORTS).map((p) => p.env)]);
+        const passed = [...hcl.matchAll(/^\s*(PROVIDER_[A-Z0-9_]+)\s*=/gm)].map((m) => m[1]!);
+        expect(passed.filter((k) => !known.has(k))).toEqual([]);
       });
 
       it('passes the secrets through ECS secrets, never as plain environment', () => {

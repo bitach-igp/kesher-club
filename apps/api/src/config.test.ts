@@ -121,6 +121,11 @@ describe('Crowded banking override (T-0659)', () => {
     expect(loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox', PROVIDER_INSTITUTION_BANKING: 'sim' }).PROVIDER_INSTITUTION_BANKING).toBe('sim');
   });
 
+  it('an empty PROVIDER_* value counts as not set, as every other key does (T-0040)', () => {
+    expect(loadApiConfig({ ...env, PROVIDER_INSTITUTION_BANKING: '' }).PROVIDER_INSTITUTION_BANKING).toBe('sim');
+    expect(thrown(() => loadApiConfig({ ...env, PROVIDER_FUNDING: '' })).invalid.join()).toMatch(/PROVIDER_FUNDING/);
+  });
+
   it('loads a full Crowded set for the API and the worker, the token and secrets as Secrets', () => {
     const c = loadApiConfig({ ...env, ...crowded, CROWDED_WEBHOOK_SECRETS: `${WH_SECRET}, ${WH_PREVIOUS}` });
     expect(c.PROVIDER_INSTITUTION_BANKING).toBe('crowded');
