@@ -4,6 +4,8 @@
 locals {
   spf = "v=spf1 ${join(" ", [for h in var.spf_includes : "include:${h}"])} ~all"
   rua = "mailto:${var.dmarc_report_address}"
+  # Route 53 takes a TXT value as quoted strings of at most 255 characters each; a 2048-bit DKIM key is longer than one.
+  dkim_value = var.dkim == null ? null : "\"${join("\" \"", regexall(".{1,255}", var.dkim.value))}\""
 }
 
 resource "aws_route53_record" "spf" {
@@ -19,7 +21,9 @@ resource "aws_route53_record" "dmarc" {
   name    = "_dmarc.${var.domain}"
   type    = "TXT"
   ttl     = 300
-  records = ["v=DMARC1; p=${var.dmarc_policy}; rua=${local.rua}; adkim=s; aspf=s; fo=1"]
+  # Relaxed alignment (the default): Postmark's return path is pm-bounces.<domain>, a subdomain, so strict SPF alignment would fail
+  # and DMARC would pass on DKIM alone.
+  records = ["v=DMARC1; p=${var.dmarc_policy}; rua=${local.rua}; fo=1"]
 }
 
 resource "aws_route53_record" "dkim" {
@@ -29,7 +33,7 @@ resource "aws_route53_record" "dkim" {
   name    = "${var.dkim.selector}._domainkey.${var.domain}"
   type    = "TXT"
   ttl     = 300
-  records = [var.dkim.value]
+  records = [local.dkim_value]
 }
 
 resource "aws_route53_record" "return_path" {

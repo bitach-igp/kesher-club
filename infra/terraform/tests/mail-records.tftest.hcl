@@ -26,6 +26,16 @@ run "defaults_start_dmarc_at_none" {
   }
 
   assert {
+    condition     = !strcontains(one(aws_route53_record.dmarc.records), "aspf") && !strcontains(one(aws_route53_record.dmarc.records), "adkim")
+    error_message = "alignment stays relaxed: the return path is a subdomain"
+  }
+
+  assert {
+    condition     = aws_route53_record.spf.name == "kesher.club" && aws_route53_record.caa.name == "kesher.club"
+    error_message = "SPF and CAA sit at the apex"
+  }
+
+  assert {
     condition     = length(aws_route53_record.dkim) == 0
     error_message = "DKIM is written only when the Postmark selector and key are supplied"
   }
@@ -67,6 +77,29 @@ run "dkim_and_stricter_policy" {
   assert {
     condition     = contains(aws_route53_record.caa.records, "0 iodef \"mailto:security@kesher.club\"")
     error_message = "CAA violations are reported when an address is given"
+  }
+}
+
+run "a_long_dkim_key_is_split_into_quoted_strings_and_a_null_return_path_is_skipped" {
+  command = plan
+
+  module {
+    source = "./modules/mail-records"
+  }
+
+  variables {
+    dkim               = { selector = "sel", value = "k=rsa;p=${join("", [for i in range(400) : "A"])}" }
+    return_path_target = null
+  }
+
+  assert {
+    condition     = length(regexall("\" \"", one(one(aws_route53_record.dkim).records))) == 1 && startswith(one(one(aws_route53_record.dkim).records), "\"k=rsa;p=") && endswith(one(one(aws_route53_record.dkim).records), "\"")
+    error_message = "a 408 character key becomes two quoted strings of at most 255 characters"
+  }
+
+  assert {
+    condition     = length(aws_route53_record.return_path) == 0
+    error_message = "a null return path target writes no CNAME"
   }
 }
 

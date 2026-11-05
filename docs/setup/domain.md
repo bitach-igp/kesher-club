@@ -25,8 +25,9 @@ is written by the environment roots; the mail and certificate records below are 
 | SPF (apex TXT) | names who may send as the domain; everything else soft-fails |
 | DKIM (`<selector>._domainkey`) | Postmark signs outgoing mail; receivers check the signature |
 | DMARC (`_dmarc`) | tells receivers what to do when SPF and DKIM both fail, and where to report |
-| Return path (`pm-bounces`) | bounces come back to Postmark and align with the domain |
+| Return path (`pm-bounces`) | bounces come back to Postmark; DMARC alignment is relaxed because this is a subdomain of the From domain |
 | CAA (apex) | only the listed authorities may issue certificates for the domain and its subdomains |
 
+A DKIM key longer than 255 characters (a 2048-bit key) is split into quoted strings automatically. Until step 4 is done, mail sent through Postmark fails DMARC (harmless at `p=none`; do not raise the policy before the sender is verified).
 The apex A record for the web site belongs with the prod web module (`app.<domain>` is already written there); this change adds no web record.
 Records for a second sender (a support desk, a newsletter) are added by extending `spf_includes` in `modules/mail-records` through a card.
