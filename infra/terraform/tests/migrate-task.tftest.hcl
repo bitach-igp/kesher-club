@@ -1,6 +1,13 @@
 # Plan-mode checks for modules/migrate-task (T-0044): private, read-only, every credential from Secrets Manager.
 
 mock_provider "aws" {
+  # The policy ARN embeds the partition, and the mock's random string is not a valid one.
+  mock_data "aws_partition" {
+    defaults = {
+      partition = "aws"
+    }
+  }
+
   mock_data "aws_iam_policy_document" {
     defaults = {
       json = "{\"Version\":\"2012-10-17\",\"Statement\":[]}"
