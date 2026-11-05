@@ -1,7 +1,7 @@
 // Balance hero (T-0671): the shekel balance large, the dollar balance beside it when the member holds one. Amounts go
 // through `format(Money, locale)`, never a Number, so a bigint stays exact. One accessible summary line for a screen reader.
 import { format, type Money } from '@kesher/domain';
-import { StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { intlLocale, useLocale } from '../i18n.ts';
 import { useTheme } from '../theme.ts';
 import { Txt } from './Txt.tsx';
@@ -17,13 +17,16 @@ export function BalanceHero({ label, ils, usd, testID }: BalanceHeroProps) {
   const th = useTheme();
   const locale = useLocale();
   const main = format(ils, intlLocale(locale));
+  // On native, mirroring follows I18nManager (applied at the restart `applyLayoutDirection` reports); only react-native-web needs the
+  // direction set, because there the page has no native layout manager.
+  const webDirection = Platform.OS === 'web' ? { direction: locale === 'he' ? ('rtl' as const) : ('ltr' as const) } : null;
   const side = usd ? format(usd, intlLocale(locale)) : undefined;
   return (
     <View
       testID={testID}
       accessible
       accessibilityLabel={side ? `${label}. ${main}. ${side}` : `${label}. ${main}`}
-      style={[styles.hero, { backgroundColor: th.color.action.primary, borderRadius: th.radius.lg, padding: th.space[5], gap: th.space[1], direction: locale === 'he' ? 'rtl' : 'ltr' }]}
+      style={[styles.hero, { backgroundColor: th.color.action.primary, borderRadius: th.radius.lg, padding: th.space[5], gap: th.space[1] }, webDirection]}
     >
       <Txt variant="caption" tone="onAction">
         {label}

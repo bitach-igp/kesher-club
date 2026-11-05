@@ -6,10 +6,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { applyLayoutDirection, LocaleProvider, onward, type LayoutDirection, type Locale } from '../i18n.ts';
 import { money } from '@kesher/domain';
-import { cleanup, fireEvent } from '@testing-library/react';
 import { Badge } from './Badge.tsx';
 import { BalanceHero } from './BalanceHero.tsx';
 import { ListRow } from './ListRow.tsx';
@@ -148,7 +147,7 @@ describe('redesign primitives mirror, keep money exact and are reachable (T-0671
     expect(picked).toEqual(['help']);
   });
 
-  it('TabBar lists the tabs in reading order in both locales (the row itself mirrors)', () => {
+  it('TabBar keeps the tabs in reading order and sets the row direction per locale (native mirroring is I18nManager, checked on device)', () => {
     const { unmount } = wrap('he', <TabBar items={tabs.map((t) => ({ ...t, label: `ת-${t.key}` }))} active="home" onSelect={() => undefined} testID="tabs-he" />);
     expect(screen.getAllByRole('tab').map((e) => e.textContent)).toEqual(['⌂ת-home', '▭ת-card', '?ת-help']);
     expect(getComputedStyle(screen.getByTestId('tabs-he')).direction).toBe('rtl');
@@ -158,7 +157,8 @@ describe('redesign primitives mirror, keep money exact and are reachable (T-0671
   });
 
   it('Badge has a brand tone', () => {
-    wrap('en', <Badge label="New" tone="brand" testID="badge" />);
+    wrap('en', <><Badge label="New" tone="brand" testID="badge" /><Badge label="Old" testID="plain" /></>);
     expect(screen.getByTestId('badge').textContent).toBe('New');
+    expect(getComputedStyle(screen.getByTestId('badge')).backgroundColor).not.toBe(getComputedStyle(screen.getByTestId('plain')).backgroundColor);
   });
 });

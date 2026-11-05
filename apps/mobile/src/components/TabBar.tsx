@@ -1,6 +1,7 @@
 // Tab bar (T-0671): a row of tabs along the bottom, each at least 44 points tall, the active one marked with `selected` and the
-// brand colour. The row mirrors under native RTL (start/end only), so the first tab sits at the reading start in both locales.
-import { Pressable, StyleSheet, View } from 'react-native';
+// brand colour. On native the row mirrors with I18nManager (start/end edges only); on react-native-web it sets `direction` from the locale,
+// so the first tab sits at the reading start in both.
+import { Platform, Pressable, StyleSheet, View } from 'react-native';
 import { useLocale } from '../i18n.ts';
 import { useTheme } from '../theme.ts';
 import { Txt } from './Txt.tsx';
@@ -22,11 +23,12 @@ export interface TabBarProps {
 export function TabBar({ items, active, onSelect, testID }: TabBarProps) {
   const th = useTheme();
   const locale = useLocale();
+  const webDirection = Platform.OS === 'web' ? { direction: locale === 'he' ? ('rtl' as const) : ('ltr' as const) } : null;
   return (
     <View
       testID={testID}
       accessibilityRole="tablist"
-      style={[styles.bar, { backgroundColor: th.color.bg.surface, borderTopWidth: th.borderWidth.default, borderTopColor: th.color.border.default, paddingHorizontal: th.space[2], direction: locale === 'he' ? 'rtl' : 'ltr' }]}
+      style={[styles.bar, { backgroundColor: th.color.bg.surface, borderTopWidth: th.borderWidth.default, borderTopColor: th.color.border.default, paddingHorizontal: th.space[2] }, webDirection]}
     >
       {items.map((t) => {
         const on = t.key === active;
