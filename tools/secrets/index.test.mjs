@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateAll, GENERATED, kids } from './generate.mjs';
-import { awsCalls, run, VALIDATORS } from './index.mjs';
+import { awsCalls, PAIR, run, VALIDATORS } from './index.mjs';
 
 const NO_VALUE = { status: 254, stderr: "An error occurred (ResourceNotFoundException) when calling the GetSecretValue operation: Secrets Manager can't find the specified secret value for VersionStage: AWSCURRENT" };
 const NO_CONTAINER = { status: 254, stderr: "An error occurred (ResourceNotFoundException) when calling the GetSecretValue operation: Secrets Manager can't find the specified secret." };
@@ -51,18 +51,18 @@ test('loads a secret with no value, on stdin, and never in an argument', () => {
 });
 
 test('keeps a secret that already has a value unless --rotate is given', () => {
-  const state = { 'kesher/staging/pii-data-key': HAS_VALUE };
+  const state = { 'kesher/staging/jwt-signing-key': HAS_VALUE };
   const kept = fakeAws(state);
-  assert.deepEqual(run({ env: 'staging', region: 'r', only: ['pii-data-key'] }, kept.exec), [{ name: 'pii-data-key', outcome: 'kept' }]);
+  assert.deepEqual(run({ env: 'staging', region: 'r', only: ['jwt-signing-key'] }, kept.exec), [{ name: 'jwt-signing-key', outcome: 'kept' }]);
   assert.ok(!kept.calls.some((c) => c.args[1] === 'put-secret-value'));
   const rotated = fakeAws(state);
-  assert.deepEqual(run({ env: 'staging', region: 'r', only: ['pii-data-key'], rotate: true }, rotated.exec), [{ name: 'pii-data-key', outcome: 'rotated' }]);
+  assert.deepEqual(run({ env: 'staging', region: 'r', only: ['jwt-signing-key'], rotate: true }, rotated.exec), [{ name: 'jwt-signing-key', outcome: 'rotated' }]);
 });
 
 test('--dry-run writes nothing and says what it would do', () => {
   const { exec, calls } = fakeAws({ 'kesher/prod/jwt-signing-key': HAS_VALUE });
-  const results = run({ env: 'prod', region: 'r', only: ['jwt-signing-key', 'staff-jwks'], rotate: true, dryRun: true }, exec);
-  assert.deepEqual(results.map((r) => r.outcome), ['would-rotate', 'would-load']);
+  const results = run({ env: 'prod', region: 'r', only: ['jwt-signing-key', 'staff-jwks', 'admin-api-signing-key'], rotate: true, dryRun: true }, exec);
+  assert.deepEqual(results.map((r) => r.outcome), ['would-rotate', 'would-load', 'would-load']);
   assert.ok(!calls.some((c) => c.args[1] === 'put-secret-value'));
 });
 
@@ -72,6 +72,38 @@ test('a container Terraform has not created stops the run and names the secret; 
   const denied = fakeAws({ 'kesher/staging/jwt-signing-key': { status: 255, stderr: 'AccessDeniedException' } });
   assert.deepEqual(run({ env: 'staging', region: 'r', only: ['jwt-signing-key'] }, denied.exec), [{ name: 'jwt-signing-key', outcome: 'failed' }]);
   assert.ok(!denied.calls.some((c) => c.args[1] === 'put-secret-value'));
+});
+
+test('the admin key pair is one unit: a lone half is refused, a half-filled pair stops the run, --rotate replaces both', () => {
+  assert.throws(() => run({ env: 'staging', region: 'r', only: ['staff-jwks'] }, fakeAws({}).exec), /one key pair/);
+  assert.throws(() => run({ env: 'staging', region: 'r', only: ['admin-api-signing-key'], rotate: true }, fakeAws({}).exec), /one key pair/);
+  const half = fakeAws({ 'kesher/staging/staff-jwks': HAS_VALUE });
+  assert.deepEqual(run({ env: 'staging', region: 'r', only: PAIR }, half.exec), [{ name: 'admin-api-signing-key+staff-jwks', outcome: 'pair-mismatch' }]);
+  assert.ok(!half.calls.some((c) => c.args[1] === 'put-secret-value'));
+  const both = fakeAws({ 'kesher/staging/staff-jwks': HAS_VALUE });
+  assert.deepEqual(run({ env: 'staging', region: 'r', only: PAIR, rotate: true }, both.exec).map((r) => r.outcome), ['loaded', 'rotated']);
+  // loaded from one generation: the public half is the private half's
+  const writes = both.calls.filter((c) => c.args[1] === 'put-secret-value');
+  const priv = JSON.parse(writes.find((c) => c.args.includes('kesher/staging/admin-api-signing-key')).input);
+  const pub = JSON.parse(writes.find((c) => c.args.includes('kesher/staging/staff-jwks')).input).keys[0];
+  assert.equal(pub.x, priv.x);
+  const fresh = fakeAws({});
+  assert.deepEqual(run({ env: 'staging', region: 'r', only: PAIR }, fresh.exec).map((r) => r.outcome), ['loaded', 'loaded']);
+  const kept = fakeAws({ 'kesher/staging/staff-jwks': HAS_VALUE, 'kesher/staging/admin-api-signing-key': HAS_VALUE });
+  assert.deepEqual(run({ env: 'staging', region: 'r', only: PAIR }, kept.exec).map((r) => r.outcome), ['kept', 'kept']);
+});
+
+test('--rotate never replaces the PII keys: an explicit request is refused, a general one skips them', () => {
+  assert.throws(() => run({ env: 'prod', region: 'r', only: ['pii-data-key'], rotate: true }, fakeAws({}).exec), /cannot be rotated with this tool/);
+  const state = Object.fromEntries(GENERATED.map((n) => [`kesher/prod/${n}`, HAS_VALUE]));
+  const all = fakeAws(state);
+  const results = run({ env: 'prod', region: 'r', rotate: true }, all.exec);
+  assert.deepEqual(results.filter((r) => r.outcome === 'protected').map((r) => r.name), ['pii-data-key', 'pii-index-key']);
+  const written = all.calls.filter((c) => c.args[1] === 'put-secret-value').map((c) => c.args[c.args.indexOf('--secret-id') + 1]);
+  assert.ok(!written.some((id) => id.includes('pii-')), 'a PII key was written');
+  assert.ok(written.includes('kesher/prod/jwt-signing-key'));
+  // an unfilled PII key is still loaded on a first run
+  assert.deepEqual(run({ env: 'prod', region: 'r', only: ['pii-data-key'] }, fakeAws({}).exec), [{ name: 'pii-data-key', outcome: 'loaded' }]);
 });
 
 test('refuses an unknown environment, an unknown secret and a missing region', () => {

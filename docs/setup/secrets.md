@@ -19,7 +19,10 @@ node tools/secrets/index.mjs --env staging --region us-east-1 --only staff-jwks,
 
 It prints one line per secret (`loaded`, `kept`, `rotated`, `would-load`, `no-container`, `failed`) and nothing else. A value
 is never printed, never an argument and never logged; the AWS CLI reads it from standard input. A secret that already has a value
-is kept unless `--rotate` is given. `no-container` means Terraform has not created it: apply the environment first.
+is kept unless `--rotate` is given. The tool never replaces `pii-data-key` or `pii-index-key` (it refuses an explicit
+request and skips them under a general `--rotate`), and it treats `admin-api-signing-key` and `staff-jwks` as one key pair: it
+loads, keeps or rotates both together, refuses to name only one, and stops with `pair-mismatch` when exactly one already has a
+value (re-run with `--rotate` to replace both). `no-container` means Terraform has not created it: apply the environment first.
 
 ## Every container
 
@@ -48,8 +51,8 @@ re-check them at every webhook-secret rotation. An empty list keeps the listener
 |---|---|
 | Database passwords | `--rotate` the four `db-*` secrets, then run the migrate task (T-0044): it sets the new passwords on the roles. Restart the services (a deploy does it) so they pick the new `db-app-password` up. |
 | `jwt-signing-key` | The API holds one signing key (`apps/api/src/auth/tokens.ts`): tokens signed with the old key stop verifying the moment the new key is live. Access tokens last 10 minutes and the app refreshes on a 401, so members do not sign in again, but rotate off-peak and expect a burst of refreshes. A two-key overlap is a future card. |
-| `admin-api-signing-key` and `staff-jwks` | Rotate together (`--only staff-jwks,admin-api-signing-key --rotate`) and deploy the API and the console in the same release. |
-| `pii-data-key`, `pii-index-key` | **Never rotate with this tool on a live database.** Sealed columns and blind indexes were written with the old keys; a rotation needs a re-seal job that reads with the old key and writes with the new one. That job is not built: open a card when the first rotation is due. |
+| `admin-api-signing-key` and `staff-jwks` | The tool rotates the pair as one (`--only staff-jwks,admin-api-signing-key --rotate`). The key id stays `kesher-<env>-admin-1`, so deploy the API and the console in the same release: until both run, staff tokens fail to verify. |
+| `pii-data-key`, `pii-index-key` | The tool refuses to rotate them. Sealed columns and blind indexes were written with the old keys; a rotation needs a re-seal job that reads with the old key and writes with the new one. That job is not built: open a card when the first rotation is due. |
 | Vendor secrets | Rotate in the vendor dashboard. Stripe and other webhook secrets allow two values during the overlap (the config takes `old,new` comma-separated), so deliveries keep verifying while the vendor switches. |
 
 If a secret may have been exposed, treat it as RUN-07 (data incident): rotate it first, then work out how it leaked.
