@@ -103,7 +103,7 @@ describe('spec contrast claims (Tab 2 colour table)', () => {
     }
   });
 
-  it('every colour token has a dark value that differs from or deliberately equals its light value (parity)', () => {
+  it('dark and light expose the same colour token paths (parity)', () => {
     const flat = (o: unknown, path = ''): string[] =>
       typeof o === 'string' ? [path] : Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => flat(v, path ? `${path}.${k}` : k));
     expect(flat(dark.color)).toEqual(flat(light.color));
