@@ -23,7 +23,7 @@
 // `runLoad` is the deterministic workflow body, pure over `LoadActivities`, so Temporal (ADR-002) can
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
-import { applyBps, DomainError, fromWire, money, sub, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
+import { applyBps, DomainError, fromWire, money, sub, toWire, uuidv7, type Currency, type Money, type Posting } from '@kesher/domain';
 import { applyRate, FundingError, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
@@ -149,6 +149,7 @@ export async function applyVendorState(a: LoadActivities, t: Transfer, load: Ven
 
 export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
 export const holdKey = (workflowId: string): string => `${workflowId}:hold`;
+const unknownLoadKey = (transferId: string): string => `load-unknown:${transferId}`;
 export const releaseKey = (workflowId: string): string => `${workflowId}:release`;
 
 interface Deps {
@@ -234,7 +235,15 @@ export class LoadService implements LoadActivities {
       postings: await this.legs(transfer, 'pending'),
       metadata: { workflowId, provider: this.d.provider, holdUntil, ...conversionMetadata(transfer), ...institutionMetadata(transfer) },
     });
-    return this.d.transfers.apply(transfer.id, 'hold', now, { journalId: journal.id, holdReleasesAt: new Date(holdUntil), reason: 'bank hold' });
+    try {
+      return await this.d.transfers.apply(transfer.id, 'hold', now, { journalId: journal.id, holdReleasesAt: new Date(holdUntil), reason: 'bank hold' });
+    } catch (e) {
+      // A fail that ran before this hold's journal existed saw nothing to reverse and left the row failed (T-0547): the journal
+      // posted here would stand against a failed load, so it is reversed now (once, by key) and the error stands.
+      const after = (await this.d.transfers.get(transfer.id))?.state;
+      if (after === 'failed' || after === 'cancelled') await this.d.ledger.reverse(journal.id, `${holdKey(workflowId)}:reversal`);
+      throw e;
+    }
   }
 
   async release(transfer: Transfer, now: Date): Promise<Transfer> {
@@ -247,7 +256,18 @@ export class LoadService implements LoadActivities {
     // (A load with no vendor link, a statement deposit, is never held, so it never gets here without one.)
     const loadId = await this.vendorLoadOf(transfer.id);
     if (loadId) {
-      const vendor = await this.d.port.getLoad(loadId);
+      // A load the vendor does not know is a case for people, opened once; it is not asked about again until they act (T-0547).
+      if (await this.unknownLoadOpen(transfer.id)) return transfer;
+      let vendor: VendorLoad;
+      try {
+        vendor = await this.d.port.getLoad(loadId);
+      } catch (e) {
+        if (e instanceof FundingError && e.code === 'UNKNOWN_LOAD') {
+          await this.openUnknownLoadCase(transfer, loadId, now);
+          return transfer;
+        }
+        throw e;
+      }
       if (vendor.status === 'failed') return this.fail(transfer, vendor.failureCode ?? 'VENDOR_FAILED', now);
     }
     // Read the row again and refuse if the hold was reversed: a return that failed the load since the caller's read must
@@ -294,7 +314,8 @@ export class LoadService implements LoadActivities {
     const current = (await this.d.transfers.get(transfer.id)) ?? transfer;
     const held = current.state === 'pending_hold' || current.state === 'pending';
     const reversals: PostedJournal[] = [];
-    if (held) {
+    // A load still `submitted` may have a hold journal posted a moment before its row moved (T-0547): the journal decides, not the state.
+    if (held || current.state === 'submitted') {
       for (const key of [holdKey(workflowId), releaseKey(workflowId)]) {
         const posted = await this.d.db.query<{ id: string }>(`select id from ledger.journal where idempotency_key = $1`, [key]);
         if (posted.rows[0]) reversals.push(await this.d.ledger.reverse(posted.rows[0].id, `${key}:reversal`));
@@ -356,6 +377,18 @@ export class LoadService implements LoadActivities {
   }
 
   /** Loads the vendor has not finished: submitted, or held for the bank's hold days (a return can come during it), longer than `olderThanMs` ago. The worker asks the vendor about them. */
+  /** True while a case people have not decided exists for a held load the vendor does not know; a resolved or dismissed one lets it be asked again. */
+  async unknownLoadOpen(transferId: string): Promise<boolean> {
+    return Boolean((await this.d.db.query(`select 1 from ops.case where dedupe_key = $1 and status in ('open', 'investigating')`, [unknownLoadKey(transferId)])).rows[0]);
+  }
+
+  private async openUnknownLoadCase(transfer: Transfer, loadId: string, now: Date): Promise<void> {
+    await this.d.db.query(
+      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_unknown', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
+      [uuidv7(now), unknownLoadKey(transfer.id), { transferId: transfer.id, loadId, state: transfer.state, amount: { minor: transfer.amount.minor.toString(), currency: transfer.amount.currency } }, now],
+    );
+  }
+
   async stale(now: Date, olderThanMs: number, limit = 100): Promise<Transfer[]> {
     // This market's loads only: another market's worker asks its own provider about its own (T-0028). An
     // institution's ACH pull is one too (T-0617); a deposit recorded off a statement (T-0614) never met the vendor.
