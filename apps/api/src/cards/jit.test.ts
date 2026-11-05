@@ -2,7 +2,7 @@
 // POST /jit/card-authorizations, every decline reason, the hold journal on approval, replay, the
 // plan's card entitlement, the velocity rule, and the fail-closed paths (a throw, a slow dependency).
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { money, uuidv7 } from '@kesher/domain';
+import { DomainError, money, uuidv7 } from '@kesher/domain';
 import { type CardIssuingPort, type CardIssuingSimulator, type JitAuthorizationRequest } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
@@ -28,8 +28,8 @@ let pending = '';
 type Decision = { result: 'APPROVED'; holdAmount: { minor: string; currency: string } } | { result: 'DECLINED'; reason: string };
 const MERCHANT = { name: 'Super-Pharm', mcc: '5912', country: 'IL' };
 
-async function authorize(input: { amount: bigint; currency?: 'USD' | 'ILS'; mcc?: string; country?: string; channel?: 'pos' | 'online' | 'atm'; tokenId?: string; agentic?: boolean; card?: string; signature?: string; now?: Date }) {
-  const signed = sim.authorize(input.card ?? processorCardId, { amount: { minor: input.amount, currency: input.currency ?? 'ILS' }, merchant: { ...MERCHANT, mcc: input.mcc ?? MERCHANT.mcc, country: input.country ?? MERCHANT.country }, channel: input.channel ?? 'pos', ...(input.tokenId ? { tokenId: input.tokenId } : {}), ...(input.agentic ? { agentic: true } : {}) });
+async function authorize(input: { merchantName?: string; amount: bigint; currency?: 'USD' | 'ILS'; mcc?: string; country?: string; channel?: 'pos' | 'online' | 'atm'; tokenId?: string; agentic?: boolean; card?: string; signature?: string; now?: Date }) {
+  const signed = sim.authorize(input.card ?? processorCardId, { amount: { minor: input.amount, currency: input.currency ?? 'ILS' }, merchant: { ...MERCHANT, name: input.merchantName ?? MERCHANT.name, mcc: input.mcc ?? MERCHANT.mcc, country: input.country ?? MERCHANT.country }, channel: input.channel ?? 'pos', ...(input.tokenId ? { tokenId: input.tokenId } : {}), ...(input.agentic ? { agentic: true } : {}) });
   const r = await dispatch(app, { method: 'POST', url: '/v1/jit/card-authorizations', headers: { ...signed.headers, ...(input.signature ? { 'x-sim-signature': input.signature } : {}) }, rawBody: signed.rawBody, now: input.now ?? NOW });
   return { status: r.status, body: r.body as Decision, authId: (JSON.parse(signed.rawBody) as { authId: string }).authId };
 }
@@ -302,6 +302,73 @@ describe('agent purchases (TST-CRD-008)', () => {
     const stale = (await pendingIntents()).find((i) => (i.payload['amount'] as { minor: string }).minor === '2400')!;
     await db.query(`update agent.pending_intent set status = 'approved', decided_at = $2, decided_by = $3 where id = $1`, [stale.id, new Date(NOW.getTime() - 2 * 3_600_000), agentParty]);
     expect((await agentAuth({ amount: 2_400n, currency: 'USD', tokenId: 'tok_agent_2' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+  });
+
+  describe('an approved purchase is single-use and bound to its merchant (T-1018, F45)', () => {
+    /** The agent asks (declined), the member says yes in the app: returns the approved intent's id. */
+    const approvedFor = async (tokenId: string, minor: bigint, extra: { merchantName?: string; country?: string } = {}) => {
+      await mode('with_approval');
+      expect((await agentAuth({ amount: minor, currency: 'USD', tokenId, ...extra })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+      const intent = (await pendingIntents()).find((i) => i.payload['tokenId'] === tokenId)!;
+      await db.query(`update agent.pending_intent set status = 'approved', decided_at = $2, decided_by = $3 where id = $1`, [intent.id, NOW, agentParty]);
+      return intent.id;
+    };
+
+    it('another merchant, or the same name in another country, is not what was approved; the right merchant still is', async () => {
+      await db.query(`update agent.pending_intent set status = 'expired' where party_id = $1`, [agentParty]);
+      const id = await approvedFor('tok_agent_m1', 45_000n, { merchantName: 'Hotel One' });
+      for (const other of [{ merchantName: 'Hotel Two' }, { merchantName: 'Hotel One', country: 'US' }]) {
+        expect((await agentAuth({ amount: 45_000n, currency: 'USD', tokenId: 'tok_agent_m1', ...other })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+      }
+      expect((await app.services.intents.get(id))?.payload['consumedAuthId']).toBeUndefined();
+      expect((await agentAuth({ amount: 45_000n, currency: 'USD', tokenId: 'tok_agent_m1', merchantName: 'Hotel One' })).body).toMatchObject({ result: 'APPROVED' });
+    });
+
+    it('two authorisations racing for one approval: exactly one is approved, one hold is posted', async () => {
+      await db.query(`update agent.pending_intent set status = 'expired' where party_id = $1`, [agentParty]);
+      const id = await approvedFor('tok_agent_m2', 3_000n);
+      const [a, b] = await Promise.all([agentAuth({ amount: 3_000n, currency: 'USD', tokenId: 'tok_agent_m2' }), agentAuth({ amount: 3_000n, currency: 'USD', tokenId: 'tok_agent_m2' })]);
+      expect([a.body, b.body].filter((x) => x.result === 'APPROVED')).toHaveLength(1);
+      const winner = a.body.result === 'APPROVED' ? a : b;
+      expect((await app.services.intents.get(id))?.payload['consumedAuthId']).toBe(winner.authId);
+      expect((await db.query(`select 1 from ledger.journal where idempotency_key = any($1::text[])`, [[`jit:${a.authId}`, `jit:${b.authId}`]])).rows.length).toBe(1);
+    });
+
+    it('a hold that is refused, by a funds check or by any other error, gives the approval back', async () => {
+      await db.query(`update agent.pending_intent set status = 'expired' where party_id = $1`, [agentParty]);
+      const id = await approvedFor('tok_agent_m3', 2_000n);
+      for (const failure of [new DomainError('INSUFFICIENT_FUNDS', 'no', { available: '0', currency: 'USD' }), new Error('database went away')]) {
+        const spy = vi.spyOn(app.services.ledger, 'postNoOverdraft').mockRejectedValueOnce(failure);
+        const r = await agentAuth({ amount: 2_000n, currency: 'USD', tokenId: 'tok_agent_m3' });
+        spy.mockRestore();
+        expect(r.body).toMatchObject({ result: 'DECLINED' });
+        expect((await app.services.intents.get(id))?.payload['consumedAuthId']).toBeUndefined();
+      }
+      expect((await agentAuth({ amount: 2_000n, currency: 'USD', tokenId: 'tok_agent_m3' })).body).toMatchObject({ result: 'APPROVED' });
+    });
+
+    it('an amount above the approval is declined; a long merchant name matches the 120 characters stored', async () => {
+      await db.query(`update agent.pending_intent set status = 'expired' where party_id = $1`, [agentParty]);
+      const merchantName = 'H'.repeat(130);
+      const id = await approvedFor('tok_agent_m4', 1_500n, { merchantName });
+      expect((await agentAuth({ amount: 1_501n, currency: 'USD', tokenId: 'tok_agent_m4', merchantName })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+      expect((await app.services.intents.get(id))?.payload['consumedAuthId']).toBeUndefined();
+      expect((await agentAuth({ amount: 1_500n, currency: 'USD', tokenId: 'tok_agent_m4', merchantName })).body).toMatchObject({ result: 'APPROVED' });
+    });
+
+    it('while one authorisation holds the approval a different one is declined, and the same one asking again is approved without a second hold', async () => {
+      await db.query(`update agent.pending_intent set status = 'expired' where party_id = $1`, [agentParty]);
+      const id = await approvedFor('tok_agent_m5', 1_200n);
+      const signed = sim.authorize(agentCard, { amount: { minor: 1_200n, currency: 'USD' }, merchant: MERCHANT, channel: 'pos', tokenId: 'tok_agent_m5', agentic: true });
+      const authId = (JSON.parse(signed.rawBody) as { authId: string }).authId;
+      // The state a crash between spending the approval and posting the hold leaves behind.
+      await db.query(`update agent.pending_intent set payload = payload || jsonb_build_object('consumedAuthId', $2::text) where id = $1`, [id, authId]);
+      expect((await agentAuth({ amount: 1_200n, currency: 'USD', tokenId: 'tok_agent_m5' })).body).toEqual({ result: 'DECLINED', reason: 'AGENT_NOT_ALLOWED' });
+      const again = () => dispatch(app, { method: 'POST', url: '/v1/jit/card-authorizations', headers: signed.headers, rawBody: signed.rawBody, now: NOW });
+      expect((await again()).body).toMatchObject({ result: 'APPROVED' });
+      expect((await again()).body).toMatchObject({ result: 'APPROVED' });
+      expect((await db.query(`select 1 from ledger.journal where idempotency_key = $1`, [`jit:${authId}`])).rows).toHaveLength(1);
+    });
   });
 });
 

@@ -152,8 +152,9 @@ export class JitService {
       if (mode === 'off') return done(decline('AGENT_NOT_ALLOWED'));
       const underThreshold = typeof mode === 'object' && req.amount.currency === card.currency && req.amount.minor <= mode.underMinor;
       if (!underThreshold) {
-        const tokenId = req.tokenId ?? 'agentic';
-        const approved = await this.d.intents.approvedAgentPurchase(card.party_id, tokenId, req.merchant.mcc, req.amount, now);
+        // A token without an id is the card itself, not a key every such card shares.
+        const tokenId = req.tokenId ?? `card:${card.id}`;
+        const approved = await this.d.intents.approvedAgentPurchase(card.party_id, { tokenId, cardId: card.id, authId: req.authId, mcc: req.merchant.mcc, merchantName: req.merchant.name, country: req.merchant.country, amount: req.amount }, now);
         if (!approved) {
           await this.d.intents.openAgentPurchase({ partyId: card.party_id, cardId: card.id, tokenId, authId: req.authId, amount: req.amount, mcc: req.merchant.mcc, country: req.merchant.country, merchantName: req.merchant.name }, now);
           return done(decline('AGENT_NOT_ALLOWED'));
@@ -197,6 +198,8 @@ export class JitService {
 
     // The funding wallet is locked and checked again inside the posting transaction (T-0544): the balance read above is the early answer,
     // this one holds when two authorisations for one wallet race (REQ-CRD-003). Held only for the check and the writes.
+    // The approval is spent before the hold is posted, in one conditional update: of two racing authorisations only one gets it (F45).
+    if (approvalToSpend && !(await this.d.intents.consumeAgentPurchase(approvalToSpend, req.authId))) return done(decline('AGENT_NOT_ALLOWED'));
     let journal;
     try {
       journal = await this.d.ledger.postNoOverdraft({
@@ -225,11 +228,13 @@ export class JitService {
         },
       });
     } catch (e) {
+      // The hold did not happen: the approval goes back, so the member's yes is not burned by a refusal.
+      // Best effort: a failure to give it back must not hide why the hold failed (the same authorisation finds its approval again on a retry).
+      if (approvalToSpend) await this.d.intents.releaseAgentPurchase(approvalToSpend, req.authId).catch(() => undefined);
       if (e instanceof DomainError && e.code === 'INSUFFICIENT_FUNDS') return done(decline('INSUFFICIENT_FUNDS'));
       throw e;
     }
     if (active && capped) await this.d.entitlements.consume(active, CARD_SPEND_ENTITLEMENT, req.amount.minor, holdKey(req.authId), now);
-    if (approvalToSpend) await this.d.intents.consumeAgentPurchase(approvalToSpend, req.authId);
     return done({ approve: true, holdAmount: req.amount }, journal.id);
   }
 
