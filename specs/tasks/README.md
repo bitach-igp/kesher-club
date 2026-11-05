@@ -197,6 +197,15 @@
 | [T-0658](T-0658.md) | INS | Fix: US funding re-checks the kill switch, KYB and account before every send | REQ-INS-024, REQ-INS-022 | fix |
 | [T-0659](T-0659.md) | INS | Go-live wiring: Crowded adapter by config, secrets passed, keys persisted | REQ-INS-022, REQ-INS-025 | go-live |
 | [T-0660](T-0660.md) | INS | Crowded HTTP simulator and an end-to-end run of the US-banking flows | REQ-INS-022, REQ-INS-023, REQ-INS-024, REQ-INS-025 | go-live |
+| [T-0670](T-0670.md) | DSN | Redesign: tokens, navy and sky palette with dark-mode parity | REQ-WAL-001 | later |
+| [T-0671](T-0671.md) | DSN | Redesign: mobile primitives (balance hero, tab bar, badge, list row) | REQ-WAL-001 | later |
+| [T-0672](T-0672.md) | DSN | Redesign: mobile home (hero balance, quick actions, activity) | REQ-WAL-001 | later |
+| [T-0673](T-0673.md) | DSN | Redesign: mobile bottom tab bar | REQ-WAL-001 | later |
+| [T-0674](T-0674.md) | DSN | Redesign: mobile card screen (card art, frozen state) | REQ-CRD-003 | later |
+| [T-0675](T-0675.md) | DSN | Redesign: console shared styles (tokens, pills, tables, tiles) | REQ-INS-006 | later |
+| [T-0676](T-0676.md) | DSN | Redesign: console roster and allowance preview | REQ-INS-003, REQ-INS-004 | later |
+| [T-0677](T-0677.md) | DSN | Redesign: admin shell navigation and tiles | REQ-INS-006 | later |
+| [T-0678](T-0678.md) | DSN | Hebrew copy and number format audit | REQ-WAL-001 | later |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
