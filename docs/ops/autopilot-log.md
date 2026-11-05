@@ -30,3 +30,6 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-05 | T-0551 | #215 | Sonnet APPROVE (first round) | green |
 | 2026-11-05 | T-0553 | #216 | Sonnet APPROVE (first round) | green |
 | 2026-11-05 | T-0552 | #217 | Sonnet APPROVE (1 fix round: no backdating) | green |
+| 2026-11-05 | T-0554 | #220 | Sonnet APPROVE | green |
+| 2026-11-05 | T-0555 | #221 | Sonnet APPROVE; desktop PASS (enum value usable) | green |
+| 2026-11-05 | T-0550 | #222 | Sonnet APPROVE (non-blocking: allowance `payMember` unguarded, noted in the card); desktop PASS on real Postgres (reserve race) | green |
