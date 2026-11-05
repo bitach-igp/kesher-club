@@ -1,7 +1,7 @@
 // Tests for db/prepare.mjs (T-0044). Run with `node --test db/`.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { childEnv, migratorUrl, planPrepare, REQUIRED, ROLE_SQL, run } from './prepare.mjs';
+import { childEnv, migratorUrl, planPrepare, REQUIRED, ROLE_SQL, rolesInput, run } from './prepare.mjs';
 
 const PASSWORDS = { DB_APP_PASSWORD: 'app-pw-secret', DB_JIT_PASSWORD: 'jit-pw-secret', DB_READONLY_PASSWORD: 'ro-pw-secret', DB_MIGRATOR_PASSWORD: 'mig/pw:with@odd#chars?' };
 const ENV = { PGHOST: 'db.internal', PGPORT: '5432', PGDATABASE: 'club', PGSSLMODE: 'verify-full', PGSSLROOTCERT: '/app/db/certs/rds-global-bundle.pem', PGUSER: 'master', PGPASSWORD: 'master-pw-secret', ...PASSWORDS };
@@ -9,7 +9,8 @@ const ENV = { PGHOST: 'db.internal', PGPORT: '5432', PGDATABASE: 'club', PGSSLMO
 test('plans roles, then passwords and grants, then the migration, in that order', () => {
   const plan = planPrepare(ENV, '/app');
   assert.deepEqual(plan.map((s) => s.name), ['roles', 'passwords and grants', 'migrate']);
-  assert.deepEqual(plan[0].args, ['-X', '-q', '-v', 'ON_ERROR_STOP=1', '-f', '/app/db/roles.sql']);
+  assert.deepEqual(plan[0].args, ['-X', '-q', '-v', 'ON_ERROR_STOP=1']);
+  assert.equal(plan[0].input, rolesInput('/app/db/roles.sql'));
   assert.equal(plan[1].input, ROLE_SQL);
   assert.deepEqual(plan[2].args, ['/app/db/migrate.mjs']);
 });
@@ -87,4 +88,20 @@ test('the migrate step carries the URL in its environment only', () => {
   const [, , migrate] = planPrepare(ENV);
   assert.equal(migrate.env.ATLAS_URL, migratorUrl(ENV));
   assert.ok(!migrate.args.join(' ').includes('postgres://'));
+});
+
+test('step 1 makes a non-superuser master an inheriting member of club_migrator before roles.sql, once', () => {
+  const sql = rolesInput('/app/db/roles.sql');
+  const lines = sql.trim().split('\n');
+  // roles.sql runs last, so the grant is in place when it alters club_migrator's default privileges.
+  assert.equal(lines.at(-1), "\\i '/app/db/roles.sql'");
+  const create = lines.findIndex((l) => l.includes('create role club_migrator login createdb'));
+  const grant = lines.findIndex((l) => l.includes('grant club_migrator to %I with inherit true, set false'));
+  assert.ok(create >= 0 && grant > create, 'the role exists before it is granted');
+  // Each statement is skipped when already true: re-running the task changes nothing.
+  assert.match(lines[create], /where not exists \(select from pg_roles where rolname = 'club_migrator'\) \\gexec$/);
+  assert.match(lines[grant], /where not pg_has_role\(current_user, 'club_migrator', 'USAGE'\) \\gexec$/);
+  assert.match(sql, /SHOW_CONTEXT never/);
+  // A path is quoted for psql.
+  assert.ok(rolesInput("/o'dd/db/roles.sql").endsWith("\\i '/o''dd/db/roles.sql'\n"));
 });

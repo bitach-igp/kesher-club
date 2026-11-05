@@ -2,7 +2,10 @@
 // Prepares a deployed database from inside the VPC (T-0044). The RDS instance has no public endpoint, so this runs as a
 // one-off Fargate task (infra/terraform/modules/migrate-task) on the image built from tools/migrate/Dockerfile. Three steps, in
 // order, each safe to repeat:
-//   1. roles.sql as the RDS master user (the managed master secret arrives as PGUSER / PGPASSWORD);
+//   1. roles.sql as the RDS master user (the managed master secret arrives as PGUSER / PGPASSWORD), after a preamble that lets a
+//      non-superuser master (RDS, or any CREATEROLE user on Postgres 16) act as club_migrator: roles.sql alters club_migrator's
+//      default privileges, which Postgres allows only to a role that has club_migrator's privileges (an inheriting member), and
+//      a CREATEROLE creator holds only ADMIN on the roles it creates;
 //   2. the four service roles' passwords from Secrets Manager (DB_*_PASSWORD), plus the CONNECT and CREATE grants roles.sql
 //      leaves out: it revokes CONNECT from PUBLIC and grants it to nobody, so without step 2 no service role could log in
 //      and club_migrator could not create a schema;
@@ -26,6 +29,25 @@ export const REQUIRED = ['PGHOST', 'PGPORT', 'PGDATABASE', 'PGSSLMODE', 'PGUSER'
 const CONNECTION = ['PGHOST', 'PGPORT', 'PGDATABASE', 'PGSSLMODE', 'PGSSLROOTCERT'];
 /** Always passed: the shell basics a child process needs. */
 const BASICS = ['PATH', 'HOME', 'LANG'];
+
+/**
+ * Step 1's standard input: the preamble, then roles.sql itself. The preamble creates club_migrator exactly as roles.sql does (so
+ * the grant has a role to name) and makes the master an inheriting member of club_migrator, which `alter default privileges for
+ * role club_migrator` requires on Postgres 16 (SET alone is refused: checked on postgres:16 with a CREATEROLE master). The grant
+ * has SET false, so the master cannot become the migrator; it already holds ADMIN on the role, so this adds no power over it. A
+ * superuser (local development) already has the role's privileges, so nothing is granted there. Both statements are skipped when
+ * already true, so the step stays safe to repeat.
+ */
+export function rolesInput(rolesPath) {
+  return [
+    '\\set VERBOSITY terse',
+    '\\set SHOW_CONTEXT never',
+    "select 'create role club_migrator login createdb' where not exists (select from pg_roles where rolname = 'club_migrator') \\gexec",
+    "select format('grant club_migrator to %I with inherit true, set false', current_user) where not pg_has_role(current_user, 'club_migrator', 'USAGE') \\gexec",
+    `\\i '${rolesPath.replace(/'/g, "''")}'`,
+    '',
+  ].join('\n');
+}
 
 /** The statements of step 2. Static text: every value comes from the environment through psql, so a password is never in it. */
 export const ROLE_SQL = [
@@ -64,7 +86,7 @@ export function planPrepare(env = process.env, root = ROOT) {
   if (missing.length > 0) throw new Error(`Missing configuration: ${missing.join(', ')}`);
   const psql = ['-X', '-q', '-v', 'ON_ERROR_STOP=1'];
   return [
-    { name: 'roles', command: 'psql', args: [...psql, '-f', path.join(root, 'db/roles.sql')], pass: [...BASICS, ...CONNECTION, 'PGUSER', 'PGPASSWORD'] },
+    { name: 'roles', command: 'psql', args: psql, input: rolesInput(path.join(root, 'db/roles.sql')), pass: [...BASICS, ...CONNECTION, 'PGUSER', 'PGPASSWORD'] },
     { name: 'passwords and grants', command: 'psql', args: psql, input: ROLE_SQL, pass: [...BASICS, ...CONNECTION, 'PGUSER', 'PGPASSWORD', 'DB_APP_PASSWORD', 'DB_JIT_PASSWORD', 'DB_READONLY_PASSWORD', 'DB_MIGRATOR_PASSWORD'] },
     { name: 'migrate', command: 'node', args: [path.join(root, 'db/migrate.mjs')], pass: BASICS, env: { ATLAS_URL: migratorUrl(env) } },
   ];

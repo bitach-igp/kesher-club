@@ -7,7 +7,7 @@ each safe to repeat:
 
 | Step | As | What |
 |---|---|---|
-| `roles` | RDS master user (managed secret) | `db/roles.sql`: `club_migrator`, `club_app`, `club_jit`, `club_readonly`, the statement budgets |
+| `roles` | RDS master user (managed secret) | `db/roles.sql`: `club_migrator`, `club_app`, `club_jit`, `club_readonly`, the statement budgets. First the master is made an inheriting member of `club_migrator` (`set false`, skipped for a superuser or when already granted): `roles.sql` alters that role's default privileges, which Postgres 16 refuses to a CREATEROLE master that only holds ADMIN on it |
 | `passwords and grants` | RDS master user | the four roles' passwords from Secrets Manager; `CONNECT` on the database for all four and `CREATE` for `club_migrator` (`roles.sql` revokes `CONNECT` from PUBLIC and grants it to nobody, so without this step no service could log in and the migrator could not create a schema) |
 | `migrate` | `club_migrator` | `db/migrate.mjs`: every schema in dependency order with Atlas (pinned 1.3.8 in the image) |
 
