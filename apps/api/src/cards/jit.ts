@@ -229,7 +229,8 @@ export class JitService {
       });
     } catch (e) {
       // The hold did not happen: the approval goes back, so the member's yes is not burned by a refusal.
-      if (approvalToSpend) await this.d.intents.releaseAgentPurchase(approvalToSpend, req.authId);
+      // Best effort: a failure to give it back must not hide why the hold failed (the same authorisation finds its approval again on a retry).
+      if (approvalToSpend) await this.d.intents.releaseAgentPurchase(approvalToSpend, req.authId).catch(() => undefined);
       if (e instanceof DomainError && e.code === 'INSUFFICIENT_FUNDS') return done(decline('INSUFFICIENT_FUNDS'));
       throw e;
     }
