@@ -24,4 +24,4 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-05 | T-0312 | #208 | Sonnet APPROVE (documented displacement race, follow-up queued) | green |
 | 2026-11-05 | T-0545 | #209 | Sonnet APPROVE (first round) | green |
 | 2026-11-05 | T-0313 | pending | pending | pending |
-| 2026-11-05 | T-0551 | pending | pending | pending |
+| 2026-11-05 | T-0549 | pending | pending | pending |
