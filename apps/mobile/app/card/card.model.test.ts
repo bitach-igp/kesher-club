@@ -3,8 +3,9 @@
 // (auth)/kyc.model.test.ts.
 import { describe, expect, it } from 'vitest';
 import type { Card, CardsApi, ShipTo } from '../../src/api.ts';
+import { t } from '../../src/i18n.ts';
 import { memoryRouter } from '../../src/navigation.ts';
-import { addressProblem, controlRows, createCardModel, EMPTY_ADDRESS, lockedReasons, primaryCard, shippingView, statusBanner } from './card.model.ts';
+import { EMPTY_ADDRESS, addressProblem, cardArt, controlRows, createCardModel, lockedReasons, primaryCard, shippingView, statusBanner } from './card.model.ts';
 
 const problem = (code: string, status: number, extra: Record<string, unknown> = {}) => Object.assign(new Error(code), { code, status, ...extra });
 const controls = (over: Partial<Card['controls']> = {}): Card['controls'] => ({ blockedMccs: [], atm: false, online: true, agentPurchases: { mode: 'off' }, ...over });
@@ -207,5 +208,40 @@ describe('lost or stolen (M23)', () => {
     await model.reportLost('lost');
     expect(model.store.get()).toMatchObject({ mode: 'none', notice: 'card.lost.done' });
     expect(router.current()).toBe('/card');
+  });
+});
+
+describe('card art and its frozen overlay (T-0674)', () => {
+  it('an active card shows its type and last four only; a frozen one is dimmed with the frozen label over it; both differ', () => {
+    const active = cardArt(virtual());
+    const frozen = cardArt(virtual({ status: 'frozen' }));
+    expect(active).toEqual({ state: 'active', typeKey: 'card.type.virtual', masked: '•••• 0001', dimmed: false });
+    expect(frozen).toEqual({ state: 'frozen', typeKey: 'card.type.virtual', masked: '•••• 0001', dimmed: true, overlayKey: 'card.art.frozen' });
+    expect(frozen).not.toEqual(active);
+  });
+
+  it('a card not yet activated or closed says so on the art; a physical card names its type', () => {
+    expect(cardArt(virtual({ status: 'inactive' }))).toMatchObject({ state: 'inactive', dimmed: true, overlayKey: 'card.status.inactive' });
+    expect(cardArt(virtual({ status: 'closed' }))).toMatchObject({ state: 'closed', dimmed: true, overlayKey: 'card.status.closed' });
+    expect(cardArt(virtual({ type: 'physical' })).typeKey).toBe('card.type.physical');
+  });
+
+  it('the art carries nothing but the last four digits (never a number, expiry or code)', () => {
+    const art = JSON.stringify(cardArt(virtual({ last4: '4242' })));
+    expect(art).toContain('4242');
+    expect(art).not.toMatch(/\d{5,}|cvv|expiry|pan/i);
+  });
+
+  it('freezing is immediate and the art follows; unfreezing still needs the passkey step-up and leaves the art frozen until it is given; the copy exists in en and he', async () => {
+    const { model } = make([virtual()], { stepUpFor: new Set(['status']) });
+    await model.load();
+    await model.freeze();
+    expect(model.store.get()).toMatchObject({ needsStepUp: false, busy: false });
+    expect(cardArt(model.selected()!).state).toBe('frozen');
+    await model.unfreeze();
+    expect(model.store.get()).toMatchObject({ needsStepUp: true, busy: false });
+    expect(cardArt(model.selected()!)).toMatchObject({ state: 'frozen', dimmed: true });
+    for (const locale of ['en', 'he'] as const) expect(t('card.art.frozen', locale)).toBeTruthy();
+    expect(t('card.art.frozen', 'en')).not.toBe(t('card.art.frozen', 'he'));
   });
 });
