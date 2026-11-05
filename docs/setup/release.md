@@ -51,8 +51,9 @@ This step creates:
 - the GitHub CI role;
 - CloudTrail, Security Hub and the locked backup vault.
 
-The default root e-mails for the member accounts are placeholders on `kesher.example`. Pass real
-addresses you control: AWS sends each new account's root sign-in to that address.
+The defaults for the domain and the member accounts' root e-mails are placeholders on `kesher.example`, and
+the apply refuses them (T-0057): pass your real domain and addresses you control. AWS sends each new account's
+root sign-in to that address. The domain, its delegation and the mail records are in `docs/setup/domain.md`.
 
 ```sh
 cd infra/terraform/envs/shared
@@ -60,6 +61,8 @@ terraform init -backend-config=backend.hcl
 terraform apply \
   -var shared_account_id=<shared id> \
   -var github_repository=bitach-igp/kesher-club \
+  -var root_domain=<your domain> \
+  -var dmarc_report_address=<mailbox that receives DMARC reports> \
   -var 'member_accounts={staging={name="club-staging",email="<staging root e-mail>"},prod={name="club-prod",email="<prod root e-mail>"}}'
 ```
 
