@@ -39,6 +39,29 @@
 | [T-0036](T-0036.md) | SETUP | The mobile layout tests warm their module graph, so CI's first test does not time out | REQ-AUTH-001 | 12 |
 | [T-0037](T-0037.md) | SETUP | The README says where the project stands; the six ADR drafts are recorded as accepted | — | 12 |
 | [T-0038](T-0038.md) | SETUP | The AuthPort contract measures OTP expiry on the port's own clock, not the wall clock | REQ-AUTH-001 | 15 |
+| [T-0040](T-0040.md) | SETUP | Per-port provider binding: PROVIDER_<PORT> picks sim or an adapter, PROVIDER_MODE_DEFAULT may be sandbox | — | 16 deploy |
+| [T-0041](T-0041.md) | SETUP | Bind the Stripe (funding, billing) and notification adapters (Twilio, Postmark, Expo push) by config | — | 16 deploy |
+| [T-0042](T-0042.md) | SETUP | Bind the marketplace (Airalo, Cover Genius) and identity (WorkOS, Apple, Google) adapters by config | — | 16 deploy |
+| [T-0043](T-0043.md) | SETUP | Production boots on simulators only for ports whose flags are off | — | 16 deploy |
+| [T-0044](T-0044.md) | SETUP | The database is prepared from inside the VPC: a migrate task creates roles, sets passwords and applies every schema | — | 16 deploy |
+| [T-0045](T-0045.md) | SETUP | The JIT service connects as club_jit, with its own password | — | 16 deploy |
+| [T-0046](T-0046.md) | SETUP | Production bootstrap: a one-time idempotent command creates the system accounts, the first admin invite and the legal and plan shells | — | 16 deploy |
+| [T-0047](T-0047.md) | SETUP | The institution console ships as an image and runs as a service, not a static bucket | — | 16 deploy |
+| [T-0048](T-0048.md) | SETUP | apps/web: marketing, versioned legal pages and the domain-association files, as a static site on the existing bucket | — | 16 deploy |
+| [T-0049](T-0049.md) | SETUP | Release hardening: ECR scan gate, SBOM, pinned base images and the console image in the release | — | 16 deploy |
+| [T-0050](T-0050.md) | SETUP | Deploy workflow: staging on demand, production behind approval, migrate first, roll back by tag | — | 16 deploy |
+| [T-0051](T-0051.md) | SETUP | A smoke suite that proves a deployed environment works | — | 16 deploy |
+| [T-0052](T-0052.md) | SETUP | Structured logging with redaction and a request id | — | 16 deploy |
+| [T-0053](T-0053.md) | SETUP | The metrics the runbooks alert on are emitted | — | 16 deploy |
+| [T-0054](T-0054.md) | SETUP | Alarms, paging, dashboards and budgets in Terraform, one per runbook alert | — | 16 deploy |
+| [T-0055](T-0055.md) | SETUP | A JIT load test with the p99 under 300 ms gate | — | 16 deploy |
+| [T-0056](T-0056.md) | SETUP | Secrets: a tool that generates and loads key material without printing it, and the rotation steps | — | 16 deploy |
+| [T-0057](T-0057.md) | SETUP | Mail and domain records in Terraform: SPF, DKIM, DMARC, CAA, return path | — | 16 deploy |
+| [T-0058](T-0058.md) | SETUP | Mobile release plumbing: bundle ids, EAS profiles, associated domains and build-time config per environment | — | 16 deploy |
+| [T-0059](T-0059.md) | SETUP | Mobile native bindings: passkeys, secure token store, device facts, push registration | — | 16 deploy |
+| [T-0060](T-0060.md) | SETUP | Staging acceptance: a full deploy from nothing, the sandbox end-to-end run and a restore drill | — | 16 deploy |
+| [T-0061](T-0061.md) | BIL | The legal documents over HTTP: current versions, accept, re-accept gate | — | 16 deploy |
+| [T-0062](T-0062.md) | BIL | The app shows the terms at sign-up and re-accept, and links them from settings | — | 16 deploy |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
