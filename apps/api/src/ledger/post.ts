@@ -21,6 +21,7 @@ export interface PostedJournal {
   kind: string;
   postings: readonly Posting[];
   reversesId?: string;
+  transferId?: string;
   effectiveAt: string;
 }
 
@@ -29,6 +30,7 @@ interface JournalRow {
   idempotency_key: string;
   kind: string;
   reverses_id: string | null;
+  transfer_id: string | null;
   effective_at: string | Date;
 }
 interface PostingRow {
@@ -133,11 +135,21 @@ export class PostgresLedger {
     return (await this.findByKey(this.db, input.idempotencyKey))!;
   }
 
-  /** Reverses exactly once by posting the negated postings (invariant 4). Idempotent by key. */
-  async reverse(journalId: string, idempotencyKey: string): Promise<PostedJournal> {
+  /**
+   * Reverses exactly once by posting the negated postings (invariant 4). Idempotent by key. The reversal belongs to the original's transfer
+   * (so it shows with it) and takes the original's effective time unless the caller names one (T-0552).
+   */
+  async reverse(journalId: string, idempotencyKey: string, opts: { effectiveAt?: Date } = {}): Promise<PostedJournal> {
     const target = await this.findById(journalId);
     if (!target) throw new DomainError('NOT_FOUND', 'Journal not found');
-    return this.post({ idempotencyKey, kind: 'reversal', reversesId: journalId, postings: target.postings.map((p) => ({ ...p, amountMinor: -p.amountMinor })) });
+    return this.post({
+      idempotencyKey,
+      kind: 'reversal',
+      reversesId: journalId,
+      ...(target.transferId ? { transferId: target.transferId } : {}),
+      effectiveAt: opts.effectiveAt ?? new Date(target.effectiveAt),
+      postings: target.postings.map((p) => ({ ...p, amountMinor: -p.amountMinor })),
+    });
   }
 
   async balance(accountId: string, currency: Currency): Promise<bigint> {
@@ -158,12 +170,12 @@ export class PostgresLedger {
   }
 
   private async findByKey(db: SqlClient, key: string): Promise<PostedJournal | undefined> {
-    const j = await db.query<JournalRow>('select id, idempotency_key, kind, reverses_id, effective_at from ledger.journal where idempotency_key = $1', [key]);
+    const j = await db.query<JournalRow>('select id, idempotency_key, kind, reverses_id, transfer_id, effective_at from ledger.journal where idempotency_key = $1', [key]);
     return j.rows[0] ? this.hydrate(db, j.rows[0]) : undefined;
   }
 
   private async findById(id: string): Promise<PostedJournal | undefined> {
-    const j = await this.db.query<JournalRow>('select id, idempotency_key, kind, reverses_id, effective_at from ledger.journal where id = $1', [id]);
+    const j = await this.db.query<JournalRow>('select id, idempotency_key, kind, reverses_id, transfer_id, effective_at from ledger.journal where id = $1', [id]);
     return j.rows[0] ? this.hydrate(this.db, j.rows[0]) : undefined;
   }
 
@@ -175,6 +187,7 @@ export class PostgresLedger {
       kind: row.kind,
       postings: p.rows.map((x) => ({ accountId: x.account_id, currency: x.currency, amountMinor: BigInt(x.amount_minor) })),
       ...(row.reverses_id ? { reversesId: row.reverses_id } : {}),
+      ...(row.transfer_id ? { transferId: row.transfer_id } : {}),
       effectiveAt: new Date(row.effective_at).toISOString(),
     };
   }
