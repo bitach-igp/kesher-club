@@ -2615,7 +2615,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Start a membership (plan + member) billed to the funder
-         * @description E03 billing. Idempotent.
+         * @description E03 billing, REQ-BIL-002, REQ-BIL-003 (T-0312). Needs a fresh step-up and `billing.stripe` on (404 FEATURE_OFF otherwise). The member is the caller or a member who accepted the caller's invite (403 otherwise). An unknown plan or a term outside 1 to 12 answers 422 before the billing vendor is called; a member who already holds a membership answers 409. Idempotent: another caller reusing the key answers 409.
          */
         readonly post: operations["createMembership"];
         readonly delete?: never;
@@ -9064,6 +9064,8 @@ export interface operations {
             readonly header: {
                 /** @description Client-generated key; replays return the original response for 24 h. */
                 readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
             };
             readonly path?: never;
             readonly cookie?: never;

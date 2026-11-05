@@ -732,8 +732,14 @@ paths:
     post:
       operationId: createMembership
       summary: Start a membership (plan + member) billed to the funder
-      description: E03 billing. Idempotent.
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      description: >-
+        E03 billing, REQ-BIL-002, REQ-BIL-003 (T-0312). Needs a fresh step-up and `billing.stripe` on (404 FEATURE_OFF
+        otherwise). The member is the caller or a member who accepted the caller's invite (403 otherwise). An unknown plan
+        or a term outside 1 to 12 answers 422 before the billing vendor is called; a member who already holds a membership
+        answers 409. Idempotent: another caller reusing the key answers 409.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
       requestBody:
         required: true
         content:

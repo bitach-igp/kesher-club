@@ -98,14 +98,33 @@ async function seedPlans(target: SeedTarget, key: { jwk: JWK; kid: string }): Pr
   return out;
 }
 
-/** Ben, signed in, starts Dana's membership on the US demo plan and pays for it; the key makes a rerun the same membership. */
+/**
+ * Ben, signed in, invites Dana to the US demo plan; Dana follows the link from the panel's notify outbox, signed in, and accepts, which
+ * starts the membership Ben pays for (T-0307). A membership is only started for oneself or for a member who accepted the funder's invite
+ * (T-0312), so the seed goes the way the apps do. The keys make a rerun the same invite and the same acceptance.
+ */
 async function seedFunding(target: SeedTarget, personas: readonly SeededPersona[]): Promise<NonNullable<SeedResult['funding']>> {
   const funder = personas.find((p) => p.persona.key === FUNDING.funder);
   const member = personas.find((p) => p.persona.key === FUNDING.member);
   if (!funder || !member) throw new Error(`No ${FUNDING.funder} or ${FUNDING.member} persona to link`);
-  const tokens = await signIn(target, funder.persona);
-  if (!tokens) throw new Error(`${FUNDING.funder} cannot sign in to fund ${FUNDING.member}`);
-  const m = await memberClient(target, funder.persona, tokens.accessToken).post('/memberships', { body: { memberPartyId: member.partyId, planCode: FUNDING.planCode, termMonths: DEMO_PLANS.find((p) => p.planCode === FUNDING.planCode)!.termMonths }, idempotencyKey: `seed-${FUNDING.funder}-funds-${FUNDING.member}` });
+  const funderTokens = await signIn(target, funder.persona);
+  if (!funderTokens) throw new Error(`${FUNDING.funder} cannot sign in to fund ${FUNDING.member}`);
+  const ben = memberClient(target, funder.persona, funderTokens.accessToken);
+  // Saving a card is what makes Ben a customer of the billing vendor, which inviting needs (T-0306); opening the sheet is idempotent.
+  await ben.post('/me/billing/setup-sheet', {});
+  await ben.post('/funder-invites', { body: { memberName: member.persona.name, phone: member.persona.phone, planCode: FUNDING.planCode }, idempotencyKey: `seed-${FUNDING.funder}-invites-${FUNDING.member}` });
+  const outbox = (await panelHook(target, 'notify', 'outbox', { to: member.persona.phone })) as { template: string; data: Record<string, string> }[];
+  const link = outbox.find((m) => m.template === 'funder.invite')?.data['inviteUrl'];
+  const token = link ? new URL(link).searchParams.get('token') : undefined;
+  if (!token) {
+    // The outbox lives in the dev process's memory: after a restart the link is gone, but an invite accepted earlier left the membership.
+    const held = (await ben.get('/memberships')).items.find((m) => m.memberPartyId === member.partyId && m.status !== 'cancelled');
+    if (!held) throw new Error(`The invite link for ${FUNDING.member} is not in the panel outbox (sent before a restart) and no membership exists yet`);
+    return { funder: FUNDING.funder, member: FUNDING.member, planCode: held.planCode, planVersion: held.planVersion ?? 0, status: held.status };
+  }
+  const memberTokens = await signIn(target, member.persona);
+  if (!memberTokens) throw new Error(`${FUNDING.member} cannot sign in to accept ${FUNDING.funder}'s invite`);
+  const { membership: m } = await memberClient(target, member.persona, memberTokens.accessToken).post('/funder-invites/{token}/accept', { path: { token }, idempotencyKey: `seed-${FUNDING.funder}-funds-${FUNDING.member}` });
   return { funder: FUNDING.funder, member: FUNDING.member, planCode: m.planCode, planVersion: m.planVersion ?? 0, status: m.status };
 }
 

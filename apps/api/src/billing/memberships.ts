@@ -51,6 +51,8 @@ export class MembershipService {
   /** `planVersion` pins a version chosen earlier (a funder's invite, T-0307); otherwise the one offered now. */
   async create(input: { idempotencyKey: string; memberPartyId: string; funderPartyId: string; funderEmail: string; planCode: string; planVersion?: number; termMonths?: number }, now: Date): Promise<Membership> {
     const existing = await this.byKey(input.idempotencyKey);
+    // A key is its funder's: another caller reusing it is a conflict, never the first caller's membership handed back.
+    if (existing && existing.funderPartyId !== input.funderPartyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'That idempotency key was used for another request');
     if (existing) return existing;
     const pinned = input.planVersion === undefined ? undefined : await this.plans.get(input.planCode, input.planVersion);
     if (input.planVersion !== undefined && !pinned) throw new DomainError('NOT_FOUND', `No plan version ${input.planCode} v${input.planVersion}`);
@@ -81,6 +83,31 @@ export class MembershipService {
       throw e;
     }
     return (await this.byKey(input.idempotencyKey))!;
+  }
+
+  /**
+   * A caller starting a membership by hand (POST /memberships, T-0312): for themselves, or for a member who accepted their invite (T-0307);
+   * for no one else (403). The plan must be on offer and the term one the contract allows (422) before the vendor hears of it, and a member
+   * who already holds a membership is not displaced by it (409).
+   */
+  async createForCaller(input: { idempotencyKey: string; callerPartyId: string; memberPartyId: string; funderEmail: string; planCode: string; termMonths?: number }, now: Date): Promise<Membership> {
+    const existing = await this.byKey(input.idempotencyKey);
+    if (existing && existing.funderPartyId !== input.callerPartyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'That idempotency key was used for another request');
+    if (existing) return existing;
+    if (input.memberPartyId !== input.callerPartyId) {
+      const invited = await this.db.query(`select 1 from billing.funder_invite where funder_party_id = $1 and member_party_id = $2 and status = 'accepted' limit 1`, [input.callerPartyId, input.memberPartyId]);
+      if (!invited.rows[0]) throw new DomainError('FORBIDDEN', 'You can start a membership for yourself or for a member who accepted your invite');
+    }
+    if (input.termMonths !== undefined && (!Number.isInteger(input.termMonths) || input.termMonths < 1 || input.termMonths > 12)) throw new DomainError('VALIDATION_FAILED', 'termMonths must be a whole number from 1 to 12');
+    try {
+      await this.plans.current(input.planCode, now);
+    } catch (e) {
+      if (e instanceof DomainError && e.code === 'NOT_FOUND') throw new DomainError('VALIDATION_FAILED', `${input.planCode} is not a plan on offer`);
+      throw e;
+    }
+    const held = await this.db.query(`select 1 from billing.membership where member_party_id = $1 and status <> 'cancelled' limit 1`, [input.memberPartyId]);
+    if (held.rows[0]) throw new DomainError('IDEMPOTENCY_CONFLICT', 'That member already has a membership');
+    return this.create({ idempotencyKey: input.idempotencyKey, memberPartyId: input.memberPartyId, funderPartyId: input.callerPartyId, funderEmail: input.funderEmail, planCode: input.planCode, ...(input.termMonths !== undefined ? { termMonths: input.termMonths } : {}) }, now);
   }
 
   async get(id: string): Promise<Membership | undefined> {
