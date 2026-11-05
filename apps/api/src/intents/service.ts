@@ -224,22 +224,43 @@ export class IntentService {
     return { intent, opened: true };
   }
 
-  /** An approval the member gave for this token, MCC and at least this amount, not yet spent and younger than the TTL. */
-  async approvedAgentPurchase(partyId: string, tokenId: string, mcc: string, amount: Money, now: Date): Promise<PendingIntent | undefined> {
+  /**
+   * An approval the member gave for this token, card, merchant (name and country) and MCC, for at least this amount, not yet spent
+   * (or spent by this very authorisation, so a retried one finds it) and younger than the TTL.
+   */
+  async approvedAgentPurchase(
+    partyId: string,
+    ask: { tokenId: string; cardId: string; authId: string; mcc: string; merchantName: string; country: string; amount: Money },
+    now: Date,
+  ): Promise<PendingIntent | undefined> {
     const r = await this.db.query<Row>(
       `select * from agent.pending_intent where party_id = $1 and kind = 'limit_change' and status = 'approved' and decided_at > $2
          and payload->>'action' = $3 and payload->>'tokenId' = $4 and payload->>'mcc' = $5 and payload->'amount'->>'currency' = $6
-         and (payload->'amount'->>'minor')::bigint >= $7 and payload->>'consumedAuthId' is null
+         and (payload->'amount'->>'minor')::bigint >= $7
+         and payload->>'cardId' = $8 and payload->>'merchantName' = $9 and payload->>'country' = $10
+         and (payload->>'consumedAuthId' is null or payload->>'consumedAuthId' = $11)
         order by decided_at asc limit 1`,
-      [partyId, new Date(now.getTime() - AGENT_PURCHASE_APPROVAL_TTL_MS), AGENT_PURCHASE_ACTION, tokenId, mcc, amount.currency, amount.minor.toString()],
+      [partyId, new Date(now.getTime() - AGENT_PURCHASE_APPROVAL_TTL_MS), AGENT_PURCHASE_ACTION, ask.tokenId, ask.mcc, ask.amount.currency, ask.amount.minor.toString(), ask.cardId, ask.merchantName.slice(0, 120), ask.country, ask.authId],
     );
     return r.rows[0] ? toIntent(r.rows[0]) : undefined;
   }
 
-  /** Marks an approval spent by one authorisation; a second authorisation needs a new approval. */
+  /**
+   * Spends an approval for one authorisation, in one conditional update: of two racing authorisations exactly one gets true. The same
+   * authorisation asking again gets true (it already holds the approval); a second authorisation needs a new approval.
+   */
   async consumeAgentPurchase(intentId: string, authId: string): Promise<boolean> {
-    const r = await this.db.query(`update agent.pending_intent set payload = payload || jsonb_build_object('consumedAuthId', $2::text) where id = $1 and payload->>'consumedAuthId' is null`, [intentId, authId]);
+    const r = await this.db.query(
+      `update agent.pending_intent set payload = payload || jsonb_build_object('consumedAuthId', $2::text)
+        where id = $1 and (payload->>'consumedAuthId' is null or payload->>'consumedAuthId' = $2)`,
+      [intentId, authId],
+    );
     return r.rowCount > 0;
+  }
+
+  /** Gives the approval back when the hold it was spent for was refused: only the authorisation that spent it can. */
+  async releaseAgentPurchase(intentId: string, authId: string): Promise<void> {
+    await this.db.query(`update agent.pending_intent set payload = payload - 'consumedAuthId' where id = $1 and payload->>'consumedAuthId' = $2`, [intentId, authId]);
   }
 
   /**
