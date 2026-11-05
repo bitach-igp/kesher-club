@@ -103,17 +103,25 @@ export class PostgresAllowanceActivities implements AllowanceActivities {
     if (!institutionId) throw new DomainError('NOT_FOUND', 'The run names no institution');
     const master = await this.accounts.institutionAccount(institutionId, amount.currency);
     const wallet = await this.accounts.memberAccount(memberPartyId, 'wallet', amount.currency);
-    const j = await this.ledger.post({
-      idempotencyKey: `${key}:settle`,
-      kind: ALLOWANCE_JOURNAL_KIND,
-      transferId: t.id,
-      effectiveAt: now,
-      postings: [
-        { accountId: master, currency: amount.currency, amountMinor: amount.minor },
-        { accountId: wallet, currency: amount.currency, amountMinor: -amount.minor },
-      ],
-      metadata: { institutionId, workflowId: wf },
-    });
+    // `startRun` checked the headroom once; money may have left since (a payout reserve, another run, a P2P). The master is locked and
+    // re-read here, so a payment never takes it past what it holds plus its approved credit (T-0661).
+    const j = await this.ledger.postNoOverdraft(
+      {
+        idempotencyKey: `${key}:settle`,
+        kind: ALLOWANCE_JOURNAL_KIND,
+        transferId: t.id,
+        effectiveAt: now,
+        postings: [
+          { accountId: master, currency: amount.currency, amountMinor: amount.minor },
+          { accountId: wallet, currency: amount.currency, amountMinor: -amount.minor },
+        ],
+        metadata: { institutionId, workflowId: wf },
+      },
+      async (tx) => {
+        const h = await this.credit.headroom(institutionId, amount.currency, wf, tx);
+        if (amount.minor > h.balance.minor + h.limit.minor) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the institution account (with its credit) for this payment');
+      },
+    );
     await this.transfers.apply(t.id, 'settle', now, { journalId: j.id });
     return { journalId: j.id };
   }

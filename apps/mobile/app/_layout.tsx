@@ -12,12 +12,12 @@ import { Slot, useGlobalSearchParams, useRootNavigationState, useRouter as useEx
 import { uuidv7 } from '@kesher/domain';
 import { createClient } from '@kesher/sdk';
 import { ApiProvider, sdkApi, type Api, type SavedPaymentMethod } from '../src/api.ts';
-import { Txt } from '../src/components/index.ts';
+import { TabBar, Txt } from '../src/components/index.ts';
 import { buildEnv, parseMobileConfig, type MobileConfig } from '../src/config.ts';
 import { DeviceProvider, type Device } from '../src/device.ts';
 import { LocaleProvider, t, useLocale, type Locale } from '../src/i18n.ts';
 import { OpenerProvider, type Opener } from '../src/linking.ts';
-import { ParamsProvider, RouterProvider, type Router } from '../src/navigation.ts';
+import { activeTab, ParamsProvider, RouterProvider, TABS, type Router } from '../src/navigation.ts';
 import { AuthenticatorProvider, seededAuthenticator, webAuthnAuthenticator, type Authenticator, type SeededDevice } from '../src/passkeys.ts';
 import { installId, memorySession, SessionProvider, type Session } from '../src/session.ts';
 import { useTheme } from '../src/theme.ts';
@@ -95,7 +95,9 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
                 <RouterProvider value={router}>
                   <ParamsProvider value={params}>
                     {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
-                    {children}
+                    <Chrome signedIn={signedIn} segments={segments} router={router}>
+                      {children}
+                    </Chrome>
                   </ParamsProvider>
                 </RouterProvider>
               </DeviceProvider>
@@ -104,6 +106,27 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
         </SessionProvider>
       </ApiProvider>
     </LocaleProvider>
+  );
+}
+
+/** The screen, with the five-tab bar under it for a signed-in member on a tab screen (T-0673); anywhere else the screen alone. */
+function Chrome({ signedIn, segments, router, children }: { signedIn: boolean; segments: readonly string[]; router: Router; children?: ReactNode }) {
+  const locale = useLocale();
+  const active = activeTab(segments);
+  if (!signedIn || !active) return <>{children}</>;
+  return (
+    <View style={{ flex: 1 }}>
+      <View style={{ flex: 1 }}>{children}</View>
+      <TabBar
+        testID="tab-bar"
+        active={active}
+        items={TABS.map((x) => ({ key: x.key, label: t(x.label, locale), glyph: x.glyph }))}
+        onSelect={(key) => {
+          const tab = TABS.find((x) => x.key === key);
+          if (tab) router.replace(tab.href);
+        }}
+      />
+    </View>
   );
 }
 

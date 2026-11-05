@@ -33,3 +33,15 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-05 | T-0554 | #220 | Sonnet APPROVE | green |
 | 2026-11-05 | T-0555 | #221 | Sonnet APPROVE; desktop PASS (enum value usable) | green |
 | 2026-11-05 | T-0550 | #222 | Sonnet APPROVE (non-blocking: allowance `payMember` unguarded, noted in the card); desktop PASS on real Postgres (reserve race) | green |
+| 2026-11-05 | T-0661 | #224 | Sonnet APPROVE (static; tests run locally) | green |
+| 2026-11-05 | T-0670..T-0678 | #225 | Haiku REQUEST_CHANGES then fixed (file lists, titles); docs only | green |
+| 2026-11-05 | T-0670 | #228 | Sonnet APPROVE (nits fixed) | green |
+| 2026-11-05 | T-0671 | #229 | Sonnet REQUEST_CHANGES then APPROVE (direction on web only, card scope stated) | green |
+| 2026-11-05 | T-0672 | #231 | Sonnet APPROVE | green |
+| 2026-11-05 | T-0673 | #232 | Sonnet APPROVE | green |
+| 2026-11-05 | T-0674 | #234 | Sonnet REQUEST_CHANGES (opacity dimmed the text, ~3:1) then APPROVE after a colour change | green |
+| 2026-11-05 | T-0675 | #235 | Sonnet APPROVE (nits fixed: colour-scheme, radio/file inputs) | green |
+| 2026-11-05 | T-0676 | #236 | Sonnet APPROVE | green |
+| 2026-11-05 | T-0677 | #237 | Sonnet APPROVE (type-scale note added) | green |
+| 2026-11-05 | T-0678 | #239 | Haiku REQUEST_CHANGES twice (plan-name note, stale base) then APPROVE | green |
+| 2026-11-05 | T-0057 | #242 | Sonnet APPROVE (1 fix round: relaxed DMARC alignment, long DKIM keys) | green |

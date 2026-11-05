@@ -5,11 +5,16 @@
 import { useEffect, useMemo } from 'react';
 import { useApi } from '../../src/api.ts';
 import { useNow } from '../../src/clock.ts';
-import { Banner, Button, Card, ListRow, Screen, Skeleton, Txt } from '../../src/components/index.ts';
+import { Pressable, StyleSheet, View } from 'react-native';
+import { Banner, BalanceHero, Button, Card, ListRow, Screen, Skeleton, Txt } from '../../src/components/index.ts';
+import { useTheme } from '../../src/theme.ts';
 import { t, useLocale } from '../../src/i18n.ts';
 import { useStore } from '../../src/model.ts';
 import { useRouter } from '../../src/navigation.ts';
-import { createHomeModel, declinedCopy, fmt, frozenCard, incidentBanner, kycCard, purseRows, quickActions, signedAmount, type HomeModel } from './home.model.ts';
+import { createHomeModel, declinedCopy, fmt, frozenCard, greeting, heroActions, heroOf, HERO_ACTIONS, incidentBanner, kycCard, purseRows, quickActions, signedAmount, type HomeModel } from './home.model.ts';
+
+/** A short decorative glyph above each quick action's label (hidden from screen readers). */
+const GLYPH: Record<string, string> = { add: '+', send: '↗', convert: '⇄', card: '▭', requests: '≡' };
 
 export function useHomeModel(): HomeModel {
   const api = useApi();
@@ -46,7 +51,10 @@ export function HomeView({ model }: { model: HomeModel }) {
   const frozen = frozenCard(s.cards);
   const recent = model.groups().flatMap((g) => g.items).slice(0, 5);
   const incident = incidentBanner(s.service);
-  const actions = quickActions(s.service);
+  const actions = quickActions(s.service).filter((q) => !HERO_ACTIONS.includes(q.action));
+  const row = heroActions(s.service);
+  const hero = heroOf(s.accounts);
+  const hi = greeting(s.displayName);
   return (
     <Screen title={t('home.title', locale)} testID="screen-home">
       {/* Staff-written incident copy, shown as text: no action, no link. */}
@@ -54,12 +62,24 @@ export function HomeView({ model }: { model: HomeModel }) {
       {identity ? <Banner tone={identity.tone} title={t('home.kyc.title', locale)} body={t(identity.body, locale)} {...(identity.action ? { action: { label: t('home.kyc.action', locale), onPress: model.goVerify } } : {})} testID="home-kyc" /> : null}
       {frozen ? <Banner tone="danger" body={t('home.card.frozen', locale)} action={{ label: t('home.card.action', locale), onPress: model.goCard }} testID="home-frozen" /> : null}
       {s.proposalsWaiting > 0 ? <Banner tone="info" body={t(s.proposalsWaiting === 1 ? 'home.proposals' : 'home.proposalsMany', locale, { count: s.proposalsWaiting })} action={{ label: t('home.proposals.open', locale), onPress: model.goProposals }} testID="home-proposals" /> : null}
+      <Txt variant="title2" testID="home-greeting">
+        {t(hi.key, locale, hi.vars)}
+      </Txt>
+      <BalanceHero label={t('home.hero.label', locale)} ils={hero.ils} {...(hero.usd ? { usd: hero.usd } : {})} testID="home-hero" />
+      {hero.empty ? (
+        <Card testID="home-empty">
+          <Txt variant="headline">{t('home.empty.title', locale)}</Txt>
+          <Txt tone="secondary">{t('home.empty.body', locale)}</Txt>
+        </Card>
+      ) : null}
+      {row.length ? <QuickRow items={row.map((q) => ({ key: q.action, label: t(q.label, locale), href: q.href }))} onGo={(href) => router.push(href)} /> : null}
+      {/* One compact card per purse under the hero: the demo recordings read these test ids, and it is the way into that purse's activity. */}
       {purseRows(s.accounts).map((p) => (
         <Card key={p.accountId} testID={`home-purse-${p.currency}`}>
           <Txt variant="caption" tone="secondary">
             {t('home.purse.available', locale)} · {p.currency}
           </Txt>
-          <Txt variant="title1" tabular>
+          <Txt variant="headline" tabular>
             {fmt(p.available, locale)}
           </Txt>
           {p.hasHolds ? (
@@ -109,3 +129,25 @@ export function HomeView({ model }: { model: HomeModel }) {
     </Screen>
   );
 }
+
+/** The four-up quick-action row under the hero: each a 44-point target with a glyph over its label. */
+function QuickRow({ items, onGo }: { items: readonly { key: string; label: string; href: string }[]; onGo(href: string): void }) {
+  const th = useTheme();
+  return (
+    <View style={[styles.row, { gap: th.space[2] }]} testID="home-quick-row">
+      {items.map((q) => (
+        <Pressable key={q.key} accessibilityRole="button" accessibilityLabel={q.label} onPress={() => onGo(q.href)} testID={`home-quick-${q.key}`} style={[styles.item, { minHeight: 44, padding: th.space[2], borderRadius: th.radius.md, backgroundColor: th.color.action.primarySubtle }]}>
+          <Txt variant="callout" tone="action" accessibilityElementsHidden importantForAccessibility="no">
+            {GLYPH[q.key] ?? '•'}
+          </Txt>
+          <Txt variant="micro" tone="action">
+            {q.label}
+          </Txt>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({ row: { flexDirection: 'row', alignSelf: 'stretch' }, item: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 2 } });
+

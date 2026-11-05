@@ -3,7 +3,7 @@
 // key; a rerun shows the earlier result and pays nobody twice; FEATURE_OFF is the off state. T-0627: a new
 // schedule's amount is checked before the call, and the form shows the dates it would run.
 import { describe, expect, it } from 'vitest';
-import { canApprove, checkSchedule, createSchedule, earlierRun, executeRun, previewRun, rowsTotal, runDates, type Result, type RunDeps, type RunResult, type RunSummary, type ScheduleDeps, type ScheduleDraft, type ScheduleRequest } from './allowances.ts';
+import { canApprove, checkSchedule, needsSecondApprover, createSchedule, earlierRun, executeRun, previewRun, rowsTotal, runDates, type Result, type RunDeps, type RunResult, type RunSummary, type ScheduleDeps, type ScheduleDraft, type ScheduleRequest } from './allowances.ts';
 import { COPY, localeFrom, t } from './i18n.ts';
 
 const SCHEDULE = '0190a0a0-0000-7000-8000-0000000000c1';
@@ -124,3 +124,14 @@ describe('a new schedule (T-0627)', () => {
     expect(await createSchedule({ create: async () => ({ ok: false, code: 'VALIDATION_FAILED' }), newKey: () => 'k' }, draft(), 'IL')).toEqual({ kind: 'error', code: 'VALIDATION_FAILED' });
   });
 });
+
+describe('the second-approver note before a run (T-0676, REQ-INS-004)', () => {
+  it('a preview over ₪5,000.00 says a second finance member approves; at exactly ₪5,000.00, or in dollars, it does not', () => {
+    expect(needsSecondApprover({ minor: 500_001n, currency: 'ILS' })).toBe(true);
+    expect(needsSecondApprover({ minor: 500_000n, currency: 'ILS' })).toBe(false);
+    expect(needsSecondApprover({ minor: 9_000_000n, currency: 'USD' })).toBe(false);
+    for (const l of ['en', 'he'] as const) expect(t('allowances.preview.approver', l)).toBeTruthy();
+    expect(t('allowances.preview.approver', 'en')).toContain('5,000');
+  });
+});
+

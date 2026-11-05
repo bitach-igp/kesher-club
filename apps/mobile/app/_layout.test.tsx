@@ -188,3 +188,66 @@ describe('build config', () => {
     expect(memorySession(id).deviceId()).toBe(id);
   });
 });
+
+describe('the tab bar (T-0673)', () => {
+  const signedIn = (deps: { session: { signIn(t: { accessToken: string; refreshToken: string; accessExpiresAt: string }): void } }) => deps.session.signIn({ accessToken: 'at', refreshToken: 'rt', accessExpiresAt: '2026-11-01T09:10:00Z' });
+
+  it('five tabs in order over the existing routes; the active one follows the route', async () => {
+    const { TABS, activeTab } = await import('../src/navigation.ts');
+    expect(TABS.map((t) => [t.key, t.href])).toEqual([
+      ['home', '/(tabs)/home'],
+      ['card', '/card'],
+      ['club', '/club'],
+      ['pay', '/pay'],
+      ['help', '/help'],
+    ]);
+    expect([activeTab(['(tabs)', 'home']), activeTab(['card', 'lost']), activeTab(['club', 'esim']), activeTab(['pay', 'recipient']), activeTab(['help'])]).toEqual(['home', 'card', 'club', 'pay', 'help']);
+    expect([activeTab(['fund', 'add-money']), activeTab(['(auth)', 'sign-in']), activeTab([]), activeTab(['wallet', 'transaction'])]).toEqual([undefined, undefined, undefined, undefined]);
+  });
+
+  it('shows for a signed-in member on a tab screen, never signed out or on a screen outside the tabs', async () => {
+    const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+    const deps = createRootDeps(config);
+    const { rerender } = render(<RootLayoutView deps={deps} router={memoryRouter('/pay')} segments={['pay']} />);
+    expect(screen.queryByTestId('tab-bar')).toBeNull();
+    signedIn(deps);
+    rerender(<RootLayoutView deps={deps} router={memoryRouter('/pay')} segments={['pay']} />);
+    expect(screen.getByTestId('tab-bar')).toBeTruthy();
+    expect(screen.getAllByRole('tab').map((e) => [e.textContent, e.getAttribute('aria-selected')])).toEqual([
+      ['⌂Home', 'false'],
+      ['▭Card', 'false'],
+      ['◇Club', 'false'],
+      ['↗Pay', 'true'],
+      ['?Help', 'false'],
+    ]);
+    rerender(<RootLayoutView deps={deps} router={memoryRouter('/fund/add-money')} segments={['fund', 'add-money']} />);
+    expect(screen.queryByTestId('tab-bar')).toBeNull();
+  });
+
+  it('selecting a tab replaces the route with that tab\'s root, and the screen is still rendered above the bar', async () => {
+    const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+    const deps = createRootDeps(config);
+    signedIn(deps);
+    const router = memoryRouter('/(tabs)/home');
+    render(
+      <RootLayoutView deps={deps} router={router} segments={['(tabs)', 'home']}>
+        <span data-testid="screen">screen</span>
+      </RootLayoutView>,
+    );
+    expect(screen.getByTestId('screen')).toBeTruthy();
+    fireEvent.click(screen.getAllByRole('tab')[1]!);
+    expect(router.current()).toBe('/card');
+    fireEvent.click(screen.getAllByRole('tab')[0]!);
+    expect(router.current()).toBe('/(tabs)/home');
+  });
+
+  it('in Hebrew the labels are Hebrew and the row direction is right to left', async () => {
+    const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+    const deps = { ...createRootDeps(config, { language: 'he-IL' }) };
+    signedIn(deps);
+    render(<RootLayoutView deps={deps} router={memoryRouter('/help')} segments={['help']} />);
+    expect(getComputedStyle(screen.getByTestId('tab-bar')).direction).toBe('rtl');
+    expect(screen.getAllByRole('tab').map((e) => e.textContent).join('|')).toMatch(/בית.*עזרה/);
+  });
+});
+

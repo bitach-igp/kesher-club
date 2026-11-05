@@ -1,0 +1,64 @@
+/* Institution console shell (T-0608, restyled T-0675). Colour, spacing, radius and type come from the generated token
+   variables (@kesher/tokens/css, light and dark); nothing here is a colour literal. Logical properties keep the
+   layout right in Hebrew, where <html dir="rtl">. */
+:root {
+  --radius: var(--radius-md);
+  --gutter: var(--layout-gutter-web);
+  color-scheme: light dark;
+  --focus-ring: var(--border-width-focus) solid var(--color-border-focus);
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--font-family-latin); font-size: var(--typography-body-font-size); line-height: 1.45; background: var(--color-bg-canvas); color: var(--color-text-primary); }
+:lang(he) body, body:lang(he) { font-family: var(--font-family-hebrew); }
+main { padding: var(--space-6) var(--gutter); max-width: min(1200px, 100%); margin-inline: auto; }
+h1 { font-size: var(--typography-display-font-size); line-height: 1.2; margin: 0 0 var(--space-4); }
+h2 { font-size: var(--typography-headline-font-size); margin: var(--space-6) 0 var(--space-2); }
+a { color: var(--color-action-primary); }
+a:hover { color: var(--color-action-primary-hover); }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: var(--focus-ring); outline-offset: var(--border-width-focus-offset); }
+
+/* Environment banner and navigation */
+.banner { padding: var(--space-2) var(--gutter); font-size: var(--typography-caption-font-size); background: var(--color-bg-sunken); }
+.banner.production { background: var(--color-status-danger-subtle); color: var(--color-status-danger); }
+.banner.staging { background: var(--color-status-warning-subtle); }
+nav { display: flex; flex-wrap: wrap; gap: var(--space-4); padding: var(--space-2) var(--gutter); border-bottom: var(--border-width-default) solid var(--color-border-default); background: var(--color-bg-surface); }
+
+/* Cards, text, rows, definition lists */
+.card { background: var(--color-bg-surface); border: var(--border-width-default) solid var(--color-border-default); border-radius: var(--radius-lg); padding: var(--space-4); margin-block-end: var(--space-4); }
+.muted { color: var(--color-text-secondary); }
+.error { color: var(--color-status-danger); }
+.row { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-4); margin: 0; }
+dt { color: var(--color-text-secondary); }
+
+/* Buttons */
+button { padding: var(--space-2) var(--space-3); min-height: 36px; border-radius: var(--radius); border: var(--border-width-default) solid var(--color-border-strong); background: var(--color-bg-surface); color: var(--color-text-primary); cursor: pointer; font: inherit; }
+button:hover { background: var(--color-bg-sunken); }
+button.primary { background: var(--color-action-primary); color: var(--color-text-on-action); border-color: var(--color-action-primary); }
+button.primary:hover { background: var(--color-action-primary-hover); }
+button:disabled { opacity: .6; cursor: default; }
+
+/* Status pills: a word, never colour alone */
+.pill { display: inline-block; padding: 2px var(--space-2); border-radius: var(--radius-sm); font-size: var(--typography-micro-font-size); font-weight: var(--font-weight-semibold); background: var(--color-bg-sunken); color: var(--color-text-secondary); }
+.pill.ok { background: var(--color-status-success-subtle); color: var(--color-status-success); }
+.pill.warn { background: var(--color-status-warning-subtle); color: var(--color-status-warning); }
+.pill.bad { background: var(--color-status-danger-subtle); color: var(--color-status-danger); }
+
+/* Tables */
+.table, table { border-collapse: collapse; width: 100%; }
+.table th, table th { text-align: start; font-weight: var(--font-weight-semibold); color: var(--color-text-secondary); font-size: var(--typography-caption-font-size); padding: var(--space-2); border-bottom: var(--border-width-default) solid var(--color-border-strong); }
+.table td, table td { padding: var(--space-2); border-bottom: var(--border-width-default) solid var(--color-border-default); }
+.table tbody tr:hover { background: var(--color-bg-sunken); }
+.table .num { text-align: end; font-variant-numeric: tabular-nums; }
+
+/* Stat tiles */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-3); margin-block-end: var(--space-4); }
+.stat { background: var(--color-bg-surface); border: var(--border-width-default) solid var(--color-border-default); border-radius: var(--radius-lg); padding: var(--space-4); }
+.stat .label { color: var(--color-text-secondary); font-size: var(--typography-caption-font-size); }
+.stat .value { font-size: var(--typography-headline-font-size); font-weight: var(--font-weight-bold); font-variant-numeric: tabular-nums; }
+
+/* Form fields */
+.field { display: grid; gap: var(--space-1); margin-block-end: var(--space-3); }
+.field label { font-size: var(--typography-caption-font-size); color: var(--color-text-secondary); }
+input:not([type=radio]):not([type=checkbox]):not([type=file]), select, textarea { font: inherit; padding: var(--space-2) var(--space-3); border: var(--border-width-input) solid var(--color-border-strong); border-radius: var(--radius); background: var(--color-bg-surface); color: var(--color-text-primary); }
+input[aria-invalid="true"], .field.invalid input { border: var(--border-width-error) solid var(--color-status-danger); }

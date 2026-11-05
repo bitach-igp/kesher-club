@@ -1,0 +1,57 @@
+/* Admin shell (T-0901, restyled T-0677): the console's look (T-0675). Colour, spacing, radius and type come from the
+   generated token variables (@kesher/tokens/css, light and dark); nothing here is a colour literal. */
+:root {
+  --radius: var(--radius-md);
+  color-scheme: light dark;
+  --focus-ring: var(--border-width-focus) solid var(--color-border-focus);
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--font-family-latin); font-size: var(--typography-body-font-size); line-height: 1.45; background: var(--color-bg-canvas); color: var(--color-text-primary); }
+a { color: var(--color-action-primary); }
+a:hover { color: var(--color-action-primary-hover); }
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .button:focus-visible { outline: var(--focus-ring); outline-offset: var(--border-width-focus-offset); }
+
+/* Shell and side navigation */
+.shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+nav { background: var(--color-bg-surface); border-inline-end: var(--border-width-default) solid var(--color-border-default); padding: var(--space-4); }
+nav a { display: block; padding: var(--space-2) 10px; border-radius: var(--radius); text-decoration: none; color: var(--color-text-primary); }
+nav a:hover { background: var(--color-bg-sunken); }
+nav .code { color: var(--color-text-secondary); font-size: var(--typography-micro-font-size); margin-inline-end: 6px; }
+main { padding: var(--space-6) var(--space-8); max-width: 1200px; }
+h1 { font-size: var(--typography-display-font-size); line-height: 1.2; margin: 0 0 var(--space-4); }
+h2 { font-size: var(--typography-headline-font-size); margin: var(--space-6) 0 var(--space-2); }
+
+/* Environment banner */
+.banner { padding: var(--space-2) var(--space-8); font-size: var(--typography-caption-font-size); }
+.banner.production { background: var(--color-status-danger-subtle); color: var(--color-status-danger); }
+.banner.staging { background: var(--color-status-warning-subtle); }
+.banner.local, .banner.preview { background: var(--color-bg-sunken); }
+
+/* Tables */
+table { border-collapse: collapse; width: 100%; background: var(--color-bg-surface); border: var(--border-width-default) solid var(--color-border-default); border-radius: var(--radius); }
+th, td { text-align: start; padding: var(--space-2) 10px; border-bottom: var(--border-width-default) solid var(--color-border-default); vertical-align: top; }
+th { color: var(--color-text-secondary); font-weight: var(--font-weight-semibold); font-size: var(--typography-micro-font-size); text-transform: uppercase; }
+
+/* Tags (status pills): a word, never colour alone */
+.tag { display: inline-block; padding: 2px var(--space-2); border-radius: var(--radius-full); font-size: var(--typography-caption-font-size); background: var(--color-bg-sunken); }
+.tag.red, .tag.breached, .tag.critical, .tag.high { background: var(--color-status-danger-subtle); color: var(--color-status-danger); }
+.tag.amber, .tag.medium, .tag.degraded, .tag.blocked { background: var(--color-status-warning-subtle); color: var(--color-status-warning); }
+.tag.green, .tag.live, .tag.closed, .tag.ready { background: var(--color-status-success-subtle); color: var(--color-status-success); }
+
+/* Buttons */
+.button, button { display: inline-block; padding: 6px var(--space-3); min-height: 32px; border-radius: var(--radius); border: var(--border-width-default) solid var(--color-border-strong); background: var(--color-bg-surface); color: var(--color-text-primary); cursor: pointer; font: inherit; text-decoration: none; }
+.button:hover, button:hover { background: var(--color-bg-sunken); }
+.button.primary, button.primary { background: var(--color-action-primary); color: var(--color-text-on-action); border-color: var(--color-action-primary); }
+button.danger { background: var(--color-status-danger); color: var(--color-bg-surface); border-color: var(--color-status-danger); }
+form.inline { display: inline; }
+
+/* Cards, grids, definition lists, stat tiles */
+.muted { color: var(--color-text-secondary); }
+.card { background: var(--color-bg-surface); border: var(--border-width-default) solid var(--color-border-default); border-radius: var(--radius-lg); padding: var(--space-4); margin-block-end: var(--space-4); }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: var(--space-4); }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-4); margin: 0; }
+dt { color: var(--color-text-secondary); }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); margin-block-end: var(--space-4); }
+.stat { background: var(--color-bg-surface); border: var(--border-width-default) solid var(--color-border-default); border-radius: var(--radius-lg); padding: var(--space-4); }
+.stat h2 { margin: 0 0 var(--space-2); font-size: var(--typography-caption-font-size); color: var(--color-text-secondary); font-weight: var(--font-weight-medium); }
+.stat .value { font-size: var(--typography-display-font-size); font-weight: var(--font-weight-bold); font-variant-numeric: tabular-nums; }
