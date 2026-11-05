@@ -70,9 +70,9 @@ describe('createLogger', () => {
   });
 
   it('key=value secrets are masked whatever the value looks like', () => {
-    for (const text of ['token=abc123XYZ', 'api_key=sk-short', 'password: hunter2', 'Authorization = Basic dXNlcjpwYXNz', 'otp=12']) {
+    for (const text of ['token=abc123XYZ', 'api_key=sk-short', 'password: hunter2', 'Authorization = Basic dXNlcjpwYXNz', 'otp=12', 'access_token=zzTop99', 'refresh_token: zzTop99', 'client_secret=zzTop99', 'sessionid=zzTop99', 'cookie: sid=zzTop99; theme=dark', '{"password":"zzTop99"}', "{'token': 'zzTop99'}", 'passwd = "zzTop99 zzTop98"']) {
       const out = scrub(`failed with ${text} here`);
-      expect(out, text).not.toMatch(/abc123XYZ|sk-short|hunter2|dXNlcjpwYXNz|=\s*12\b/);
+      expect(out, text).not.toMatch(/abc123XYZ|sk-short|hunter2|dXNlcjpwYXNz|=\s*12\b|zzTop/);
       expect(out, text).toContain('[redacted]');
     }
   });

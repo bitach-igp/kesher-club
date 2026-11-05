@@ -27,8 +27,9 @@ export const ID_SHAPE = /^(?![\d-]+$)[A-Za-z0-9-]{8,40}$/;
 const IDENTIFIER = /^[a-z][a-z0-9_-]{0,39}$/i;
 
 const REDACTIONS: readonly [RegExp, string][] = [
-  // key=value and key: value for the names that carry secrets, whatever the value looks like
-  [/\b(token|secret|password|passwd|pwd|api[_-]?key|apikey|authorization|auth|credential|otp|pin|cvv|cvc)(\s*[=:]\s*)(?:(?:Bearer|Basic|Token)\s+)?\S+/gi, '$1$2[redacted]'],
+  // key=value, key: value and "key":"value" for the names that carry secrets, whatever the value looks like. The name may sit
+  // inside a longer one (access_token, client_secret), so only a letter or digit before it stops the match.
+  [/(?<![A-Za-z0-9])(token|secret|password|passwd|pwd|api[_-]?key|apikey|authorization|auth|credential|otp|pin|cvv|cvc|cookie|session[_-]?id|sessionid|sid)(["']?\s*[=:]\s*)(?:(?:Bearer|Basic|Token)\s+)?("[^"]*"|'[^']*'|[^\s,;}&]+)/gi, '$1$2[redacted]'],
   [/\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]*/g, '[token]'], // a JWT
   [/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, '[token]'],
   [/\b(?:sk|pk|rk|tok|whsec|xox[a-z])_[A-Za-z0-9_]{6,}/gi, '[secret]'], // vendor key prefixes
