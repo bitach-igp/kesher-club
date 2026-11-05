@@ -57,4 +57,4 @@ A session's credits are shared across a five-hour window; spend them deliberatel
 - Give a reviewer the card and the diff only, and ask for a report under 300 words. After a fix commit the reviewer that approves reads the full final diff; the delta since the last round only tells it where to look first.
 - Run the whole check set (`pnpm typecheck`, `lint`, `test`, `trace`) before pushing, including other packages' tests when a shared behaviour changed; a CI-only failure costs a round trip.
 - Do not poll. Subscribe to the PR and end the turn; the CI event wakes the session. Events for an older head are not the current head's result.
-- One card at a time. When the user asks to throttle, finish the card in flight and stop starting new ones until told.
+- One card at a time. Throttling means cheaper models and fewer round trips, not pausing: on 2026-11-05 the user said autopilot keeps running, card after card, until they say stop. Pause only on an explicit stop, or when every remaining card needs a decision from the user (then list the decisions and wait).
