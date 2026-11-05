@@ -11,3 +11,12 @@ Steps (from repo root, PowerShell on Windows unless stated):
 8. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema including billing (0005 applied). Step 6 reports 1 test passed: of five simultaneous creates for one member exactly one succeeds, the other four are refused IDEMPOTENCY_CONFLICT, one row exists and four subscriptions were ended. Step 7 is run after step 6 and must FAIL with `duplicate key value violates unique constraint "membership_one_open_per_member"` (a second open membership for the member step 6 left behind).
 Report back: the console output of steps 4, 6 and 7 (the vitest summary and the step 7 error line), and `docker --version`.
+
+## Result
+PASS for the migration and the index; the race test needed one fix (pushed as a separate commit). 2026-11-05 04:05-04:25 Asia/Jerusalem, runner worktree on Zvi's PC at 34b479f, then re-run with the fix.
+- `docker --version`: Docker version 29.9.2, build a82e528
+- Step 4: `ok` for all nine schemas (ledger, identity, org, billing, legal, addons, notify, audit, agent); `membership_one_open_per_member` present in billing.
+- Step 6 at 34b479f: first fresh-DB run `Tests 1 passed (1)`; a second fresh-DB run failed `expected "cancel" to be called 4 times, but got 0 times` (all four losers were refused by the early `held` check before any vendor call, a correct outcome the test did not allow). With the fix commit: two fresh-DB runs `Tests 1 passed (1)`, 5 subscriptions made, 4 cancelled.
+- Step 7: fails as expected: `ERROR:  duplicate key value violates unique constraint "membership_one_open_per_member"` / `DETAIL:  Key (member_party_id)=(...) already exists.`
+- Step 8: container removed.
+- Note: the pg test passes only on a fresh database. Re-running it on the same database fails (all five creates refused) because each run's new `SimulatorHost` numbers subscriptions from `sub_000001` again and `ops.external_ref` has primary key (provider, external_id), so the winner's ref insert collides with a previous run's and is treated as a lost race.
