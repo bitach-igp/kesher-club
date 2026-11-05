@@ -18,9 +18,9 @@ const specPairs: ReadonlyArray<{
   claimed: readonly [number, number];
   minimum: number;
 }> = [
-  { name: 'text.primary on bg.canvas', fg: (t) => t.color.text.primary, bg: (t) => t.color.bg.canvas, claimed: [14.87, 16.14], minimum: WCAG_AA_TEXT },
-  { name: 'text.secondary on bg.canvas', fg: (t) => t.color.text.secondary, bg: (t) => t.color.bg.canvas, claimed: [5.79, 8.1], minimum: WCAG_AA_TEXT },
-  { name: 'text.onAction on action.primary', fg: (t) => t.color.text.onAction, bg: (t) => t.color.action.primary, claimed: [5.93, 7.78], minimum: WCAG_AA_TEXT },
+  { name: 'text.primary on bg.canvas', fg: (t) => t.color.text.primary, bg: (t) => t.color.bg.canvas, claimed: [14.66, 16.21], minimum: WCAG_AA_TEXT },
+  { name: 'text.secondary on bg.canvas', fg: (t) => t.color.text.secondary, bg: (t) => t.color.bg.canvas, claimed: [5.71, 8.13], minimum: WCAG_AA_TEXT },
+  { name: 'text.onAction on action.primary', fg: (t) => t.color.text.onAction, bg: (t) => t.color.action.primary, claimed: [9.92, 8.86], minimum: WCAG_AA_TEXT },
   { name: 'status.success on bg.surface', fg: (t) => t.color.status.success, bg: (t) => t.color.bg.surface, claimed: [5.38, 7.88], minimum: WCAG_AA_TEXT },
   { name: 'status.warning on bg.surface', fg: (t) => t.color.status.warning, bg: (t) => t.color.bg.surface, claimed: [5.17, 8.88], minimum: WCAG_AA_TEXT },
   { name: 'status.danger on bg.surface', fg: (t) => t.color.status.danger, bg: (t) => t.color.bg.surface, claimed: [5.52, 7.13], minimum: WCAG_AA_TEXT },
@@ -59,12 +59,12 @@ describe('spec contrast claims (Tab 2 colour table)', () => {
     }
   }
 
-  it('action.primary on white is 5.93:1 (light)', () => {
-    expect(contrastRatio(light.color.action.primary, '#FFFFFF')).toBeGreaterThanOrEqual(5.93 - 0.005);
+  it('action.primary (navy) on white is 9.92:1 (light)', () => {
+    expect(contrastRatio(light.color.action.primary, '#FFFFFF')).toBeGreaterThanOrEqual(9.92 - 0.005);
   });
 
-  it('ink on stone is 10.97:1 (light)', () => {
-    expect(contrastRatio(light.color.text.primary, light.color.bg.stone)).toBeGreaterThanOrEqual(10.97 - 0.005);
+  it('ink on stone is 12.56:1 (light)', () => {
+    expect(contrastRatio(light.color.text.primary, light.color.bg.stone)).toBeGreaterThanOrEqual(12.56 - 0.005);
   });
 
   it('accent.gold is 3.72:1 on surface (light, non-text use only)', () => {
@@ -91,5 +91,21 @@ describe('spec contrast claims (Tab 2 colour table)', () => {
         expect(contrastRatio(theme.color.money.out, bg)).toBeGreaterThanOrEqual(WCAG_AA_TEXT);
       }
     }
+  });
+
+  it('the brand blue is a 3:1 non-text colour on surface and the focus ring meets 3:1 on canvas in both modes (T-0670)', () => {
+    expect(light.color.accent.blue).toBe('#1D76BB');
+    expect(light.color.accent.sky).toBe('#9ADBF6');
+    expect(contrastRatio(light.color.accent.blue, light.color.bg.surface)).toBeGreaterThanOrEqual(WCAG_AA_NON_TEXT);
+    for (const [, theme] of modes) {
+      expect(contrastRatio(theme.color.border.focus, theme.color.bg.canvas)).toBeGreaterThanOrEqual(WCAG_AA_NON_TEXT);
+      expect(contrastRatio(theme.color.action.primary, theme.color.bg.canvas)).toBeGreaterThanOrEqual(WCAG_AA_TEXT);
+    }
+  });
+
+  it('dark and light expose the same colour token paths (parity)', () => {
+    const flat = (o: unknown, path = ''): string[] =>
+      typeof o === 'string' ? [path] : Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => flat(v, path ? `${path}.${k}` : k));
+    expect(flat(dark.color)).toEqual(flat(light.color));
   });
 });

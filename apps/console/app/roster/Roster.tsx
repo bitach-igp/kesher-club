@@ -4,7 +4,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { t, type CopyKey, type Locale } from '../../src/i18n.ts';
-import { attemptFor, balanceText, cardKey, errorKey, placedText, toggle, type Attempt, type RosterMember } from '../../src/roster.ts';
+import { attemptFor, balanceText, cardKey, cardTone, errorKey, placedText, statusTone, toggle, type Attempt, type RosterMember } from '../../src/roster.ts';
 import { placeInCohort } from './actions.ts';
 
 const STORE = 'kesher-roster-selection';
@@ -61,16 +61,16 @@ export function RosterTable({ locale, rows, cohorts }: { locale: Locale; rows: r
         <button type="button" disabled={busy} onClick={() => void place()} data-testid="roster-place">{t('roster.place', locale)}</button>
         {message ? <p role={message.error ? 'alert' : 'status'} className={message.error ? 'error' : undefined} data-testid="roster-message">{t(message.key, locale, message.vars)}</p> : null}
       </div>
-      <table data-testid="roster-table">
+      <table className="table" data-testid="roster-table">
         <thead>
           <tr>
-            <td />
-            <td>{t('roster.col.name', locale)}</td>
-            <td>{t('roster.col.status', locale)}</td>
-            <td>{t('roster.col.cohort', locale)}</td>
-            <td>{t('roster.col.card', locale)}</td>
-            <td>{t('roster.col.balance', locale)}</td>
-            <td>{t('roster.col.plan', locale)}</td>
+            <th scope="col" />
+            <th scope="col">{t('roster.col.name', locale)}</th>
+            <th scope="col">{t('roster.col.status', locale)}</th>
+            <th scope="col">{t('roster.col.cohort', locale)}</th>
+            <th scope="col">{t('roster.col.card', locale)}</th>
+            <th scope="col" className="num">{t('roster.col.balance', locale)}</th>
+            <th scope="col">{t('roster.col.plan', locale)}</th>
           </tr>
         </thead>
         <tbody>
@@ -78,10 +78,10 @@ export function RosterTable({ locale, rows, cohorts }: { locale: Locale; rows: r
             <tr key={m.id} data-testid={`roster-row-${m.id}`}>
               <td><input type="checkbox" checked={selected.has(m.id)} onChange={() => pick(m.id)} aria-label={m.name} /></td>
               <td><a href={`/roster/${m.id}`}>{m.name}</a></td>
-              <td>{t(`roster.status.${m.status}`, locale)}</td>
+              <td><span className={`pill ${statusTone(m.status)}`}>{t(`roster.status.${m.status}`, locale)}</span></td>
               <td>{m.cohort?.name ?? ''}</td>
-              <td>{t(cardKey(m), locale)}</td>
-              <td dir="ltr">{balanceText(m, locale)}</td>
+              <td><span className={`pill ${cardTone(m.card)}`}>{t(cardKey(m), locale)}</span></td>
+              <td className="num" dir="ltr">{balanceText(m, locale)}</td>
               <td>{m.planCode ?? ''}</td>
             </tr>
           ))}

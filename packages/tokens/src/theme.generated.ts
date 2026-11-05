@@ -4,10 +4,10 @@
 const lightTheme = {
   color: {
     bg: {
-      canvas: "#FBF8F3",
+      canvas: "#F4F7FB",
       surface: "#FFFFFF",
-      sunken: "#F3EEE5",
-      stone: "#E2D6C2",
+      sunken: "#E9EFF7",
+      stone: "#D6E8F7",
     },
     text: {
       primary: "#14233B",
@@ -16,12 +16,14 @@ const lightTheme = {
       onAction: "#FFFFFF",
     },
     action: {
-      primary: "#1E5BD8",
-      primaryHover: "#184BB4",
-      primarySubtle: "#E7EEFC",
+      primary: "#293B8F",
+      primaryHover: "#1F2E72",
+      primarySubtle: "#E6EAF7",
     },
     accent: {
       gold: "#B8761F",
+      blue: "#1D76BB",
+      sky: "#9ADBF6",
     },
     status: {
       success: "#177A45",
@@ -32,16 +34,16 @@ const lightTheme = {
       dangerSubtle: "#FAEFEE",
     },
     border: {
-      default: "#E3DCD0",
+      default: "#DBE3EE",
       strong: "#8A94A6",
-      focus: "#1E5BD8",
+      focus: "#1D76BB",
     },
     money: {
       in: "#177A45",
       out: "#14233B",
     },
     overlay: {
-      scrim: "#0E15237A",
+      scrim: "#0D14267A",
     },
   },
   font: {
@@ -221,24 +223,26 @@ export const light: Theme = lightTheme;
 export const dark: Theme = {
   color: {
     bg: {
-      canvas: "#0E1523",
+      canvas: "#0D1426",
       surface: "#172033",
       sunken: "#0A101B",
-      stone: "#2A2418",
+      stone: "#1B2A44",
     },
     text: {
       primary: "#EEF1F7",
       secondary: "#A3ADC2",
       disabled: "#5D677B",
-      onAction: "#0E1523",
+      onAction: "#0D1426",
     },
     action: {
-      primary: "#7FA8FF",
-      primaryHover: "#9DBCFF",
-      primarySubtle: "#1B2B4F",
+      primary: "#8FB4FF",
+      primaryHover: "#B0CAFF",
+      primarySubtle: "#1B2B55",
     },
     accent: {
       gold: "#E0A852",
+      blue: "#5FA8E0",
+      sky: "#2B5C78",
     },
     status: {
       success: "#5CC98A",
@@ -251,14 +255,14 @@ export const dark: Theme = {
     border: {
       default: "#2A3550",
       strong: "#5D677B",
-      focus: "#7FA8FF",
+      focus: "#8FB4FF",
     },
     money: {
       in: "#5CC98A",
       out: "#EEF1F7",
     },
     overlay: {
-      scrim: "#0E15237A",
+      scrim: "#0D14267A",
     },
   },
   font: {
