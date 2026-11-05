@@ -165,6 +165,10 @@ export class AddonOrderService {
   async charge(orderId: string, now: Date): Promise<AddonOrder> {
     const o = await this.must(orderId);
     if (o.state !== 'created') return o;
+    // A charge already posted (a crash between the journal and the state) is not paid for twice, and the member is not refused for the
+    // money that has already left their wallet.
+    const posted = (await this.db.query<{ id: string }>(`select id from ledger.journal where idempotency_key = $1`, [`addon:${o.id}:charge`])).rows[0];
+    if (posted) return this.transition(o.id, 'charged', now, { chargeJournalId: posted.id });
     await this.assertFunds(o.memberPartyId, o.price);
     const wallet = await this.accounts.memberAccount(o.memberPartyId, 'wallet', o.price.currency);
     const payable = await this.accounts.systemAccount('addon_payable', o.price.currency);

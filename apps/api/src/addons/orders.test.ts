@@ -244,6 +244,42 @@ describe('replays, races and a re-checked charge (T-0548, follow-up of T-0542)',
     expect(await chargeJournal(first.id)).toBe(1);
   });
 
+  it('a charge that posted but never moved the order is finished on replay, even though the wallet no longer holds the price', async () => {
+    const { memberPartyId, wallet } = await member(false, 2_500n);
+    const crash = vi.spyOn(orders, 'transition').mockRejectedValueOnce(new Error('crashed after the journal'));
+    await expect(orders.create({ idempotencyKey: 'r-6-paid', memberPartyId, sku }, now)).rejects.toThrow('crashed');
+    crash.mockRestore();
+    const stuck = (await orders.byKey('r-6-paid'))!;
+    expect(stuck.state).toBe('created');
+    expect(await chargeJournal(stuck.id)).toBe(1);
+    expect(-(await ledger.balance(wallet, 'USD'))).toBe(0n); // the price has left the wallet already
+    const replay = await orders.create({ idempotencyKey: 'r-6-paid', memberPartyId, sku }, now);
+    expect(replay).toMatchObject({ id: stuck.id, state: 'charged' });
+    expect(await chargeJournal(stuck.id)).toBe(1);
+  });
+
+  it('two callers charging one created order both end on the charged order, with one journal', async () => {
+    const { memberPartyId } = await member(false, 10_000n);
+    const crash = vi.spyOn(orders, 'charge').mockRejectedValueOnce(new Error('crashed before the charge'));
+    await expect(orders.create({ idempotencyKey: 'r-7-two', memberPartyId, sku }, now)).rejects.toThrow('crashed');
+    crash.mockRestore();
+    const stuck = (await orders.byKey('r-7-two'))!;
+    const [a, b] = await Promise.all([orders.charge(stuck.id, now), orders.charge(stuck.id, now)]);
+    expect([a.state, b.state]).toEqual(['charged', 'charged']);
+    expect(await chargeJournal(stuck.id)).toBe(1);
+  });
+
+  it('a replay does not spend the credit again', async () => {
+    const { memberPartyId, membership } = await member(true, 10_000n);
+    const crash = vi.spyOn(orders, 'charge').mockRejectedValueOnce(new Error('crashed before the charge'));
+    await expect(orders.create({ idempotencyKey: 'r-8-credit', memberPartyId, membership, sku: 'esim:airalo:IL-10GB-30D' }, now)).rejects.toThrow('crashed');
+    crash.mockRestore();
+    const afterCreate = (await entitlements.can(membership!, 'esim.dataGb', 1n, now)).remaining;
+    await orders.create({ idempotencyKey: 'r-8-credit', memberPartyId, membership, sku: 'esim:airalo:IL-10GB-30D' }, now);
+    await orders.create({ idempotencyKey: 'r-8-credit', memberPartyId, membership, sku: 'esim:airalo:IL-10GB-30D' }, now);
+    expect((await entitlements.can(membership!, 'esim.dataGb', 1n, now)).remaining).toBe(afterCreate);
+  });
+
   it('the top quantity, 10, orders and is priced for ten', async () => {
     const { memberPartyId } = await member(false, 50_000n);
     const o = await orders.create({ idempotencyKey: 'r-4-ten', memberPartyId, sku, quantity: 10 }, now);
@@ -309,6 +345,7 @@ describe('POST /addon-orders needs a step-up like every money route (T-0542)', (
   it('an empty wallet over HTTP is 422 INSUFFICIENT_FUNDS', async () => {
     // Spend whatever the wallet holds on $25 eSIMs (however many earlier tests ordered), then there is nothing left.
     const left = (await accounts.purses(partyId)).find((p) => p.currency === 'USD')!.available.minor;
+    expect(left >= 2_500n && left <= 25_000n).toBe(true);
     const drain = await order({ sku: 'esim:airalo:IL-5GB-30D', quantity: Number(left / 2_500n) }, 'http-3-drain-wallet', { 'x-step-up': stepUp });
     expect(drain.status).toBe(201);
     const r = await order({ sku: 'esim:airalo:IL-5GB-30D' }, 'http-3-empty-wallet', { 'x-step-up': stepUp });
