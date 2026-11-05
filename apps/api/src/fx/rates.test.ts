@@ -177,6 +177,14 @@ describe('T-0546: a feed rate that jumps is refused, and a manual rate runs out 
     await expect(r.publishFromPort('USD/ILS', 36_900_000n, t(12 * 60_000 - 1))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
     expect(await cases()).toEqual([{ kind: 'fx_rate_deviation', severity: 'high', n: 1 }]);
     expect((await db2.query<{ payload: { offeredMid: string } }>(`select payload from ops.case where kind = 'fx_rate_deviation'`)).rows[0]!.payload.offeredMid).toBe('36.900000');
+    // A case ops closed while the same rate is still refused is opened again by the next refused offer; one being worked is left as it is.
+    await db2.query(`update ops.case set status = 'resolved' where kind = 'fx_rate_deviation'`);
+    await expect(r.publishFromPort('USD/ILS', 36_800_000n, t(12 * 60_000 - 2))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect((await db2.query<{ status: string }>(`select status from ops.case where kind = 'fx_rate_deviation'`)).rows).toEqual([{ status: 'open' }]);
+    await db2.query(`update ops.case set status = 'investigating' where kind = 'fx_rate_deviation'`);
+    await expect(r.publishFromPort('USD/ILS', 36_700_000n, t(12 * 60_000 - 3))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect((await db2.query<{ status: string }>(`select status from ops.case where kind = 'fx_rate_deviation'`)).rows).toEqual([{ status: 'investigating' }]);
+    expect(await cases()).toEqual([{ kind: 'fx_rate_deviation', severity: 'high', n: 1 }]);
     // One basis point past the bound the other way is refused too; a halving as well.
     await expect(r.publishFromPort('USD/ILS', 3_672_000n, t(12 * 60_000))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' }); // -10.01%
     // The old rate runs out on its own (safe failure): the feed stays refused, quotes are refused.
