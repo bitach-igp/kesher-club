@@ -10,3 +10,13 @@ Steps (from repo root, PowerShell on Windows unless stated):
 7. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema. Step 6 reports 1 test passed (not skipped): exactly six of ten simultaneous reserves succeed, four are refused INSUFFICIENT_FUNDS, the master ends at 0 and the reserve at -6,000.
 Report back: the console output of steps 4 and 6 (the vitest summary and any failure message), and `docker --version`.
+
+## Result
+PASS · 2026-11-05 14:05 Asia/Jerusalem · runner worktree at e311735
+- `docker --version`: Docker version 29.9.2, build a82e528
+- Step 3: roles.sql applied (ALTER ROLE ×3).
+- Step 4: migrated (ledger to 0027); `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent.
+- Step 5: install done in 2.1s (lockfile unchanged).
+- Step 6: `✓ src/payouts/reserve-lock.pg.test.ts (1 test) 235ms` · Test Files 1 passed (1) · Tests 1 passed (1), not skipped. Ran on a fresh database.
+- Step 7: container removed.
+- Note: the test passes its own copy of the guard to `postNoOverdraft`; it does not call `PayoutService.reserveInstitution`, so a later change to the service's guard would not be caught here.
