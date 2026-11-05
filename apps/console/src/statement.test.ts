@@ -16,6 +16,7 @@ const october: Statement = {
     { date: '2026-10-20', journalId: '0190a0a0-0000-7000-8000-000000000003', kind: 'fee', description: 'Trip', amount: ils('45000'), balance: ils('945000') },
   ],
   closing: ils('945000'),
+  reserved: ils('0'),
 };
 
 describe('T-0646 I10 master account', () => {

@@ -9,12 +9,12 @@ import { uuidv7 } from '@kesher/domain';
 import { isPgError, PG, type Database } from '../db.ts';
 import type { PostgresLedger } from './post.ts';
 
-export type AccountType = 'wallet' | 'pending' | 'institution_master' | 'partner_settlement' | 'fx_position' | 'fee_income' | 'interchange_income' | 'addon_payable' | 'suspense';
+export type AccountType = 'wallet' | 'pending' | 'institution_master' | 'partner_settlement' | 'fx_position' | 'fee_income' | 'interchange_income' | 'addon_payable' | 'suspense' | 'payout_reserve';
 export const CURRENCIES: readonly Currency[] = ['USD', 'ILS'];
 /** Owner of system accounts (no party). */
 export const SYSTEM_OWNER = '00000000-0000-7000-8000-000000000000';
 
-const CREDIT_NORMAL = new Set<AccountType>(['wallet', 'pending', 'institution_master', 'addon_payable']);
+const CREDIT_NORMAL = new Set<AccountType>(['wallet', 'pending', 'institution_master', 'addon_payable', 'payout_reserve']);
 
 export interface LedgerAccount {
   id: string;
@@ -77,6 +77,20 @@ export class AccountService {
    */
   async institutionHoldAccount(institutionId: string, currency: Currency): Promise<string> {
     return (await this.ensure(institutionId, 'pending', currency)).id;
+  }
+
+  /**
+   * The institution's payout reserve (T-0555): money set aside for a payout waiting on its approver, a `payout_reserve` account owned by
+   * the institution. It is still the institution's own money (statements, exports and the dashboard count it), but not available:
+   * `institutionBalance` is the master only, so payouts' funds check, allowances and credit headroom never count it.
+   */
+  async institutionPayoutReserveAccount(institutionId: string, currency: Currency): Promise<string> {
+    return (await this.ensure(institutionId, 'payout_reserve', currency)).id;
+  }
+
+  /** What the institution has reserved for waiting payouts in a currency (credit-normal, negated). */
+  async institutionReserved(institutionId: string, currency: Currency): Promise<Money> {
+    return money(-(await this.ledger.balance(await this.institutionPayoutReserveAccount(institutionId, currency), currency)), currency);
   }
 
   /** What the institution has on hold in a currency (credit-normal, negated). */

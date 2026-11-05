@@ -67,11 +67,13 @@ describe('the master account statement (TST-INS-021, T-0645)', () => {
     expect(csv).toMatchObject({ opening: { minor: '200000' }, closing: { minor: '945000' }, contentType: 'text/csv; charset=utf-8' });
     const text = Buffer.from(csv.base64, 'base64').toString('utf8');
     const lines = text.trim().split('\r\n');
-    expect(lines.at(-1)).toMatch(/^2026-10-31,,closing,,745000,945000,ILS,/);
+    expect(lines.at(-2)).toMatch(/^2026-10-31,,closing,,745000,945000,ILS,/);
+    expect(lines.at(-1)).toMatch(/^2026-10-31,,reserved,,0,0,ILS,/); // nothing is set aside this month (T-0555)
     expect(text).toContain(`"'=HYPERLINK(""x"") Trip"`);
     const book = (await get('finance', 'statement/export?month=2026-10&format=xlsx')).body as { base64: string };
     const sheet = sheetCells(unzipStored(new Uint8Array(Buffer.from(book.base64, 'base64'))).get('xl/worksheets/sheet1.xml')!);
-    expect(sheet.at(-1)?.slice(2, 6)).toEqual(['closing', '', '745000', '945000']);
+    expect(sheet.at(-2)?.slice(2, 6)).toEqual(['closing', '', '745000', '945000']);
+    expect(sheet.at(-1)?.slice(2, 6)).toEqual(['reserved', '', '0', '0']);
     expect(sheet[1]?.slice(2, 6)).toEqual(['opening', '', '200000', '200000']);
   });
 
@@ -80,5 +82,49 @@ describe('the master account statement (TST-INS-021, T-0645)', () => {
     expect((await get('stranger', 'statement?month=2026-10')).status).toBe(404);
     expect((await get('finance', 'statement?month=2026-13')).status).toBe(422);
     expect((await get('finance', 'statement/export?month=2026-10&format=pdf')).status).toBe(422);
+  });
+});
+
+describe('money set aside for a payout is still the institution\'s (T-0555, REQ-INS-021)', () => {
+  const RES = uuidv7(NOW);
+  const wire = (m: Wire) => m.minor;
+  const stmt = async (month: string) => (await get('resFinance', `statement?month=${month}`, RES)).body as Statement & { reserved: Wire };
+
+  beforeAll(async () => {
+    await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Reserve', 'IL')`, [RES]);
+    const partyId = uuidv7(NOW);
+    await db.query(`insert into org.staff (party_id, institution_id, role) values ($1, $2, 'finance')`, [partyId, RES]);
+    tokens['resFinance'] = (await app.services.tokens.issue({ partyId, deviceId: 'web', roles: ['member', 'org_finance'] })).accessToken;
+    const { accounts, ledger } = app.services;
+    const master = await accounts.institutionAccount(RES, 'ILS');
+    const reserve = await accounts.institutionPayoutReserveAccount(RES, 'ILS');
+    const partner = await accounts.systemAccount('partner_settlement', 'ILS');
+    const post = (key: string, kind: string, at: string, legs: [string, bigint][]) =>
+      ledger.post({ idempotencyKey: key, kind, effectiveAt: new Date(at), postings: legs.map(([accountId, amountMinor]) => ({ accountId, currency: 'ILS' as const, amountMinor })), metadata: { institutionId: RES } });
+    // August: a deposit, then ₪4,000 set aside for a waiting payout and set free again in the same month.
+    await post('res-aug-deposit', 'deposit', '2026-08-01T10:00:00Z', [[partner, 1_000_000n], [master, -1_000_000n]]);
+    const set = await post('res-aug-reserve', 'payout_reserve', '2026-08-05T10:00:00Z', [[master, 400_000n], [reserve, -400_000n]]);
+    await ledger.reverse(set.id, 'res-aug-reserve:unreserve', { effectiveAt: new Date('2026-08-06T10:00:00Z') });
+    // September: ₪3,000 set aside and still waiting at month end. October: that payout goes out, from the reserve.
+    await post('res-sep-reserve', 'payout_reserve', '2026-09-03T10:00:00Z', [[master, 300_000n], [reserve, -300_000n]]);
+    await post('res-oct-payout', 'payout', '2026-10-02T10:00:00Z', [[reserve, 300_000n], [partner, -300_000n]]);
+  }, 60_000);
+
+  it('a reserve and its release in the same month are no movement: no payout row, opening and closing unchanged', async () => {
+    const aug = await stmt('2026-08');
+    expect(aug.rows.map((x) => x.kind)).toEqual(['deposit']);
+    expect([wire(aug.opening), wire(aug.closing), wire(aug.reserved)]).toEqual(['0', '1000000', '0']);
+  });
+
+  it('a reserve still open at month end changes nothing in the closing balance, which shows it as reserved; nothing shows as a payout yet', async () => {
+    const sep = await stmt('2026-09');
+    expect(sep.rows).toEqual([]);
+    expect([wire(sep.opening), wire(sep.closing), wire(sep.reserved)]).toEqual(['1000000', '1000000', '300000']);
+  });
+
+  it('the payout appears once, in the month it goes out of the reserve, and the reserved figure returns to zero', async () => {
+    const oct = await stmt('2026-10');
+    expect(oct.rows.map((x) => [x.kind, wire(x.amount)])).toEqual([['payout', '-300000']]);
+    expect([wire(oct.opening), wire(oct.closing), wire(oct.reserved)]).toEqual(['1000000', '700000', '0']);
   });
 });

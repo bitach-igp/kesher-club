@@ -3965,9 +3965,13 @@ export interface components {
         };
         readonly InstitutionDashboard: {
             /** @description The master account per currency */
+            readonly available: readonly components["schemas"]["Money"][];
+            /** @description What the institution owns per currency */
             readonly balances: readonly components["schemas"]["Money"][];
             /** @description Fee items still due */
             readonly feesDue: readonly components["schemas"]["Money"][];
+            /** @description The payout reserve per currency */
+            readonly reserved: readonly components["schemas"]["Money"][];
             readonly roster: {
                 readonly active: number;
                 readonly invited: number;
@@ -4070,6 +4074,8 @@ export interface components {
             readonly currency: "ILS" | "USD";
             readonly month: string;
             readonly opening: components["schemas"]["Money"];
+            /** @description Of the closing balance */
+            readonly reserved: components["schemas"]["Money"];
             readonly rows: readonly {
                 readonly amount: components["schemas"]["Money"];
                 readonly balance: components["schemas"]["Money"];
@@ -8258,6 +8264,7 @@ export interface operations {
                         readonly contentType: string;
                         readonly filename: string;
                         readonly opening: components["schemas"]["Money"];
+                        readonly reserved: components["schemas"]["Money"];
                         readonly rows: number;
                     };
                 };

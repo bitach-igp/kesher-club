@@ -17,14 +17,19 @@ const UPCOMING = 3;
 
 export interface Dashboard {
   roster: { invited: number; verified: number; active: number };
+  /** What the institution owns per currency: the master account plus its payout reserve (T-0555). */
   balances: ReturnType<typeof toWire>[];
+  /** The master account per currency: what payouts, allowances and credit headroom can use. */
+  available: ReturnType<typeof toWire>[];
+  /** The payout reserve per currency, set aside for payouts waiting on their approver. */
+  reserved: ReturnType<typeof toWire>[];
   upcomingRuns: { scheduleId: string; name: string; date: string; amount: ReturnType<typeof toWire>; memberCount: number }[];
   feesDue: ReturnType<typeof toWire>[];
 }
 
 export interface DashboardDeps {
   db: Database;
-  accounts: Pick<AccountService, 'institutionBalance'>;
+  accounts: Pick<AccountService, 'institutionBalance' | 'institutionReserved'>;
   staffOf: StaffOf;
 }
 
@@ -38,7 +43,7 @@ export class InstitutionDashboard {
 
   async read(institutionId: string, now: Date): Promise<Dashboard> {
     const { db } = this.d;
-    const [statuses, schedules, fees, balances] = await Promise.all([
+    const [statuses, schedules, fees, available, reserved] = await Promise.all([
       db.query<{ status: string; n: number }>(`select status, count(*)::int as n from org.member where institution_id = $1 and status in ('invited', 'verified', 'active') group by status`, [institutionId]),
       db.query<{ id: string; name: string; amount_minor: string; currency: Currency; cadence: 'weekly' | 'monthly' | 'once'; member_filter: string[]; member_count: number; last_run: string | Date | null }>(
         `select s.id, s.name, s.amount_minor::text, s.currency, s.cadence, s.member_filter,
@@ -50,6 +55,7 @@ export class InstitutionDashboard {
       ),
       db.query<{ currency: Currency; total: string }>(`select currency, sum(amount_minor)::text as total from org.fee_item where institution_id = $1 and status = 'due' group by currency order by currency`, [institutionId]),
       Promise.all(CURRENCIES.map((c) => this.d.accounts.institutionBalance(institutionId, c))),
+      Promise.all(CURRENCIES.map((c) => this.d.accounts.institutionReserved(institutionId, c))),
     ]);
     const count = (s: string) => statuses.rows.find((r) => r.status === s)?.n ?? 0;
     const today = isoDate(now);
@@ -62,7 +68,9 @@ export class InstitutionDashboard {
       .slice(0, UPCOMING);
     return {
       roster: { invited: count('invited'), verified: count('verified'), active: count('active') },
-      balances: balances.map(toWire),
+      balances: available.map((a, i) => toWire(money(a.minor + reserved[i]!.minor, a.currency))),
+      available: available.map(toWire),
+      reserved: reserved.map(toWire),
       upcomingRuns,
       feesDue: fees.rows.map((f) => toWire(money(BigInt(f.total), f.currency))),
     };

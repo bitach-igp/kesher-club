@@ -8,6 +8,8 @@ import { COPY } from './i18n.ts';
 const OHR: Dashboard = {
   roster: { invited: 3, verified: 2, active: 5 },
   balances: [{ minor: '1200000', currency: 'ILS' }, { minor: '0', currency: 'USD' }],
+  available: [{ minor: '1200000', currency: 'ILS' }, { minor: '0', currency: 'USD' }],
+  reserved: [{ minor: '0', currency: 'ILS' }, { minor: '0', currency: 'USD' }],
   upcomingRuns: [{ scheduleId: '0190a0a0-0000-7000-8000-000000000001', name: 'Weekly ₪200', date: '2026-11-06', amount: { minor: '20000', currency: 'ILS' }, memberCount: 5 }],
   feesDue: [{ minor: '45000', currency: 'ILS' }],
 };
