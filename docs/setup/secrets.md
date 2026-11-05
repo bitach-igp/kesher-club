@@ -17,12 +17,12 @@ node tools/secrets/index.mjs --env staging --region us-east-1               # lo
 node tools/secrets/index.mjs --env staging --region us-east-1 --only staff-jwks,admin-api-signing-key --rotate
 ```
 
-It prints one line per secret (`loaded`, `kept`, `rotated`, `would-load`, `no-container`, `failed`) and nothing else. A value
+It prints one line per secret and nothing else: `loaded`, `kept`, `rotated`, `protected` (a PII key left alone), `would-load`, `would-rotate`, `invalid`, `no-container`, `pair-mismatch`, `pair-incomplete` or `failed`. A value
 is never printed, never an argument and never logged; the AWS CLI reads it from standard input. A secret that already has a value
 is kept unless `--rotate` is given. The tool never replaces `pii-data-key` or `pii-index-key` (it refuses an explicit
 request and skips them under a general `--rotate`), and it treats `admin-api-signing-key` and `staff-jwks` as one key pair: it
 loads, keeps or rotates both together, refuses to name only one, and stops with `pair-mismatch` when exactly one already has a
-value (re-run with `--rotate` to replace both). `no-container` means Terraform has not created it: apply the environment first.
+value (re-run with `--rotate` to replace both). `pair-incomplete` means the second half of the pair could not be written after the first was: the two halves disagree and a plain re-run would not notice, so re-run with `--only admin-api-signing-key,staff-jwks --rotate` before deploying. `no-container` means Terraform has not created it: apply the environment first.
 
 ## Every container
 

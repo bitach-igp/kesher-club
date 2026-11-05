@@ -79,6 +79,7 @@ function probe(exec, env, name, region) {
 export function run({ env, region, only, rotate = false, dryRun = false }, exec = defaultExec, generate = generateAll) {
   if (!ENVS.includes(env)) throw new Error(`--env must be one of ${ENVS.join(', ')}`);
   if (!region) throw new Error('--region is required (no default)');
+  if (only && only.length === 0) throw new Error('--only names no secret');
   const names = only ?? GENERATED;
   for (const n of names) if (!GENERATED.includes(n)) throw new Error(`Unknown secret ${n}; this tool generates: ${GENERATED.join(', ')}`);
   if (rotate && only && only.some((n) => PROTECTED.includes(n))) {
@@ -88,6 +89,8 @@ export function run({ env, region, only, rotate = false, dryRun = false }, exec 
     throw new Error(`${PAIR.join(' and ')} are one key pair: name both, or neither`);
   }
   const values = generate(env);
+  // Every value is checked before anything is written, so a bad generator can never leave half a run behind.
+  for (const n of names) if (!VALIDATORS[n](values[n])) return [{ name: n, outcome: 'invalid' }];
   const results = [];
   const store = (name, hasValue) => {
     if (dryRun) return hasValue ? 'would-rotate' : 'would-load';
@@ -98,13 +101,7 @@ export function run({ env, region, only, rotate = false, dryRun = false }, exec 
   for (const name of names) {
     if (handled.has(name)) continue;
     const group = PAIR.includes(name) ? PAIR : [name];
-    for (const n of group) {
-      handled.add(n);
-      if (!VALIDATORS[n](values[n])) {
-        results.push({ name: n, outcome: 'invalid' });
-        return results;
-      }
-    }
+    for (const n of group) handled.add(n);
     const states = group.map((n) => probe(exec, env, n, region));
     const bad = states.findIndex((st) => st === 'no-container' || st === 'failed');
     if (bad >= 0) {
@@ -127,7 +124,11 @@ export function run({ env, region, only, rotate = false, dryRun = false }, exec 
     for (const [i, n] of group.entries()) {
       const outcome = store(n, states[i] === 'value');
       results.push({ name: n, outcome });
-      if (outcome === 'failed') return results;
+      if (outcome === 'failed') {
+        // The second half of a pair failing leaves the first one new: a plain re-run would see two values and keep them.
+        if (i > 0) results.push({ name: group.join('+'), outcome: 'pair-incomplete' });
+        return results;
+      }
     }
   }
   return results;

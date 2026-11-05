@@ -93,6 +93,30 @@ test('the admin key pair is one unit: a lone half is refused, a half-filled pair
   assert.deepEqual(run({ env: 'staging', region: 'r', only: PAIR }, kept.exec).map((r) => r.outcome), ['kept', 'kept']);
 });
 
+test('a pair whose second write fails is reported as incomplete, never as plainly failed; a pair-mismatch also shows under --dry-run', () => {
+  const calls = [];
+  let writes = 0;
+  const exec = (args, input) => {
+    calls.push({ args, input });
+    if (args[1] === 'get-secret-value') return NO_VALUE;
+    writes += 1;
+    return { status: writes === 2 ? 255 : 0, stderr: '' };
+  };
+  const results = run({ env: 'staging', region: 'r', only: PAIR }, exec);
+  assert.deepEqual(results.map((r) => r.outcome), ['loaded', 'failed', 'pair-incomplete']);
+  const half = fakeAws({ 'kesher/staging/staff-jwks': HAS_VALUE });
+  assert.deepEqual(run({ env: 'staging', region: 'r', only: PAIR, dryRun: true }, half.exec), [{ name: 'admin-api-signing-key+staff-jwks', outcome: 'pair-mismatch' }]);
+});
+
+test('nothing is written when any generated value is invalid, and an empty --only is refused', () => {
+  const values = generateAll('staging');
+  values['pii-index-key'] = 'not-a-key';
+  const { exec, calls } = fakeAws({});
+  assert.deepEqual(run({ env: 'staging', region: 'r', only: ['jwt-signing-key', 'pii-index-key'] }, exec, () => values), [{ name: 'pii-index-key', outcome: 'invalid' }]);
+  assert.equal(calls.length, 0);
+  assert.throws(() => run({ env: 'staging', region: 'r', only: [] }, fakeAws({}).exec), /--only names no secret/);
+});
+
 test('--rotate never replaces the PII keys: an explicit request is refused, a general one skips them', () => {
   assert.throws(() => run({ env: 'prod', region: 'r', only: ['pii-data-key'], rotate: true }, fakeAws({}).exec), /cannot be rotated with this tool/);
   const state = Object.fromEntries(GENERATED.map((n) => [`kesher/prod/${n}`, HAS_VALUE]));
