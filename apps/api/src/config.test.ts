@@ -112,18 +112,14 @@ describe('Crowded banking override (T-0659)', () => {
     expect(loadApiConfig({ ...env, ...crowded, PROVIDER_MODE_DEFAULT: 'sandbox' }).PROVIDER_INSTITUTION_BANKING).toBe('crowded');
   });
 
-  it('refuses a PROVIDER_* key no port owns, alongside other problems, so a typo never leaves a port on its simulator (T-0040)', () => {
-    expect(thrown(() => loadApiConfig({ ...env, PROVIDER_FUNDING: 'stripe' })).invalid.join()).toMatch(/PROVIDER_FUNDING: not a provider key/);
-    expect(thrown(() => loadWorkerConfig({ ...env, PROVIDER_FUNDING: 'stripe' })).invalid.join()).toMatch(/PROVIDER_FUNDING: not a provider key/);
-    const both = thrown(() => loadApiConfig({ ...env, MARKET: 'XX', PROVIDER_FUNDING: 'stripe' }));
-    expect(both.invalid.join()).toMatch(/MARKET/);
-    expect(both.invalid.join()).toMatch(/PROVIDER_FUNDING/);
+  it('does not refuse a PROVIDER_* key it does not know: Terraform injects PROVIDER_WEBHOOK_SECRETS as an ECS secret (T-0040)', () => {
+    expect(loadApiConfig({ ...env, PROVIDER_WEBHOOK_SECRETS: 'whsec-not-read-yet' }).PROVIDER_INSTITUTION_BANKING).toBe('sim');
+    expect(loadWorkerConfig({ ...env, PROVIDER_WEBHOOK_SECRETS: 'whsec-not-read-yet' }).MARKET).toBe('IL');
     expect(loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox', PROVIDER_INSTITUTION_BANKING: 'sim' }).PROVIDER_INSTITUTION_BANKING).toBe('sim');
   });
 
   it('an empty PROVIDER_* value counts as not set, as every other key does (T-0040)', () => {
     expect(loadApiConfig({ ...env, PROVIDER_INSTITUTION_BANKING: '' }).PROVIDER_INSTITUTION_BANKING).toBe('sim');
-    expect(thrown(() => loadApiConfig({ ...env, PROVIDER_FUNDING: '' })).invalid.join()).toMatch(/PROVIDER_FUNDING/);
   });
 
   it('loads a full Crowded set for the API and the worker, the token and secrets as Secrets', () => {

@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { apiConfigSchema, loadApiConfig, loadWorkerConfig, PROVIDER_PORTS, workerConfigSchema } from './config.ts';
+import { apiConfigSchema, loadApiConfig, loadWorkerConfig, workerConfigSchema } from './config.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = (p: string): string => fs.readFileSync(path.join(ROOT, p), 'utf8');
@@ -88,12 +88,6 @@ describe('the process config and Terraform agree (T-0025)', () => {
             expect(() => load({ ...raw, PROVIDER_MODE_DEFAULT: 'sandbox' })).not.toThrow();
           }
         }
-      });
-
-      it('passes no PROVIDER_* key the config does not know, which would stop the boot (T-0040)', () => {
-        const known = new Set(['PROVIDER_MODE_DEFAULT', ...Object.values(PROVIDER_PORTS).map((p) => p.env)]);
-        const passed = [...hcl.matchAll(/^\s*(PROVIDER_[A-Z0-9_]+)\s*=/gm)].map((m) => m[1]!);
-        expect(passed.filter((k) => !known.has(k))).toEqual([]);
       });
 
       it('passes the secrets through ECS secrets, never as plain environment', () => {
