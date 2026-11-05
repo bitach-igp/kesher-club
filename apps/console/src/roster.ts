@@ -69,3 +69,9 @@ export const attemptFor = (last: Attempt | undefined, cohortId: string, ids: Rea
 };
 
 export const errorKey = (code: string): CopyKey => (code === 'NOT_FOUND' ? 'roster.place.notOurs' : code === 'VALIDATION_FAILED' ? 'roster.place.invalid' : code === 'FORBIDDEN' ? 'error.forbidden' : 'error.generic');
+
+/** The tone of a status or card pill (T-0676). The word always shows too; colour is never the only signal. */
+export type Tone = 'ok' | 'warn' | 'bad' | 'neutral';
+export const statusTone = (s: Status): Tone => ({ invited: 'warn', verified: 'ok', active: 'ok', declined: 'bad', removed: 'neutral' } as const)[s];
+export const cardTone = (c: RosterMember['card']): Tone => ({ none: 'neutral', inactive: 'warn', active: 'ok', frozen: 'bad' } as const)[c];
+

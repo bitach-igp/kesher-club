@@ -3,7 +3,7 @@
 // Approve as the second finance member. The decisions live in src/allowances.ts; this renders them.
 import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
-import { earlierRun, executeRun, fmt, previewRun, type PreviewView, type RunDeps, type RunSummary, type RunView } from '../../src/allowances.ts';
+import { earlierRun, executeRun, fmt, needsSecondApprover, previewRun, type PreviewView, type RunDeps, type RunSummary, type RunView } from '../../src/allowances.ts';
 import { t, type CopyKey, type Locale } from '../../src/i18n.ts';
 import { passkeyStepUp } from '../step-up-flow.ts';
 import { previewAllowance, runAllowance } from './actions.ts';
@@ -74,13 +74,24 @@ export function RunPanel({ scheduleId, defaultDate, locale, canRun, runs }: { sc
       {already ? <p className="muted" data-testid="run-earlier">{already.requestedByMe && already.status === 'awaiting_second_approval' ? t('allowances.run.mine', locale) : t('allowances.run.earlier', locale, { date: already.runDate })}</p> : null}
       {preview?.kind === 'preview' ? (
         <>
+          <div className="stats" data-testid="preview-stats">
+            <div className="stat">
+              <div className="label">{t('allowances.preview.members', locale)}</div>
+              <div className="value">{preview.run.memberCount}</div>
+            </div>
+            <div className="stat">
+              <div className="label">{t('allowances.preview.totalLabel', locale)}</div>
+              <div className="value" dir="ltr">{fmt(preview.run.total, locale)}</div>
+            </div>
+          </div>
+          {needsSecondApprover(preview.total) ? <p className="card" role="note" data-testid="preview-approver">{t('allowances.preview.approver', locale)}</p> : null}
           {preview.run.rows?.length ? (
-            <table data-testid="preview-rows">
+            <table className="table" data-testid="preview-rows">
               <tbody>
                 {preview.run.rows.map((r, i) => (
                   <tr key={i}>
                     <td>{r.memberName}</td>
-                    <td>{fmt(r.amount, locale)}</td>
+                    <td className="num" dir="ltr">{fmt(r.amount, locale)}</td>
                   </tr>
                 ))}
               </tbody>
