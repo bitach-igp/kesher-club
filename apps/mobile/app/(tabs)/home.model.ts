@@ -89,6 +89,26 @@ export function purseRows(accounts: readonly Account[]): PurseRow[] {
     });
 }
 
+/** The hero (T-0672): the shekel balance (zero when there is no shekel purse), the dollar balance when there is a dollar purse, and `empty` for a new member. */
+export interface Hero {
+  ils: Money;
+  usd?: Money;
+  empty: boolean;
+}
+export function heroOf(accounts: readonly Account[]): Hero {
+  const rows = purseRows(accounts);
+  const ils = rows.find((r) => r.currency === 'ILS');
+  const usd = rows.find((r) => r.currency === 'USD');
+  return { ils: ils?.available ?? money(0n, 'ILS'), ...(usd ? { usd: usd.available } : {}), empty: rows.every((r) => r.available.minor === 0n && r.holds.minor === 0n) };
+}
+
+/** The four actions in the hero's row, in order; the rest stay in the quick-actions list. */
+export const HERO_ACTIONS: readonly QuickAction[] = ['add', 'send', 'convert', 'card'];
+export const heroActions = (status: ServiceStatus | undefined): typeof QUICK_ACTIONS => quickActions(status).filter((q) => HERO_ACTIONS.includes(q.action));
+
+/** The greeting copy: by the name others see (member text, shown as written), or a plain hello. */
+export const greeting = (displayName: string | undefined): { key: CopyKey; vars: Record<string, string> } => (displayName ? { key: 'home.greeting', vars: { name: displayName } } : { key: 'home.greeting.anon', vars: {} });
+
 /** The identity card: which message, if any, while T2 is not approved. */
 export function kycCard(status: KycStatus | undefined): { body: CopyKey; action: boolean; tone: 'info' | 'warning' | 'danger' } | undefined {
   if (!status || status.approvedTier === 'T2') return status ? undefined : { body: 'home.kyc.none', action: true, tone: 'info' };
