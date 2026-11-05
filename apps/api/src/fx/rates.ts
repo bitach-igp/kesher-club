@@ -17,6 +17,10 @@ export type RateSource = 'port' | 'manual';
 export type RateStatus = 'proposed' | 'active' | 'superseded' | 'rejected';
 /** A port-sourced rate is good for this long; the worker republishes well inside it (REQ-FX-004). */
 export const PORT_RATE_TTL_MS = 15 * 60_000;
+/** A feed mid that moves more than this from the active rate (in basis points; 1,000 = 10%) is refused, not published (T-0546, F44). */
+export const MAX_RATE_MOVE_BPS = 1_000n;
+/** A manual rate holds for at most this long; past it the feed takes over again (REQ-FX-004). */
+export const MANUAL_RATE_MAX_MS = 24 * 60 * 60_000;
 export const approvalSubject = (rateId: string): string => `fx_rate:${rateId}`;
 
 export interface ClubRate {
@@ -53,6 +57,7 @@ interface Row {
   status: RateStatus;
   valid_from: string | Date | null;
   valid_until: string | Date | null;
+  activated_at?: string | Date | null;
   approval_id: string | null;
   proposed_by: string;
   reason: string | null;
@@ -122,8 +127,9 @@ export class RateService {
   /** The active rate for the pair, if it is valid now; a port rate past its window is not. */
   async current(pair: RatePair, now: Date): Promise<ClubRate | undefined> {
     const r = await this.db.query<Row>(
-      `select * from ops.fx_rate where pair = $1 and status = 'active' and (valid_from is null or valid_from <= $2) and (valid_until is null or valid_until > $2)`,
-      [pair, now],
+      `select * from ops.fx_rate where pair = $1 and status = 'active' and (valid_from is null or valid_from <= $2)
+         and (valid_until > $2 or (valid_until is null and not (source = 'manual' and coalesce(activated_at, valid_from, created_at) + ($3::double precision * interval '1 millisecond') <= $2)))`,
+      [pair, now, MANUAL_RATE_MAX_MS],
     );
     return r.rows[0] ? toRate(r.rows[0]) : undefined;
   }
@@ -149,19 +155,41 @@ export class RateService {
 
   /**
    * The worker's path: publish the port's mid as the active rate for the next 15 minutes, superseding
-   * the previous port rate. An active manual rate wins: nothing is published while one stands.
+   * the previous rate. An active manual rate wins while it stands (it holds for at most 24 hours; once it
+   * has lapsed the feed takes over). A mid that moves more than MAX_RATE_MOVE_BPS from the active rate is
+   * REFUSED: the old rate stays (and runs out on its own, which refuses quotes: the safe failure), a case
+   * is opened for ops, and the refusal is thrown so the worker reports it.
    */
   async publishFromPort(pair: RatePair, midScaled: bigint, now: Date): Promise<ClubRate | undefined> {
     if (midScaled <= 0n) throw new DomainError('VALIDATION_FAILED', 'rate must be positive');
-    return this.db.transaction(async (tx) => {
+    const out = await this.db.transaction(async (tx) => {
       const active = await tx.query<Row>(`select * from ops.fx_rate where pair = $1 and status = 'active' for update`, [pair]);
-      if (active.rows[0]?.source === 'manual') return undefined;
-      // One active row per pair is a partial unique index: the old one steps down before the new one steps up.
-      if (active.rows[0]) await tx.query(`update ops.fx_rate set status = 'superseded', superseded_at = $2 where id = $1`, [active.rows[0].id, now]);
+      const cur = active.rows[0];
+      // A manual rate stands until it lapses: its valid_until, or (a row active before the cap existed) 24 hours after its activation.
+      const manualUntil = cur?.source === 'manual' ? (cur.valid_until ? new Date(cur.valid_until).getTime() : new Date(cur.activated_at ?? cur.valid_from ?? cur.created_at).getTime() + MANUAL_RATE_MAX_MS) : 0;
+      if (cur?.source === 'manual' && manualUntil > now.getTime()) return { kind: 'manual' as const };
+      if (cur) {
+        const old = BigInt(cur.mid_scaled);
+        const move = midScaled > old ? midScaled - old : old - midScaled;
+        if (move * 10_000n > MAX_RATE_MOVE_BPS * old) return { kind: 'refused' as const, version: cur.version, old };
+        // One active row per pair is a partial unique index: the old one steps down before the new one steps up.
+        await tx.query(`update ops.fx_rate set status = 'superseded', superseded_at = $2 where id = $1`, [cur.id, now]);
+      }
       const row = await this.insert(tx, { pair, midScaled, source: 'port', status: 'active', validFrom: now, validUntil: new Date(now.getTime() + PORT_RATE_TTL_MS), proposedBy: 'worker' }, now);
       await tx.query(`update ops.fx_rate set activated_at = $2 where id = $1`, [row.id, now]);
-      return row;
+      return { kind: 'published' as const, row };
     });
+    if (out.kind === 'manual') return undefined;
+    if (out.kind === 'refused') {
+      const movedBps = ((midScaled > out.old ? midScaled - out.old : out.old - midScaled) * 10_000n) / out.old;
+      // Outside the transaction (it ended): the case must survive the throw. One case per active rate (a feed that keeps offering wrong values keeps one open case, carrying the latest offer).
+      await this.db.query(
+        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'fx_rate_deviation', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do update set payload = excluded.payload, status = case when ops.case.status in ('resolved', 'dismissed') then 'open' else ops.case.status end`,
+        [uuidv7(now), `fx_rate_deviation:${pair}:v${out.version}`, JSON.stringify({ pair, activeVersion: out.version, activeMid: formatRate(out.old), offeredMid: formatRate(midScaled), movedBps: movedBps.toString(), boundBps: MAX_RATE_MOVE_BPS.toString(), summary: `The feed offered ${pair} ${formatRate(midScaled)}, ${movedBps.toString()} bp from the active ${formatRate(out.old)}; refused` }), now],
+      );
+      throw new DomainError('VALIDATION_FAILED', `The feed rate for ${pair} moved ${movedBps.toString()} bp, more than the ${MAX_RATE_MOVE_BPS.toString()} bp allowed; the active rate is kept`, { pair });
+    }
+    return out.row;
   }
 
   /**
@@ -214,8 +242,10 @@ export class RateService {
       const before = previous.rows[0] ? { version: previous.rows[0].version, mid: formatRate(BigInt(previous.rows[0].mid_scaled)), source: previous.rows[0].source } : null;
       await this.audit.record({ actorId: by.partyId, actorRole: by.role, action: 'fx_rate.activate', subject: rate.pair, reason, before, after: { version: rate.version, mid: formatRate(rate.midScaled), source: 'manual' }, payload: { approvalId, rateId: rate.id } }, now, txDb);
       if (previous.rows[0]) await tx.query(`update ops.fx_rate set status = 'superseded', superseded_at = $2 where id = $1`, [previous.rows[0].id, now]);
-      await tx.query(`update ops.fx_rate set status = 'active', valid_from = $2, activated_at = $2 where id = $1 and status = 'proposed'`, [rate.id, now]);
-      return { ...rate, status: 'active', validFrom: now.toISOString() };
+      // A manual rate holds for at most 24 hours; then the feed takes over (REQ-FX-004).
+      const until = new Date(now.getTime() + MANUAL_RATE_MAX_MS);
+      await tx.query(`update ops.fx_rate set status = 'active', valid_from = $2, valid_until = $3, activated_at = $2 where id = $1 and status = 'proposed'`, [rate.id, now, until]);
+      return { ...rate, status: 'active', validFrom: now.toISOString(), validUntil: until.toISOString() };
     });
   }
 

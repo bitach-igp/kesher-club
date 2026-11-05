@@ -62,3 +62,30 @@ describe('TST-FX-004: the refresh job', () => {
     expect(await rates.current('USD/ILS', now)).toMatchObject({ version: p.rate.version, source: 'manual' });
   });
 });
+
+describe('T-0546: the job reports a refused mid', () => {
+  it('a decimal-slip mid (10x) is refused and reported, not published: the old rate stays, a case is opened, then the old rate runs out', async () => {
+    const db2 = await createTestDatabase();
+    try {
+      const r = new RateService(db2, new ApprovalService(db2), new AuditService(db2));
+      let t = NOW;
+      await new RefreshRatesJob(new FxSimulator(fixedClock(NOW.toISOString())), r, () => t).run();
+      const slipped: FxPort = {
+        quote: async (input) => ({ quoteId: 'slip', from: input.from, to: input.to, rateScaled: 37_000_000n, total: input.from }) as never,
+        convert: async () => {
+          throw new FxError('PROVIDER_UNAVAILABLE', 'unused');
+        },
+      };
+      t = at(5 * 60_000);
+      const report = await new RefreshRatesJob(slipped, r, () => t).run();
+      expect(report).toMatchObject({ published: [], manual: [], errors: [{ pair: 'USD/ILS', error: expect.stringContaining('moved') }] });
+      expect((await r.history('USD/ILS')).map((x) => x.version)).toEqual([1]);
+      expect((await r.current('USD/ILS', t))?.midScaled).toBe(3_710_000n);
+      expect((await db2.query<{ n: number }>(`select count(*)::int as n from ops.case where kind = 'fx_rate_deviation'`)).rows[0]!.n).toBe(1);
+      await expect(r.rateFor('USD', 'ILS', at(16 * 60_000))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    } finally {
+      await db2.close();
+    }
+  }, 60_000);
+});
+

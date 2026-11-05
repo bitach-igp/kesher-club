@@ -9,7 +9,7 @@ import { importSigningKey } from '@kesher/api/auth/tokens';
 import { loadWorkerConfig } from '@kesher/api/config';
 import { createPiiCipher } from '@kesher/api/crypto/pii';
 import { createPgDatabase } from '@kesher/api/pg';
-import { createRegistry } from '@kesher/api/registry';
+import { createRegistry, crowdedWebhookSecrets, overridesFromConfig } from '@kesher/api/registry';
 import { buildJobs as defaultJobs, type JobDeps, loadCatalogueConfig, pgRunLog } from './jobs.ts';
 import { advisoryLock } from './lock.ts';
 import { type Job, type Log, Scheduler } from './scheduler.ts';
@@ -50,13 +50,15 @@ export async function main(env: Record<string, string | undefined>, opts: Worker
     const pii = createPiiCipher({ dataKey: config.PII_DATA_KEY, indexKey: config.PII_INDEX_KEY });
     // createApp wires the token service too; the worker never mints a token, but builds the same graph.
     const signingKey = await importSigningKey(JSON.parse(config.JWT_SIGNING_KEY.reveal()) as Parameters<typeof importSigningKey>[0], config.JWT_SIGNING_KID);
-    const { registry } = createRegistry(config.PROVIDER_MODE_DEFAULT);
+    // Same provider choice as the API (T-0659): the worker replays webhook events and reads provider state through the same adapter.
+    const { registry, providers } = createRegistry(config.PROVIDER_MODE_DEFAULT, undefined, overridesFromConfig(config, db, (message) => emit('warning', { message })));
     const clock = opts.clock ?? (() => new Date());
-    const app = createApp({ db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), clock });
+    const app = createApp({ db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), clock, crowdedWebhookSecrets: crowdedWebhookSecrets(config) });
     const jobs = (opts.buildJobs ?? defaultJobs)({ app, db, registry, market: config.MARKET, clock, runs: pgRunLog(db), catalogue });
     const scheduler = new Scheduler(jobs, advisoryLock(locks, config.MARKET), emit);
     scheduler.start();
-    emit('started', { market: config.MARKET, providers: config.PROVIDER_MODE_DEFAULT, jobs: jobs.length });
+    // The worker's Log takes flat fields: the per-port providers go as one JSON string.
+    emit('started', { market: config.MARKET, mode: config.PROVIDER_MODE_DEFAULT, providers: JSON.stringify(providers), jobs: jobs.length });
 
     let closing: Promise<void> | undefined;
     return {

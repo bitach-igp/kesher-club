@@ -3,7 +3,9 @@
 // the requester cannot be an approver of their own money request; over-threshold amounts and
 // money flags always need two.
 import { DomainError, uuidv7, type Currency, type Money } from '@kesher/domain';
-import { isPgError, PG, type Database } from '../db.ts';
+import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type ApprovalKind = 'allowance_run' | 'payout' | 'flag_flip' | 'provider_binding' | 'ledger_correction' | 'fx_rate' | 'staff_grant' | 'institution_deposit' | 'credit_limit' | 'kyb_decision' | 'price_rule' | 'plan_version';
 export type ApprovalStatus = 'pending' | 'awaiting_second_approval' | 'approved' | 'rejected' | 'expired';
@@ -61,16 +63,36 @@ export class ApprovalService {
     this.db = db;
   }
 
+  /**
+   * How many approvers this request needs: the amount's own rule, and for an institution's payout also the rolling day. Once the day's
+   * payouts (open or approved, not rejected or expired) together pass the threshold, each further one needs two, so cutting a large
+   * payout into small ones does not get around the second person. The institution's row is locked while the day is summed.
+   */
+  private async requiredFor(tx: SqlClient, input: { kind: ApprovalKind; scope: string; amount?: Money }, now: Date): Promise<number> {
+    const own = approversRequired(input.kind, input.amount);
+    if (own > 1 || input.kind !== 'payout' || !input.amount || input.amount.currency !== 'ILS' || !UUID.test(input.scope)) return own;
+    await tx.query('select 1 from org.institution where id = $1 for update', [input.scope]);
+    const r = await tx.query<{ total: string }>(
+      `select coalesce(sum(amount_minor::bigint), 0)::text as total from ops.approval_request
+        where kind = 'payout' and scope = $1 and currency = 'ILS' and created_at > $2 and status not in ('rejected', 'expired')`,
+      [input.scope, new Date(now.getTime() - 24 * 3_600_000)],
+    );
+    return BigInt(r.rows[0]?.total ?? '0') + input.amount.minor > SECOND_APPROVER_THRESHOLD_ILS_MINOR ? 2 : 1;
+  }
+
   /** Creates (or returns) the request for (kind, subject). The requester's own approval counts only for single-approver actions. */
   async request(input: { kind: ApprovalKind; subject: string; scope: string; requestedBy: Approver; amount?: Money; payload?: Record<string, unknown>; ttlMs?: number }, now: Date): Promise<ApprovalRequest> {
-    const required = approversRequired(input.kind, input.amount);
     const id = uuidv7(now);
     try {
-      await this.db.query(
-        `insert into ops.approval_request (id, kind, subject, payload, amount_minor, currency, required, scope, requested_by, status, expires_at, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
-        [id, input.kind, input.subject, JSON.stringify(input.payload ?? {}), input.amount?.minor.toString() ?? null, input.amount?.currency ?? null, required, input.scope, input.requestedBy.partyId, required === 1 ? 'pending' : 'awaiting_second_approval', new Date(now.getTime() + (input.ttlMs ?? DEFAULT_TTL_MS)), now],
-      );
+      // An institution's payouts are summed over a rolling day under its row lock (T-0545, F43), so the sum and the insert are one step.
+      await this.db.transaction(async (tx) => {
+        const required = await this.requiredFor(tx, input, now);
+        await tx.query(
+          `insert into ops.approval_request (id, kind, subject, payload, amount_minor, currency, required, scope, requested_by, status, expires_at, created_at)
+           values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+          [id, input.kind, input.subject, JSON.stringify(input.payload ?? {}), input.amount?.minor.toString() ?? null, input.amount?.currency ?? null, required, input.scope, input.requestedBy.partyId, required === 1 ? 'pending' : 'awaiting_second_approval', new Date(now.getTime() + (input.ttlMs ?? DEFAULT_TTL_MS)), now],
+        );
+      });
     } catch (e) {
       if (!isPgError(e, PG.UNIQUE_VIOLATION)) throw e;
     }
@@ -80,11 +102,16 @@ export class ApprovalService {
     return r;
   }
 
+  /** Marks an open request expired, once: the one place this write lives. A request already decided is left as it is. */
+  async expire(requestId: string, now: Date): Promise<void> {
+    await this.db.query(`update ops.approval_request set status = 'expired', decided_at = $2 where id = $1 and status in ('pending','awaiting_second_approval')`, [requestId, now]);
+  }
+
   async decide(requestId: string, by: Approver, decision: 'approve' | 'reject', now: Date, reason?: string): Promise<ApprovalRequest> {
     const pre = await this.get(requestId);
     if (!pre) throw new DomainError('NOT_FOUND', 'Approval request not found');
     if ((pre.status === 'pending' || pre.status === 'awaiting_second_approval') && Date.parse(pre.expiresAt) <= now.getTime()) {
-      await this.db.query(`update ops.approval_request set status = 'expired', decided_at = $2 where id = $1 and status in ('pending','awaiting_second_approval')`, [requestId, now]);
+      await this.expire(requestId, now);
       throw new DomainError('IDEMPOTENCY_CONFLICT', 'Request expired');
     }
     return this.db.transaction(async (tx) => {

@@ -254,25 +254,39 @@ export class InstitutionUsFunding {
    * Sends an approved request's money. The claim (a `sending` event, taken under a lock on the request) comes before the provider is called, so
    * two callers and a cancel take turns. Repeating it is safe: the provider hears the same key every time.
    */
-  async execute(requestId: string, now: Date): Promise<void> {
+  async execute(requestId: string, now: Date): Promise<'blocked' | undefined> {
     const req = (await this.d.db.query<RequestRow>('select * from org.us_funding_request where id = $1', [requestId])).rows[0];
     if (!req) return;
+    // Judged again before every send, not only when the request was approved (T-0658): the kill switch, the account and the KYB can change
+    // in the day between approval and the sweep. A blocked request is left as it is: no claim, nothing sent, nothing failed.
+    if (!(await this.d.flags.isOn(US_BANKING_FLAG))) return 'blocked';
+    let acct;
+    try {
+      acct = await this.open(req.institution_id);
+    } catch (e) {
+      if (e instanceof DomainError) return 'blocked';
+      throw e;
+    }
+    // Without the bank's id for the account there is nothing to send from; checked before the claim, so none is taken and waits to go stale.
+    if (!acct.ref) return 'blocked';
     const claimed = await this.d.db.transaction(async (tx) => {
       await tx.query('select 1 from org.us_funding_request where id = $1 for update', [requestId]);
       const s = fold(await this.events(requestId, tx));
       const abandoned = s.status === 'sending' && s.sendingAt !== undefined && now.getTime() - s.sendingAt.getTime() > SENDING_STALE_MS;
       if (s.status !== 'approved' && !abandoned) return undefined;
-      if (s.approvedAt && now.getTime() - s.approvedAt.getTime() > RESEND_WINDOW_MS) {
+      // A transfer already booked inside Kesher is never called unsent: the deposit still has to be recorded, however late.
+      if (!s.booked && s.approvedAt && now.getTime() - s.approvedAt.getTime() > RESEND_WINDOW_MS) {
         await this.append(tx, requestId, 'send_unknown', null, { reason: 'unsent after a day' }, now);
         return 'stale' as const;
       }
       await this.append(tx, requestId, 'sending', null, {}, now);
       return s;
     });
-    if (claimed === 'stale') return this.openCase(req, 'send_unknown', now);
+    if (claimed === 'stale') {
+      await this.openCase(req, 'send_unknown', now);
+      return;
+    }
     if (!claimed) return;
-    const acct = await this.d.usBanking.account(req.institution_id);
-    if (!acct || !acct.ref) return;
     const port = this.d.registry.resolve<InstitutionBankingPort>('institution-banking', acct.market);
     const amount = money(BigInt(req.amount_minor), 'USD');
     const key = `us-fund:${req.institution_id}:${req.idempotency_key}`;
@@ -303,7 +317,8 @@ export class InstitutionUsFunding {
       if (e.code === 'PROVIDER_UNAVAILABLE') return;
       if (e.code === 'OUTCOME_UNKNOWN') {
         await this.append(this.d.db, requestId, 'send_unknown', null, { reason: 'the bank\'s answer could not be read' }, now);
-        return this.openCase(req, 'send_unknown', now);
+        await this.openCase(req, 'send_unknown', now);
+        return;
       }
       await this.fail(req, e.code, now);
     }
@@ -367,7 +382,7 @@ export class InstitutionUsFunding {
    * The worker's cycle for one market: approved requests (and sends whose claim went stale) are sent; sent ones the bank has not finished are
    * asked about. One request that cannot be handled never stops the rest.
    */
-  async sweep(market: 'IL' | 'US', now: Date): Promise<{ sent: number; polled: number; errors: number }> {
+  async sweep(market: 'IL' | 'US', now: Date): Promise<{ sent: number; polled: number; errors: number; blocked: number; errorClasses: string[] }> {
     const rows = await this.d.db.query<{ id: string }>(
       `select r.id from org.us_funding_request r join org.institution i on i.id = r.institution_id where i.market = $1
         and not exists (select 1 from org.us_funding_event e where e.request_id = r.id and e.kind in ('linked', 'failed', 'cancelled', 'deposit_recorded', 'send_unknown')) order by r.created_at`,
@@ -376,13 +391,15 @@ export class InstitutionUsFunding {
     let sent = 0;
     let polled = 0;
     let errors = 0;
+    let blocked = 0;
+    const errorClasses = new Set<string>();
     for (const { id } of rows.rows) {
       try {
         const s = fold(await this.events(id));
         if (FINAL.includes(s.status)) continue;
         if (s.status === 'approved' || s.status === 'sending') {
           const before = (await this.events(id)).length;
-          await this.execute(id, now);
+          if ((await this.execute(id, now)) === 'blocked') blocked += 1;
           if ((await this.events(id)).length > before) sent += 1;
         } else if (s.status === 'in_transit' && s.paymentRef) {
           const req = (await this.d.db.query<RequestRow>('select * from org.us_funding_request where id = $1', [id])).rows[0]!;
@@ -395,11 +412,12 @@ export class InstitutionUsFunding {
             if (!(e instanceof InstitutionBankingError)) throw e; // the provider is unavailable: next cycle
           }
         }
-      } catch {
+      } catch (e) {
         errors += 1; // one request's trouble is not the others' (it is retried next cycle)
+        errorClasses.add(e instanceof DomainError ? `DomainError:${e.code}` : e instanceof Error ? e.constructor.name : typeof e); // the job reports what it swallowed
       }
     }
-    return { sent, polled, errors };
+    return { sent, polled, errors, blocked, errorClasses: [...errorClasses] };
   }
 
   /**

@@ -23,7 +23,7 @@
 // `runLoad` is the deterministic workflow body, pure over `LoadActivities`, so Temporal (ADR-002) can
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
-import { applyBps, DomainError, fromWire, money, sub, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
+import { applyBps, DomainError, fromWire, money, sub, toWire, uuidv7, type Currency, type Money, type Posting } from '@kesher/domain';
 import { applyRate, FundingError, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
@@ -31,7 +31,7 @@ import type { Database } from '../db.ts';
 import type { RateService } from '../fx/rates.ts';
 import { rateString } from '../fx/service.ts';
 import type { AccountService } from '../ledger/accounts.ts';
-import type { PostgresLedger } from '../ledger/post.ts';
+import type { PostedJournal, PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
@@ -129,6 +129,9 @@ export async function runLoad(a: LoadActivities, input: LoadInput, workflowId: s
 
 /** Moves the transfer to where the vendor says the load stands. Idempotent: a state already reached is left alone. */
 export async function applyVendorState(a: LoadActivities, t: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Omit<LoadRun, 'replayed'>> {
+  // A load in `pending` is a release that began and did not finish: whatever the vendor's calm answer, it finishes through the release
+  // (which asks the vendor again and fails the load if it was returned). A `failed` answer takes the normal path below.
+  if (t.state === 'pending' && (load.status === 'succeeded' || load.status === 'on_hold')) return { workflowId, transfer: await a.settle(t, load, workflowId, now) };
   switch (load.status) {
     case 'succeeded':
       // A held load stays held: the bank's hold days govern, and the release job settles it on the date.
@@ -146,6 +149,7 @@ export async function applyVendorState(a: LoadActivities, t: Transfer, load: Ven
 
 export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
 export const holdKey = (workflowId: string): string => `${workflowId}:hold`;
+const unknownLoadKey = (transferId: string): string => `load-unknown:${transferId}`;
 export const releaseKey = (workflowId: string): string => `${workflowId}:release`;
 
 interface Deps {
@@ -208,7 +212,8 @@ export class LoadService implements LoadActivities {
   }
 
   async settle(transfer: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Transfer> {
-    if (transfer.state === 'pending_hold') return this.release(transfer, now);
+    // A held load, or a release that began and did not finish, settles through the release: its own journal, never a second credit.
+    if (transfer.state === 'pending_hold' || transfer.state === 'pending') return this.release(transfer, now);
     const journal = await this.d.ledger.post({
       idempotencyKey: settleKey(workflowId),
       kind: journalKind(transfer, LOAD_JOURNAL_KIND),
@@ -230,12 +235,46 @@ export class LoadService implements LoadActivities {
       postings: await this.legs(transfer, 'pending'),
       metadata: { workflowId, provider: this.d.provider, holdUntil, ...conversionMetadata(transfer), ...institutionMetadata(transfer) },
     });
-    return this.d.transfers.apply(transfer.id, 'hold', now, { journalId: journal.id, holdReleasesAt: new Date(holdUntil), reason: 'bank hold' });
+    try {
+      return await this.d.transfers.apply(transfer.id, 'hold', now, { journalId: journal.id, holdReleasesAt: new Date(holdUntil), reason: 'bank hold' });
+    } catch (e) {
+      // A fail that ran before this hold's journal existed saw nothing to reverse and left the row failed (T-0547): the journal
+      // posted here would stand against a failed load, so it is reversed now (once, by key) and the error stands.
+      const after = (await this.d.transfers.get(transfer.id))?.state;
+      if (after === 'failed' || after === 'cancelled') await this.d.ledger.reverse(journal.id, `${holdKey(workflowId)}:reversal`);
+      throw e;
+    }
   }
 
   async release(transfer: Transfer, now: Date): Promise<Transfer> {
-    if (transfer.state !== 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a load that is ${transfer.state}`);
+    // A `pending` load is a release that began (the hold left, its journal is posted) and did not finish: it is finished here.
+    if (transfer.state !== 'pending_hold' && transfer.state !== 'pending') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a load that is ${transfer.state}`);
     const workflowId = transfer.idempotencyKey;
+    // Ask the vendor before the money leaves pending: a debit the bank returned during the hold is failed (the hold
+    // is reversed once), never released. The vendor cannot be asked: the error leaves the hold in place and the next
+    // cycle tries again. Releasing blind would credit money that was never collected.
+    // (A load with no vendor link, a statement deposit, is never held, so it never gets here without one.)
+    const loadId = await this.vendorLoadOf(transfer.id);
+    if (loadId) {
+      // A load the vendor does not know is a case for people, opened once; it is not asked about again until they act (T-0547).
+      if (await this.unknownLoadOpen(transfer.id)) return transfer;
+      let vendor: VendorLoad;
+      try {
+        vendor = await this.d.port.getLoad(loadId);
+      } catch (e) {
+        if (e instanceof FundingError && e.code === 'UNKNOWN_LOAD') {
+          await this.openUnknownLoadCase(transfer, loadId, now);
+          return transfer;
+        }
+        throw e;
+      }
+      if (vendor.status === 'failed') return this.fail(transfer, vendor.failureCode ?? 'VENDOR_FAILED', now);
+    }
+    // Read the row again and refuse if the hold was reversed: a return that failed the load since the caller's read must
+    // not have a release posted behind it (nothing would repair that journal once the row is failed).
+    const fresh = await this.d.transfers.get(transfer.id);
+    if (fresh?.state !== 'pending_hold' && fresh?.state !== 'pending') throw new DomainError('IDEMPOTENCY_CONFLICT', 'The load is no longer held');
+    if ((await this.d.db.query(`select 1 from ledger.journal where idempotency_key = $1`, [`${holdKey(workflowId)}:reversal`])).rows[0]) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold was already reversed');
     // The hold already converted: the release moves the credited amount within the purse currency.
     const { minor, currency } = credited(transfer);
     const pending = await this.destination(transfer, 'pending', currency);
@@ -251,13 +290,44 @@ export class LoadService implements LoadActivities {
       ],
       metadata: { workflowId, provider: this.d.provider, heldUntil: transfer.holdReleasesAt, ...institutionMetadata(transfer) },
     });
-    const released = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold days passed' });
-    return this.d.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
+    try {
+      const released = fresh.state === 'pending' ? fresh : await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold days passed' });
+      return await this.d.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
+    } catch (e) {
+      // A return (webhook or sweep) failed the load after the vendor check, before the row moved or between its two
+      // steps. Its journal is already posted, so reverse it (once: the key is idempotent and `fail` uses the same one),
+      // or the wallet keeps money that was never collected.
+      if ((await this.d.transfers.get(transfer.id))?.state === 'failed') await this.d.ledger.reverse(journal.id, `${releaseKey(workflowId)}:reversal`);
+      throw e;
+    }
   }
 
+  /**
+   * Fails the load. While the money is held (`pending_hold`, or `pending` once a release has begun) it undoes what is
+   * posted: the hold journal and the release journal, each found by its key (a release that posted and then died
+   * leaves one). It decides on the row as it stands now, not on the caller's read, which may be older than a hold that
+   * has posted since. If the row has in fact moved on to keep the money (the release won), the reversals are undone
+   * and the error stands; while it is still held they are left, so a retry finishes the same work.
+   */
   async fail(transfer: Transfer, code: string, now: Date): Promise<Transfer> {
-    if (transfer.state === 'pending_hold' && transfer.journalId) await this.d.ledger.reverse(transfer.journalId, `${holdKey(transfer.idempotencyKey)}:reversal`);
-    return this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: transfer.state === 'pending_hold' ? 'returned during hold' : 'vendor' });
+    const workflowId = transfer.idempotencyKey;
+    const current = (await this.d.transfers.get(transfer.id)) ?? transfer;
+    const held = current.state === 'pending_hold' || current.state === 'pending';
+    const reversals: PostedJournal[] = [];
+    // A load still `submitted` may have a hold journal posted a moment before its row moved (T-0547): the journal decides, not the state.
+    if (held || current.state === 'submitted') {
+      for (const key of [holdKey(workflowId), releaseKey(workflowId)]) {
+        const posted = await this.d.db.query<{ id: string }>(`select id from ledger.journal where idempotency_key = $1`, [key]);
+        if (posted.rows[0]) reversals.push(await this.d.ledger.reverse(posted.rows[0].id, `${key}:reversal`));
+      }
+    }
+    try {
+      return await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: held ? 'returned during hold' : 'vendor' });
+    } catch (e) {
+      const after = (await this.d.transfers.get(transfer.id))?.state;
+      if (after === 'settled' || after === 'cancelled') for (const r of reversals) await this.d.ledger.reverse(r.id, `${r.idempotencyKey}:undo`);
+      throw e;
+    }
   }
 
   // ---- webhooks ----
@@ -306,13 +376,25 @@ export class LoadService implements LoadActivities {
     return r.rows[0]?.external_id;
   }
 
-  /** Loads the vendor has not finished: submitted longer than `olderThanMs` ago. The worker asks the vendor about them. */
+  /** Loads the vendor has not finished: submitted, or held for the bank's hold days (a return can come during it), longer than `olderThanMs` ago. The worker asks the vendor about them. */
+  /** True while a case people have not decided exists for a held load the vendor does not know; a resolved or dismissed one lets it be asked again. */
+  async unknownLoadOpen(transferId: string): Promise<boolean> {
+    return Boolean((await this.d.db.query(`select 1 from ops.case where dedupe_key = $1 and status in ('open', 'investigating')`, [unknownLoadKey(transferId)])).rows[0]);
+  }
+
+  private async openUnknownLoadCase(transfer: Transfer, loadId: string, now: Date): Promise<void> {
+    await this.d.db.query(
+      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_unknown', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
+      [uuidv7(now), unknownLoadKey(transfer.id), { transferId: transfer.id, loadId, state: transfer.state, amount: { minor: transfer.amount.minor.toString(), currency: transfer.amount.currency } }, now],
+    );
+  }
+
   async stale(now: Date, olderThanMs: number, limit = 100): Promise<Transfer[]> {
     // This market's loads only: another market's worker asks its own provider about its own (T-0028). An
     // institution's ACH pull is one too (T-0617); a deposit recorded off a statement (T-0614) never met the vendor.
     const r = await this.d.db.query<{ id: string }>(`select t.id from ops.transfer t
         where (t.kind = 'load' or (t.kind = 'deposit' and exists (select 1 from ops.external_ref r where r.entity_type = 'transfer' and r.entity_id = t.id and r.provider = $4)))
-          and t.state = 'submitted' and t.updated_at <= $1 and t.market = $3 order by t.updated_at limit $2`,
+          and t.state in ('submitted', 'pending_hold', 'pending') and t.updated_at <= $1 and t.market = $3 order by (t.state = 'pending_hold'), t.updated_at limit $2`,
       [new Date(now.getTime() - olderThanMs), limit, this.d.transfers.market, this.d.provider]);
     const out: Transfer[] = [];
     for (const row of r.rows) {

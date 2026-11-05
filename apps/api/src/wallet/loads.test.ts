@@ -5,16 +5,17 @@
 // release job is tested in the worker). TST-WAL-006: a load names the purse it credits; into the other
 // currency it converts at the club rate, priced once, and a missing or stale rate refuses it before the
 // vendor is asked. Over the funding simulator and PGlite with a real passkey and step-up.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { FundingError, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
+import { FakeStripe, StripeFundingAdapter } from '@kesher/adapters';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { holdKey, loadState, LoadService, releaseKey, settleKey, type LoadView } from './loads.ts';
+import { holdKey, loadState, LoadService, releaseKey, runLoad, settleKey, type LoadView } from './loads.ts';
 
 const seedTransfer = (db: { query: (t: string, p?: readonly unknown[]) => Promise<unknown> }, f: { id: string; kind: string; state: string; market: string; at: Date }) =>
   db.query(
@@ -431,6 +432,150 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     expect(await purse('USD', party)).toEqual({ available: 0n, holds: 0n });
   });
 
+  it('the stale-load sweep also picks up a load held for the bank\'s hold days, so a return during the hold is found (F05)', async () => {
+    const old = new Date(NOW.getTime() - 3_600_000);
+    const [held, settled] = [uuidv7(), uuidv7()];
+    await seedTransfer(db, { id: held, kind: 'load', state: 'pending_hold', market: 'US', at: old });
+    await seedTransfer(db, { id: settled, kind: 'load', state: 'settled', market: 'US', at: old });
+    const stale = (await app.services.loads.stale(NOW, 60_000, 1000)).map((t) => t.id);
+    expect(stale).toContain(held);
+    expect(stale).not.toContain(settled);
+  });
+
+  describe('a fail racing a hold, and a load the vendor does not know (T-0547)', () => {
+    const holds = async () => (await app.services.accounts.purses(member)).find((p) => p.currency === 'USD')!.holds.minor;
+    const reversals = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [`${holdKey(key)}:reversal`])).rows[0]!.n;
+    const achLoad = (key: string) => load({ method: 'ach', paymentMethodId: 'pm_bank', amount: { minor: '3000', currency: 'USD' } }, key);
+
+    it('a fail between the hold journal and the row moving to held reverses the journal; a fail before the journal posts is repaired by the hold itself', async () => {
+      // (b) The fail runs after the hold journal is posted and before the row says held: it sees `submitted` and must still reverse it.
+      const before = await holds();
+      const realApply = app.services.transfers.apply.bind(app.services.transfers);
+      const spy = vi.spyOn(app.services.transfers, 'apply').mockImplementation(async (id, event, now, extra) => {
+        if (event === 'hold') await app.services.loads.fail((await app.services.transfers.get(id))!, 'RETURNED', NOW);
+        return realApply(id, event, now, extra);
+      });
+      await achLoad('load-race-b-1');
+      spy.mockRestore();
+      expect((await app.services.transfers.byKey('load-race-b-1'))!.state).toBe('failed');
+      expect(await holds()).toBe(before);
+      expect(await reversals('load-race-b-1')).toBe(1);
+      // (a) The fail runs before the journal exists: nothing to reverse then, so the hold, finding the row failed, reverses its own journal.
+      const realPost = app.services.ledger.post.bind(app.services.ledger);
+      const post = vi.spyOn(app.services.ledger, 'post').mockImplementation(async (input) => {
+        if (input.idempotencyKey === holdKey('load-race-a-1')) await app.services.loads.fail((await app.services.transfers.byKey('load-race-a-1'))!, 'RETURNED', NOW);
+        return realPost(input);
+      });
+      await achLoad('load-race-a-1');
+      post.mockRestore();
+      expect((await app.services.transfers.byKey('load-race-a-1'))!.state).toBe('failed');
+      expect(await holds()).toBe(before);
+      expect(await reversals('load-race-a-1')).toBe(1);
+    });
+
+    it('a held load the vendor does not know opens one case and is not asked again', async () => {
+      expect((await achLoad('load-unknown-1')).status).toBe(201);
+      const t = (await app.services.transfers.byKey('load-unknown-1'))!;
+      const beforeAvailable = await available();
+      const ask = vi.spyOn(host.simulators.funding, 'getLoad').mockRejectedValue(new FundingError('UNKNOWN_LOAD', 'no such load'));
+      expect((await app.services.loads.release(t, NOW)).state).toBe('pending_hold');
+      expect((await app.services.loads.release(t, NOW)).state).toBe('pending_hold');
+      expect(ask).toHaveBeenCalledTimes(1);
+      ask.mockRestore();
+      expect((await db.query(`select 1 from ops.case where kind = 'load_unknown' and dedupe_key = $1`, [`load-unknown:${t.id}`])).rows).toHaveLength(1);
+      expect(await app.services.loads.unknownLoadOpen(t.id)).toBe(true);
+      // Nothing was credited while the case was open; once people resolve it the vendor is asked again and the load goes on.
+      expect(await available()).toBe(beforeAvailable);
+      await db.query(`update ops.case set status = 'resolved' where dedupe_key = $1`, [`load-unknown:${t.id}`]);
+      expect(await app.services.loads.unknownLoadOpen(t.id)).toBe(false);
+      expect((await app.services.loads.release(t, NOW)).state).toBe('settled');
+      expect(await available()).toBe(beforeAvailable + 3_000n);
+    });
+  });
+
+  it('held loads do not starve the submitted ones: with a small limit the submitted load comes first', async () => {
+    const old = new Date(NOW.getTime() - 7_200_000);
+    const older = new Date(NOW.getTime() - 9_000_000);
+    const [held, submitted] = [uuidv7(), uuidv7()];
+    await seedTransfer(db, { id: held, kind: 'load', state: 'pending_hold', market: 'US', at: older });
+    await seedTransfer(db, { id: submitted, kind: 'load', state: 'submitted', market: 'US', at: old });
+    // Earlier tests in this file leave stale submitted loads of their own, so ask for exactly as many as exist.
+    const submittedCount = Number((await db.query<{ n: number }>(`select count(*)::int as n from ops.transfer where kind = 'load' and state = 'submitted' and market = 'US' and updated_at <= $1`, [new Date(NOW.getTime() - 60_000)])).rows[0]!.n);
+    const firstPage = (await app.services.loads.stale(NOW, 60_000, submittedCount)).map((t) => t.id);
+    expect(firstPage).toContain(submitted);
+    expect(firstPage).not.toContain(held); // the limit is filled by submitted loads; the held one waits
+    expect((await app.services.loads.stale(NOW, 60_000, submittedCount + 1)).map((t) => t.id)).toContain(held);
+  });
+
+  it('a release that dies after the row moved to pending is finished by the vendor\'s confirmation, a retry or the sweep, and never credits twice (T-0543, F09)', async () => {
+    const crashAtSettle = async (run: () => Promise<unknown>) => {
+      const transfers = app.services.transfers;
+      const real = transfers.apply.bind(transfers);
+      let boom = true;
+      transfers.apply = async (id, event, at, extra) => {
+        if (event === 'settle' && boom) {
+          boom = false;
+          throw new Error('db down');
+        }
+        return real(id, event, at, extra);
+      };
+      try {
+        await expect(run()).rejects.toThrow('db down');
+      } finally {
+        transfers.apply = real;
+      }
+    };
+    const stuck = async (key: string) => {
+      const r = await load({ method: 'ach', paymentMethodId: 'pm_bank', amount: { minor: '5000', currency: 'USD' } }, key);
+      const t = (await app.services.transfers.byKey(key))!;
+      expect(r.body).toMatchObject({ state: 'on_hold' });
+      await crashAtSettle(() => app.services.loads.release(t, new Date('2026-11-05T09:00:00Z')));
+      const pending = (await app.services.transfers.get(t.id))!;
+      expect(pending.state).toBe('pending');
+      return pending;
+    };
+    const count = async (k: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [k])).rows[0]!.n;
+
+    // (a) the vendor says it succeeded (webhook) while the row is pending: it settles the release, it does not post a second credit.
+    const before = await available();
+    const a = await stuck('load-pending-hook-1');
+    expect(await available()).toBe(before + 5_000n); // the release journal already credited the wallet
+    expect((await hook(host.simulators.funding.webhookFor((await vendorLoadOf(a.id))!, 'succeeded'))).status).toBe(200);
+    expect((await app.services.transfers.get(a.id))!.state).toBe('settled');
+    expect(await available()).toBe(before + 5_000n);
+    expect(await count(settleKey('load-pending-hook-1'))).toBe(0);
+
+    // (b) the member's retry with the same key.
+    const b = await stuck('load-pending-retry-1');
+    const again = await load({ method: 'ach', paymentMethodId: 'pm_bank', amount: { minor: '5000', currency: 'USD' } }, 'load-pending-retry-1');
+    expect(again.body).toMatchObject({ id: b.id, state: 'settled' });
+    expect(await available()).toBe(before + 10_000n);
+    expect(await count(settleKey('load-pending-retry-1'))).toBe(0);
+    expect(await count(releaseKey('load-pending-retry-1'))).toBe(1);
+
+    // (c) the sweep picks a stuck pending load up, and asking the vendor finishes it the same way.
+    const c = await stuck('load-pending-sweep-1');
+    const sweepAt = new Date('2026-11-05T10:00:00Z');
+    expect((await app.services.loads.stale(sweepAt, 60_000, 1000)).map((t) => t.id)).toContain(c.id);
+    const { applyVendorState } = await import('./loads.ts');
+    const vendor = await host.simulators.funding.getLoad((await vendorLoadOf(c.id))!);
+    expect((await applyVendorState(app.services.loads, c, vendor, c.idempotencyKey, sweepAt)).transfer.state).toBe('settled');
+    expect(await available()).toBe(before + 15_000n);
+    expect(await count(settleKey('load-pending-sweep-1'))).toBe(0);
+  });
+
+  it('a pending load is swept ahead of loads still in their hold, even when more held loads are older than the limit (T-0543)', async () => {
+    const [held1, held2, held3, pending] = [uuidv7(), uuidv7(), uuidv7(), uuidv7()];
+    const ancient = new Date(NOW.getTime() - 30 * 86_400_000);
+    for (const id of [held1, held2, held3]) await seedTransfer(db, { id, kind: 'load', state: 'pending_hold', market: 'US', at: ancient });
+    await seedTransfer(db, { id: pending, kind: 'load', state: 'pending', market: 'US', at: new Date(NOW.getTime() - 86_400_000) });
+    // The limit is the number of rows that must come first (submitted or pending): the held ones, however old, wait behind them.
+    const first = Number((await db.query<{ n: number }>(`select count(*)::int as n from ops.transfer where kind = 'load' and market = 'US' and state in ('submitted', 'pending') and updated_at <= $1`, [new Date(NOW.getTime() - 60_000)])).rows[0]!.n);
+    const page = (await app.services.loads.stale(NOW, 60_000, first)).map((t) => t.id);
+    expect(page).toContain(pending);
+    for (const id of [held1, held2, held3]) expect(page).not.toContain(id);
+  });
+
   it('the stale-load sweep sees only this market\'s loads, so it asks only this market\'s provider (T-0028)', async () => {
     const old = new Date(NOW.getTime() - 3_600_000);
     const [us, il] = [uuidv7(), uuidv7()];
@@ -442,3 +587,59 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
   });
 
 });
+
+describe('a returned ACH debit through the real Stripe adapter (T-0539, F05)', () => {
+  const HOLD_END = new Date('2026-11-05T09:00:00Z'); // Monday + 3 business days
+  const clock = fixedClock(NOW.toISOString()) as AdvanceableClock;
+  // One fake for the file's tests: its ids advance like Stripe's, so two loads never share a vendor id.
+  let shared: { fake: FakeStripe; svc: LoadService } | undefined;
+  const stripe = () => {
+    if (shared) return shared;
+    const fake = new FakeStripe({ secretKey: 'sk_test_fake_key', webhookSecret: 'whsec_fake_signing_secret', clock });
+    const port = new StripeFundingAdapter({ secretKey: 'sk_test_fake_key', webhookSecret: 'whsec_fake_signing_secret', fetch: fake.fetch, clock });
+    const s = app.services;
+    shared = { fake, svc: new LoadService({ db, port, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider: 'stripe' }) };
+    return shared;
+  };
+  const heldLoad = async (svc: LoadService, party: string, key: string) => {
+    const run = await runLoad(svc, { payerPartyId: party, memberPartyId: party, method: 'ach', amount: money(8_000n, 'USD'), paymentMethodId: 'pm_us_bank_ok' }, key, NOW);
+    return { run, loadId: (await svc.vendorLoadOf(run.transfer.id))! };
+  };
+  const journals = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [key])).rows[0]!.n;
+  const newParty = async () => {
+    const party = uuidv7(NOW);
+    await app.services.accounts.provisionMember(party);
+    return party;
+  };
+
+  it('the payment_failed webhook fails the held load and reverses the hold once; a repeat changes nothing', async () => {
+    const { fake, svc } = stripe();
+    const party = await newParty();
+    const key = `stripe-ach-hook-${party}`;
+    const { run, loadId } = await heldLoad(svc, party, key);
+    expect(run.transfer).toMatchObject({ state: 'pending_hold' });
+    const hook = fake.settlePaymentIntent(loadId, 'returned');
+    const v = await svc.webhookVerifier().verify(hook.headers, hook.rawBody, NOW);
+    expect(v.ok).toBe(true);
+    const event = { provider: 'funding', eventId: v.eventId, receivedAt: NOW.toISOString(), signatureOk: true, payload: v.payload };
+    expect(await svc.applyWebhook(event, NOW)).toMatchObject({ state: 'failed', failureCode: 'insufficient_funds' });
+    expect(await svc.applyWebhook(event, NOW)).toMatchObject({ state: 'failed' });
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await available(party)).toBe(0n);
+  });
+
+  it('with the webhook lost, the release on the hold date asks Stripe, fails the load and credits nothing', async () => {
+    const { fake, svc } = stripe();
+    const party = await newParty();
+    const key = `stripe-ach-lost-${party}`;
+    const { run, loadId } = await heldLoad(svc, party, key);
+    fake.settlePaymentIntent(loadId, 'returned'); // the bank returned it; nobody told us
+    const after = await svc.release((await app.services.transfers.get(run.transfer.id))!, HOLD_END);
+    expect(after).toMatchObject({ state: 'failed', failureCode: 'insufficient_funds' });
+    expect(await journals(releaseKey(key))).toBe(0);
+    expect(await journals(`${holdKey(key)}:reversal`)).toBe(1);
+    expect(await available(party)).toBe(0n);
+    await expect(svc.release(after, HOLD_END)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+  });
+});
+

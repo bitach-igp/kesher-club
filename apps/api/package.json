@@ -9,6 +9,7 @@
     "start": "node --experimental-strip-types src/index.ts"
   },
   "dependencies": {
+    "@kesher/adapters": "workspace:*",
     "@kesher/domain": "workspace:*",
     "@kesher/ports": "workspace:*",
     "@kesher/simulators": "workspace:*",
@@ -19,7 +20,6 @@
   "devDependencies": {
     "@electric-sql/pglite": "0.5.10",
     "@electric-sql/pglite-socket": "0.2.13",
-    "@kesher/adapters": "workspace:*",
     "@types/pg": "8.15.5"
   },
   "exports": {

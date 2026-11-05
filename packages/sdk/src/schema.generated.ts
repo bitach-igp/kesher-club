@@ -99,7 +99,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Buy an add-on; entitlement credits apply automatically
-         * @description REQ-MKT-001, REQ-ESIM-001/002, REQ-INSR-001. Idempotent; starts the AddonWorkflow keyed by the Idempotency-Key.
+         * @description REQ-MKT-001, REQ-ESIM-001/002, REQ-INSR-001 (T-0542). Needs a fresh step-up (STEP_UP_REQUIRED, 401). Idempotent; starts the AddonWorkflow keyed by the Idempotency-Key, which names one request: the same member, sku and quantity, otherwise IDEMPOTENCY_CONFLICT (409). The wallet must hold the price after credit, otherwise INSUFFICIENT_FUNDS (422) and nothing is created or spent. The quantity is a whole number from 1 to 10, otherwise VALIDATION_FAILED (422).
          */
         readonly post: operations["createAddonOrder"];
         readonly delete?: never;
@@ -2615,7 +2615,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Start a membership (plan + member) billed to the funder
-         * @description E03 billing. Idempotent.
+         * @description E03 billing, REQ-BIL-002, REQ-BIL-003 (T-0312). Needs a fresh step-up and `billing.stripe` on (404 FEATURE_OFF otherwise). The member is the caller or a member who accepted the caller's invite (403 otherwise). An unknown plan or a term outside 1 to 12 answers 422 before the billing vendor is called; a member who already holds a membership answers 409. Idempotent: another caller reusing the key answers 409.
          */
         readonly post: operations["createMembership"];
         readonly delete?: never;
@@ -3839,7 +3839,7 @@ export interface components {
             readonly validFrom?: string;
             /**
              * Format: date-time
-             * @description Absent on a manual rate
+             * @description A port rate holds 15 minutes; a manual rate at most 24 hours from its activation (T-0546); past it the feed takes over
              */
             readonly validUntil?: string;
             readonly version: number;
@@ -3965,9 +3965,13 @@ export interface components {
         };
         readonly InstitutionDashboard: {
             /** @description The master account per currency */
+            readonly available: readonly components["schemas"]["Money"][];
+            /** @description What the institution owns per currency */
             readonly balances: readonly components["schemas"]["Money"][];
             /** @description Fee items still due */
             readonly feesDue: readonly components["schemas"]["Money"][];
+            /** @description The payout reserve per currency */
+            readonly reserved: readonly components["schemas"]["Money"][];
             readonly roster: {
                 readonly active: number;
                 readonly invited: number;
@@ -4070,6 +4074,8 @@ export interface components {
             readonly currency: "ILS" | "USD";
             readonly month: string;
             readonly opening: components["schemas"]["Money"];
+            /** @description Of the closing balance */
+            readonly reserved: components["schemas"]["Money"];
             readonly rows: readonly {
                 readonly amount: components["schemas"]["Money"];
                 readonly balance: components["schemas"]["Money"];
@@ -5107,6 +5113,8 @@ export interface operations {
             readonly header: {
                 /** @description Client-generated key; replays return the original response for 24 h. */
                 readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
             };
             readonly path?: never;
             readonly cookie?: never;
@@ -8256,6 +8264,7 @@ export interface operations {
                         readonly contentType: string;
                         readonly filename: string;
                         readonly opening: components["schemas"]["Money"];
+                        readonly reserved: components["schemas"]["Money"];
                         readonly rows: number;
                     };
                 };
@@ -9062,6 +9071,8 @@ export interface operations {
             readonly header: {
                 /** @description Client-generated key; replays return the original response for 24 h. */
                 readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
             };
             readonly path?: never;
             readonly cookie?: never;

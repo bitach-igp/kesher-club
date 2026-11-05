@@ -74,14 +74,17 @@ export interface SendRun {
 
 /**
  * The workflow body: created → submitted → settled, or → pending_hold and, once the time passes, →
- * settled by way of the release; each step safe to repeat. A run on a hold that has not expired returns it.
+ * settled by way of the release (pending_hold → pending → settled); each step safe to repeat. A run on a hold that has not
+ * expired returns it; a run on a pending one finishes the release.
  */
 export async function runSend(a: SendActivities, input: SendInput, workflowId: string, now: Date): Promise<SendRun> {
   let t = await a.begin(input, workflowId, now);
   if (t.state === 'settled' || t.state === 'failed' || t.state === 'cancelled' || t.state === 'reversed') return { workflowId, transfer: t, replayed: true, notified: false, held: false };
   const replayed = t.state !== 'created';
-  if (t.state === 'pending_hold') {
-    if (!t.holdReleasesAt || Date.parse(t.holdReleasesAt) > now.getTime()) return { workflowId, transfer: t, replayed, notified: false, held: false };
+  if (t.state === 'pending_hold' || t.state === 'pending') {
+    // `pending` is a release that began (the hold left, its journal is posted) and did not finish: it is finished, never posted
+    // again. A hold that has not expired is returned as it is.
+    if (t.state === 'pending_hold' && (!t.holdReleasesAt || Date.parse(t.holdReleasesAt) > now.getTime())) return { workflowId, transfer: t, replayed, notified: false, held: false };
     t = await a.release(t, workflowId, now);
   } else {
     if (t.state === 'created') t = await a.submit(t, now);
@@ -201,15 +204,28 @@ export class P2pSendService implements SendActivities {
 
   async post(transfer: Transfer, workflowId: string, now: Date): Promise<{ journalId: string }> {
     const from = await this.d.accounts.memberAccount(transfer.fromPartyId!, 'wallet', transfer.amount.currency);
-    const journal = await this.d.ledger.post({
-      idempotencyKey: settleKey(workflowId),
-      kind: P2P_JOURNAL_KIND,
-      transferId: transfer.id,
-      effectiveAt: now,
-      postings: await this.legs(transfer, from),
-      metadata: { workflowId, fromPartyId: transfer.fromPartyId, toPartyId: transfer.toPartyId, ...conversionMetadata(transfer) },
-    });
-    return { journalId: journal.id };
+    try {
+      // The sender's wallet is locked and checked again inside the posting transaction (T-0544): the pre-checks in send() are an
+      // early answer, this is the one that holds when two requests race. The monthly risk limit is counted again under the same lock.
+      const journal = await this.d.ledger.postNoOverdraft(
+        {
+          idempotencyKey: settleKey(workflowId),
+          kind: P2P_JOURNAL_KIND,
+          transferId: transfer.id,
+          effectiveAt: now,
+          postings: await this.legs(transfer, from),
+          metadata: { workflowId, fromPartyId: transfer.fromPartyId, toPartyId: transfer.toPartyId, ...conversionMetadata(transfer) },
+        },
+        (tx) => this.d.limits.recheckRisk(tx, transfer.fromPartyId!, transfer, now),
+      );
+      return { journalId: journal.id };
+    } catch (e) {
+      // Refused under the lock (another request got there first): the send ends here, nothing moved, the client is told why.
+      if (e instanceof DomainError && (e.code === 'INSUFFICIENT_FUNDS' || e.code === 'LIMIT_EXCEEDED')) {
+        await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: e.code, reason: 'refused under the wallet lock' });
+      }
+      throw e;
+    }
   }
 
   /**
@@ -252,14 +268,15 @@ export class P2pSendService implements SendActivities {
   }
 
   hold(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer> {
-    return this.d.holds.hold(transfer, workflowId, now);
+    return this.d.holds.hold(transfer, workflowId, now, (tx) => this.d.limits.recheckRisk(tx, transfer.fromPartyId!, transfer, now));
   }
 
   /** A converted hold releases here, at the price fixed when it began; a same-currency one through the hold service. */
   async release(transfer: Transfer, workflowId: string, now: Date): Promise<Transfer> {
     if (!transfer.conversion) return this.d.holds.release(transfer, workflowId, now);
-    if (transfer.state !== 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a transfer that is ${transfer.state}`);
-    if (!transfer.holdReleasesAt || Date.parse(transfer.holdReleasesAt) > now.getTime()) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold has not expired yet');
+    if (transfer.state !== 'pending_hold' && transfer.state !== 'pending') throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot release a transfer that is ${transfer.state}`);
+    if (transfer.state === 'pending_hold' && (!transfer.holdReleasesAt || Date.parse(transfer.holdReleasesAt) > now.getTime())) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold has not expired yet');
+    if (await this.d.holds.holdReversed(workflowId)) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold was already returned to the sender');
     const pending = await this.d.accounts.memberAccount(transfer.fromPartyId!, 'pending', transfer.amount.currency);
     const journal = await this.d.ledger.post({
       idempotencyKey: releaseKey(workflowId),
@@ -269,7 +286,8 @@ export class P2pSendService implements SendActivities {
       postings: await this.legs(transfer, pending),
       metadata: { workflowId, heldUntil: transfer.holdReleasesAt, ...conversionMetadata(transfer) },
     });
-    const released = await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold expired' });
+    // A pending row already left its hold (a release that died before it settled): the journal above is the one already posted, and only the settle is left.
+    const released = transfer.state === 'pending' ? transfer : await this.d.transfers.apply(transfer.id, 'release_hold', now, { reason: 'hold expired' });
     return this.d.transfers.apply(released.id, 'settle', now, { journalId: journal.id });
   }
 
@@ -277,9 +295,9 @@ export class P2pSendService implements SendActivities {
     return this.d.limits.consume(transfer.fromPartyId!, transfer.amount, `${workflowId}:usage`, now);
   }
 
-  /** P2P sends left submitted longer than `olderThanMs`: the worker's sweep finishes them with the same keys. */
+  /** P2P sends left submitted, or pending (a release that did not finish), longer than `olderThanMs`: the worker's sweep finishes them with the same keys. */
   async stale(now: Date, olderThanMs: number, limit = 100): Promise<Transfer[]> {
-    const r = await this.d.db.query<{ id: string }>(`select id from ops.transfer where kind = 'p2p' and state = 'submitted' and updated_at <= $1 order by updated_at limit $2`, [new Date(now.getTime() - olderThanMs), limit]);
+    const r = await this.d.db.query<{ id: string }>(`select id from ops.transfer where kind = 'p2p' and state in ('submitted', 'pending') and updated_at <= $1 order by updated_at limit $2`, [new Date(now.getTime() - olderThanMs), limit]);
     const out: Transfer[] = [];
     for (const row of r.rows) {
       const t = await this.d.transfers.get(row.id);

@@ -69,6 +69,8 @@ describe('TST-PAY-003: the release job', () => {
     const c = await member('+972503000003');
     const d = await member('+972503000004');
     await credit(a, 300_000n);
+    // Three holds totalling 210,000 are over the new tier's monthly cap; the hold path now enforces it (T-0544), so the sender is standard.
+    await db.query(`insert into ops.risk_tier (party_id, tier, set_by, reason) values ($1, 'standard', 'system', 'test')`, [a]);
     now = NOW;
     const ab = await runSend(send, { fromPartyId: a, toPartyId: b, amount: money(60_000n, 'ILS') }, `h-ab-${a}`, now);
     const ac = await runSend(send, { fromPartyId: a, toPartyId: c, amount: money(70_000n, 'ILS') }, `h-ac-${a}`, now);

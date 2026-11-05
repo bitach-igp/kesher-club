@@ -3,9 +3,11 @@
 // @kesher/domain brings APP_ENV, DATABASE_URL, TEMPORAL_ADDRESS and PROVIDER_MODE_DEFAULT, and already
 // refuses simulators in prod. Key names are the ones Terraform passes (T-0025); the database password
 // may arrive separately as PGPASSWORD, which node-postgres reads when DATABASE_URL carries none. Only `sim` is accepted for now: no vendor adapter is wired into the
-// registry until ADR-006 names a processor, so `sandbox` and `live` would boot on nothing.
+// registry until ADR-006 names a processor, so `sandbox` and `live` would boot on nothing. The one exception is a per-port
+// override (T-0659): PROVIDER_INSTITUTION_BANKING=crowded binds the US banking port to the Crowded adapter, with its base URL,
+// API token and webhook secrets as a set that is all there or refused.
 // `loadConfig` throws ConfigError naming every missing or invalid key; secrets never print.
-import { defineConfig, loadConfig, secret, type Config, type Secret } from '@kesher/domain';
+import { ConfigError, defineConfig, loadConfig, secret, Secret, type Config } from '@kesher/domain';
 import type { JWK } from 'jose';
 import { z } from 'zod';
 
@@ -28,7 +30,33 @@ const key32 = () =>
     return bytes.length === 32 && bytes.toString('base64') === raw;
   }, 'must be 32 bytes, standard base64');
 
+/** An https URL with a host. The message never quotes the value. */
+const httpsUrl = () => z.string().refine((v) => /^https:\/\/[^/\s?#]+/.test(v) && URL.canParse(v), 'must be an https URL');
+
+/**
+ * One or two comma-separated secrets (the current endpoint secret and, during a rotation, the previous one). The parser reports
+ * only the rule that failed, never a value; a repeated secret is a rotation that rotated nothing.
+ */
+const secretPair = () =>
+  z.string().transform((raw, ctx): Secret[] => {
+    const parts = raw.split(',').map((p) => p.trim());
+    if (parts.length >= 1 && parts.length <= 2 && parts.every((p) => p !== '') && new Set(parts).size === parts.length) return parts.map((p) => new Secret(p));
+    ctx.addIssue({ code: 'custom', message: 'must be one or two distinct, non-empty secrets separated by a comma' });
+    return z.NEVER;
+  });
+
 const shared = {
+  /**
+   * Which provider backs the US banking port (T-0659). A per-port override: PROVIDER_MODE_DEFAULT stays `sim` (ADR-006 names no
+   * processor), and `crowded` binds only `institution-banking` to the Crowded adapter. It needs the three CROWDED_* keys.
+   */
+  PROVIDER_INSTITUTION_BANKING: z.enum(['sim', 'crowded']).default('sim'),
+  CROWDED_BASE_URL: httpsUrl().optional(),
+  /** The binding mode recorded for the port: `sandbox` (default, whatever the base URL) or `live`, only when set explicitly. Not part of the all-or-nothing set. */
+  CROWDED_BINDING: z.enum(['sandbox', 'live']).default('sandbox'),
+  CROWDED_API_TOKEN: secret().optional(),
+  /** The endpoint secret and, during a rotation, the previous one, comma-separated. */
+  CROWDED_WEBHOOK_SECRETS: secretPair().optional(),
   /** The member token key: a private ES256 JWK as JSON, from Secrets Manager. Checked here, because a
    *  JSON.parse error quotes its input and would carry the key into a boot log. */
   JWT_SIGNING_KEY: secret().refine((k) => {
@@ -54,9 +82,24 @@ const shared = {
 };
 
 const processRules = (cfg: unknown, ctx: z.RefinementCtx) => {
-  const c = cfg as { PROVIDER_MODE_DEFAULT: string; PII_DATA_KEY: Secret; PII_INDEX_KEY: Secret };
+  const c = cfg as {
+    PROVIDER_MODE_DEFAULT: string;
+    PROVIDER_INSTITUTION_BANKING: 'sim' | 'crowded';
+    CROWDED_BASE_URL?: string | undefined;
+    CROWDED_API_TOKEN?: Secret | undefined;
+    CROWDED_WEBHOOK_SECRETS?: Secret[] | undefined;
+    PII_DATA_KEY: Secret;
+    PII_INDEX_KEY: Secret;
+  };
   if (c.PROVIDER_MODE_DEFAULT !== 'sim') {
     ctx.addIssue({ code: 'custom', path: ['PROVIDER_MODE_DEFAULT'], message: 'only sim until ADR-006 wires a vendor adapter' });
+  }
+  // The Crowded keys come as a set: `crowded` needs all three, and a partial set is refused even while the port stays on the
+  // simulator (half a credential is a mistake, not a choice). A key left out is reported as missing by name.
+  const crowdedKeys = ['CROWDED_BASE_URL', 'CROWDED_API_TOKEN', 'CROWDED_WEBHOOK_SECRETS'] as const;
+  const present = crowdedKeys.filter((k) => c[k] !== undefined);
+  if (c.PROVIDER_INSTITUTION_BANKING === 'crowded' || present.length > 0) {
+    for (const k of crowdedKeys) if (c[k] === undefined) ctx.addIssue({ code: 'custom', path: [k], message: 'required when any Crowded key is set or PROVIDER_INSTITUTION_BANKING=crowded' });
   }
   if (c.PII_DATA_KEY.reveal() === c.PII_INDEX_KEY.reveal()) {
     ctx.addIssue({ code: 'custom', path: ['PII_INDEX_KEY'], message: 'must differ from PII_DATA_KEY' });
@@ -69,5 +112,27 @@ export const workerConfigSchema = defineConfig(shared).superRefine(processRules)
 export type ApiConfig = Config<typeof apiConfigSchema>;
 export type WorkerConfig = Config<typeof workerConfigSchema>;
 
-export const loadApiConfig = (env: Record<string, string | undefined>): ApiConfig => loadConfig(apiConfigSchema, env);
-export const loadWorkerConfig = (env: Record<string, string | undefined>): WorkerConfig => loadConfig(workerConfigSchema, env);
+/**
+ * The Crowded keys the env leaves out while the set is in play. zod skips an object-level refinement once any field has failed,
+ * so `processRules` alone would hide a half-set Crowded credential behind, say, a bad MARKET; this runs on the raw env instead.
+ */
+const missingCrowdedKeys = (env: Record<string, string | undefined>): string[] => {
+  const set = (k: string) => env[k] !== undefined && env[k] !== '';
+  const keys = ['CROWDED_BASE_URL', 'CROWDED_API_TOKEN', 'CROWDED_WEBHOOK_SECRETS'];
+  return env['PROVIDER_INSTITUTION_BANKING'] === 'crowded' || keys.some(set) ? keys.filter((k) => !set(k)) : [];
+};
+
+/** `loadConfig`, plus the Crowded set check reported alongside any other problem rather than behind it. */
+const load = <S extends Parameters<typeof loadConfig>[0]>(schema: S, env: Record<string, string | undefined>): Config<S> => {
+  try {
+    return loadConfig(schema, env);
+  } catch (e) {
+    if (!(e instanceof ConfigError)) throw e;
+    const extra = missingCrowdedKeys(env).filter((k) => !e.missing.includes(k));
+    if (extra.length === 0) throw e;
+    throw new ConfigError([...e.missing, ...extra], e.invalid);
+  }
+};
+
+export const loadApiConfig = (env: Record<string, string | undefined>): ApiConfig => load(apiConfigSchema, env);
+export const loadWorkerConfig = (env: Record<string, string | undefined>): WorkerConfig => load(workerConfigSchema, env);

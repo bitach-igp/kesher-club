@@ -10,6 +10,7 @@ Claude Code (local and cloud sessions) loads project skills from `.claude/skills
 | `club-adapter` | house | this repo | Ports, simulators, contract suites, vendor adapters |
 | `club-task-slicer` | house | this repo | REQ → task cards (≤1 day, ≤400 lines) |
 | `club-runbook` | house | this repo | Runbooks from an alert |
+| `club-autopilot` | house | this repo | Card pipeline: scout, code, review, merge gate |
 | `spec-kit` | vendored templates | github/spec-kit @ f6e72bc (MIT) | Spec / plan / tasks templates |
 | `property-based-testing` | vendored skill | trailofbits/skills @ 5c99c03 (CC-BY-SA-4.0) | Ledger and money invariant tests (fast-check) |
 | `supply-chain-risk-auditor` | vendored skill with scripts | trailofbits/skills @ 5c99c03 (CC-BY-SA-4.0) | Dependency review before money flags go on |

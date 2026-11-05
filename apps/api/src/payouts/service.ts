@@ -12,6 +12,7 @@ import { DomainError, fromWire, money, toWire, type Money } from '@kesher/domain
 import { PayoutError, type NotifyPort, type Payout as VendorPayout, type PayoutPort } from '@kesher/ports';
 import { uuidv7 } from '@kesher/domain';
 import type { ApprovalService } from '../approvals/service.ts';
+import { approversRequired, SECOND_APPROVER_THRESHOLD_ILS_MINOR } from '../approvals/service.ts';
 import type { IdentityRepository } from '../auth/repository.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
@@ -34,6 +35,11 @@ export const FAILED_TEMPLATE = 'money.payout_failed';
 export type PayoutState = 'cooling_off' | 'awaiting_second_approval' | 'submitted' | 'processing' | 'settled' | 'failed' | 'reversed' | 'rejected';
 /** A second finance member rejected the payout: the transfer fails with this code before anything moved. */
 export const REJECTED = 'REJECTED';
+/** A payout the rail never took (it was down) is retried by the sweep from this age, and failed (reversed, the member told) at STRANDED_AFTER_MS (T-0541, RUN-01). */
+export const RETRY_AFTER_MS = 5 * 60_000;
+export const STRANDED_AFTER_MS = 30 * 60_000;
+/** A payout whose second approval was never given within its time (T-0540): failed, and its reserve released. */
+export const APPROVAL_EXPIRED = 'APPROVAL_EXPIRED';
 
 /** Whose money it is (T-0527): a member's own purse, or an institution's account, asked for by its finance staff. */
 export type PayoutSource = { kind: 'member' } | { kind: 'institution'; requestedBy: string; requesterRole: 'finance' | 'org_admin' };
@@ -71,17 +77,28 @@ export interface PayoutActivities {
   begin(input: PayoutInput, workflowId: string, now: Date): Promise<Transfer>;
   /** True when the payee is new to this member and the amount is over the cooling-off threshold. */
   needsCoolOff(input: PayoutInput): Promise<boolean>;
-  /** Parks the transfer for 24 hours; nothing moves. */
+  /** Parks the transfer for 24 hours. */
   coolOff(transfer: Transfer, now: Date): Promise<Transfer>;
-  /** The 24 hours passed: the transfer leaves the hold (still nothing moved) and goes on to the approval and the rail. */
+  /**
+   * A member's payout that waits has its amount reserved (wallet → pending), so it cannot be spent meanwhile; idempotent.
+   * When the money is no longer there (spent before the reserve, on a run that resumes) the payout is failed and returned.
+   */
+  reserve(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined>;
+  /** The 24 hours passed: the transfer leaves the hold and goes on to the approval and the rail. */
   release(transfer: Transfer, now: Date): Promise<Transfer>;
   /** Approved, or no second approver needed. Opens the request on the first ask. */
   approved(transfer: Transfer, input: PayoutInput, now: Date): Promise<boolean>;
-  /** The journal (wallet → partner_settlement) and the vendor pull, both keyed by the workflow id. */
+  /** A member's payout whose approval was rejected or ran out: failed, the reserve released, the approval marked expired. Undefined when it is not due. */
+  expireIfDue(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined>;
+  /** True when the vendor has a payout for this transfer (its webhook finishes it). */
+  atRail(transfer: Transfer): Promise<boolean>;
+  /** A submitted (or cooled-off, `pending`) payout the rail still refuses 30 minutes after its first attempt: failed and reversed once, the payer told, a case opened. Undefined when it is not due. */
+  stranded(transfer: Transfer, now: Date): Promise<Transfer | undefined>;
+  /** The journal (from the reserve, or the wallet when nothing was reserved → partner_settlement) and the vendor pull, both keyed by the workflow id. */
   submit(transfer: Transfer, input: PayoutInput, workflowId: string, now: Date): Promise<{ transfer: Transfer; payout: VendorPayout }>;
   settle(transfer: Transfer, now: Date): Promise<Transfer>;
-  /** Reverses the journal once and fails the transfer; tells the payer. */
-  fail(transfer: Transfer, code: string, now: Date): Promise<Transfer>;
+  /** Reverses the journal and the reserve once and fails the transfer; tells the payer. */
+  fail(transfer: Transfer, code: string, now: Date, reason?: string): Promise<Transfer>;
 }
 
 export interface PayoutRun {
@@ -99,17 +116,47 @@ export interface PayoutRun {
 export async function runPayout(a: PayoutActivities, input: PayoutInput, workflowId: string, now: Date): Promise<PayoutRun> {
   let t = await a.begin(input, workflowId, now);
   const replayed = t.state !== 'created';
-  if (t.state === 'settled' || t.state === 'failed' || t.state === 'cancelled' || t.state === 'reversed' || t.state === 'submitted') return { workflowId, transfer: t, replayed };
+  if (t.state === 'settled' || t.state === 'failed' || t.state === 'cancelled' || t.state === 'reversed') return { workflowId, transfer: t, replayed };
+  // At the rail already: its webhook finishes it. Otherwise (a `submitted` payout with no vendor ref) the rail was down, or its answer
+  // was lost: it is asked again under the same key below (the journal is posted once, the vendor makes one payout).
+  if (t.state === 'submitted' && (await a.atRail(t))) return { workflowId, transfer: t, replayed };
   // Past the hold and already at the rail: the webhook finishes it.
   if (t.state === 'pending' && t.journalId) return { workflowId, transfer: t, replayed };
   if (t.state === 'pending_hold') {
-    if (!t.holdReleasesAt || Date.parse(t.holdReleasesAt) > now.getTime()) return { workflowId, transfer: t, waiting: 'cooling_off', replayed };
+    if (!t.holdReleasesAt || Date.parse(t.holdReleasesAt) > now.getTime()) {
+      // Still cooling off: a payout whose run died between the hold and the reserve is reserved now rather than at the end of the cool-off.
+      const gone = await a.reserve(t, input, now);
+      return gone ? { workflowId, transfer: gone, replayed } : { workflowId, transfer: t, waiting: 'cooling_off', replayed };
+    }
+    // The cool-off is over. A payout waiting before it was reserved (a crash between the hold and the reserve, or one older than the
+    // reserve) is reserved now, or failed if the money has gone.
+    const gone = await a.reserve(t, input, now);
+    if (gone) return { workflowId, transfer: gone, replayed };
     t = await a.release(t, now);
   } else if (t.state === 'created' && (await a.needsCoolOff(input))) {
-    return { workflowId, transfer: await a.coolOff(t, now), waiting: 'cooling_off', replayed };
+    const held = await a.coolOff(t, now);
+    const gone = await a.reserve(held, input, now);
+    return { workflowId, transfer: gone ?? held, ...(gone ? {} : { waiting: 'cooling_off' as const }), replayed };
   }
-  if (!(await a.approved(t, input, now))) return { workflowId, transfer: t, waiting: 'approval', replayed };
-  const r = await a.submit(t, input, workflowId, now);
+  if (!(await a.approved(t, input, now))) {
+    // A rejected or lapsed approval ends the wait first (and returns the reserve); only then does a waiting payout hold funds.
+    const ended = await a.expireIfDue(t, input, now);
+    if (ended) return { workflowId, transfer: ended, replayed };
+    const gone = await a.reserve(t, input, now);
+    return gone ? { workflowId, transfer: gone, replayed } : { workflowId, transfer: t, waiting: 'approval', replayed };
+  }
+  let r;
+  try {
+    r = await a.submit(t, input, workflowId, now);
+  } catch (e) {
+    // The rail answered "unavailable" to this attempt too. Only now, 30 minutes after the first attempt, is the payout given up on: the
+    // vendor was asked once more first (it may have taken the payout and lost its answer, or be back), so a payout it holds is never refunded.
+    if (e instanceof DomainError && e.code === 'PROVIDER_UNAVAILABLE') {
+      const dead = await a.stranded(t, now);
+      if (dead) return { workflowId, transfer: dead, replayed };
+    }
+    throw e;
+  }
   t = r.transfer;
   if (r.payout.status === 'settled') t = await a.settle(t, now);
   else if (r.payout.status === 'failed') t = await a.fail(t, r.payout.failureReason ?? 'PAYOUT_FAILED', now);
@@ -117,6 +164,9 @@ export async function runPayout(a: PayoutActivities, input: PayoutInput, workflo
 }
 
 export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
+/** A member's payout that has to wait moves the amount wallet → pending under this key (T-0540); `unreserveKey` reverses it, once. */
+export const reserveKey = (workflowId: string): string => `${workflowId}:reserve`;
+export const unreserveKey = (workflowId: string): string => `${workflowId}:unreserve`;
 
 interface Deps {
   db: Database;
@@ -177,10 +227,21 @@ export class PayoutService implements PayoutActivities {
     // An institution pays out only what its own account holds (T-0613); never below zero.
     const available = source.kind === 'institution' ? (await this.d.accounts.institutionBalance(partyId, 'ILS')).minor : (await this.d.accounts.purses(partyId)).find((p) => p.currency === 'ILS')!.available.minor;
     if (available < amount.minor) throw new DomainError('INSUFFICIENT_FUNDS', source.kind === 'institution' ? 'Not enough in the institution account for this payout' : 'Not enough in the purse for this payout', { available: available.toString(), currency: 'ILS' });
+    this.refuseUnapprovable(source, amount);
     const { payee, isNew } = await this.ensurePayee(partyId, check, now);
     const input: PayoutInput = { partyId, source, payeeId: payee.id, payee: { iban: payee.iban, name: payee.name }, amount, reference: b.reference.trim() };
     const run = await runPayout(this, input, key, now);
     return { ...(await this.view(run.transfer)), newPayee: isNew };
+  }
+
+  /**
+   * A member has no second approver to ask: a payout that would need one is refused at request time rather than left waiting for nobody
+   * (T-0545, F42). An institution's has its finance staff.
+   */
+  private refuseUnapprovable(source: PayoutSource, amount: Money): void {
+    if (source.kind === 'member' && approversRequired('payout', amount) > 1) {
+      throw new DomainError('VALIDATION_FAILED', 'A payout this size needs a second approver, which a member payout does not have', { limit: { minor: SECOND_APPROVER_THRESHOLD_ILS_MINOR.toString(), currency: 'ILS' } });
+    }
   }
 
   /** Our checks, then the vendor's (name against the account). A payee seen before is not re-asked. */
@@ -236,6 +297,128 @@ export class PayoutService implements PayoutActivities {
     return (await this.requestApproval(transfer, input, now)).status === 'approved';
   }
 
+  async atRail(transfer: Transfer): Promise<boolean> {
+    // Any provider's ref counts: a payout the old rail took before the market changed provider is at a rail, and sending it again on the new one could pay twice.
+    return (await this.d.db.query(`select 1 from ops.external_ref where entity_type = 'transfer' and entity_id = $1`, [transfer.id])).rows.length > 0;
+  }
+
+  async stranded(transfer: Transfer, now: Date): Promise<Transfer | undefined> {
+    if (transfer.state !== 'submitted' && transfer.state !== 'pending') return undefined;
+    // Thirty minutes from the first attempt: the settle journal is posted by it (the transfer's own age would count a cool-off or an approval wait).
+    const first = await this.d.db.query<{ effective_at: string | Date }>(`select effective_at from ledger.journal where idempotency_key = $1`, [settleKey(transfer.idempotencyKey)]);
+    if (!first.rows[0] || now.getTime() - new Date(first.rows[0].effective_at).getTime() < STRANDED_AFTER_MS) return undefined;
+    // The case first (deduped): a crash after the fail must still leave ops the signal.
+    await this.d.db.query(
+      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'payout_stranded', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
+      [uuidv7(now), `payout_stranded:${transfer.id}`, JSON.stringify({ transferId: transfer.id, runbook: 'RUN-01', summary: 'A payout the rail never took in 30 minutes was failed and reversed' }), now],
+    );
+    return this.fail(transfer, 'PROVIDER_UNAVAILABLE', now, 'the rail stayed down for 30 minutes');
+  }
+
+  async expireIfDue(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined> {
+    // A payout whose approval was rejected or ran out ends, a member's and an institution's alike (T-0554). An institution's has nothing
+    // reserved yet (T-0550), so the fail only ends the transfer; its finance staff see it in the console's payout list.
+    const req = await this.d.approvals.find('payout', transfer.id);
+    if (!req) return undefined;
+    const open = req.status === 'pending' || req.status === 'awaiting_second_approval';
+    if (open && Date.parse(req.expiresAt) > now.getTime()) return undefined;
+    if (req.status === 'approved') return undefined;
+    // Fail first (this releases the reserve), mark the approval after: a crash between leaves a lapsed approval the sweep still finds.
+    const code = req.status === 'rejected' ? REJECTED : APPROVAL_EXPIRED;
+    const failed = await this.fail(transfer, code, now, req.status === 'rejected' ? 'approval rejected' : 'approval expired');
+    if (open) await this.d.approvals.expire(req.id, now);
+    return failed;
+  }
+
+  // ---- the reserve (T-0540) ----
+
+  private async journalIdOf(key: string): Promise<string | undefined> {
+    return (await this.d.db.query<{ id: string }>(`select id from ledger.journal where idempotency_key = $1`, [key])).rows[0]?.id;
+  }
+
+  /**
+   * A member's payout that waits (cooling off, or for an approver) moves its amount wallet → pending, so `available` drops at
+   * once and the same money cannot be spent twice; the payout later posts from pending. Idempotent by key. When the purse no
+   * longer holds the amount (it was spent before the reserve existed) the payout fails instead of overdrawing. An institution's
+   * payout reserves master → `payout_reserve` instead (`reserveInstitution`).
+   */
+  async reserve(transfer: Transfer, input: PayoutInput, now: Date): Promise<Transfer | undefined> {
+    // The caller's read may be older than the payout: one that ended meanwhile (failed, cancelled, settled) takes no new reserve, which
+    // nothing would release.
+    const fresh = await this.d.transfers.get(transfer.id);
+    if (!fresh || fresh.state === 'settled' || fresh.state === 'failed' || fresh.state === 'cancelled' || fresh.state === 'reversed') return undefined;
+    const key = reserveKey(transfer.idempotencyKey);
+    if (await this.journalIdOf(key)) return undefined;
+    if (input.source.kind === 'institution') return this.reserveInstitution(transfer, input, key, now);
+    const purse = (await this.d.accounts.purses(input.partyId)).find((p) => p.currency === 'ILS');
+    if ((purse?.available.minor ?? 0n) < input.amount.minor) return this.fail(transfer, 'INSUFFICIENT_FUNDS', now, 'the funds were spent before they were reserved');
+    const wallet = await this.d.accounts.memberAccount(input.partyId, 'wallet', 'ILS');
+    const pending = await this.d.accounts.memberAccount(input.partyId, 'pending', 'ILS');
+    try {
+      // Locked and checked again inside the posting transaction (T-0544): the purse read above is the early answer, this one holds
+      // when two requests for one wallet race.
+      await this.d.ledger.postNoOverdraft({
+        idempotencyKey: key,
+        kind: PAYOUT_JOURNAL_KIND,
+        transferId: transfer.id,
+        effectiveAt: now,
+        postings: [
+          { accountId: wallet, currency: 'ILS', amountMinor: input.amount.minor },
+          { accountId: pending, currency: 'ILS', amountMinor: -input.amount.minor },
+        ],
+        metadata: { workflowId: transfer.idempotencyKey, reason: 'payout waiting (T-0540)' },
+      });
+    } catch (e) {
+      if (e instanceof DomainError && e.code === 'INSUFFICIENT_FUNDS') return this.fail(transfer, 'INSUFFICIENT_FUNDS', now, 'the funds were spent before they were reserved');
+      throw e;
+    }
+    return undefined;
+  }
+
+  /**
+   * An institution's waiting payout sets its money aside, `institution_master` → `payout_reserve` (T-0550): the master is what is
+   * available, so another payout, an allowance run or the credit check no longer sees it, while the institution still owns it (the
+   * statement, export and dashboard count the reserve, T-0555). The funds check runs again inside the posting transaction, under the
+   * master's lock, so two payouts racing for the last of it cannot both reserve.
+   */
+  private async reserveInstitution(transfer: Transfer, input: PayoutInput, key: string, now: Date): Promise<Transfer | undefined> {
+    const spent = 'the funds were spent before they were reserved';
+    const master = await this.d.accounts.institutionAccount(input.partyId, 'ILS');
+    const reserve = await this.d.accounts.institutionPayoutReserveAccount(input.partyId, 'ILS');
+    if ((await this.d.accounts.institutionBalance(input.partyId, 'ILS')).minor < input.amount.minor) return this.fail(transfer, 'INSUFFICIENT_FUNDS', now, spent);
+    try {
+      await this.d.ledger.postNoOverdraft(
+        {
+          idempotencyKey: key,
+          kind: PAYOUT_JOURNAL_KIND,
+          transferId: transfer.id,
+          effectiveAt: now,
+          postings: [
+            { accountId: master, currency: 'ILS', amountMinor: input.amount.minor },
+            { accountId: reserve, currency: 'ILS', amountMinor: -input.amount.minor },
+          ],
+          // No institutionId: moving money between the institution's own accounts is not a statement or export row.
+          metadata: { workflowId: transfer.idempotencyKey, reason: 'institution payout waiting (T-0550)' },
+        },
+        async (tx) => {
+          const b = await tx.query<{ balance: string }>('select coalesce(balance_minor, 0)::text as balance from ops.account_balance where account_id = $1', [master]);
+          // The master is credit-normal: its ledger balance is negative while it holds money; debiting the amount must not take it past zero.
+          if (BigInt(b.rows[0]?.balance ?? '0') + input.amount.minor > 0n) throw new DomainError('INSUFFICIENT_FUNDS', 'Not enough in the institution account for this payout');
+        },
+      );
+    } catch (e) {
+      if (e instanceof DomainError && e.code === 'INSUFFICIENT_FUNDS') return this.fail(transfer, 'INSUFFICIENT_FUNDS', now, spent);
+      throw e;
+    }
+    return undefined;
+  }
+
+  /** Returns the reserve to the wallet, once (the reversal key is idempotent). Nothing to do when nothing was reserved. */
+  private async unreserve(transfer: Transfer): Promise<void> {
+    const id = await this.journalIdOf(reserveKey(transfer.idempotencyKey));
+    if (id) await this.d.ledger.reverse(id, unreserveKey(transfer.idempotencyKey));
+  }
+
   /** The payout's approval request, made once per transfer; a later call finds the first, with its requester. */
   private requestApproval(transfer: Transfer, input: PayoutInput, now: Date) {
     const requestedBy = input.source.kind === 'institution' ? { partyId: input.source.requestedBy, role: input.source.requesterRole } : { partyId: input.partyId, role: 'member' };
@@ -246,7 +429,15 @@ export class PayoutService implements PayoutActivities {
   async submit(transfer: Transfer, input: PayoutInput, workflowId: string, now: Date): Promise<{ transfer: Transfer; payout: VendorPayout }> {
     let t = transfer;
     const institution = input.source.kind === 'institution';
-    const wallet = institution ? await this.d.accounts.institutionAccount(input.partyId, 'ILS') : await this.d.accounts.memberAccount(input.partyId, 'wallet', 'ILS');
+    // A member's payout that waited posts from its reserve; one that did not (it went straight to the rail, or it was already
+    // waiting before the reserve existed) posts from the wallet as before.
+    const reserved = !!(await this.journalIdOf(reserveKey(workflowId)));
+    // An institution's that waited posts from its payout reserve (T-0550), one that did not from the master.
+    const wallet = institution
+      ? reserved
+        ? await this.d.accounts.institutionPayoutReserveAccount(input.partyId, 'ILS')
+        : await this.d.accounts.institutionAccount(input.partyId, 'ILS')
+      : await this.d.accounts.memberAccount(input.partyId, reserved ? 'pending' : 'wallet', 'ILS');
     const partner = await this.d.accounts.systemAccount('partner_settlement', 'ILS');
     const journal = await this.d.ledger.post({
       idempotencyKey: settleKey(workflowId),
@@ -271,6 +462,7 @@ export class PayoutService implements PayoutActivities {
       }
       if (e instanceof PayoutError && e.code === 'INVALID_PAYEE') {
         await this.d.ledger.reverse(journal.id, `${settleKey(workflowId)}:reversal`);
+        await this.unreserve(t);
         if (t.state === 'created') await this.d.transfers.apply(t.id, 'submit', now, { journalId: journal.id });
         await this.d.transfers.apply(t.id, 'fail', now, { failureCode: 'INVALID_PAYEE', reason: e.message.slice(0, 200) });
         throw mapPayoutError(e);
@@ -292,10 +484,13 @@ export class PayoutService implements PayoutActivities {
     return t;
   }
 
-  async fail(transfer: Transfer, code: string, now: Date): Promise<Transfer> {
+  async fail(transfer: Transfer, code: string, now: Date, reason = 'rail failed'): Promise<Transfer> {
     let reversalJournalId: string | undefined;
-    if (transfer.journalId) reversalJournalId = (await this.d.ledger.reverse(transfer.journalId, `${settleKey(transfer.idempotencyKey)}:reversal`)).id;
-    const t = await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: 'rail failed', ...(reversalJournalId ? { reversalJournalId } : {}) });
+    // The payout journal, by key when the transfer does not carry it (a cooled-off payout the rail never took stays `pending` with its journal posted).
+    const posted = transfer.journalId ?? (await this.journalIdOf(settleKey(transfer.idempotencyKey)));
+    if (posted) reversalJournalId = (await this.d.ledger.reverse(posted, `${settleKey(transfer.idempotencyKey)}:reversal`)).id;
+    await this.unreserve(transfer);
+    const t = await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason, ...(reversalJournalId ? { reversalJournalId } : {}) });
     await this.tellPayer(t, code, now);
     return t;
   }
@@ -357,6 +552,7 @@ export class PayoutService implements PayoutActivities {
     if (mine.rows[0] && mine.rows[0].decision === decision && by.partyId !== req.requestedBy) return t;
     if (req.status !== 'awaiting_second_approval') throw new DomainError('IDEMPOTENCY_CONFLICT', `This payout is already ${req.status === 'approved' ? 'approved' : req.status}`);
     const after = await this.d.approvals.decide(req.id, by, decision, now, reason);
+    if (decision === 'reject') await this.unreserve(t);
     if (decision === 'reject') return this.d.transfers.apply(t.id, 'fail', now, { failureCode: REJECTED, reason: 'rejected by a second finance member' });
     if (after.status !== 'approved') return t;
     return (await runPayout(this, await this.inputFor(t), t.idempotencyKey, now)).transfer;
@@ -452,9 +648,15 @@ export class PayoutService implements PayoutActivities {
     const r = await this.d.db.query<{ id: string }>(
       `select t.id from ops.transfer t where t.kind = 'payout' and (
           (t.state = 'pending_hold' and t.hold_releases_at <= $1)
+          or (t.state = 'pending_hold' and t.hold_releases_at > $1
+              and not exists (select 1 from ledger.journal j where j.idempotency_key = t.idempotency_key || ':reserve'))
           or (t.state in ('created', 'pending') and t.journal_id is null and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and a.status = 'approved'))
+          or (t.state = 'submitted' and t.journal_id is not null and t.updated_at <= $1::timestamptz - ($4 * interval '1 millisecond')
+              and not exists (select 1 from ops.external_ref x where x.entity_type = 'transfer' and x.entity_id = t.id))
+          or (t.state in ('created', 'pending') and t.journal_id is null
+              and exists (select 1 from ops.approval_request a where a.kind = 'payout' and a.subject = t.id::text and (a.status in ('rejected', 'expired') or (a.status in ('pending', 'awaiting_second_approval') and a.expires_at <= $1))))
        ) and t.market = $3 order by t.created_at limit $2`,
-      [now, limit, this.d.transfers.market],
+      [now, limit, this.d.transfers.market, RETRY_AFTER_MS],
     );
     const out: Transfer[] = [];
     for (const row of r.rows) {

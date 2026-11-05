@@ -732,8 +732,14 @@ paths:
     post:
       operationId: createMembership
       summary: Start a membership (plan + member) billed to the funder
-      description: E03 billing. Idempotent.
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      description: >-
+        E03 billing, REQ-BIL-002, REQ-BIL-003 (T-0312). Needs a fresh step-up and `billing.stripe` on (404 FEATURE_OFF
+        otherwise). The member is the caller or a member who accepted the caller's invite (403 otherwise). An unknown plan
+        or a term outside 1 to 12 answers 422 before the billing vendor is called; a member who already holds a membership
+        answers 409. Idempotent: another caller reusing the key answers 409.
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
       requestBody:
         required: true
         content:
@@ -1288,8 +1294,14 @@ paths:
     post:
       operationId: createAddonOrder
       summary: Buy an add-on; entitlement credits apply automatically
-      description: REQ-MKT-001, REQ-ESIM-001/002, REQ-INSR-001. Idempotent; starts the AddonWorkflow keyed by the Idempotency-Key.
-      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      description: >-
+        REQ-MKT-001, REQ-ESIM-001/002, REQ-INSR-001 (T-0542). Needs a fresh step-up (STEP_UP_REQUIRED, 401). Idempotent; starts
+        the AddonWorkflow keyed by the Idempotency-Key, which names one request: the same member, sku and quantity, otherwise
+        IDEMPOTENCY_CONFLICT (409). The wallet must hold the price after credit, otherwise INSUFFICIENT_FUNDS (422) and nothing
+        is created or spent. The quantity is a whole number from 1 to 10, otherwise VALIDATION_FAILED (422).
+      parameters:
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+        - { $ref: "#/components/parameters/StepUp" }
       requestBody:
         required: true
         content:
@@ -1555,7 +1567,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [filename, contentType, base64, rows, opening, closing]
+                required: [filename, contentType, base64, rows, opening, closing, reserved]
                 properties:
                   filename: { type: string }
                   contentType: { type: string }
@@ -1563,6 +1575,7 @@ paths:
                   rows: { type: integer, minimum: 0 }
                   opening: { $ref: "#/components/schemas/Money" }
                   closing: { $ref: "#/components/schemas/Money" }
+                  reserved: { $ref: "#/components/schemas/Money" }
         default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/team:
     get:
@@ -4264,7 +4277,7 @@ components:
         grant: { $ref: "#/components/schemas/ApprovalRequest" }
     InstitutionStatement:
       type: object
-      required: [month, currency, opening, rows, closing]
+      required: [month, currency, opening, rows, closing, reserved]
       properties:
         month: { type: string }
         currency: { type: string, enum: [ILS, USD] }
@@ -4282,6 +4295,7 @@ components:
               amount: { $ref: "#/components/schemas/Money" }
               balance: { $ref: "#/components/schemas/Money" }
         closing: { $ref: "#/components/schemas/Money" }
+        reserved: { $ref: "#/components/schemas/Money", description: Of the closing balance, the part set aside for payouts waiting on their approver (T-0555); still the institution's money, not available }
     InstitutionStudent:
       type: object
       required: [member, allowances, fees]
@@ -4391,7 +4405,7 @@ components:
         memberCount: { type: integer, minimum: 0, description: Members whose latest placement is this cohort }
     InstitutionDashboard:
       type: object
-      required: [roster, balances, upcomingRuns, feesDue]
+      required: [roster, balances, available, reserved, upcomingRuns, feesDue]
       properties:
         roster:
           type: object
@@ -4400,7 +4414,9 @@ components:
             invited: { type: integer, minimum: 0 }
             verified: { type: integer, minimum: 0 }
             active: { type: integer, minimum: 0 }
-        balances: { type: array, items: { $ref: "#/components/schemas/Money" }, description: The master account per currency }
+        balances: { type: array, items: { $ref: "#/components/schemas/Money" }, description: What the institution owns per currency, the master account plus its payout reserve (T-0555) }
+        available: { type: array, items: { $ref: "#/components/schemas/Money" }, description: The master account per currency, what payouts, allowances and credit headroom can use }
+        reserved: { type: array, items: { $ref: "#/components/schemas/Money" }, description: The payout reserve per currency, set aside for payouts waiting on their approver }
         upcomingRuns:
           type: array
           maxItems: 3
@@ -4884,7 +4900,7 @@ components:
         source: { type: string, enum: [port, manual] }
         status: { type: string, enum: [proposed, active, superseded, rejected] }
         validFrom: { type: string, format: date-time }
-        validUntil: { type: string, format: date-time, description: Absent on a manual rate, which holds until superseded }
+        validUntil: { type: string, format: date-time, description: A port rate holds 15 minutes; a manual rate at most 24 hours from its activation (T-0546); past it the feed takes over }
         proposedBy: { type: string }
         reason: { type: string }
         createdAt: { type: string, format: date-time }
@@ -4993,7 +5009,7 @@ components:
       required: [sku]
       properties:
         sku: { type: string }
-        quantity: { type: integer, minimum: 1, default: 1 }
+        quantity: { type: integer, minimum: 1, maximum: 10, default: 1 }
         disclosuresAcknowledged: { type: boolean, description: Required for insurance (REQ-INSR-001) }
     AddonOrder:
       type: object

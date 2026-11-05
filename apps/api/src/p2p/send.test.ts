@@ -14,8 +14,8 @@ import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { runLoad } from '../wallet/loads.ts';
-import { HOLD_MS, releaseKey } from './holds.ts';
-import { RECEIVED_TEMPLATE, settleKey } from './send.ts';
+import { HOLD_MS, holdKey, releaseKey } from './holds.ts';
+import { RECEIVED_TEMPLATE, runSend, settleKey } from './send.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -336,3 +336,208 @@ describe('TST-PAY-006: the receiving currency', () => {
     expect((await app.services.transfers.history(released.id)).map((e) => e.to)).toEqual(['created', 'submitted', 'pending_hold', 'pending', 'settled']);
   });
 });
+
+describe('T-0543: a send left in pending is finished once, never posted twice (F09)', () => {
+  const MIN = 60_000;
+  const journalCount = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [key])).rows[0]!.n;
+  /** The release dies after the hold left (release_hold applied, settle not): the row stays `pending`. */
+  async function crashAtSettle(run: () => Promise<unknown>) {
+    const transfers = app.services.transfers;
+    const real = transfers.apply.bind(transfers);
+    let boom = true;
+    transfers.apply = async (id, event, at, extra) => {
+      if (event === 'settle' && boom) {
+        boom = false;
+        throw new Error('db down');
+      }
+      return real(id, event, at, extra);
+    };
+    try {
+      await expect(run()).rejects.toThrow('db down');
+    } finally {
+      transfers.apply = real;
+    }
+  }
+
+  it('a client retry after the crash finishes the send: the recipient is credited once, one release journal, no settle journal, one notification', async () => {
+    const a = await register('+972501000090');
+    const b = await register('+972501000091');
+    await fund(a, 100_000n);
+    const key = 'pending-retry-1';
+    const body = { toPartyId: b.partyId, amount: ils('60000') };
+    const held = await send(a, body, key);
+    expect(held.body).toMatchObject({ state: 'pending_hold' });
+    const id = (held.body as { id: string }).id;
+    const later = new Date(NOW.getTime() + HOLD_MS);
+    const before = notifySim().sent.length;
+    await crashAtSettle(() => app.services.p2p.send(a.partyId, body, key, later));
+    expect((await app.services.transfers.get(id))!.state).toBe('pending');
+    // The client retries with the same key.
+    const done = await app.services.p2p.send(a.partyId, body, key, later);
+    expect(done).toMatchObject({ id, state: 'settled' });
+    expect(await available(b.partyId)).toBe(60_000n);
+    expect(await available(a.partyId)).toBe(40_000n);
+    expect(await journalCount(holdKey(key))).toBe(1);
+    expect(await journalCount(releaseKey(key))).toBe(1);
+    expect(await journalCount(settleKey(key))).toBe(0);
+    expect((await app.services.transfers.history(id)).map((e) => e.to)).toEqual(['created', 'submitted', 'pending_hold', 'pending', 'settled']);
+    expect(notifySim().sent.slice(before).filter((n) => n.data['transferId'] === id)).toHaveLength(1);
+    // Once more: nothing changes.
+    await app.services.p2p.send(a.partyId, body, key, later);
+    expect(await available(b.partyId)).toBe(60_000n);
+    expect(await journalCount(releaseKey(key))).toBe(1);
+  });
+
+  it('the sweep finds a stuck pending send and finishes it with the stored key', async () => {
+    const a = await register('+972501000092');
+    const b = await register('+972501000093');
+    await fund(a, 100_000n);
+    const key = 'pending-sweep-1';
+    const body = { toPartyId: b.partyId, amount: ils('60000') };
+    const id = ((await send(a, body, key)).body as { id: string }).id;
+    const later = new Date(NOW.getTime() + HOLD_MS);
+    await crashAtSettle(() => app.services.p2p.send(a.partyId, body, key, later));
+    const sweepAt = new Date(later.getTime() + 10 * MIN);
+    expect((await app.services.p2p.stale(sweepAt, 5 * MIN)).map((t) => t.id)).toContain(id);
+    const t = (await app.services.transfers.get(id))!;
+    const run = await runSend(app.services.p2p, { fromPartyId: a.partyId, toPartyId: b.partyId, amount: t.amount }, key, sweepAt);
+    expect(run.transfer).toMatchObject({ id, state: 'settled' });
+    expect(await available(b.partyId)).toBe(60_000n);
+    expect(await journalCount(settleKey(key))).toBe(0);
+    expect((await app.services.p2p.stale(sweepAt, 5 * MIN)).map((x) => x.id)).not.toContain(id);
+  });
+
+  it('a replay after the payee became known does not settle on top of the hold; the release still pays once', async () => {
+    const a = await register('+972501000094');
+    const b = await register('+972501000095');
+    await fund(a, 100_000n);
+    const key = 'pending-known-1';
+    const body = { toPartyId: b.partyId, amount: ils('60000') };
+    const id = ((await send(a, body, key)).body as { id: string }).id;
+    // A small send settles, so b is no longer a new counterparty.
+    expect((await send(a, { toPartyId: b.partyId, amount: ils('1000') }, 'pending-known-small')).body).toMatchObject({ state: 'settled' });
+    // The replay inside the two hours still returns the held send: no settle journal.
+    expect(await app.services.p2p.send(a.partyId, body, key, new Date(NOW.getTime() + 10 * MIN))).toMatchObject({ id, state: 'pending_hold' });
+    expect(await journalCount(settleKey(key))).toBe(0);
+    expect(await app.services.p2p.send(a.partyId, body, key, new Date(NOW.getTime() + HOLD_MS))).toMatchObject({ id, state: 'settled' });
+    expect(await journalCount(settleKey(key))).toBe(0);
+    expect(await journalCount(releaseKey(key))).toBe(1);
+    expect(await available(b.partyId)).toBe(60_000n + 1_000n);
+  });
+
+  it('the converted-currency release finishes a pending row too: the member is credited once at the price fixed when it began', async () => {
+    const a = await register('+972501000096');
+    const c = await register('+972501000097');
+    await fund(a, 50_000n, 'USD');
+    await app.services.preferences.set(c.partyId, 'ILS', NOW);
+    const key = 'pending-xccy-1';
+    const body = { toPartyId: c.partyId, amount: usd('20000') };
+    // The earlier test in this file left the second published rate current from a minute on; price the hold then.
+    const at = new Date(NOW.getTime() + 5 * MIN);
+    const held = await app.services.p2p.send(a.partyId, body, key, at);
+    expect(held).toMatchObject({ state: 'pending_hold', rateVersion: expect.any(Number) });
+    const received = BigInt((held as { received: { minor: string } }).received.minor);
+    expect(received).toBeGreaterThan(0n);
+    const later = new Date(at.getTime() + HOLD_MS);
+    await crashAtSettle(() => app.services.p2p.send(a.partyId, body, key, later));
+    expect((await app.services.transfers.get(held.id))!.state).toBe('pending');
+    expect(await available(c.partyId, 'ILS')).toBe(received); // the release journal already credited it
+    expect(await app.services.p2p.send(a.partyId, body, key, later)).toMatchObject({ id: held.id, state: 'settled', received: { minor: received.toString(), currency: 'ILS' } });
+    expect(await available(c.partyId, 'ILS')).toBe(received); // the retry added nothing
+    expect(await journalCount(releaseKey(key))).toBe(1);
+    expect(await journalCount(settleKey(key))).toBe(0);
+  });
+
+  it('a hold that went back to the sender (a cancel that died after reversing it) is never paid out to the recipient', async () => {
+    const a = await register('+972501000098');
+    const b = await register('+972501000099');
+    await fund(a, 100_000n);
+    const key = 'pending-cancelled-1';
+    const body = { toPartyId: b.partyId, amount: ils('60000') };
+    const held = await send(a, body, key);
+    const id = (held.body as { id: string }).id;
+    const t = (await app.services.transfers.get(id))!;
+    expect(await available(a.partyId)).toBe(40_000n);
+    // The cancel reversed the hold (the money is back with the sender) and died before the transfer was marked cancelled.
+    await app.services.ledger.reverse(t.journalId!, `${holdKey(key)}:reversal`);
+    expect(await available(a.partyId)).toBe(100_000n);
+    await expect(app.services.p2p.send(a.partyId, body, key, new Date(NOW.getTime() + HOLD_MS))).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await journalCount(releaseKey(key))).toBe(0);
+    expect(await available(b.partyId)).toBe(0n);
+    expect(await available(a.partyId)).toBe(100_000n);
+  });
+});
+
+describe('T-0544: the sender\'s wallet is locked and checked again where the money moves (F13)', () => {
+  const input = (from: Member, to: Member, minor: bigint) => ({ fromPartyId: from.partyId, toPartyId: to.partyId, amount: { minor, currency: 'ILS' as const } });
+  const journalCount = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [key])).rows[0]!.n;
+
+  it('a second full-balance send that got past the pre-checks is refused where it posts: nothing moves, the send ends failed, the wallet is not overdrawn', async () => {
+    const a = await register('+972501000110');
+    const b = await register('+972501000111');
+    const c = await register('+972501000112');
+    await fund(a, 40_000n);
+    // Two sends of the whole balance, both through begin (so both passed the pre-checks of send(), which a race does too).
+    expect((await send(a, { toPartyId: b.partyId, amount: ils('40000') }, 'lock-first-1')).body).toMatchObject({ state: 'settled' });
+    await expect(runSend(app.services.p2p, input(a, c, 40_000n), 'lock-second-1', NOW)).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
+    const t = (await app.services.transfers.byKey('lock-second-1'))!;
+    expect(t).toMatchObject({ state: 'failed', failureCode: 'INSUFFICIENT_FUNDS' });
+    expect(await journalCount(settleKey('lock-second-1'))).toBe(0);
+    expect(await available(a.partyId)).toBe(0n);
+    expect(await available(b.partyId)).toBe(40_000n);
+    expect(await available(c.partyId)).toBe(0n);
+    // A retry with the same key does not post it later either.
+    await expect(app.services.p2p.send(a.partyId, { toPartyId: c.partyId, amount: ils('40000') }, 'lock-second-1', NOW)).resolves.toMatchObject({ state: 'failed' });
+    expect(await available(a.partyId)).toBe(0n);
+  });
+
+  it('a held send (new pair over the threshold) is refused the same way when the wallet is already spent', async () => {
+    const a = await register('+972501000113');
+    const b = await register('+972501000114');
+    await fund(a, 60_000n);
+    // Spend 20,000 first so the 60,000 hold no longer fits.
+    expect((await send(a, { toPartyId: b.partyId, amount: ils('20000') }, 'lock-spend-1')).body).toMatchObject({ state: 'settled' });
+    const c = await register('+972501000115');
+    await expect(runSend(app.services.p2p, input(a, c, 60_000n), 'lock-hold-1', NOW)).rejects.toMatchObject({ code: 'INSUFFICIENT_FUNDS' });
+    expect(await app.services.transfers.byKey('lock-hold-1')).toMatchObject({ state: 'failed', failureCode: 'INSUFFICIENT_FUNDS' });
+    expect(await available(a.partyId)).toBe(40_000n);
+    expect((await app.services.accounts.purses(a.partyId)).find((p) => p.currency === 'ILS')!.holds.minor).toBe(0n);
+  });
+
+  it('the monthly limit holds across sends begun together: counted in creation order, the one that would pass the cap is refused, whichever posts first', async () => {
+    const a = await register('+972501000116');
+    const [b, c, d] = [await register('+972501000117'), await register('+972501000118'), await register('+972501000119')];
+    await fund(a, 300_000n);
+    // The new tier may send 100,000 (₪1,000) a month. Three sends of 50,000 are begun (all passed send()'s check), then posted out of order.
+    const p2p = app.services.p2p;
+    const at = (n: number) => new Date(NOW.getTime() + n * 1_000);
+    const [ta, tb, tc] = [
+      await p2p.begin(input(a, b, 50_000n), 'lock-lim-a', at(1)),
+      await p2p.begin(input(a, c, 50_000n), 'lock-lim-b', at(2)),
+      await p2p.begin(input(a, d, 50_000n), 'lock-lim-c', at(3)),
+    ];
+    expect([ta.state, tb.state, tc.state]).toEqual(['created', 'created', 'created']);
+    // The third, posting first, counts the two begun before it and is refused.
+    await expect(runSend(p2p, input(a, d, 50_000n), 'lock-lim-c', at(4))).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED' });
+    expect(await app.services.transfers.byKey('lock-lim-c')).toMatchObject({ state: 'failed', failureCode: 'LIMIT_EXCEEDED' });
+    // The first two together are exactly the cap.
+    expect((await runSend(p2p, input(a, b, 50_000n), 'lock-lim-a', at(5))).transfer.state).toBe('settled');
+    expect((await runSend(p2p, input(a, c, 50_000n), 'lock-lim-b', at(6))).transfer.state).toBe('settled');
+    expect(await available(a.partyId)).toBe(200_000n);
+    expect(await available(d.partyId)).toBe(0n);
+  });
+  it('the monthly limit also holds on the hold path: a new-pair send over the threshold, begun after another, is refused where it holds', async () => {
+    const a = await register('+972501000120');
+    const [b, c] = [await register('+972501000121'), await register('+972501000122')];
+    await fund(a, 300_000n);
+    const p2p = app.services.p2p;
+    const at = (n: number) => new Date(NOW.getTime() + n * 1_000);
+    await p2p.begin(input(a, b, 60_000n), 'lock-hlim-a', at(1));
+    await p2p.begin(input(a, c, 60_000n), 'lock-hlim-b', at(2));
+    // The later one holds first, counts the earlier one begun before it (120,000 > the 100,000 cap) and is refused.
+    await expect(runSend(p2p, input(a, c, 60_000n), 'lock-hlim-b', at(3))).rejects.toMatchObject({ code: 'LIMIT_EXCEEDED' });
+    expect(await app.services.transfers.byKey('lock-hlim-b')).toMatchObject({ state: 'failed', failureCode: 'LIMIT_EXCEEDED' });
+    expect((await app.services.accounts.purses(a.partyId)).find((x) => x.currency === 'ILS')!.holds.minor).toBe(0n);
+  });
+});
+

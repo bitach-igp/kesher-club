@@ -87,6 +87,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@kesher/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
       '@kesher/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -112,9 +115,6 @@ importers:
       '@electric-sql/pglite-socket':
         specifier: 0.2.13
         version: 0.2.13(@electric-sql/pglite-age@0.0.11(@electric-sql/pglite@0.5.10))(@electric-sql/pglite-pg_hashids@0.0.11(@electric-sql/pglite@0.5.10))(@electric-sql/pglite-pg_ivm@0.0.11(@electric-sql/pglite@0.5.10))(@electric-sql/pglite-pg_textsearch@0.0.12(@electric-sql/pglite@0.5.10))(@electric-sql/pglite-pg_uuidv7@0.0.11(@electric-sql/pglite@0.5.10))(@electric-sql/pglite-pgtap@0.0.11(@electric-sql/pglite@0.5.10))(@electric-sql/pglite-pgvector@0.0.11(@electric-sql/pglite@0.5.10))(@electric-sql/pglite@0.5.10)
-      '@kesher/adapters':
-        specifier: workspace:*
-        version: link:../../packages/adapters
       '@types/pg':
         specifier: 8.15.5
         version: 8.15.5
@@ -271,6 +271,10 @@ importers:
       zod:
         specifier: ^4.6.7
         version: 4.6.7
+    devDependencies:
+      '@kesher/adapters':
+        specifier: workspace:*
+        version: link:../../packages/adapters
 
   apps/worker:
     dependencies:
