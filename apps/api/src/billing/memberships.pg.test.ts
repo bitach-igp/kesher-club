@@ -30,9 +30,10 @@ run('one open membership per member on real Postgres', () => {
   });
   afterAll(async () => db.close());
 
-  it('five simultaneous creates for one member under different keys leave exactly one membership and end the other four subscriptions', async () => {
+  it('five simultaneous creates for one member under different keys leave exactly one membership and end every other subscription made', async () => {
     const member = uuidv7();
     const funder = uuidv7();
+    const created = vi.spyOn(billing, 'createSubscription');
     const cancel = vi.spyOn(billing, 'cancel');
     const results = await Promise.allSettled(
       [1, 2, 3, 4, 5].map((n) => memberships.create({ idempotencyKey: `pg-race-${member}-${n}`, memberPartyId: member, funderPartyId: funder, funderEmail: 'f@example.com', planCode: code }, NOW)),
@@ -40,7 +41,18 @@ run('one open membership per member on real Postgres', () => {
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
     for (const r of results) if (r.status === 'rejected') expect(r.reason).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
     expect((await db.query(`select 1 from billing.membership where member_party_id = $1`, [member])).rows).toHaveLength(1);
-    expect(cancel).toHaveBeenCalledTimes(4);
+    // A request that sees the winner's row is refused before the vendor and makes no subscription; one that lost the insert race made
+    // one and must end it. How many of each depends on timing, so: every subscription made, except the winner's, is cancelled at once.
+    const made = (await Promise.all(created.mock.results.map((r) => r.value))).map((s) => s.subscriptionId);
+    const kept = (await db.query<{ external_id: string }>(
+      `select x.external_id from billing.membership m join ops.external_ref x on x.entity_type = 'membership' and x.entity_id = m.id and x.provider = 'stripe' where m.member_party_id = $1`,
+      [member],
+    )).rows.map((r) => r.external_id);
+    expect(kept).toHaveLength(1);
+    expect(made).toContain(kept[0]);
+    expect(cancel.mock.calls.map((c) => c[0]).sort()).toEqual(made.filter((id) => id !== kept[0]).sort());
+    for (const c of cancel.mock.calls) expect(c[1]).toBe('now');
+    created.mockRestore();
     cancel.mockRestore();
   });
 });
