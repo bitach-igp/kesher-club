@@ -10,3 +10,12 @@ Steps (from repo root, PowerShell on Windows unless stated):
 7. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema (ledger applies 0027). Step 5 lists `payout_reserve` as the last value. Step 6 prints one row with `payout_reserve` (the value is usable in a later statement).
 Report back: the console output of steps 4, 5 and 6, and `docker --version`.
+
+## Result
+Outcome: PASS (2026-11-05 13:08 Asia/Jerusalem, Kesher desktop checker, Windows PC runner worktree at 5f3563e).
+- `docker --version`: Docker version 29.9.2, build a82e528
+- Step 3 (roles.sql): ALTER ROLE ×N, no errors.
+- Step 4 (migrate): `ok` for every schema: ledger, identity, org, billing, legal, addons, notify, audit, agent.
+- Step 5: enum_range lists wallet, pending, institution_master, partner_settlement, fx_position, fee_income, interchange_income, addon_payable, suspense, payout_reserve (10 rows; payout_reserve last).
+- Step 6: `insert ... 'payout_reserve' ... returning type` → one row `payout_reserve`, `INSERT 0 1` (the value is usable in a later statement).
+- Step 7: container removed.
