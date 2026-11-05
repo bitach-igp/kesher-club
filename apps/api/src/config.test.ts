@@ -90,8 +90,10 @@ describe('API and worker config (T-0020)', () => {
     }
   });
 
-  it('runs on simulators only until ADR-006 wires a vendor, and never on simulators in production', () => {
-    expect(thrown(() => loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: only sim/);
+  it('takes sim or sandbox as the environment label, refuses live, and never allows simulators in production', () => {
+    expect(loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox' }).PROVIDER_MODE_DEFAULT).toBe('sandbox');
+    expect(loadWorkerConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox' }).PROVIDER_MODE_DEFAULT).toBe('sandbox');
+    expect(thrown(() => loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'live' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: only sim or sandbox/);
     expect(thrown(() => loadApiConfig({ ...env, APP_ENV: 'prod' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: simulators are not allowed in production/);
   });
 });
@@ -103,11 +105,20 @@ const WH_PREVIOUS = 'whsec-previous-do-not-print';
 const crowded = { PROVIDER_INSTITUTION_BANKING: 'crowded', CROWDED_BASE_URL: 'https://sandbox-api.crowdedfinance.com/api/v1', CROWDED_API_TOKEN: TOKEN, CROWDED_WEBHOOK_SECRETS: WH_SECRET };
 
 describe('Crowded banking override (T-0659)', () => {
-  it('defaults to the simulator, needs no Crowded key, and leaves PROVIDER_MODE_DEFAULT sim-only', () => {
+  it('defaults to the simulator and needs no Crowded key', () => {
     const c = loadApiConfig(env);
     expect(c.PROVIDER_INSTITUTION_BANKING).toBe('sim');
     expect(c.CROWDED_API_TOKEN).toBeUndefined();
-    expect(thrown(() => loadApiConfig({ ...env, ...crowded, PROVIDER_MODE_DEFAULT: 'sandbox' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: only sim/);
+    expect(loadApiConfig({ ...env, ...crowded, PROVIDER_MODE_DEFAULT: 'sandbox' }).PROVIDER_INSTITUTION_BANKING).toBe('crowded');
+  });
+
+  it('refuses a PROVIDER_* key no port owns, alongside other problems, so a typo never leaves a port on its simulator (T-0040)', () => {
+    expect(thrown(() => loadApiConfig({ ...env, PROVIDER_FUNDING: 'stripe' })).invalid.join()).toMatch(/PROVIDER_FUNDING: not a provider key/);
+    expect(thrown(() => loadWorkerConfig({ ...env, PROVIDER_FUNDING: 'stripe' })).invalid.join()).toMatch(/PROVIDER_FUNDING: not a provider key/);
+    const both = thrown(() => loadApiConfig({ ...env, MARKET: 'XX', PROVIDER_FUNDING: 'stripe' }));
+    expect(both.invalid.join()).toMatch(/MARKET/);
+    expect(both.invalid.join()).toMatch(/PROVIDER_FUNDING/);
+    expect(loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox', PROVIDER_INSTITUTION_BANKING: 'sim' }).PROVIDER_INSTITUTION_BANKING).toBe('sim');
   });
 
   it('loads a full Crowded set for the API and the worker, the token and secrets as Secrets', () => {

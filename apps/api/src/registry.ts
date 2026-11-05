@@ -1,6 +1,6 @@
 // The provider registry a process runs on (T-0021). `sim` binds every port to the in-process
-// simulators (previews and staging until ADR-006 names a processor); the config refuses any other
-// global mode until a vendor adapter is chosen for it. A port can be overridden on its own (T-0659):
+// simulators (previews and staging until ADR-006 names a processor); `sandbox` is the same registry under the staging label
+// (T-0040): the config refuses any other global mode, and a vendor adapter is chosen per port. A port can be overridden on its own (T-0659):
 // `institution-banking` binds to the Crowded adapter and every other port stays on the simulators.
 // Tests keep their own SimulatorHost on a fixed clock; a running process gets the wall clock, which
 // the simulators' control panel may still nudge forward.
@@ -80,8 +80,9 @@ export function createRegistry(
   clock: AdvanceableClock = systemClock(),
   overrides: RegistryOverrides = {},
 ): { registry: ProviderRegistry; simulators: SimulatorHost; providers: ProviderSummary } {
-  // The config already refuses anything but `sim` (T-0020); this guards a caller that skipped it.
-  if (mode !== 'sim') throw new Error(`No vendor adapters are wired for provider mode "${mode}" yet (ADR-006)`);
+  // The config already refuses anything but `sim` and `sandbox` (T-0040); this guards a caller that skipped it. The mode only
+  // labels the environment: a port runs a vendor adapter only through an override below.
+  if (mode !== 'sim' && mode !== 'sandbox') throw new Error(`Provider mode "${mode}" is not accepted: use sim or sandbox, and choose vendors per port`);
   const simulators = new SimulatorHost(clock);
   const providers: ProviderSummary = { 'institution-banking': 'sim' };
   const banking = overrides.institutionBanking;

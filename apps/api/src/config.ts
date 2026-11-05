@@ -2,10 +2,12 @@
 // services through createApp, so they share one shape; the API adds its port. The base shape from
 // @kesher/domain brings APP_ENV, DATABASE_URL, TEMPORAL_ADDRESS and PROVIDER_MODE_DEFAULT, and already
 // refuses simulators in prod. Key names are the ones Terraform passes (T-0025); the database password
-// may arrive separately as PGPASSWORD, which node-postgres reads when DATABASE_URL carries none. Only `sim` is accepted for now: no vendor adapter is wired into the
-// registry until ADR-006 names a processor, so `sandbox` and `live` would boot on nothing. The one exception is a per-port
-// override (T-0659): PROVIDER_INSTITUTION_BANKING=crowded binds the US banking port to the Crowded adapter, with its base URL,
-// API token and webhook secrets as a set that is all there or refused.
+// may arrive separately as PGPASSWORD, which node-postgres reads when DATABASE_URL carries none.
+// PROVIDER_MODE_DEFAULT is `sim` or `sandbox` (T-0040). It only labels the environment: which vendor backs a port is chosen per
+// port by a PROVIDER_<PORT> key (T-0659 for the US banking port), and a port with no choice stays on its simulator. `live` is
+// refused until the production guard (T-0043). `PROVIDER_PORTS` below is the one table of those keys and each adapter's
+// credentials, which are an all-there-or-refused set; a PROVIDER_* key the table does not list is refused, so a typo can never
+// leave a port quietly on its simulator.
 // `loadConfig` throws ConfigError naming every missing or invalid key; secrets never print.
 import { ConfigError, defineConfig, loadConfig, secret, Secret, type Config } from '@kesher/domain';
 import type { JWK } from 'jose';
@@ -44,6 +46,17 @@ const secretPair = () =>
     ctx.addIssue({ code: 'custom', message: 'must be one or two distinct, non-empty secrets separated by a comma' });
     return z.NEVER;
   });
+
+/**
+ * The ports that can leave their simulator (T-0040). `env` is the key that chooses the provider; each adapter lists the
+ * credentials it needs. Adding a vendor is a row here, its keys in `shared` and a registry binding.
+ */
+export const PROVIDER_PORTS = {
+  'institution-banking': { env: 'PROVIDER_INSTITUTION_BANKING', adapters: { crowded: ['CROWDED_BASE_URL', 'CROWDED_API_TOKEN', 'CROWDED_WEBHOOK_SECRETS'] } },
+} as const satisfies Record<string, { env: string; adapters: Record<string, readonly string[]> }>;
+
+/** Every PROVIDER_* key a process may be given. */
+const PROVIDER_KEYS: ReadonlySet<string> = new Set(['PROVIDER_MODE_DEFAULT', ...Object.values(PROVIDER_PORTS).map((p) => p.env)]);
 
 const shared = {
   /**
@@ -91,8 +104,8 @@ const processRules = (cfg: unknown, ctx: z.RefinementCtx) => {
     PII_DATA_KEY: Secret;
     PII_INDEX_KEY: Secret;
   };
-  if (c.PROVIDER_MODE_DEFAULT !== 'sim') {
-    ctx.addIssue({ code: 'custom', path: ['PROVIDER_MODE_DEFAULT'], message: 'only sim until ADR-006 wires a vendor adapter' });
+  if (c.PROVIDER_MODE_DEFAULT !== 'sim' && c.PROVIDER_MODE_DEFAULT !== 'sandbox') {
+    ctx.addIssue({ code: 'custom', path: ['PROVIDER_MODE_DEFAULT'], message: 'only sim or sandbox; live waits for the production guard (T-0043)' });
   }
   // The Crowded keys come as a set: `crowded` needs all three, and a partial set is refused even while the port stays on the
   // simulator (half a credential is a mistake, not a choice). A key left out is reported as missing by name.
@@ -113,24 +126,37 @@ export type ApiConfig = Config<typeof apiConfigSchema>;
 export type WorkerConfig = Config<typeof workerConfigSchema>;
 
 /**
- * The Crowded keys the env leaves out while the set is in play. zod skips an object-level refinement once any field has failed,
- * so `processRules` alone would hide a half-set Crowded credential behind, say, a bad MARKET; this runs on the raw env instead.
+ * What the raw env gets wrong about providers. zod skips an object-level refinement once any field has failed, so `processRules`
+ * alone would hide a half-set credential behind, say, a bad MARKET; this runs on the raw env instead. `missing` are the
+ * credentials left out while a set is in play (the port chose the adapter, or any key of the set is present); `unknown` are
+ * PROVIDER_* keys no port owns.
  */
-const missingCrowdedKeys = (env: Record<string, string | undefined>): string[] => {
+const providerProblems = (env: Record<string, string | undefined>): { missing: string[]; unknown: string[] } => {
   const set = (k: string) => env[k] !== undefined && env[k] !== '';
-  const keys = ['CROWDED_BASE_URL', 'CROWDED_API_TOKEN', 'CROWDED_WEBHOOK_SECRETS'];
-  return env['PROVIDER_INSTITUTION_BANKING'] === 'crowded' || keys.some(set) ? keys.filter((k) => !set(k)) : [];
+  const missing: string[] = [];
+  for (const port of Object.values(PROVIDER_PORTS)) {
+    for (const [adapter, keys] of Object.entries(port.adapters)) {
+      if (env[port.env] === adapter || keys.some(set)) missing.push(...keys.filter((k) => !set(k)));
+    }
+  }
+  const unknown = Object.keys(env).filter((k) => k.startsWith('PROVIDER_') && !PROVIDER_KEYS.has(k));
+  return { missing, unknown };
 };
 
-/** `loadConfig`, plus the Crowded set check reported alongside any other problem rather than behind it. */
+/** `loadConfig`, plus the provider checks reported alongside any other problem rather than behind it. */
 const load = <S extends Parameters<typeof loadConfig>[0]>(schema: S, env: Record<string, string | undefined>): Config<S> => {
+  const { missing, unknown } = providerProblems(env);
+  const unknownIssues = unknown.map((k) => `${k}: not a provider key (known: ${[...PROVIDER_KEYS].join(', ')})`);
   try {
-    return loadConfig(schema, env);
+    const config = loadConfig(schema, env);
+    if (unknownIssues.length > 0) throw new ConfigError([], unknownIssues);
+    return config;
   } catch (e) {
     if (!(e instanceof ConfigError)) throw e;
-    const extra = missingCrowdedKeys(env).filter((k) => !e.missing.includes(k));
-    if (extra.length === 0) throw e;
-    throw new ConfigError([...e.missing, ...extra], e.invalid);
+    const extra = missing.filter((k) => !e.missing.includes(k));
+    const invalid = [...e.invalid, ...unknownIssues.filter((i) => !e.invalid.includes(i))];
+    if (extra.length === 0 && invalid.length === e.invalid.length) throw e;
+    throw new ConfigError([...e.missing, ...extra], invalid);
   }
 };
 
