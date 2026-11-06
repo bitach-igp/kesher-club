@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { toProblem, type HttpRequest, type HttpResponse } from './http.ts';
 import { match } from './routes.ts';
 import type { App } from './app.ts';
-import { DomainError } from '@kesher/domain';
+import { DomainError, ID_SHAPE, type Logger } from '@kesher/domain';
 
 /** What an API process serves (T-0063): everything, or only the card authorisation route and the status. */
 export type ServiceRole = 'api' | 'jit';
@@ -21,7 +21,9 @@ const RAW_BODY = new Set(['crowdedWebhook']);
 /** A request's time is the app's clock unless the caller pins one: the demo's shared clock (T-0035) must reach handlers. */
 export async function dispatch(app: App, input: { method: string; url: string; headers: Record<string, string>; rawBody: string; rawBytes?: Uint8Array; now?: Date; role?: ServiceRole }): Promise<HttpResponse> {
   const now = input.now ?? app.services.clock.now();
-  const traceId = input.headers['traceparent']?.split('-')[1] ?? randomUUID();
+  // The trace id is the caller's W3C traceparent, else the request id the server gave this request, else a new one.
+  const requestHeader = input.headers['x-request-id'];
+  const traceId = input.headers['traceparent']?.split('-')[1] ?? (requestHeader !== undefined && ID_SHAPE.test(requestHeader) ? requestHeader : randomUUID());
   const u = new URL(input.url, 'http://api.local');
   const pathname = u.pathname.replace(/^\/v1(?=\/)/, '');
   // The authorisation host answers 404 to everything but its own routes, before authentication or any handler (T-0063).
@@ -57,10 +59,40 @@ export async function dispatch(app: App, input: { method: string; url: string; h
   return handler(req);
 }
 
-export function createServer(app: App, options: { role?: ServiceRole } = {}): http.Server {
+/** The operation a request ran, for the access line: the contract's operationId, never the URL (it carries ids and query values). */
+function routeName(method: string, url: string): string {
+  const pathname = new URL(url, 'http://api.local').pathname.replace(/^\/v1(?=\/)/, '');
+  if (pathname.startsWith('/mcp')) return 'mcp';
+  return match(method, pathname)?.route.operationId ?? 'unmatched';
+}
+
+/**
+ * `log` receives one `request` line per response: request id, method, operation, status and duration. Never the URL, query,
+ * headers or body, and no member or account id: the logger cannot carry them (T-0052). The request id is the caller's
+ * `x-request-id` (the load balancer sets one) when it has the strict id shape, else a new UUID; it is returned in `X-Request-Id`.
+ */
+export function createServer(app: App, options: { role?: ServiceRole; log?: Logger } = {}): http.Server {
+  const log = options.log;
   return http.createServer(async (req, res) => {
+    const startedAt = Date.now();
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) if (typeof v === 'string') headers[k.toLowerCase()] = v;
+    const requestId = headers['x-request-id'] !== undefined && ID_SHAPE.test(headers['x-request-id']) ? headers['x-request-id'] : randomUUID();
+    headers['x-request-id'] = requestId;
+    const method = req.method ?? 'GET';
+    const finish = (status: number): void => {
+      let route = 'unmatched';
+      try {
+        route = routeName(method, req.url ?? '/');
+      } catch {
+        // an unparsable URL is logged as unmatched
+      }
+      try {
+        log?.('request', { requestId, method, route, status, durationMs: Date.now() - startedAt });
+      } catch {
+        // a logging failure never fails the response, which has already been sent
+      }
+    };
     // The body is kept as the bytes that arrived: a signature is over them, and decoding them first would change them.
     const chunks: Buffer[] = [];
     let size = 0;
@@ -69,19 +101,21 @@ export function createServer(app: App, options: { role?: ServiceRole } = {}): ht
       chunks.push(buf);
       size += buf.length;
       if (size > MAX_BODY) {
-        res.writeHead(413, { 'content-type': 'application/problem+json' }).end(JSON.stringify({ type: 'about:blank', title: 'Body too large', status: 413, code: 'VALIDATION_FAILED' }));
+        res.writeHead(413, { 'content-type': 'application/problem+json', 'x-request-id': requestId }).end(JSON.stringify({ type: 'about:blank', title: 'Body too large', status: 413, code: 'VALIDATION_FAILED' }));
+        finish(413);
         return;
       }
     }
     const rawBytes = Buffer.concat(chunks);
     let out: HttpResponse;
     try {
-      out = await dispatch(app, { method: req.method ?? 'GET', url: req.url ?? '/', headers, rawBody: rawBytes.toString('utf8'), rawBytes, ...(options.role ? { role: options.role } : {}) });
+      out = await dispatch(app, { method, url: req.url ?? '/', headers, rawBody: rawBytes.toString('utf8'), rawBytes, ...(options.role ? { role: options.role } : {}) });
     } catch (e) {
-      out = toProblem(e, randomUUID());
+      out = toProblem(e, requestId);
     }
     const contentType = out.headers?.['content-type'] ?? 'application/json; charset=utf-8';
-    res.writeHead(out.status, { ...out.headers, 'content-type': contentType, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+    res.writeHead(out.status, { ...out.headers, 'content-type': contentType, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'x-request-id': requestId });
     res.end(out.body === undefined ? '' : JSON.stringify(out.body, (_k, v: unknown) => (typeof v === 'bigint' ? v.toString() : v)));
+    finish(out.status);
   });
 }

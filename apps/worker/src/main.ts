@@ -7,6 +7,7 @@ import { createApp } from '@kesher/api/app';
 import { PostgresIdentityRepository } from '@kesher/api/auth/pg-repository';
 import { importSigningKey } from '@kesher/api/auth/tokens';
 import { loadWorkerConfig } from '@kesher/api/config';
+import { createLogger, type LogFields } from '@kesher/domain';
 import { createPiiCipher } from '@kesher/api/crypto/pii';
 import { createPgDatabase } from '@kesher/api/pg';
 import { createRegistry, crowdedWebhookSecrets, overridesFromConfig } from '@kesher/api/registry';
@@ -33,14 +34,19 @@ export interface WorkerOptions {
   clock?: () => Date;
 }
 
-export const log: Log = (event, fields) => {
-  process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), service: 'worker', event, ...fields })}\n`);
-};
+/**
+ * The worker's sink takes flat fields (the scheduler's `Log`); the shared logger behind it keeps only the fields it knows and
+ * scrubs their text (T-0052), so an unexpected field is dropped by name, never printed.
+ */
+const sink = (logger: ReturnType<typeof createLogger>): Log => (event, fields) => logger(event, fields as LogFields);
+
+/** The process logger before the config is known (boot failures, signals); once it is, `main` logs with its market. */
+export const log: Log = sink(createLogger({ service: 'worker' }));
 
 export async function main(env: Record<string, string | undefined>, opts: WorkerOptions = {}): Promise<RunningWorker> {
-  const emit = opts.log ?? log;
   const drainMs = opts.drainMs ?? DRAIN_MS;
   const config = loadWorkerConfig(env); // throws ConfigError, naming every problem, before anything opens
+  const emit = opts.log ?? sink(createLogger({ service: 'worker', market: config.MARKET }));
   const catalogue = loadCatalogueConfig(); // config/catalogue.json: missing or malformed throws here too
   const db = createPgDatabase(config.DATABASE_URL, { max: config.DATABASE_POOL_MAX });
   // The locks' own session: one connection, never reaped while idle (lock.ts).

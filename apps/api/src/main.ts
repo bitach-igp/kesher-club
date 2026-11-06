@@ -5,6 +5,7 @@
 // values (constitution art. 9, AGENTS.md).
 import type http from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { createLogger } from '@kesher/domain';
 import type { JWK } from 'jose';
 import { createApp } from './app.ts';
 import { PostgresIdentityRepository } from './auth/pg-repository.ts';
@@ -25,18 +26,18 @@ export interface RunningApi {
   shutdown(): Promise<void>;
 }
 
-export const log = (event: string, fields: Record<string, string | number | boolean | Record<string, string>> = {}): void => {
-  process.stdout.write(`${JSON.stringify({ at: new Date().toISOString(), service: 'api', event, ...fields })}\n`);
-};
+/** The process logger before the config is known (boot failures, signals); once it is, `main` logs with its market. */
+export const log = createLogger({ service: 'api' });
 
 export async function main(env: Record<string, string | undefined>): Promise<RunningApi> {
   const config: ApiConfig = loadApiConfig(env); // throws ConfigError, naming every problem, before anything opens
+  const logger = createLogger({ service: 'api', market: config.MARKET });
   const db = createPgDatabase(config.DATABASE_URL, { max: config.DATABASE_POOL_MAX });
   try {
     const pii = createPiiCipher({ dataKey: config.PII_DATA_KEY, indexKey: config.PII_INDEX_KEY });
     const signingKey = await importSigningKey(JSON.parse(config.JWT_SIGNING_KEY.reveal()) as JWK, config.JWT_SIGNING_KID);
     // The banking port's provider is chosen by config (T-0659); its idempotency keys live in Postgres so a restart loses none.
-    const { registry, providers } = createRegistry(config.PROVIDER_MODE_DEFAULT, undefined, overridesFromConfig(config, db, (message) => log('warning', { message })));
+    const { registry, providers } = createRegistry(config.PROVIDER_MODE_DEFAULT, undefined, overridesFromConfig(config, db, (message) => logger('warning', { message })));
     const app = createApp({
       db,
       registry,
@@ -50,22 +51,22 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
       crowdedWebhookSecrets: crowdedWebhookSecrets(config),
       ...(config.MEMBER_APP_URL ? { oauth: { consentUrl: `${config.MEMBER_APP_URL.replace(/\/$/, '')}/connect` } } : {}),
     });
-    const server = createServer(app, { role: config.SERVICE_ROLE });
+    const server = createServer(app, { role: config.SERVICE_ROLE, log: logger });
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(config.PORT, () => resolve());
     });
     const port = (server.address() as AddressInfo).port;
-    log('listening', { port, market: config.MARKET, role: config.SERVICE_ROLE, mode: config.PROVIDER_MODE_DEFAULT, providers });
+    logger('listening', { port, role: config.SERVICE_ROLE, mode: config.PROVIDER_MODE_DEFAULT, providers });
     let closing: Promise<void> | undefined;
     return {
       port,
       shutdown: () =>
         (closing ??= (async () => {
-          log('draining', { drainMs: DRAIN_MS });
+          logger('draining', { drainMs: DRAIN_MS });
           await drain(server, DRAIN_MS);
           await db.close();
-          log('stopped');
+          logger('stopped');
         })()),
     };
   } catch (e) {
