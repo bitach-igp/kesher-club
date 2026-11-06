@@ -51,3 +51,6 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-06 | T-0063 | #245 | Sonnet APPROVE (first round) | green |
 | 2026-11-06 | T-0061 | #247 | Sonnet APPROVE (first round; lint error in the new test fixed before review) | green |
 | 2026-11-06 | T-0679 | #253 | Sonnet APPROVE (trailing blank line fixed); desktop recordings not run, test ids kept | green |
+| 2026-11-06 | T-0413 | #250 | independent APPROVE (1 fix round: converted-authorisation test, stale comment) | green |
+| 2026-11-06 | T-0064 | #252 | independent changes-requested then fixed (wrong column and table in the pg proof, unneeded sequence grant, replay assertion); desktop PASS; two items carried to T-0045 | green |
+| 2026-11-06 | T-0045 | #255 | independent review: 1 defect (prod terraform assert missing) fixed; jit status probe without DB | green |
