@@ -63,6 +63,9 @@
 | [T-0061](T-0061.md) | BIL | The legal documents over HTTP: current versions, accept, re-accept gate | — | 16 deploy |
 | [T-0063](T-0063.md) | SETUP | A JIT process: SERVICE_ROLE=jit serves only the card authorisation route and the status | — | 16 deploy |
 | [T-0064](T-0064.md) | SETUP | club_jit can run the card authorisation: the grants it needs and a real-Postgres decision test | — | 16 deploy |
+| [T-0065](T-0065.md) | BIL | Legal documents: draft and publish through the two-person flow | — | 16 deploy |
+| [T-0066](T-0066.md) | BIL | A member who has not accepted the current terms is stopped at money routes (behind a flag) | — | 16 deploy |
+| [T-0067](T-0067.md) | BIL | legal.consent.ip is nullable: a consent no longer records an address it does not collect | — | 16 deploy |
 | [T-0062](T-0062.md) | BIL | The app shows the terms at sign-up and re-accept, and links them from settings | — | 16 deploy |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |

@@ -146,6 +146,57 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ServiceStatus" }
         default: { $ref: "#/components/responses/Problem" }
+  /legal/documents:
+    get:
+      operationId: getLegalDocuments
+      summary: The legal documents in force, in both languages
+      description: >-
+        T-0061. Public on purpose: the app shows the terms before sign-up, and Stripe and the app stores link them. One entry per
+        document that has a version already in force (terms, privacy, cardholder, esim, insurance, p2p, funder); the hash is the text's
+        SHA-256, so a client can prove which text it showed.
+      security: []
+      responses:
+        "200":
+          description: The documents in force
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LegalDocuments" }
+        default: { $ref: "#/components/responses/Problem" }
+  /me/consents:
+    get:
+      operationId: getMyConsents
+      summary: What the signed-in member accepted, and what is still pending
+      description: >-
+        T-0061. `pending` lists each document whose latest material version in force is newer than the member's last acceptance (or
+        that they never accepted), with the reason: `first` or `material_change`.
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Accepted and pending documents
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MyConsents" }
+        default: { $ref: "#/components/responses/Problem" }
+    post:
+      operationId: recordConsents
+      summary: Record that the member accepted the listed document versions
+      description: >-
+        T-0061. Only the version in force can be accepted. Acceptance is recorded against the device the token is bound to and the
+        locale the member read it in; no IP address is collected. Accepting the same document version again is a no-op that returns
+        the original record, so the call is naturally idempotent and takes no Idempotency-Key.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordConsentsRequest" }
+      responses:
+        "201":
+          description: The recorded acceptances
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecordedConsents" }
+        default: { $ref: "#/components/responses/Problem" }
   /me/capabilities:
     get:
       operationId: getCapabilities
@@ -4490,6 +4541,75 @@ components:
             market: { type: string, enum: [US, IL] }
         role: { type: string, enum: [staff, finance, admin] }
         paymentReference: { type: string, description: What the institution quotes on a transfer into Kesher's account (T-0614) }
+    LegalDocKey:
+      type: string
+      enum: [terms, privacy, cardholder, esim, insurance, p2p, funder]
+    Localised:
+      type: object
+      required: [en, he]
+      properties:
+        en: { type: string }
+        he: { type: string }
+    LegalDocument:
+      type: object
+      required: [docKey, version, title, body, hash, material, effectiveAt]
+      properties:
+        docKey: { $ref: "#/components/schemas/LegalDocKey" }
+        version: { type: integer, minimum: 1 }
+        title: { $ref: "#/components/schemas/Localised" }
+        body: { $ref: "#/components/schemas/Localised" }
+        hash: { type: string, description: SHA-256 of the document key and both bodies }
+        material: { type: boolean, description: A material change must be accepted again }
+        changeSummary: { $ref: "#/components/schemas/Localised" }
+        effectiveAt: { type: string, format: date-time }
+    LegalDocuments:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/LegalDocument" } }
+    PendingLegalDocument:
+      allOf:
+        - $ref: "#/components/schemas/LegalDocument"
+        - type: object
+          required: [reason]
+          properties:
+            reason: { type: string, enum: [first, material_change] }
+    ConsentRecord:
+      type: object
+      required: [docKey, version, hash, locale, acceptedAt]
+      properties:
+        docKey: { $ref: "#/components/schemas/LegalDocKey" }
+        version: { type: integer, minimum: 1 }
+        hash: { type: string }
+        locale: { type: string, enum: [en, he] }
+        acceptedAt: { type: string, format: date-time }
+    MyConsents:
+      type: object
+      required: [accepted, pending]
+      properties:
+        accepted: { type: array, items: { $ref: "#/components/schemas/ConsentRecord" } }
+        pending: { type: array, items: { $ref: "#/components/schemas/PendingLegalDocument" } }
+    RecordConsentsRequest:
+      type: object
+      required: [documents, locale]
+      properties:
+        documents:
+          type: array
+          minItems: 1
+          maxItems: 7
+          description: One entry per document; each must be the version in force.
+          items:
+            type: object
+            required: [docKey, version]
+            properties:
+              docKey: { $ref: "#/components/schemas/LegalDocKey" }
+              version: { type: integer, minimum: 1 }
+        locale: { type: string, enum: [en, he], description: The language the member read the text in }
+    RecordedConsents:
+      type: object
+      required: [accepted]
+      properties:
+        accepted: { type: array, items: { $ref: "#/components/schemas/ConsentRecord" } }
     Capabilities:
       type: object
       required: [features, entitlements]
