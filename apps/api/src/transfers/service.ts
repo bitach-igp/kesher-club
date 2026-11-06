@@ -1,7 +1,7 @@
 // TransferService (T-0205): the single writer of ops.transfer. Every state change is one
 // transaction that updates the row, appends a transfer_event, and enqueues an outbox message.
 // Money moves only through the ledger (journal ids are recorded here, never amounts recomputed).
-import { DomainError, uuidv7, type Currency, type Money } from '@kesher/domain';
+import { DomainError, guarded, stdoutMetrics, uuidv7, type Currency, type Metrics, type Money } from '@kesher/domain';
 import type { Market } from '@kesher/ports';
 import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
 import { enqueue } from './outbox.ts';
@@ -79,9 +79,11 @@ export class TransferService {
   /** The market whose API this is: every row written carries it (T-0027), and the worker's sweeps read
    *  only its rows (T-0028). createApp always passes it. */
   readonly market: Market;
-  constructor(db: Database, market: Market = 'IL') {
+  private readonly metrics: Metrics;
+  constructor(db: Database, market: Market = 'IL', metrics: Metrics = stdoutMetrics) {
     this.db = db;
     this.market = market;
+    this.metrics = guarded(metrics);
   }
 
   /** Idempotent by key: a replayed create returns the existing transfer unchanged (REQ-PAY-005). */
@@ -150,6 +152,19 @@ export class TransferService {
   async history(id: string): Promise<{ from?: TransferState; to: TransferState; reason?: string; at: string }[]> {
     const r = await this.db.query<{ from_state: TransferState | null; to_state: TransferState; reason: string | null; at: string | Date }>('select from_state, to_state, reason, at from ops.transfer_event where transfer_id = $1 order by id', [id]);
     return r.rows.map((e) => ({ ...(e.from_state ? { from: e.from_state } : {}), to: e.to_state, ...(e.reason ? { reason: e.reason } : {}), at: new Date(e.at).toISOString() }));
+  }
+
+  /**
+   * Emits `transfer.stuck{state,market}` for each non-terminal state that has transfers: seconds since the oldest of them last
+   * changed state. A state with none is not emitted. No transfer id leaves this method: only the state and the age. Called by
+   * the worker's metrics sweep.
+   */
+  async reportStuck(now: Date): Promise<{ state: TransferState; ageS: number }[]> {
+    const terminal = [...TERMINAL_STATES];
+    const r = await this.db.query<{ state: TransferState; oldest: string | Date }>('select state, min(updated_at) as oldest from ops.transfer where market = $1 and not (state = any($2::text[])) group by state', [this.market, terminal]);
+    const out = r.rows.map((row) => ({ state: row.state, ageS: Math.max(0, (now.getTime() - new Date(row.oldest).getTime()) / 1000) }));
+    for (const o of out) this.metrics.transferStuck(o.state, this.market, o.ageS);
+    return out;
   }
 
   isTerminal(t: Transfer): boolean {

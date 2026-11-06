@@ -9,7 +9,7 @@
 // club rate with the plan markup. One purse pays the whole amount. The hold always lands in the pending purse
 // of the authorisation's currency, which is what the processor settles; the rate is looked up only when a
 // conversion is the way to approve, so the common path costs nothing extra.
-import { applyBps, DomainError, money, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
+import { applyBps, DomainError, guarded, money, stdoutMetrics, toWire, type Currency, type Metrics, type Money, type Posting } from '@kesher/domain';
 import { applyRate, CardIssuingError, type CardIssuingPort, type JitAuthorizationRequest, type JitDecision } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { EntitlementService } from '../billing/entitlements.ts';
@@ -47,6 +47,8 @@ export interface JitDeps {
   /** Club rates and plan markups for a purchase the other purse pays; without them only the same-currency purse is tried. */
   fx?: { rates: Pick<RateService, 'rateFor'>; markups: { markupFor(partyId: string): Promise<bigint> } };
   budgetMs?: number;
+  /** Where the decision's duration and error go (T-0053); stdout by default. Nothing it does can change a decision. */
+  metrics?: Metrics;
 }
 
 /** The purse that pays, and the conversion when it is not the authorisation's currency. */
@@ -76,8 +78,10 @@ const decline = (reason: Extract<JitDecision, { approve: false }>['reason']): Ji
 export class JitService {
   private readonly budgetMs: number;
   private readonly d: JitDeps;
+  private readonly metrics: Metrics;
   constructor(d: JitDeps) {
     this.d = d;
+    this.metrics = guarded(d.metrics ?? stdoutMetrics);
     this.budgetMs = d.budgetMs ?? DECISION_BUDGET_MS;
   }
 
@@ -88,6 +92,8 @@ export class JitService {
       req = await this.d.port.parseAuthorization(headers, rawBody);
     } catch (e) {
       if (e instanceof CardIssuingError && e.code === 'BAD_SIGNATURE') throw new DomainError('UNAUTHENTICATED', 'Authorisation request signature could not be verified');
+      // A request the port cannot read is a port error (a forged signature is not: it says nothing about the provider).
+      this.metrics.providerError('card-issuing');
       throw new DomainError('VALIDATION_FAILED', 'Authorisation request could not be parsed');
     }
     const outcome = await this.decide(req, now);
@@ -98,16 +104,25 @@ export class JitService {
   async decide(req: JitAuthorizationRequest, now: Date): Promise<JitOutcome> {
     const started = performance.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let failed = false;
     const budget = new Promise<JitOutcome>((resolve) => {
-      timer = setTimeout(() => resolve({ decision: decline('TIMEOUT'), elapsedMs: performance.now() - started }), this.budgetMs);
+      timer = setTimeout(() => {
+        failed = true;
+        resolve({ decision: decline('TIMEOUT'), elapsedMs: performance.now() - started });
+      }, this.budgetMs);
     });
+    let outcome: JitOutcome;
     try {
-      return await Promise.race([this.evaluate(req, now, started), budget]);
+      outcome = await Promise.race([this.evaluate(req, now, started), budget]);
     } catch {
-      return { decision: decline('TIMEOUT'), elapsedMs: performance.now() - started };
+      failed = true;
+      outcome = { decision: decline('TIMEOUT'), elapsedMs: performance.now() - started };
     } finally {
       if (timer) clearTimeout(timer);
     }
+    // One line per decision with its duration and whether it failed closed (error rate = average of jit.error). The emitter is guarded: it cannot throw or alter `outcome`.
+    this.metrics.jitDecision(outcome.elapsedMs, failed);
+    return outcome;
   }
 
   private async evaluate(req: JitAuthorizationRequest, now: Date, started: number): Promise<JitOutcome> {

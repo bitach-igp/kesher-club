@@ -68,6 +68,8 @@ describe('buildJobs (T-0022)', () => {
       'payout-sweep': 60,
       'p2p-release-holds': 60,
       'fx-void-stale': 60,
+      'metrics-market': 60,
+      'metrics-recon': 60,
       'webhook-replay': 60,
       'fx-refresh-rates': 300,
       'ach-release-holds': 300,
@@ -86,8 +88,8 @@ describe('buildJobs (T-0022)', () => {
 
   it('gives every job a scope: market jobs sweep their own market\'s rows, club jobs run one at a time in the club (T-0028)', () => {
     const byScope = (scope: string) => jobs.filter((j) => j.scope === scope).map((j) => j.name).sort();
-    expect(byScope('market')).toEqual(['ach-release-holds', 'auto-reload', 'card-token-events', 'catalogue-sync', 'deposit-reconcile', 'esim-usage', 'kyb-rescreen', 'load-sweep', 'p2p-release-holds', 'payout-sweep', 'us-banking-recon', 'us-funding-sweep', 'webhook-replay']);
-    expect(byScope('club')).toEqual(['agent-expire-intents', 'balance-proof', 'card-release-holds', 'fx-refresh-rates', 'fx-void-stale', 'kyb-refresh', 'monitoring', 'p2p-expire-requests', 'send-sweep']);
+    expect(byScope('market')).toEqual(['ach-release-holds', 'auto-reload', 'card-token-events', 'catalogue-sync', 'deposit-reconcile', 'esim-usage', 'kyb-rescreen', 'load-sweep', 'metrics-market', 'p2p-release-holds', 'payout-sweep', 'us-banking-recon', 'us-funding-sweep', 'webhook-replay']);
+    expect(byScope('club')).toEqual(['agent-expire-intents', 'balance-proof', 'card-release-holds', 'fx-refresh-rates', 'fx-void-stale', 'kyb-refresh', 'metrics-recon', 'monitoring', 'p2p-expire-requests', 'send-sweep']);
     expect(jobs.every((j) => j.scope === 'market' || j.scope === 'club')).toBe(true);
   });
 

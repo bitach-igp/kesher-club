@@ -11,6 +11,7 @@ import { cardIssuingProcessor } from '@kesher/api/cards/settlement';
 import type { Database } from '@kesher/api/db';
 import { US_BANKING_FLAG } from '@kesher/api/institutions/us-banking';
 import type { BankPort, EsimPort, FundingPort, FxPort, InstitutionBankingPort, InsurancePort, KybPort, Market, NotifyPort, ProviderRegistry } from '@kesher/ports';
+import { guarded, minorToNumber, stdoutMetrics, type Metrics } from '@kesher/domain';
 import { z } from 'zod';
 import { EXPIRE_INTENTS_CYCLE_MS, ExpireIntentsJob } from './agent/expire-intents.ts';
 import { CardHoldReleaseJob, CYCLE_MS as CARD_HOLD_RELEASE_CYCLE_MS } from './cards/release-holds.ts';
@@ -80,13 +81,55 @@ export interface JobDeps {
   clock: () => Date;
   runs: RunLog;
   catalogue: CatalogueConfig;
+  /** Where the sweep's gauges go (T-0053); stdout by default. */
+  metrics?: Metrics;
+}
+
+/** The gauges that need a look at the database (T-0053) are read once a minute. */
+export const METRICS_SWEEP_CYCLE_MS = 60_000;
+
+/**
+ * Open reconciliation breaks (RUN-03: over $50, or aged over 24 h). Open means an `ops.case` of kind `recon_break` that is `open` or
+ * `investigating`; breaks come from two writers, the nightly recon (an `ops.recon_break` row with both amounts) and the US banking
+ * recon (a case with the amounts only in its payload: `amount`, or `provider` and `recorded`).
+ * `recon.break_oldest_h` is the age in hours of the oldest such case, whatever its currency or source (unit `None`: CloudWatch has no hour unit).
+ * `recon.break_open_usd` is the sum, in whole dollars as a number made from bigint minor units with `minorToNumber`, of the USD amount of
+ * those cases: |partner - ledger| when both sides are USD (a missing side counts as 0), or the payload's USD amount. A break whose two sides
+ * are in different currencies, or in another currency, is left out of the USD figure, never subtracted across currencies. It is a monitoring
+ * number, never money: nothing reads it back into the ledger. Both are 0 with none open.
+ */
+export async function reportReconBreaks(db: Database, metrics: Metrics, now: Date): Promise<{ openUsdMinor: bigint; oldestHours: number }> {
+  const r = await db.query<{ usd_minor: string; oldest: string | Date | null }>(
+    `with open_case as (select id, opened_at, payload from ops.case where kind = 'recon_break' and status in ('open', 'investigating')),
+          amounts as (
+            select abs(coalesce(b.partner_minor, 0) - coalesce(b.ledger_minor, 0)) as minor
+              from ops.recon_break b join open_case c on c.id = b.case_id
+             where coalesce(b.partner_currency, b.ledger_currency) = 'USD' and coalesce(b.ledger_currency, b.partner_currency) = 'USD'
+            union all
+            select abs((c.payload->'provider'->>'minor')::bigint - (c.payload->'recorded'->>'minor')::bigint)
+              from open_case c
+             where not exists (select 1 from ops.recon_break b where b.case_id = c.id) and c.payload->'provider'->>'currency' = 'USD' and c.payload->'recorded'->>'currency' = 'USD'
+            union all
+            select (c.payload->'amount'->>'minor')::bigint
+              from open_case c
+             where not exists (select 1 from ops.recon_break b where b.case_id = c.id) and c.payload->'amount'->>'currency' = 'USD'
+          )
+     select (select coalesce(sum(minor), 0)::text from amounts) as usd_minor, (select min(opened_at) from open_case) as oldest`,
+  );
+  const openUsdMinor = BigInt(r.rows[0]?.usd_minor ?? '0');
+  const oldest = r.rows[0]?.oldest;
+  const oldestHours = oldest ? Math.max(0, now.getTime() - new Date(oldest).getTime()) / 3_600_000 : 0;
+  metrics.reconBreakOpenUsd(minorToNumber(openUsdMinor));
+  metrics.reconBreakOldestHours(oldestHours);
+  return { openUsdMinor, oldestHours };
 }
 
 /** US funding (T-0653): approved requests not yet sent are sent, and sent ones the bank has not finished are asked about. */
 const US_FUNDING_SWEEP_CYCLE_MS = 5 * 60_000;
 
-export function buildJobs({ app, db, registry, market, clock, runs, catalogue }: JobDeps): Job[] {
+export function buildJobs({ app, db, registry, market, clock, runs, catalogue, metrics: injected }: JobDeps): Job[] {
   const s = app.services;
+  const metrics = guarded(injected ?? stdoutMetrics);
   const tokenEvents = new TokenEventsJob(s.inbound, cardIssuingProcessor({ provisioning: s.provisioning, settlement: s.settlement }), clock);
   const cardHolds = new CardHoldReleaseJob(s.settlement, clock);
   const loads = new LoadWorkflow(s.loads, registry.resolve<FundingPort>('funding', market), clock);
@@ -121,6 +164,9 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue }:
   };
 
   return [
+    // The periodic gauges the runbooks alert on (T-0053): webhook lag and stuck transfers per market, reconciliation breaks for the club.
+    { name: 'metrics-market', scope: 'market', everyMs: METRICS_SWEEP_CYCLE_MS, run: async () => ({ lagMs: await s.inbound.reportLag(clock()), stuck: (await s.transfers.reportStuck(clock())).length }) },
+    { name: 'metrics-recon', scope: 'club', everyMs: METRICS_SWEEP_CYCLE_MS, run: () => reportReconBreaks(db, metrics, clock()) },
     { name: 'card-token-events', scope: 'market', everyMs: TOKEN_EVENTS_CYCLE_MS, run: () => tokenEvents.run() },
     { name: 'load-sweep', scope: 'market', everyMs: LOAD_SWEEP_CYCLE_MS, run: () => loads.sweep() },
     { name: 'send-sweep', scope: 'club', everyMs: SEND_SWEEP_CYCLE_MS, run: () => sends.sweep() },
