@@ -7,6 +7,8 @@
 // runs finish and schedules nothing more. The job bodies are the same ones Temporal will host. Nightly
 // jobs ride the same loop through `daily()` below.
 
+import { guarded, stdoutMetrics, type Metrics } from '@kesher/domain';
+
 /**
  * Who may run a job at once (T-0028). A `market` job sweeps rows that carry its worker's market and
  * calls that market's providers, so each market's worker runs its own, side by side. A `club` job's
@@ -50,8 +52,12 @@ export class Scheduler {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly inFlight = new Set<Promise<void>>();
   private stopped = false;
+  private readonly metrics: Metrics;
+  /** When each job last finished without throwing (or when the scheduler started, until it does): the base of `job.age_s`. */
+  private readonly lastOk = new Map<string, number>();
 
-  constructor(jobs: readonly Job[], lock: JobLock, log: Log) {
+  constructor(jobs: readonly Job[], lock: JobLock, log: Log, metrics: Metrics = stdoutMetrics) {
+    this.metrics = guarded(metrics);
     const names = new Set<string>();
     for (const j of jobs) {
       if (names.has(j.name)) throw new Error(`Two jobs are named ${j.name}`);
@@ -64,6 +70,7 @@ export class Scheduler {
   }
 
   start(): void {
+    for (const job of this.jobs) this.lastOk.set(job.name, Date.now());
     for (const job of this.jobs) this.schedule(job, 0);
   }
 
@@ -94,8 +101,16 @@ export class Scheduler {
       const outcome = await this.lock.withLock(job, () => job.run());
       // A daily job's tick before its time, or after today's run, is not news.
       if (!(outcome.ran && outcome.value === IDLE)) this.log(outcome.ran ? 'job_ran' : 'job_skipped', { job: job.name, ms: Date.now() - started });
+      // Metrics (T-0053): a run that did its work resets the job's age; a skipped tick (another task holds the lock) and a daily
+      // job's idle tick say nothing about this task's work, so they emit nothing.
+      if (outcome.ran && outcome.value !== IDLE) {
+        this.lastOk.set(job.name, Date.now());
+        this.metrics.jobAge(job.name, 0);
+      }
     } catch (e) {
       this.log('job_failed', { job: job.name, ms: Date.now() - started, ...errorFields(e) });
+      this.metrics.jobFailure(job.name);
+      this.metrics.jobAge(job.name, (Date.now() - (this.lastOk.get(job.name) ?? started)) / 1000);
     }
     this.schedule(job, Math.max(0, job.everyMs - (Date.now() - started)));
   }

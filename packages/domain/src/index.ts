@@ -4,3 +4,4 @@ export * from './ledger.ts';
 export * from './config.ts';
 export * from './ids.ts';
 export * from './log.ts';
+export * from './metrics.ts';

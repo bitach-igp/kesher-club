@@ -11,6 +11,7 @@ import { cardIssuingProcessor } from '@kesher/api/cards/settlement';
 import type { Database } from '@kesher/api/db';
 import { US_BANKING_FLAG } from '@kesher/api/institutions/us-banking';
 import type { BankPort, EsimPort, FundingPort, FxPort, InstitutionBankingPort, InsurancePort, KybPort, Market, NotifyPort, ProviderRegistry } from '@kesher/ports';
+import { guarded, minorToNumber, stdoutMetrics, type Metrics } from '@kesher/domain';
 import { z } from 'zod';
 import { EXPIRE_INTENTS_CYCLE_MS, ExpireIntentsJob } from './agent/expire-intents.ts';
 import { CardHoldReleaseJob, CYCLE_MS as CARD_HOLD_RELEASE_CYCLE_MS } from './cards/release-holds.ts';
@@ -80,13 +81,39 @@ export interface JobDeps {
   clock: () => Date;
   runs: RunLog;
   catalogue: CatalogueConfig;
+  /** Where the sweep's gauges go (T-0053); stdout by default. */
+  metrics?: Metrics;
+}
+
+/** The gauges that need a look at the database (T-0053) are read once a minute. */
+export const METRICS_SWEEP_CYCLE_MS = 60_000;
+
+/**
+ * Open reconciliation breaks (RUN-03: over $50, or aged over 24 h): `recon.break_open_usd` is the sum, in whole dollars as a
+ * number, of |partner - ledger| over USD breaks whose case is open or being investigated, made from bigint minor units with
+ * `minorToNumber`. It is a monitoring number, never money: nothing reads it back into the ledger. A break with only one side
+ * counts that side. `recon.break_oldest_h` is the age in hours of the oldest such case of any currency. Both are 0 with none open.
+ */
+export async function reportReconBreaks(db: Database, metrics: Metrics, now: Date): Promise<{ openUsdMinor: bigint; oldestHours: number }> {
+  const r = await db.query<{ usd_minor: string; oldest: string | Date | null }>(
+    `select coalesce(sum(abs(coalesce(b.partner_minor, 0) - coalesce(b.ledger_minor, 0))) filter (where coalesce(b.partner_currency, b.ledger_currency) = 'USD'), 0)::text as usd_minor,
+            min(c.opened_at) as oldest
+       from ops.recon_break b join ops.case c on c.id = b.case_id where c.status in ('open', 'investigating')`,
+  );
+  const openUsdMinor = BigInt(r.rows[0]?.usd_minor ?? '0');
+  const oldest = r.rows[0]?.oldest;
+  const oldestHours = oldest ? Math.max(0, now.getTime() - new Date(oldest).getTime()) / 3_600_000 : 0;
+  metrics.reconBreakOpenUsd(minorToNumber(openUsdMinor));
+  metrics.reconBreakOldestHours(oldestHours);
+  return { openUsdMinor, oldestHours };
 }
 
 /** US funding (T-0653): approved requests not yet sent are sent, and sent ones the bank has not finished are asked about. */
 const US_FUNDING_SWEEP_CYCLE_MS = 5 * 60_000;
 
-export function buildJobs({ app, db, registry, market, clock, runs, catalogue }: JobDeps): Job[] {
+export function buildJobs({ app, db, registry, market, clock, runs, catalogue, metrics: injected }: JobDeps): Job[] {
   const s = app.services;
+  const metrics = guarded(injected ?? stdoutMetrics);
   const tokenEvents = new TokenEventsJob(s.inbound, cardIssuingProcessor({ provisioning: s.provisioning, settlement: s.settlement }), clock);
   const cardHolds = new CardHoldReleaseJob(s.settlement, clock);
   const loads = new LoadWorkflow(s.loads, registry.resolve<FundingPort>('funding', market), clock);
@@ -121,6 +148,9 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue }:
   };
 
   return [
+    // The periodic gauges the runbooks alert on (T-0053): webhook lag and stuck transfers per market, reconciliation breaks for the club.
+    { name: 'metrics-market', scope: 'market', everyMs: METRICS_SWEEP_CYCLE_MS, run: async () => ({ lagMs: await s.inbound.reportLag(clock()), stuck: (await s.transfers.reportStuck(clock())).length }) },
+    { name: 'metrics-recon', scope: 'club', everyMs: METRICS_SWEEP_CYCLE_MS, run: () => reportReconBreaks(db, metrics, clock()) },
     { name: 'card-token-events', scope: 'market', everyMs: TOKEN_EVENTS_CYCLE_MS, run: () => tokenEvents.run() },
     { name: 'load-sweep', scope: 'market', everyMs: LOAD_SWEEP_CYCLE_MS, run: () => loads.sweep() },
     { name: 'send-sweep', scope: 'club', everyMs: SEND_SWEEP_CYCLE_MS, run: () => sends.sweep() },

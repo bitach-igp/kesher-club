@@ -5,7 +5,7 @@
 // A delivery whose signature fails claims nothing (T-0207, REQ-LED-005): it is kept for forensics in
 // ops.inbound_rejected, keyed by an id of ours, never by the provider's event id. Were it stored here, a forged
 // delivery that arrived first would hold the genuine event's key and get the genuine delivery refused for good.
-import { uuidv7 } from '@kesher/domain';
+import { guarded, stdoutMetrics, uuidv7, type Metrics } from '@kesher/domain';
 import type { Market } from '@kesher/ports';
 import { isPgError, PG, type Database } from '../db.ts';
 
@@ -33,9 +33,11 @@ export class InboundEventStore {
   private readonly db: Database;
   /** The market whose API this is: every row written carries it (T-0027), and the sweeps read only its rows (T-0028). */
   private readonly market: Market;
-  constructor(db: Database, market: Market = 'IL') {
+  private readonly metrics: Metrics;
+  constructor(db: Database, market: Market = 'IL', metrics: Metrics = stdoutMetrics) {
     this.db = db;
     this.market = market;
+    this.metrics = guarded(metrics);
   }
 
   /**
@@ -79,6 +81,13 @@ export class InboundEventStore {
     const r = await this.db.query<{ oldest: string | Date | null }>('select min(received_at) as oldest from ops.inbound_event where signature_ok and processed_at is null and market = $1', [this.market]);
     const oldest = r.rows[0]?.oldest;
     return oldest ? now.getTime() - new Date(oldest).getTime() : 0;
+  }
+
+  /** Emits `webhook.lag_s{market}` (RUN-05 alert: over 5 minutes pages): the age of the oldest unapplied verified event, 0 when none. Called by the worker's metrics sweep. */
+  async reportLag(now: Date): Promise<number> {
+    const ms = await this.lagMs(now);
+    this.metrics.webhookLag(Math.max(0, ms) / 1000, this.market);
+    return ms;
   }
 }
 
