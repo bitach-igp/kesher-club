@@ -161,4 +161,34 @@ describe('redesign primitives mirror, keep money exact and are reachable (T-0671
     expect(screen.getByTestId('badge').textContent).toBe('New');
     expect(getComputedStyle(screen.getByTestId('badge')).backgroundColor).not.toBe(getComputedStyle(screen.getByTestId('plain')).backgroundColor);
   });
+
+  it('BalanceHero with purses folds each currency into the hero: balance first, then what is on hold, then the way in (T-0679)', () => {
+    const opened: string[] = [];
+    const purses = [
+      { currency: 'ILS' as const, available: money(123_456_789_012_345_678n, 'ILS'), availableLabel: 'Available · ILS', seeAllLabel: 'See all', onOpen: () => opened.push('ILS') },
+      { currency: 'USD' as const, available: money(30_000n, 'USD'), holds: money(2_000n, 'USD'), availableLabel: 'Available · USD', holdsText: '$20.00 on hold', seeAllLabel: 'See all', onOpen: () => opened.push('USD') },
+    ];
+    wrap('en', <BalanceHero label="Your balance" ils={money(0n, 'ILS')} purses={purses} testID="hero" />);
+    const ils = screen.getByTestId('home-purse-ILS').textContent ?? '';
+    expect(ils).toContain('1,234,567,890,123,456.78');
+    expect(ils.indexOf('Available · ILS')).toBeLessThan(ils.indexOf('1,234'));
+    const usd = screen.getByTestId('home-purse-USD').textContent ?? '';
+    expect(usd.indexOf('$300.00')).toBeGreaterThan(-1);
+    expect(usd.indexOf('$300.00')).toBeLessThan(usd.indexOf('$20.00 on hold'));
+    expect(screen.getByTestId('home-holds-USD').textContent).toBe('$20.00 on hold');
+    expect(screen.queryByTestId('home-holds-ILS')).toBeNull();
+    fireEvent.click(screen.getByTestId('home-wallet-USD'));
+    fireEvent.click(screen.getByTestId('home-wallet-ILS'));
+    expect(opened).toEqual(['USD', 'ILS']);
+  });
+
+  it('with purses the hero is not one accessible node (its buttons stay reachable); without them it still reads as one line', () => {
+    const purse = { currency: 'ILS' as const, available: money(250_000n, 'ILS'), availableLabel: 'Available · ILS', seeAllLabel: 'See all', onOpen: () => undefined };
+    const { unmount } = wrap('en', <BalanceHero label="Your balance" ils={money(250_000n, 'ILS')} purses={[purse]} testID="hero" />);
+    expect(screen.getByTestId('hero').getAttribute('aria-label')).toBeNull();
+    expect(screen.getByRole('button', { name: /See all/ })).toBeTruthy();
+    unmount();
+    wrap('en', <BalanceHero label="Your balance" ils={money(250_000n, 'ILS')} testID="hero2" />);
+    expect(screen.getByTestId('hero2').getAttribute('aria-label')).toMatch(/2,500\.00/);
+  });
 });

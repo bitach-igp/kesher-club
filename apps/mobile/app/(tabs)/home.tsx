@@ -54,6 +54,7 @@ export function HomeView({ model }: { model: HomeModel }) {
   const actions = quickActions(s.service).filter((q) => !HERO_ACTIONS.includes(q.action));
   const row = heroActions(s.service);
   const hero = heroOf(s.accounts);
+  const purses = purseRows(s.accounts);
   const hi = greeting(s.displayName);
   return (
     <Screen title={t('home.title', locale)} testID="screen-home">
@@ -65,7 +66,24 @@ export function HomeView({ model }: { model: HomeModel }) {
       <Txt variant="title2" testID="home-greeting">
         {t(hi.key, locale, hi.vars)}
       </Txt>
-      <BalanceHero label={t('home.hero.label', locale)} ils={hero.ils} {...(hero.usd ? { usd: hero.usd } : {})} testID="home-hero" />
+      <BalanceHero
+        label={t('home.hero.label', locale)}
+        ils={hero.ils}
+        {...(hero.usd ? { usd: hero.usd } : {})}
+        {...(purses.length
+          ? {
+              purses: purses.map((p) => ({
+                currency: p.currency,
+                available: p.available,
+                ...(p.hasHolds ? { holds: p.holds, holdsText: t('home.purse.holds', locale, { amount: fmt(p.holds, locale) }) } : {}),
+                availableLabel: `${t('home.purse.available', locale)} · ${p.currency}`,
+                seeAllLabel: t('home.seeAll', locale),
+                onOpen: () => model.goWallet(p.accountId),
+              })),
+            }
+          : {})}
+        testID="home-hero"
+      />
       {hero.empty ? (
         <Card testID="home-empty">
           <Txt variant="headline">{t('home.empty.title', locale)}</Txt>
@@ -73,23 +91,6 @@ export function HomeView({ model }: { model: HomeModel }) {
         </Card>
       ) : null}
       {row.length ? <QuickRow items={row.map((q) => ({ key: q.action, label: t(q.label, locale), href: q.href }))} onGo={(href) => router.push(href)} /> : null}
-      {/* One compact card per purse under the hero: the demo recordings read these test ids, and it is the way into that purse's activity. */}
-      {purseRows(s.accounts).map((p) => (
-        <Card key={p.accountId} testID={`home-purse-${p.currency}`}>
-          <Txt variant="caption" tone="secondary">
-            {t('home.purse.available', locale)} · {p.currency}
-          </Txt>
-          <Txt variant="headline" tabular>
-            {fmt(p.available, locale)}
-          </Txt>
-          {p.hasHolds ? (
-            <Txt tone="secondary" testID={`home-holds-${p.currency}`}>
-              {t('home.purse.holds', locale, { amount: fmt(p.holds, locale) })}
-            </Txt>
-          ) : null}
-          <Button label={t('home.seeAll', locale)} variant="tertiary" onPress={() => model.goWallet(p.accountId)} testID={`home-wallet-${p.currency}`} />
-        </Card>
-      ))}
       <Card testID="home-settings">
         <ListRow title={t('home.receiveIn', locale)} onPress={model.goReceiveIn} testID="home-receive-in" />
         {/* Member text, shown as written. */}
