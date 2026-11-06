@@ -44,7 +44,7 @@
 | [T-0042](T-0042.md) | SETUP | Bind the marketplace (Airalo, Cover Genius) and identity (WorkOS, Apple, Google) adapters by config | — | 16 deploy |
 | [T-0043](T-0043.md) | SETUP | Production boots on simulators only for ports whose flags are off | — | 16 deploy |
 | [T-0044](T-0044.md) | SETUP | The database is prepared from inside the VPC: a migrate task creates roles, sets passwords and applies every schema | — | 16 deploy |
-| [T-0045](T-0045.md) | SETUP | The JIT service connects as club_jit, with its own password | — | 16 deploy |
+| [T-0045](T-0045.md) | SETUP | The JIT service connects as club_jit, with its own password (after T-0063, T-0064) | — | 16 deploy |
 | [T-0046](T-0046.md) | SETUP | Production bootstrap: a one-time idempotent command creates the system accounts, the first admin invite and the legal and plan shells | — | 16 deploy |
 | [T-0047](T-0047.md) | SETUP | The institution console ships as an image and runs as a service, not a static bucket | — | 16 deploy |
 | [T-0048](T-0048.md) | SETUP | apps/web: marketing, versioned legal pages and the domain-association files, as a static site on the existing bucket | — | 16 deploy |
@@ -61,6 +61,8 @@
 | [T-0059](T-0059.md) | SETUP | Mobile native bindings: passkeys, secure token store, device facts, push registration | — | 16 deploy |
 | [T-0060](T-0060.md) | SETUP | Staging acceptance: a full deploy from nothing, the sandbox end-to-end run and a restore drill | — | 16 deploy |
 | [T-0061](T-0061.md) | BIL | The legal documents over HTTP: current versions, accept, re-accept gate | — | 16 deploy |
+| [T-0063](T-0063.md) | SETUP | A JIT process: SERVICE_ROLE=jit serves only the card authorisation route and the status | — | 16 deploy |
+| [T-0064](T-0064.md) | SETUP | club_jit can run the card authorisation: the grants it needs and a real-Postgres decision test | — | 16 deploy |
 | [T-0062](T-0062.md) | BIL | The app shows the terms at sign-up and re-accept, and links them from settings | — | 16 deploy |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
