@@ -192,4 +192,3 @@ describe('redesign primitives mirror, keep money exact and are reachable (T-0671
     expect(screen.getByTestId('hero2').getAttribute('aria-label')).toMatch(/2,500\.00/);
   });
 });
-
