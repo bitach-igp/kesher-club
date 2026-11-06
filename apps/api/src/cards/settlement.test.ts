@@ -13,6 +13,7 @@ import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import { provisionAuthorisationSystemAccounts } from '../ledger/accounts.ts';
 import { holdKey } from './jit.ts';
 import { endKey, HOLD_RELEASE_MS, lateKey } from './settlement.ts';
 
@@ -75,6 +76,7 @@ beforeAll(async () => {
   await load(noa.wallet.ILS, 'ILS', 50_000n, 'load:noa');
   await load(ari.wallet.ILS, 'ILS', 50_000n, 'load:ari');
   await app.services.rates.publishFromPort('USD/ILS', 3_700_000n, NOW);
+  await provisionAuthorisationSystemAccounts(db); // T-0413: a converted authorisation only reads these
 }, 60_000);
 afterAll(async () => db.close());
 

@@ -53,8 +53,11 @@ describe('ordering (TST-CRD-009)', () => {
     await dispatch(app, { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: 'evt-kyc', sessionId: kyc.sessionId, status: 'approved' }), now: NOW });
     virtualCardId = (await app.services.cards.forParty(member))[0]!.id;
 
+    // The virtual card's issue provisioned the holds accounts; remove them so the physical path has to do it itself (T-0413).
+    await db.query(`delete from ledger.account where owner_party_id = $1 and type = 'pending'`, [member]);
     const r = await order(IL);
     expect(r.status).toBe(201);
+    expect((await db.query<{ currency: string }>(`select currency::text from ledger.account where owner_party_id = $1 and type = 'pending' order by currency`, [member])).rows.map((x) => x.currency)).toEqual(['ILS', 'USD']);
     const card = r.body as CardBody;
     expect(card).toMatchObject({ type: 'physical', status: 'inactive', shipping: { pinSet: false } });
     expect(card.shipping?.trackingUrl).toMatch(/^https:\/\/track\.sim\.kesher\.example\//);

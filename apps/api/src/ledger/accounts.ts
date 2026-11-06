@@ -4,7 +4,7 @@
 //   holds     = pending           (reserved by JIT authorisations not yet cleared)
 //   available = wallet            (what the next authorisation can use)
 // Wallet and pending are credit-normal: a negative ledger balance is money the member has.
-import { money, toWire, type Currency, type Money } from '@kesher/domain';
+import { DomainError, money, toWire, type Currency, type Money } from '@kesher/domain';
 import { uuidv7 } from '@kesher/domain';
 import { isPgError, PG, type Database } from '../db.ts';
 import type { PostgresLedger } from './post.ts';
@@ -15,6 +15,37 @@ export const CURRENCIES: readonly Currency[] = ['USD', 'ILS'];
 export const SYSTEM_OWNER = '00000000-0000-7000-8000-000000000000';
 
 const CREDIT_NORMAL = new Set<AccountType>(['wallet', 'pending', 'institution_master', 'addon_payable', 'payout_reserve']);
+
+/**
+ * Inserts the account unless it exists and returns its id; concurrent callers converge on one row. Free-standing so the places that
+ * provision accounts (card issue, the bootstrap, test and demo setup) need no service wiring.
+ */
+async function ensureAccountRow(db: Database, ownerPartyId: string, type: AccountType, currency: Currency): Promise<string> {
+  const found = await db.query<{ id: string }>('select id from ledger.account where owner_party_id = $1 and type = $2 and currency = $3', [ownerPartyId, type, currency]);
+  if (found.rows[0]) return found.rows[0].id;
+  const id = uuidv7();
+  try {
+    await db.query('insert into ledger.account (id, owner_party_id, type, currency, normal_side) values ($1, $2, $3, $4, $5)', [id, ownerPartyId, type, currency, CREDIT_NORMAL.has(type) ? 'C' : 'D']);
+    return id;
+  } catch (e) {
+    if (isPgError(e, PG.UNIQUE_VIOLATION)) return ensureAccountRow(db, ownerPartyId, type, currency);
+    throw e;
+  }
+}
+
+/**
+ * The member's `pending` (holds) account in every currency, provisioned when a card is issued (T-0413). A card authorisation only
+ * reads accounts: its database role may not insert into `ledger.account`. Wallets are not touched; they are created at first use.
+ */
+export async function provisionPendingAccounts(db: Database, partyId: string): Promise<void> {
+  for (const currency of CURRENCIES) await ensureAccountRow(db, partyId, 'pending', currency);
+}
+
+/** The system accounts a converted card authorisation posts to, in every currency (T-0413); the production bootstrap (T-0046) and the demo seed call this. */
+export const AUTHORISATION_SYSTEM_ACCOUNTS = ['fx_position', 'fee_income'] as const;
+export async function provisionAuthorisationSystemAccounts(db: Database): Promise<void> {
+  for (const type of AUTHORISATION_SYSTEM_ACCOUNTS) for (const currency of CURRENCIES) await ensureAccountRow(db, SYSTEM_OWNER, type, currency);
+}
 
 export interface LedgerAccount {
   id: string;
@@ -133,15 +164,21 @@ export class AccountService {
   }
 
   private async ensure(ownerPartyId: string, type: AccountType, currency: Currency): Promise<LedgerAccount> {
-    const found = await this.db.query<{ id: string }>('select id from ledger.account where owner_party_id = $1 and type = $2 and currency = $3', [ownerPartyId, type, currency]);
-    if (found.rows[0]) return { id: found.rows[0].id, ownerPartyId, type, currency };
-    const id = uuidv7();
-    try {
-      await this.db.query('insert into ledger.account (id, owner_party_id, type, currency, normal_side) values ($1, $2, $3, $4, $5)', [id, ownerPartyId, type, currency, CREDIT_NORMAL.has(type) ? 'C' : 'D']);
-      return { id, ownerPartyId, type, currency };
-    } catch (e) {
-      if (isPgError(e, PG.UNIQUE_VIOLATION)) return this.ensure(ownerPartyId, type, currency);
-      throw e;
-    }
+    return { id: await ensureAccountRow(this.db, ownerPartyId, type, currency), ownerPartyId, type, currency };
+  }
+
+  /** Read-only: the member's account, or NOT_FOUND. The card authorisation path uses these and never creates an account (T-0413). */
+  async findMemberAccount(partyId: string, type: 'wallet' | 'pending', currency: Currency): Promise<string> {
+    return this.find(partyId, type, currency);
+  }
+
+  async findSystemAccount(type: Exclude<AccountType, 'wallet' | 'pending'>, currency: Currency): Promise<string> {
+    return this.find(SYSTEM_OWNER, type, currency);
+  }
+
+  private async find(ownerPartyId: string, type: AccountType, currency: Currency): Promise<string> {
+    const r = await this.db.query<{ id: string }>('select id from ledger.account where owner_party_id = $1 and type = $2 and currency = $3', [ownerPartyId, type, currency]);
+    if (!r.rows[0]) throw new DomainError('NOT_FOUND', `No ${type} account in ${currency}`);
+    return r.rows[0].id;
   }
 }

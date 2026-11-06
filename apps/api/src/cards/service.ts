@@ -8,6 +8,7 @@ import { CardIssuingError, type Card, type CardControls, type CardIssuingPort, t
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import type { KycService } from '../kyc/service.ts';
+import { provisionPendingAccounts } from '../ledger/accounts.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import { applyPatch, type Actor, type ControlsPatch } from './controls.ts';
 
@@ -132,6 +133,8 @@ export class CardService {
 
   /** Writes our record once per workflow; a rerun returns the row the first run wrote. */
   async recordCard(partyId: string, card: Card, workflowId: string, now: Date): Promise<IssuedCard> {
+    // The authorisation path only reads accounts (T-0413): the member's holds accounts exist before the card does.
+    await provisionPendingAccounts(this.db, partyId);
     const r = await this.db.query<Row>(
       `insert into cards.card (id, party_id, processor, processor_card_id, cardholder_id, type, status, last4, currency, controls, locked_by_funder, workflow_id, issued_at, updated_at)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, '{}', $11, $12, $12)

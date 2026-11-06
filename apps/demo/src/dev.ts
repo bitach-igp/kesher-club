@@ -13,6 +13,7 @@ import { pathToFileURL } from 'node:url';
 import { randomBytes } from 'node:crypto';
 import { exportJWK, generateKeyPair, type JWK } from 'jose';
 import { createApp, type App } from '@kesher/api/app';
+import { provisionAuthorisationSystemAccounts } from '@kesher/api/ledger/accounts';
 import { PostgresIdentityRepository } from '@kesher/api/auth/pg-repository';
 import { importSigningKey } from '@kesher/api/auth/tokens';
 import { loadRegistry, StaticFlags } from '@kesher/api/billing/capabilities';
@@ -165,6 +166,8 @@ export async function startDev(env: Record<string, string | undefined>, opts: De
         return { status: 200, headers: { get: (h: string) => (h.toLowerCase() === 'content-length' ? String(Buffer.byteLength(body)) : null) }, text: async () => body };
       },
     };
+    // The card authorisation reads the system accounts a converted purchase posts to and never creates one (T-0413).
+    await provisionAuthorisationSystemAccounts(db);
     const app = createApp({ db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), pii, staffJwks: config.STAFF_JWKS, clock: now, flags, cimd, oauth: { consentUrl: `${demo.DEMO_WEB_ORIGINS[0]}/connect` } });
     const jobs: Job[] = buildJobs({ app, db, registry, market: config.MARKET, clock: now, runs: pgRunLog(db), catalogue: loadCatalogueConfig() });
     const scheduler = new Scheduler(jobs, noLock, (event, fields) => log(event, fields));
