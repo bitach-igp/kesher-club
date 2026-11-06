@@ -8,6 +8,10 @@ import { match } from './routes.ts';
 import type { App } from './app.ts';
 import { DomainError, ID_SHAPE, type Logger } from '@kesher/domain';
 
+/** What an API process serves (T-0063): everything, or only the card authorisation route and the status. */
+export type ServiceRole = 'api' | 'jit';
+const JIT_OPERATIONS: ReadonlySet<string> = new Set(['cardAuthorization', 'getStatus']);
+
 const MAX_BODY = 2 * 1024 * 1024 + 1024;
 /** OAuth's token endpoint takes a form body (RFC 6749 §3.2, T-1016); every other route stays JSON-only. */
 const FORM_BODY = new Set(['issueAgentToken']);
@@ -15,13 +19,17 @@ const FORM_BODY = new Set(['issueAgentToken']);
 const RAW_BODY = new Set(['crowdedWebhook']);
 
 /** A request's time is the app's clock unless the caller pins one: the demo's shared clock (T-0035) must reach handlers. */
-export async function dispatch(app: App, input: { method: string; url: string; headers: Record<string, string>; rawBody: string; rawBytes?: Uint8Array; now?: Date }): Promise<HttpResponse> {
+export async function dispatch(app: App, input: { method: string; url: string; headers: Record<string, string>; rawBody: string; rawBytes?: Uint8Array; now?: Date; role?: ServiceRole }): Promise<HttpResponse> {
   const now = input.now ?? app.services.clock.now();
   // The trace id is the caller's W3C traceparent, else the request id the server gave this request, else a new one.
   const requestHeader = input.headers['x-request-id'];
   const traceId = input.headers['traceparent']?.split('-')[1] ?? (requestHeader !== undefined && ID_SHAPE.test(requestHeader) ? requestHeader : randomUUID());
   const u = new URL(input.url, 'http://api.local');
   const pathname = u.pathname.replace(/^\/v1(?=\/)/, '');
+  // The authorisation host answers 404 to everything but its own routes, before authentication or any handler (T-0063).
+  if (input.role === 'jit' && (app.mcp.owns(pathname) || !JIT_OPERATIONS.has(match(input.method, pathname)?.route.operationId ?? ''))) {
+    return toProblem(new DomainError('NOT_FOUND', 'No such route'), traceId);
+  }
   // /mcp speaks JSON-RPC (T-1013), outside the REST route table and the contract.
   if (app.mcp.owns(pathname)) {
     const headers = Object.fromEntries(Object.entries(input.headers).map(([k, v]) => [k.toLowerCase(), v]));
@@ -63,7 +71,8 @@ function routeName(method: string, url: string): string {
  * headers or body, and no member or account id: the logger cannot carry them (T-0052). The request id is the caller's
  * `x-request-id` (the load balancer sets one) when it has the strict id shape, else a new UUID; it is returned in `X-Request-Id`.
  */
-export function createServer(app: App, log?: Logger): http.Server {
+export function createServer(app: App, options: { role?: ServiceRole; log?: Logger } = {}): http.Server {
+  const log = options.log;
   return http.createServer(async (req, res) => {
     const startedAt = Date.now();
     const headers: Record<string, string> = {};
@@ -100,7 +109,7 @@ export function createServer(app: App, log?: Logger): http.Server {
     const rawBytes = Buffer.concat(chunks);
     let out: HttpResponse;
     try {
-      out = await dispatch(app, { method, url: req.url ?? '/', headers, rawBody: rawBytes.toString('utf8'), rawBytes });
+      out = await dispatch(app, { method, url: req.url ?? '/', headers, rawBody: rawBytes.toString('utf8'), rawBytes, ...(options.role ? { role: options.role } : {}) });
     } catch (e) {
       out = toProblem(e, requestId);
     }

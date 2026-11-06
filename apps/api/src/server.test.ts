@@ -59,7 +59,7 @@ describe('the access line and the request id (T-0052)', () => {
   let logBase: string;
   let closeLogged: () => Promise<void>;
   beforeAll(async () => {
-    const server = createServer(app, createLogger({ service: 'api', market: 'IL', write: (l) => logged.push(l) }));
+    const server = createServer(app, { log: createLogger({ service: 'api', market: 'IL', write: (l) => logged.push(l) }) });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     logBase = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     closeLogged = () => new Promise((resolve) => server.close(() => resolve()));
@@ -95,5 +95,33 @@ describe('the access line and the request id (T-0052)', () => {
   it('the MCP endpoint is logged as mcp, not by path', async () => {
     await fetch(`${logBase}/mcp`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
     expect(last()).toMatchObject({ route: 'mcp', status: 200 });
+  });
+});
+
+describe('the authorisation host serves only its own routes (T-0063)', () => {
+  const call = (role: 'api' | 'jit' | undefined, method: string, url: string, rawBody = '{}') =>
+    dispatch(app, { method, url, headers: { 'content-type': 'application/json' }, rawBody, ...(role ? { role } : {}) });
+  const code = (r: { body?: unknown }) => (r.body as { code?: string } | undefined)?.code;
+
+  it('a jit process answers 404 NOT_FOUND to every other route, MCP and the OAuth endpoints included', async () => {
+    for (const [method, url] of [['POST', '/v1/auth/otp'], ['GET', '/v1/me/capabilities'], ['POST', '/v1/webhooks/stripe'], ['POST', '/mcp'], ['GET', '/v1/nope']] as const) {
+      const r = await call('jit', method, url);
+      expect(r.status, `${method} ${url}`).toBe(404);
+      expect(code(r), `${method} ${url}`).toBe('NOT_FOUND');
+    }
+  });
+
+  it('a jit process still reaches the card authorisation route and the status', async () => {
+    const status = await call('jit', 'GET', '/v1/status', '');
+    expect(status.status).toBe(200);
+    // The authorisation route is reached: whatever it answers to an empty body, it is not the role gate's NOT_FOUND.
+    const auth = await call('jit', 'POST', '/v1/jit/card-authorizations');
+    expect(code(auth)).not.toBe('NOT_FOUND');
+  });
+
+  it('an api process, or none, still serves the other routes', async () => {
+    for (const role of ['api', undefined] as const) {
+      expect(code(await call(role, 'POST', '/v1/auth/otp')), String(role)).not.toBe('NOT_FOUND');
+    }
   });
 });

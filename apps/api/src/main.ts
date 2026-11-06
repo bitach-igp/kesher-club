@@ -51,13 +51,13 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
       crowdedWebhookSecrets: crowdedWebhookSecrets(config),
       ...(config.MEMBER_APP_URL ? { oauth: { consentUrl: `${config.MEMBER_APP_URL.replace(/\/$/, '')}/connect` } } : {}),
     });
-    const server = createServer(app, logger);
+    const server = createServer(app, { role: config.SERVICE_ROLE, log: logger });
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(config.PORT, () => resolve());
     });
     const port = (server.address() as AddressInfo).port;
-    logger('listening', { port, mode: config.PROVIDER_MODE_DEFAULT, providers });
+    logger('listening', { port, role: config.SERVICE_ROLE, mode: config.PROVIDER_MODE_DEFAULT, providers });
     let closing: Promise<void> | undefined;
     return {
       port,

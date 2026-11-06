@@ -104,6 +104,19 @@ const WH_SECRET = 'whsec-current-do-not-print';
 const WH_PREVIOUS = 'whsec-previous-do-not-print';
 const crowded = { PROVIDER_INSTITUTION_BANKING: 'crowded', CROWDED_BASE_URL: 'https://sandbox-api.crowdedfinance.com/api/v1', CROWDED_API_TOKEN: TOKEN, CROWDED_WEBHOOK_SECRETS: WH_SECRET };
 
+describe('SERVICE_ROLE (T-0063)', () => {
+  it('is api by default, jit when asked, and nothing else for the API', () => {
+    expect(loadApiConfig(env).SERVICE_ROLE).toBe('api');
+    expect(loadApiConfig({ ...env, SERVICE_ROLE: 'jit' }).SERVICE_ROLE).toBe('jit');
+    expect(thrown(() => loadApiConfig({ ...env, SERVICE_ROLE: 'worker' })).invalid.join()).toMatch(/SERVICE_ROLE/);
+    expect(thrown(() => loadApiConfig({ ...env, SERVICE_ROLE: 'admin' })).invalid.join()).toMatch(/SERVICE_ROLE/);
+  });
+
+  it('the worker, which Terraform also gives SERVICE_ROLE=worker, ignores it', () => {
+    expect(() => loadWorkerConfig({ ...env, SERVICE_ROLE: 'worker' })).not.toThrow();
+  });
+});
+
 describe('Crowded banking override (T-0659)', () => {
   it('defaults to the simulator and needs no Crowded key', () => {
     const c = loadApiConfig(env);

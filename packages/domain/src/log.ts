@@ -10,7 +10,7 @@ export type LogLevel = 'info' | 'warning' | 'error';
 
 /** The only fields a line may carry (besides `at`, `level`, `service`, `market` and `event`, which the logger sets). */
 const NUMBER_FIELDS = ['status', 'durationMs', 'ms', 'port', 'drainMs', 'jobs'] as const;
-const TEXT_FIELDS = ['market', 'route', 'method', 'job', 'error', 'code', 'message', 'signal', 'mode'] as const;
+const TEXT_FIELDS = ['market', 'route', 'method', 'job', 'error', 'code', 'message', 'signal', 'mode', 'role'] as const;
 const ID_FIELDS = ['requestId', 'traceId'] as const;
 /** The per-port provider choice: port name to adapter name, both short identifiers. */
 const MAP_FIELDS = ['providers'] as const;
