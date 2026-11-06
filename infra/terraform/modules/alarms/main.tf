@@ -58,8 +58,8 @@ locals {
   ]...)
 
   # ALB dimension values are the tail of the ARN.
-  lb_suffix = { for k, s in var.ingress_services : k => last(split("loadbalancer/", s.load_balancer_arn)) }
-  tg_suffix = { for k, s in var.ingress_services : k => "targetgroup/${last(split("targetgroup/", s.target_group_arn))}" }
+  lb_suffix = { for k, s in var.ingress_services : k => split("loadbalancer/", s.load_balancer_arn)[1] }
+  tg_suffix = { for k, s in var.ingress_services : k => "targetgroup/${split("targetgroup/", s.target_group_arn)[1]}" }
 }
 
 # ---- topics: pages (to the pager) and tickets, both encrypted with a CMK ------------------------------------------------
