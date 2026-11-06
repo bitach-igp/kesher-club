@@ -114,6 +114,25 @@ describe('the process config and Terraform agree (T-0025)', () => {
   }
 });
 
+describe('the service roles Terraform passes are ones the processes know (T-0063)', () => {
+  for (const file of ['infra/terraform/envs/staging/main.tf', 'infra/terraform/envs/prod/main.tf']) {
+    it(`${file}: api and jit services get a role the API config accepts, the worker gets worker`, () => {
+      const hcl = read(file);
+      const roles = [...hcl.matchAll(/module "(api|jit|worker)" \{[\s\S]*?SERVICE_ROLE\s*=\s*"([a-z]+)"/g)].map((m) => [m[1]!, m[2]!] as const);
+      expect(roles.map(([module]) => module).sort()).toEqual(['api', 'jit', 'worker']);
+      // The load balancer health-checks both on the status route; the module's default /healthz is the console's and the API serves none.
+      for (const module of ['api', 'jit']) {
+        const block = hcl.slice(hcl.indexOf(`module "${module}" {`), hcl.indexOf('module "', hcl.indexOf(`module "${module}" {`) + 10));
+        expect(block, `module ${module}`).toMatch(/health_check_path\s*=\s*"\/v1\/status"/);
+      }
+      for (const [module, role] of roles) {
+        expect(role, `module ${module}`).toBe(module);
+        if (module !== 'worker') expect(() => loadApiConfig({ ...VALID, APP_ENV: 'staging', PROVIDER_MODE_DEFAULT: 'sim', SERVICE_ROLE: role } as Record<string, string>)).not.toThrow();
+      }
+    });
+  }
+});
+
 describe('node-postgres reads what Terraform passes (T-0025)', () => {
   it('takes the password from PGPASSWORD when DATABASE_URL carries none, and loads the CA from sslrootcert', () => {
     const before = process.env['PGPASSWORD'];
