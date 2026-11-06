@@ -15,7 +15,8 @@
 /** The closed set of metric dimensions. */
 export const METRIC_DIMENSIONS = ['market', 'port', 'job', 'state'] as const;
 export type MetricDimension = (typeof METRIC_DIMENSIONS)[number];
-export type MetricUnit = 'Count' | 'Milliseconds' | 'Seconds' | 'Hours' | 'None';
+/** CloudWatch StandardUnit values only: an unknown unit makes CloudWatch drop the metric. `recon.break_oldest_h` is hours but declared `None` (CloudWatch has no hour unit); the name carries the unit. */
+export type MetricUnit = 'Count' | 'Milliseconds' | 'Seconds' | 'None';
 
 export const METRICS_NAMESPACE = 'Kesher';
 
@@ -27,7 +28,7 @@ export const METRIC_DEFS = {
   'job.failure': { unit: 'Count', dimensions: ['job'] },
   'job.age_s': { unit: 'Seconds', dimensions: ['job'] },
   'recon.break_open_usd': { unit: 'None', dimensions: [] },
-  'recon.break_oldest_h': { unit: 'Hours', dimensions: [] },
+  'recon.break_oldest_h': { unit: 'None', dimensions: [] },
   'transfer.stuck': { unit: 'Seconds', dimensions: ['state', 'market'] },
   'provider.error': { unit: 'Count', dimensions: ['port'] },
 } as const satisfies Record<string, { unit: MetricUnit; dimensions: readonly MetricDimension[] }>;

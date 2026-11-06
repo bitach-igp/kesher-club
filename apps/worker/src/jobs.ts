@@ -89,16 +89,32 @@ export interface JobDeps {
 export const METRICS_SWEEP_CYCLE_MS = 60_000;
 
 /**
- * Open reconciliation breaks (RUN-03: over $50, or aged over 24 h): `recon.break_open_usd` is the sum, in whole dollars as a
- * number, of |partner - ledger| over USD breaks whose case is open or being investigated, made from bigint minor units with
- * `minorToNumber`. It is a monitoring number, never money: nothing reads it back into the ledger. A break with only one side
- * counts that side. `recon.break_oldest_h` is the age in hours of the oldest such case of any currency. Both are 0 with none open.
+ * Open reconciliation breaks (RUN-03: over $50, or aged over 24 h). Open means an `ops.case` of kind `recon_break` that is `open` or
+ * `investigating`; breaks come from two writers, the nightly recon (an `ops.recon_break` row with both amounts) and the US banking
+ * recon (a case with the amounts only in its payload: `amount`, or `provider` and `recorded`).
+ * `recon.break_oldest_h` is the age in hours of the oldest such case, whatever its currency or source (unit `None`: CloudWatch has no hour unit).
+ * `recon.break_open_usd` is the sum, in whole dollars as a number made from bigint minor units with `minorToNumber`, of the USD amount of
+ * those cases: |partner - ledger| when both sides are USD (a missing side counts as 0), or the payload's USD amount. A break whose two sides
+ * are in different currencies, or in another currency, is left out of the USD figure, never subtracted across currencies. It is a monitoring
+ * number, never money: nothing reads it back into the ledger. Both are 0 with none open.
  */
 export async function reportReconBreaks(db: Database, metrics: Metrics, now: Date): Promise<{ openUsdMinor: bigint; oldestHours: number }> {
   const r = await db.query<{ usd_minor: string; oldest: string | Date | null }>(
-    `select coalesce(sum(abs(coalesce(b.partner_minor, 0) - coalesce(b.ledger_minor, 0))) filter (where coalesce(b.partner_currency, b.ledger_currency) = 'USD'), 0)::text as usd_minor,
-            min(c.opened_at) as oldest
-       from ops.recon_break b join ops.case c on c.id = b.case_id where c.status in ('open', 'investigating')`,
+    `with open_case as (select id, opened_at, payload from ops.case where kind = 'recon_break' and status in ('open', 'investigating')),
+          amounts as (
+            select abs(coalesce(b.partner_minor, 0) - coalesce(b.ledger_minor, 0)) as minor
+              from ops.recon_break b join open_case c on c.id = b.case_id
+             where coalesce(b.partner_currency, b.ledger_currency) = 'USD' and coalesce(b.ledger_currency, b.partner_currency) = 'USD'
+            union all
+            select abs((c.payload->'provider'->>'minor')::bigint - (c.payload->'recorded'->>'minor')::bigint)
+              from open_case c
+             where not exists (select 1 from ops.recon_break b where b.case_id = c.id) and c.payload->'provider'->>'currency' = 'USD' and c.payload->'recorded'->>'currency' = 'USD'
+            union all
+            select (c.payload->'amount'->>'minor')::bigint
+              from open_case c
+             where not exists (select 1 from ops.recon_break b where b.case_id = c.id) and c.payload->'amount'->>'currency' = 'USD'
+          )
+     select (select coalesce(sum(minor), 0)::text from amounts) as usd_minor, (select min(opened_at) from open_case) as oldest`,
   );
   const openUsdMinor = BigInt(r.rows[0]?.usd_minor ?? '0');
   const oldest = r.rows[0]?.oldest;

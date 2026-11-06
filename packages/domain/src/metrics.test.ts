@@ -45,6 +45,13 @@ describe('the EMF line', () => {
   });
 });
 
+describe('units', () => {
+  it('every metric unit is a CloudWatch StandardUnit', () => {
+    const standard = ['Seconds', 'Microseconds', 'Milliseconds', 'Bytes', 'Kilobytes', 'Megabytes', 'Gigabytes', 'Terabytes', 'Bits', 'Kilobits', 'Megabits', 'Gigabits', 'Terabits', 'Percent', 'Count', 'Bytes/Second', 'Kilobytes/Second', 'Megabytes/Second', 'Gigabytes/Second', 'Terabytes/Second', 'Bits/Second', 'Kilobits/Second', 'Megabits/Second', 'Gigabits/Second', 'Terabits/Second', 'Count/Second', 'None'];
+    for (const [name, def] of Object.entries(METRIC_DEFS)) expect(standard, name).toContain(def.unit);
+  });
+});
+
 describe('the dimension set is closed', () => {
   it('is exactly market, port, job and state, and every metric draws from it', () => {
     expect([...METRIC_DIMENSIONS]).toEqual(['market', 'port', 'job', 'state']);

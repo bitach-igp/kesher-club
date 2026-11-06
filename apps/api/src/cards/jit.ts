@@ -92,6 +92,8 @@ export class JitService {
       req = await this.d.port.parseAuthorization(headers, rawBody);
     } catch (e) {
       if (e instanceof CardIssuingError && e.code === 'BAD_SIGNATURE') throw new DomainError('UNAUTHENTICATED', 'Authorisation request signature could not be verified');
+      // A request the port cannot read is a port error (a forged signature is not: it says nothing about the provider).
+      this.metrics.providerError('card-issuing');
       throw new DomainError('VALIDATION_FAILED', 'Authorisation request could not be parsed');
     }
     const outcome = await this.decide(req, now);
@@ -112,9 +114,8 @@ export class JitService {
     let outcome: JitOutcome;
     try {
       outcome = await Promise.race([this.evaluate(req, now, started), budget]);
-    } catch (e) {
+    } catch {
       failed = true;
-      if (e instanceof CardIssuingError) this.metrics.providerError('card-issuing');
       outcome = { decision: decline('TIMEOUT'), elapsedMs: performance.now() - started };
     } finally {
       if (timer) clearTimeout(timer);

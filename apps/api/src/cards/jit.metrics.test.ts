@@ -1,6 +1,7 @@
 // T-0053: a JIT decision emits one metrics line with its duration, and a failing emitter never changes the decision.
 import { createMetrics, money, type Metrics } from '@kesher/domain';
-import { CardIssuingError, type CardIssuingPort, type JitAuthorizationRequest } from '@kesher/ports';
+import { type CardIssuingPort, type CardIssuingSimulator, type JitAuthorizationRequest } from '@kesher/ports';
+import { SimulatorHost } from '@kesher/simulators';
 import { describe, expect, it } from 'vitest';
 import type { Database } from '../db.ts';
 import { JitService, type JitDeps } from './jit.ts';
@@ -25,14 +26,28 @@ describe('JIT metrics (T-0053)', () => {
     expect(lines[0]).not.toMatch(/auth-0001|card_unknown/); // no identifier leaves the authorisation path
   });
 
-  it('counts a failed-closed decision as an error, and a card-issuing failure as a provider error', async () => {
+  it('counts a decision that failed closed as an error, with no provider error (the port is not called inside decide)', async () => {
     const lines: string[] = [];
-    const db = { query: async () => { throw new CardIssuingError('PROVIDER_UNAVAILABLE', 'down'); } };
+    const db = { query: async () => { throw new Error('db down'); } };
     const out = await service(createMetrics({ write: (l) => lines.push(l) }), db).decide(REQ, NOW);
     expect(out.decision).toEqual({ approve: false, reason: 'TIMEOUT' });
     const parsed = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
-    expect(parsed.find((l) => 'provider.error' in l)).toMatchObject({ port: 'card-issuing', 'provider.error': 1 });
-    expect(parsed.find((l) => 'jit.error' in l)).toMatchObject({ 'jit.error': 1 });
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toMatchObject({ 'jit.error': 1 });
+  });
+
+  it('emits provider.error{port} when the card-issuing port cannot read a request in handle(), but not for a forged signature', async () => {
+    const lines: string[] = [];
+    const host = new SimulatorHost();
+    const port = host.registry.resolve<CardIssuingPort>('card-issuing', 'IL');
+    const svc = service(createMetrics({ write: (l) => lines.push(l) }), known, { port });
+    await expect(svc.handle({ 'x-sim-signature': 'sim' }, '{ not json', NOW)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    const emitted = lines.map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(emitted).toEqual([expect.objectContaining({ port: 'card-issuing', 'provider.error': 1 })]);
+    lines.length = 0;
+    const signed = (host.registry.resolve<CardIssuingPort>('card-issuing', 'IL') as CardIssuingSimulator).authorize('card_x', { amount: { minor: 100n, currency: 'ILS' }, merchant: { name: 'S', mcc: '5912', country: 'IL' }, channel: 'pos' });
+    await expect(svc.handle({ ...signed.headers, 'x-sim-signature': 'forged' }, signed.rawBody, NOW)).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    expect(lines).toEqual([]);
   });
 
   it('counts a budget overrun as an error', async () => {

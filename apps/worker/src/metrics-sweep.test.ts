@@ -24,21 +24,27 @@ describe('metrics sweeps (T-0053)', () => {
   });
 
   it('sums open USD breaks as a number from minor units and ages the oldest open case', async () => {
-    const add = async (status: string, openedAt: Date, partner: bigint | null, ledger: bigint | null, currency: string) => {
+    const add = async (status: string, openedAt: Date, partner: bigint | null, ledger: bigint | null, currency: string, ledgerCurrency = currency) => {
       const caseId = uuidv7(openedAt);
       await db.query(`insert into ops.case (id, kind, dedupe_key, severity, status, opened_at) values ($1, 'recon_break', $4, 'medium', $2, $3)`, [caseId, status, openedAt, `dk-${caseId}`]);
       await db.query(
-        `insert into ops.recon_break (id, case_id, provider, external_id, partner_minor, partner_currency, ledger_minor, ledger_currency, reason, run_date) values ($1, $2, 'p', $6, $3, $5, $4, $5, 'amount_mismatch', '2026-11-05')`,
-        [uuidv7(openedAt), caseId, partner?.toString() ?? null, ledger?.toString() ?? null, currency, `ext-${caseId}`],
+        `insert into ops.recon_break (id, case_id, provider, external_id, partner_minor, partner_currency, ledger_minor, ledger_currency, reason, run_date) values ($1, $2, 'p', $6, $3, $5, $4, $7, 'amount_mismatch', '2026-11-05')`,
+        [uuidv7(openedAt), caseId, partner?.toString() ?? null, ledger?.toString() ?? null, currency, `ext-${caseId}`, ledgerCurrency],
       );
     };
     await add('open', hoursAgo(30), 10_000n, 7_500n, 'USD'); // 25.00
     await add('investigating', hoursAgo(2), null, 3_005n, 'USD'); // 30.05
     await add('open', hoursAgo(50), 99_999n, 0n, 'ILS'); // another currency: aged, not summed
     await add('resolved', hoursAgo(100), 90_000n, 0n, 'USD'); // closed: ignored
+    await add('open', hoursAgo(5), 70_000n, 70_000n, 'USD', 'ILS'); // USD against ILS: never subtracted, left out of the USD figure
+    // US banking recon (apps/worker/src/recon/us-banking.ts) opens a case with the amounts in the payload and no ops.recon_break row.
+    const us = async (payload: unknown, openedAt: Date) => db.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'recon_break', $2, 'medium', 'open', $3, $4)`, [uuidv7(openedAt), `us-${uuidv7()}`, JSON.stringify(payload), openedAt]);
+    await us({ provider: 'crowded', externalId: 'pay-1', reason: 'payment_without_page', amount: { minor: '2000', currency: 'USD' } }, hoursAgo(60)); // 20.00
+    await us({ externalId: 'pay-2', reason: 'amount_mismatch', day: '2026-11-04', provider: { minor: '1000', currency: 'USD' }, recorded: { minor: '400', currency: 'USD' } }, hoursAgo(3)); // 6.00
+    await us({ reason: 'deadline_missed', day: '2026-11-04' }, hoursAgo(1)); // no amount: counts toward age only (in the real payload `provider` holds the provider's amount on a mismatch, as here)
     lines.length = 0;
-    expect(await reportReconBreaks(db, metrics, NOW)).toEqual({ openUsdMinor: 5_505n, oldestHours: 50 });
-    expect(lines.map((l) => l['recon.break_open_usd'] ?? l['recon.break_oldest_h'])).toEqual([55.05, 50]);
+    expect(await reportReconBreaks(db, metrics, NOW)).toEqual({ openUsdMinor: 8_105n, oldestHours: 60 });
+    expect(lines.map((l) => l['recon.break_open_usd'] ?? l['recon.break_oldest_h'])).toEqual([81.05, 60]);
     expect(lines[0]).not.toHaveProperty('job');
   });
 
