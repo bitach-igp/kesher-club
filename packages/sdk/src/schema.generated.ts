@@ -2428,6 +2428,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/legal/documents": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The legal documents in force, in both languages
+         * @description T-0061. Public on purpose: the app shows the terms before sign-up, and Stripe and the app stores link them. One entry per document that has a version already in force (terms, privacy, cardholder, esim, insurance, p2p, funder); the hash is the text's SHA-256, so a client can prove which text it showed.
+         */
+        readonly get: operations["getLegalDocuments"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/loads": {
         readonly parameters: {
             readonly query?: never;
@@ -2506,6 +2526,30 @@ export interface paths {
          * @description REQ-WAL-005. Every purse is emptied by refunds against the member's loads before the account closes; holds or an overdrawn purse block it. Requires a step-up token younger than 5 minutes (REQ-AUTH-006). Idempotent.
          */
         readonly post: operations["closeAccount"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/me/consents": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * What the signed-in member accepted, and what is still pending
+         * @description T-0061. `pending` lists each document whose latest material version in force is newer than the member's last acceptance (or that they never accepted), with the reason: `first` or `material_change`.
+         */
+        readonly get: operations["getMyConsents"];
+        readonly put?: never;
+        /**
+         * Record that the member accepted the listed document versions
+         * @description T-0061. Only the version in force can be accepted. Acceptance is recorded against the device the token is bound to and the locale the member read it in; no IP address is collected. Accepting the same document version again is a no-op that returns the original record, so the call is naturally idempotent and takes no Idempotency-Key.
+         */
+        readonly post: operations["recordConsents"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -3671,6 +3715,15 @@ export interface components {
             readonly owedTotal: readonly components["schemas"]["Money"][];
             readonly total: readonly components["schemas"]["Money"][];
         };
+        readonly ConsentRecord: {
+            /** Format: date-time */
+            readonly acceptedAt: string;
+            readonly docKey: components["schemas"]["LegalDocKey"];
+            readonly hash: string;
+            /** @enum {string} */
+            readonly locale: "en" | "he";
+            readonly version: number;
+        };
         readonly CreditLimit: {
             /** @enum {string} */
             readonly currency: "USD" | "ILS";
@@ -4263,6 +4316,24 @@ export interface components {
             /** @enum {string} */
             readonly status: "none" | "pending" | "approved" | "rejected" | "review";
         };
+        /** @enum {string} */
+        readonly LegalDocKey: "terms" | "privacy" | "cardholder" | "esim" | "insurance" | "p2p" | "funder";
+        readonly LegalDocument: {
+            readonly body: components["schemas"]["Localised"];
+            readonly changeSummary?: components["schemas"]["Localised"];
+            readonly docKey: components["schemas"]["LegalDocKey"];
+            /** Format: date-time */
+            readonly effectiveAt: string;
+            /** @description SHA-256 of the document key and both bodies */
+            readonly hash: string;
+            /** @description A material change must be accepted again */
+            readonly material: boolean;
+            readonly title: components["schemas"]["Localised"];
+            readonly version: number;
+        };
+        readonly LegalDocuments: {
+            readonly items: readonly components["schemas"]["LegalDocument"][];
+        };
         readonly Load: {
             readonly amount: components["schemas"]["Money"];
             readonly clientSecret?: string;
@@ -4289,6 +4360,10 @@ export interface components {
              * @enum {string}
              */
             readonly purseCurrency?: "USD" | "ILS";
+        };
+        readonly Localised: {
+            readonly en: string;
+            readonly he: string;
         };
         readonly MemberIntent: {
             readonly amount?: components["schemas"]["Money"];
@@ -4366,6 +4441,10 @@ export interface components {
             readonly currency: "USD" | "ILS";
             /** @description Minor units as a string (bigint-safe) */
             readonly minor: string;
+        };
+        readonly MyConsents: {
+            readonly accepted: readonly components["schemas"]["ConsentRecord"][];
+            readonly pending: readonly components["schemas"]["PendingLegalDocument"][];
         };
         readonly MyInstitution: {
             readonly institution: {
@@ -4556,6 +4635,10 @@ export interface components {
             readonly status: "pending" | "approved" | "rejected" | "expired";
             readonly summary?: string;
         };
+        readonly PendingLegalDocument: components["schemas"]["LegalDocument"] & {
+            /** @enum {string} */
+            readonly reason: "first" | "material_change";
+        };
         readonly PlanVersion: {
             readonly approval?: {
                 readonly approvals: number;
@@ -4705,6 +4788,21 @@ export interface components {
             /** Format: date-time */
             readonly paidAt: string;
             readonly receiptNumber: string;
+        };
+        readonly RecordConsentsRequest: {
+            /** @description One entry per document; each must be the version in force. */
+            readonly documents: readonly {
+                readonly docKey: components["schemas"]["LegalDocKey"];
+                readonly version: number;
+            }[];
+            /**
+             * @description The language the member read the text in
+             * @enum {string}
+             */
+            readonly locale: "en" | "he";
+        };
+        readonly RecordedConsents: {
+            readonly accepted: readonly components["schemas"]["ConsentRecord"][];
         };
         readonly ResolvedRecipient: {
             /** @description False until the recipient has passed T1 verification */
@@ -8768,6 +8866,27 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly getLegalDocuments: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The documents in force */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["LegalDocuments"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly createLoad: {
         readonly parameters: {
             readonly query?: never;
@@ -8889,6 +9008,52 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Closure"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getMyConsents: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Accepted and pending documents */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["MyConsents"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly recordConsents: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["RecordConsentsRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description The recorded acceptances */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RecordedConsents"];
                 };
             };
             readonly default: components["responses"]["Problem"];

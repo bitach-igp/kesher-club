@@ -8,6 +8,8 @@ import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
 import { fxAdminHandlers } from './fx/admin.ts';
 import { PriceRules, priceRuleHandlers } from './addons/price-rules.ts';
+import { LegalService } from './legal/service.ts';
+import { legalHandlers } from './legal/routes.ts';
 import { DisplayNameService, displayNameHandlers } from './me/display-name.ts';
 import { RecipientLookup } from './p2p/recipients.ts';
 import { CimdRegistry, type Fetcher, type Resolver } from './mcp/cimd.ts';
@@ -370,6 +372,7 @@ export function createApp(o: AppOptions): App {
     ...caseHandlers(new OpsCases(o.db, s.audit)),
     ...preferenceHandlers(s.preferences),
     ...displayNameHandlers(s.displayNames),
+    ...legalHandlers(new LegalService(o.db)),
     ...oauthHandlers({ authorize: s.authorize, cfg: s.oauthConfig, jwks: () => s.tokens.jwks(), flags: s.flags }),
     ...consentHandlers({ consent: s.consent, stepUp: s.stepUp, flags: s.flags }),
     ...tokenHandler({ endpoint: s.tokenEndpoint, flags: s.flags }),
