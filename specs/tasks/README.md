@@ -110,6 +110,7 @@
 | [T-0410](T-0410.md) | CRD | Card settlement: clearing moves the hold, unclaimed holds release after 7 days | REQ-CRD-003 | 9 |
 | [T-0411](T-0411.md) | CRD | A card hold refunds the markup on what was not spent | REQ-CRD-003 | 9 |
 | [T-0412](T-0412.md) | CRD | P09 the funder sets a member's card controls | REQ-CRD-005 | 14 |
+| [T-0413](T-0413.md) | CRD | The accounts a card authorisation needs exist before the first authorisation | REQ-CRD-003 | 16 deploy |
 | [T-0501](T-0501.md) | WAL | Loads by card, Apple Pay, Google Pay + load workflow | REQ-WAL-002 | 5 |
 | [T-0502](T-0502.md) | WAL | ACH holds and release | REQ-WAL-003 | 5 |
 | [T-0503](T-0503.md) | WAL | Auto-reload, once per 24 h | REQ-WAL-004 | 6 |
