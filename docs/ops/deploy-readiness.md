@@ -47,6 +47,7 @@ today**, for four independent reasons, any one of which stops a launch:
 | 15 | Medium | No image scan, no SBOM, base images pinned by tag only | `release.yml`, Dockerfiles | T-0049 |
 | 16 | Medium | The p99 under 300 ms target has no load test against a deployed JIT | no k6 or equivalent in repo | T-0055 |
 | 17 | Medium | No acceptance record: restore drill (RUN-08), alarm test, VPN reach, a full empty-account deploy | `docs/runbooks/RUN-08-*.md` "Last tested" | T-0060 |
+| 19 | High | There is no JIT process: `SERVICE_ROLE` is read by nothing, so the "jit" ECS service is a second full copy of the API, and `club_jit` holds grants on two `cards` tables only, so pointing the service at it would break card authorisation (found starting T-0045, 2026-11-06) | `grep SERVICE_ROLE` over the code; `db/migrations/ledger/0007_cards.sql:37-39` | T-0063, T-0064, then T-0045 |
 | 18 | Low | `TEMPORAL_*` secrets and variables are required by the config and Terraform, but workers run on the plain scheduler and no Temporal client is a dependency | `packages/domain/src/config.ts`, `apps/worker/README.md` | Decision D1 |
 
 ## Decisions needed from the owner
