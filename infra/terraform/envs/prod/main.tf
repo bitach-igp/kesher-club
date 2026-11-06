@@ -394,6 +394,7 @@ module "jit" {
     alb_security_group_id = module.alb.security_group_id
     host_headers          = [local.market_hosts[each.key].jit]
     priority              = 20 + each.value.rule
+    health_check_path     = "/v1/status" # the API serves no /healthz; the status route is on the jit role (T-0063)
   }
 }
 

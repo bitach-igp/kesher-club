@@ -8,6 +8,10 @@ import { match } from './routes.ts';
 import type { App } from './app.ts';
 import { DomainError } from '@kesher/domain';
 
+/** What an API process serves (T-0063): everything, or only the card authorisation route and the status. */
+export type ServiceRole = 'api' | 'jit';
+const JIT_OPERATIONS: ReadonlySet<string> = new Set(['cardAuthorization', 'getStatus']);
+
 const MAX_BODY = 2 * 1024 * 1024 + 1024;
 /** OAuth's token endpoint takes a form body (RFC 6749 §3.2, T-1016); every other route stays JSON-only. */
 const FORM_BODY = new Set(['issueAgentToken']);
@@ -15,11 +19,15 @@ const FORM_BODY = new Set(['issueAgentToken']);
 const RAW_BODY = new Set(['crowdedWebhook']);
 
 /** A request's time is the app's clock unless the caller pins one: the demo's shared clock (T-0035) must reach handlers. */
-export async function dispatch(app: App, input: { method: string; url: string; headers: Record<string, string>; rawBody: string; rawBytes?: Uint8Array; now?: Date }): Promise<HttpResponse> {
+export async function dispatch(app: App, input: { method: string; url: string; headers: Record<string, string>; rawBody: string; rawBytes?: Uint8Array; now?: Date; role?: ServiceRole }): Promise<HttpResponse> {
   const now = input.now ?? app.services.clock.now();
   const traceId = input.headers['traceparent']?.split('-')[1] ?? randomUUID();
   const u = new URL(input.url, 'http://api.local');
   const pathname = u.pathname.replace(/^\/v1(?=\/)/, '');
+  // The authorisation host answers 404 to everything but its own routes, before authentication or any handler (T-0063).
+  if (input.role === 'jit' && (app.mcp.owns(pathname) || !JIT_OPERATIONS.has(match(input.method, pathname)?.route.operationId ?? ''))) {
+    return toProblem(new DomainError('NOT_FOUND', 'No such route'), traceId);
+  }
   // /mcp speaks JSON-RPC (T-1013), outside the REST route table and the contract.
   if (app.mcp.owns(pathname)) {
     const headers = Object.fromEntries(Object.entries(input.headers).map(([k, v]) => [k.toLowerCase(), v]));
@@ -49,7 +57,7 @@ export async function dispatch(app: App, input: { method: string; url: string; h
   return handler(req);
 }
 
-export function createServer(app: App): http.Server {
+export function createServer(app: App, options: { role?: ServiceRole } = {}): http.Server {
   return http.createServer(async (req, res) => {
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(req.headers)) if (typeof v === 'string') headers[k.toLowerCase()] = v;
@@ -68,7 +76,7 @@ export function createServer(app: App): http.Server {
     const rawBytes = Buffer.concat(chunks);
     let out: HttpResponse;
     try {
-      out = await dispatch(app, { method: req.method ?? 'GET', url: req.url ?? '/', headers, rawBody: rawBytes.toString('utf8'), rawBytes });
+      out = await dispatch(app, { method: req.method ?? 'GET', url: req.url ?? '/', headers, rawBody: rawBytes.toString('utf8'), rawBytes, ...(options.role ? { role: options.role } : {}) });
     } catch (e) {
       out = toProblem(e, randomUUID());
     }

@@ -116,7 +116,15 @@ const processRules = (cfg: unknown, ctx: z.RefinementCtx) => {
   }
 };
 
-export const apiConfigSchema = defineConfig({ ...shared, PORT: z.coerce.number().int().min(1).max(65535) }).superRefine(processRules);
+export const apiConfigSchema = defineConfig({
+  ...shared,
+  PORT: z.coerce.number().int().min(1).max(65535),
+  /**
+   * What this API process serves (T-0063). `api` serves every route; `jit` serves only the card authorisation route and the status,
+   * so the authorisation host exposes nothing else. Terraform passes `jit` to the authorisation services and `api` to the rest.
+   */
+  SERVICE_ROLE: z.enum(['api', 'jit']).default('api'),
+}).superRefine(processRules);
 export const workerConfigSchema = defineConfig(shared).superRefine(processRules);
 
 export type ApiConfig = Config<typeof apiConfigSchema>;
