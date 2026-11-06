@@ -668,6 +668,47 @@ resource "aws_backup_selection" "rds" {
   resources    = [module.rds.instance_arn]
 }
 
+# ---- alarms, paging, dashboards and budget (T-0054) --------------------------------------------------------------------
+# One alarm per row of the runbook alert table, each naming its RUN (modules/alarms). The pager endpoint has no default: an apply
+# says where pages go. CI passes it as TF_VAR_pager_endpoint.
+
+variable "pager_endpoint" {
+  description = "HTTPS endpoint of the pager integration (PagerDuty or Opsgenie); no default, pages must go somewhere."
+  type        = string
+  sensitive   = true
+}
+
+variable "monthly_budget_usd" {
+  description = "Monthly cost budget; notices at 50, 80 and 100 percent of actual spend go to the tickets topic."
+  type        = number
+  default     = 1000
+}
+
+module "alarms" {
+  source                 = "../../modules/alarms"
+  name                   = local.name
+  pager_endpoint         = var.pager_endpoint
+  budget_limit_usd       = var.monthly_budget_usd
+  db_instance_identifier = module.rds.instance_identifier
+  db_replica_identifier  = var.create_read_replica ? "${local.name}-replica" : null
+  db_max_connections     = 150
+  certificate_arns       = { platform = aws_acm_certificate_validation.this.certificate_arn }
+  tags                   = local.tags
+
+  ingress_services = merge(
+    { for k, m in module.api : "api-${k}" => { load_balancer_arn = module.alb.arn, target_group_arn = m.target_group_arn, run = "RUN-05" } },
+    { for k, m in module.jit : "jit-${k}" => { load_balancer_arn = module.alb.arn, target_group_arn = m.target_group_arn, run = "RUN-02" } },
+    { admin = { load_balancer_arn = module.admin_alb.arn, target_group_arn = module.admin.target_group_arn, run = "RUN-05" } },
+  )
+
+  ecs_services = merge(
+    { for k, m in module.api : "api-${k}" => { cluster_name = aws_ecs_cluster.this.name, service_name = m.service_name, run = "RUN-05" } },
+    { for k, m in module.jit : "jit-${k}" => { cluster_name = aws_ecs_cluster.this.name, service_name = m.service_name, run = "RUN-02" } },
+    { for k, m in module.worker : "worker-${k}" => { cluster_name = aws_ecs_cluster.this.name, service_name = m.service_name, run = "RUN-05" } },
+    { admin = { cluster_name = aws_ecs_cluster.this.name, service_name = module.admin.service_name, run = "RUN-05" } },
+  )
+}
+
 # ---- deploy role (assumed by the CI role in club-shared) ---------------------------------------
 
 data "aws_iam_policy_document" "deploy_trust" {

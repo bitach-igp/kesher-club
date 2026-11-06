@@ -36,6 +36,11 @@ From Tab 3 §9. Each names its runbook.
 | Port contract check | nightly suite red against the sandbox or live adapter | RUN-01 |
 | US banking provider | `InstitutionBankingPort` error rate over 5% for 5 minutes; webhook signature failures; US reconciliation unfinished at 06:00 IL | RUN-09 |
 
+Each row is an alarm in `infra/terraform/modules/alarms` whose description names the alert and its RUN
+(`apps/api/src/alarms-contract.test.ts` and `infra/terraform/tests/alarms.tftest.hcl` fail when a row has
+none). Pages go to the SNS topic `<env>-pages`, whose one subscription is the pager endpoint variable;
+a failed backup job also pages; budget notices and non-money job failures go to `<env>-tickets`.
+
 ## On-call
 
 - One primary and one secondary, weekly, handed over on Monday at 10:00 Asia/Jerusalem with a note in
