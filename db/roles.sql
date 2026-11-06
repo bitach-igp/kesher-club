@@ -4,7 +4,7 @@
 --   club_migrator  owns every schema and runs Atlas. Used only by the release job and local dev.
 --   club_app       the service role. SELECT/INSERT on ledger.*, never UPDATE/DELETE (constitution art. 3).
 --   club_readonly  read replica / Metabase. SELECT only, no PII columns (views are granted per schema).
---   club_jit       the authorisation path. SELECT on ledger and cards, INSERT on ledger (holds) only.
+--   club_jit       the authorisation path (T-0064). Reads ledger.account, cards, flags, rates, plans; inserts ledger.journal and posting (holds); upserts ops.account_balance, billing entitlement counters and agent.pending_intent. No DELETE, no UPDATE of ledger.*.
 do $$ begin
   if not exists (select from pg_roles where rolname = 'club_migrator') then
     create role club_migrator login createdb;

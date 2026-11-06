@@ -9,6 +9,7 @@ import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
+import { holdKey } from './jit.ts';
 import { createPgDatabase, type PgDatabase } from '../pg.ts';
 
 const ownerUrl = process.env['TEST_PG_URL'];
@@ -73,19 +74,24 @@ run('club_jit on real Postgres', () => {
     const seqs = (await owner.query<{ s: string }>(`select schemaname || '.' || sequencename as s from pg_sequences`)).rows.map((r) => r.s);
     for (const q of seqs) {
       const r = await owner.query<{ u: boolean; s: boolean }>(`select has_sequence_privilege('club_jit', $1, 'usage') as u, has_sequence_privilege('club_jit', $1, 'select') as s`, [q]);
-      expect({ seq: q, usage: r.rows[0]!.u }).toEqual({ seq: q, usage: q === 'ledger.posting_id_seq' });
+      expect({ seq: q, usage: r.rows[0]!.u }).toEqual({ seq: q, usage: false });
     }
   });
 
   it('approves an authorisation as club_jit, and a replay answers the same without a second hold', async () => {
-    const first = await authorize(processorCardId);
+    const signed = sim.authorize(processorCardId, { amount: { minor: 1_800n, currency: 'ILS' }, merchant: { name: 'Super-Pharm', mcc: '5912', country: 'IL' }, channel: 'pos' });
+    const send = () => dispatch(app, { method: 'POST', url: '/v1/jit/card-authorizations', headers: signed.headers, rawBody: signed.rawBody, now: NOW });
+    await authorize(processorCardId); // warm the pooled club_jit connections: the decision budget is short
+    const first = await send();
     expect(first.body).toEqual({ result: 'APPROVED', holdAmount: { minor: '1800', currency: 'ILS' } });
-    expect((await owner.query<{ n: number }>(`select count(*)::int as n from ledger.journal where kind = 'auth_hold'`)).rows[0]!.n).toBeGreaterThanOrEqual(1);
+    expect(await send()).toMatchObject({ body: first.body });
+    const authId = (JSON.parse(signed.rawBody) as { authId: string }).authId;
+    expect((await owner.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [holdKey(authId)])).rows[0]!.n).toBe(1);
   });
 
   it('declines an unknown card (a decision, not a database error)', async () => {
     const r = await authorize('card_unknown_to_us');
-    expect(r.body).toMatchObject({ result: 'DECLINED' });
+    expect(r.body).toEqual({ result: 'DECLINED', reason: 'UNKNOWN_CARD' });
   });
 
   it.each([
@@ -93,8 +99,8 @@ run('club_jit on real Postgres', () => {
     [`delete from ledger.journal`],
     [`insert into ledger.account (id) values ($1)`],
     [`update ledger.account set currency = 'USD'`],
-    [`select 1 from identity.party limit 1`],
-    [`update ops.flag_state set enabled = true`],
+    [`select 1 from identity.user_account limit 1`],
+    [`update ops.flag_state set value = true`],
   ])('is refused with 42501: %s', async (sql) => {
     await expect(jit.query(sql, sql.includes('$1') ? [uuidv7()] : [])).rejects.toMatchObject({ code: '42501' });
   });

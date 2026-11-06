@@ -5,8 +5,7 @@
 grant usage on schema ledger, ops, agent to club_jit;
 grant select on ledger.account to club_jit;
 grant select, insert on ledger.journal, ledger.posting to club_jit;
--- ledger.posting.id is generated always as identity: the INSERT takes the next value from this sequence.
-grant usage on sequence ledger.posting_id_seq to club_jit;
+-- ledger.posting.id is generated always as identity: Postgres takes the value without a sequence privilege, so no sequence is granted.
 -- The balance cache the posting maintains under the per-wallet lock (T-0544): read, insert the first row, update the rest.
 grant select, insert, update on ops.account_balance to club_jit;
 grant select on ops.fx_rate to club_jit;

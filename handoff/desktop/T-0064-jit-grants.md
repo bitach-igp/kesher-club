@@ -11,4 +11,4 @@ Steps (from repo root, PowerShell on Windows unless stated; the password below i
 8. $env:TEST_PG_URL = "postgres://postgres:postgres@localhost:5433/club"; $env:TEST_PG_JIT_URL = "postgres://club_jit:jit-pw-1@localhost:5433/club"; pnpm --filter @kesher/api exec vitest run src/cards/jit.pg.test.ts
 9. docker rm -f kesher-pg
 Expected: step 6 prints `ok` for every schema (ledger 0028, billing 0006 and audit 0002 applied). Step 8 reports all tests passed: the privilege matrix equals the table in the test, an authorisation approves with every statement run as club_jit, an unknown card is declined, and each of the six forbidden statements is refused with SQLSTATE 42501.
-Report back: the console output of steps 6 and 8 (the vitest summary), and `docker --version`. If a statement is refused with 42501 that the approval path needs, give the table and privilege from the error line.
+Report back: the console output of steps 6 and 8 (the vitest summary), and `docker --version`. A grant that is missing shows as a body mismatch (DECLINED TIMEOUT), not an error line: report which test failed and the Postgres log (`docker logs kesher-pg`), which names the table and privilege.
