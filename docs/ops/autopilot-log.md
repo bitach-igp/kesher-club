@@ -48,3 +48,5 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-05 | T-0040 | #230 | Sonnet APPROVE (2 fix rounds: the unknown-key refusal would have broken boot) | green |
 | 2026-11-05 | T-0044 | #233 | Sonnet APPROVE (2 fix rounds: per-step env, terraform test mock) | green |
 | 2026-11-05 | T-0057 | #242 | Sonnet APPROVE (1 fix round: relaxed DMARC alignment, long DKIM keys) | green |
+| 2026-11-06 | T-0063 | #245 | Sonnet APPROVE (first round) | green |
+| 2026-11-06 | T-0061 | #247 | Sonnet APPROVE (first round; lint error in the new test fixed before review) | green |
