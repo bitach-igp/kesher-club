@@ -119,6 +119,11 @@ run "staging_runs_one_service_per_market" {
   }
 
   assert {
+    condition     = alltrue([for m in values(module.jit) : startswith(m.environment["DATABASE_URL"], "postgres://club_jit@")]) && alltrue([for m in values(module.api) : startswith(m.environment["DATABASE_URL"], "postgres://club_app@")])
+    error_message = "T-0045: the jit service connects as club_jit and the api as club_app"
+  }
+
+  assert {
     condition     = alltrue(flatten([for svc in [module.api, module.jit, module.worker] : [for k, m in svc : m.environment["MARKET"] == upper(k)]]))
     error_message = "each service's MARKET must be its own market"
   }
@@ -141,6 +146,11 @@ run "staging_runs_one_service_per_market" {
   assert {
     condition     = flatten([for c in aws_lb_listener_rule.webhooks["us"].condition : [for h in c.host_header : tolist(h.values)]]) == ["webhooks-us.staging.kesher.example"] && aws_lb_listener_rule.webhooks["us"].priority != aws_lb_listener_rule.webhooks["il"].priority
     error_message = "the US providers' webhooks land on the US host"
+  }
+
+  assert {
+    condition     = alltrue([for m in values(module.jit) : startswith(m.environment["DATABASE_URL"], "postgres://club_jit@")]) && alltrue([for m in values(module.api) : startswith(m.environment["DATABASE_URL"], "postgres://club_app@")])
+    error_message = "T-0045: the jit service connects as club_jit and the api as club_app"
   }
 
   assert {

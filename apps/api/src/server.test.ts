@@ -114,6 +114,7 @@ describe('the authorisation host serves only its own routes (T-0063)', () => {
   it('a jit process still reaches the card authorisation route and the status', async () => {
     const status = await call('jit', 'GET', '/v1/status', '');
     expect(status.status).toBe(200);
+    expect(status.body).toEqual({ role: 'jit', status: 'ok' }); // no database read: club_jit cannot read the approvals the public status uses (T-0045)
     // The authorisation route is reached: whatever it answers to an empty body, it is not the role gate's NOT_FOUND.
     const auth = await call('jit', 'POST', '/v1/jit/card-authorizations');
     expect(code(auth)).not.toBe('NOT_FOUND');
