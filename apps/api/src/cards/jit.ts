@@ -166,7 +166,8 @@ export class JitService {
 
     const currency = req.amount.currency;
     if (!row.wallet_id && !row.other_wallet_id) return done(decline('INSUFFICIENT_FUNDS')); // no purse, nothing to spend
-    // The pending purse is provisioned with the wallet; a member funded before provisioning gets it here.
+    // The pending purse is provisioned when the card is issued (T-0413). The path only reads accounts, so a card without one throws here and
+    // the decision is a TIMEOUT decline.
     const pending = row.pending_id ?? (await this.d.accounts.findMemberAccount(card.party_id, 'pending', currency));
 
     if (controls.dailyLimit && controls.dailyLimit.currency === currency) {

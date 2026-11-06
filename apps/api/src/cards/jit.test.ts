@@ -423,6 +423,22 @@ describe('which purse pays (T-0409, ADR-007)', () => {
     expect(-(await app.services.ledger.balance(ariIls, 'ILS'))).toBe(50_000n - 18_639n);
   });
 
+  it('a converted purchase with a system account missing declines TIMEOUT, holds nothing and creates no account (T-0413)', async () => {
+    const accountCount = async () => Number((await db.query<{ n: string }>('select count(*) as n from ledger.account')).rows[0]!.n);
+    const before = await accountCount();
+    const heldBefore = -(await app.services.ledger.balance(ariIls, 'ILS'));
+    const missing = vi.spyOn(app.services.accounts, 'findSystemAccount').mockRejectedValue(new DomainError('NOT_FOUND', 'No fx_position account in USD'));
+    try {
+      const r = await usdPay(5_000n, 'IL');
+      expect(r.body).toEqual({ result: 'DECLINED', reason: 'TIMEOUT' });
+      expect(await holdPostings(r.authId)).toEqual([]);
+    } finally {
+      missing.mockRestore();
+    }
+    expect(await accountCount()).toBe(before);
+    expect(-(await app.services.ledger.balance(ariIls, 'ILS'))).toBe(heldBefore);
+  });
+
   it('in Israel with the shekel purse short, the dollar purse pays unconverted', async () => {
     await credit(ariUsd, 'USD', 100_000n, 'load:ari:usd');
     const r = await usdPay(100_000n, 'IL'); // $1,000 is ₪3,700 and more: the shekel purse cannot cover it
