@@ -216,6 +216,9 @@ module "secrets" {
   region      = var.region
   names = [
     "db-app-password",
+    "db-jit-password",
+    "db-readonly-password",
+    "db-migrator-password",
     "jwt-signing-key",
     "temporal-client-cert",
     "temporal-client-key",
@@ -240,6 +243,32 @@ module "rds" {
   create_read_replica = var.create_read_replica
   deletion_protection = var.deletion_protection
   skip_final_snapshot = !var.deletion_protection
+}
+
+# ---- database preparation (T-0044) ---------------------------------------------------------------
+# A one-off task inside the VPC: roles, the service roles' passwords and grants, then every schema. Deploys run it before the
+# services roll (T-0050); see docs/setup/database.md.
+module "migrate" {
+  source                = "../../modules/migrate-task"
+  name                  = "${local.name}-migrate"
+  vpc_id                = module.network.vpc_id
+  subnet_ids            = module.network.private_subnet_ids
+  vpc_cidr              = module.network.vpc_cidr
+  image                 = "${var.ecr_registry}/kesher/migrate:${var.image_tag}"
+  rds_security_group_id = module.rds.security_group_id
+  rds_address           = module.rds.address
+  rds_port              = module.rds.port
+  database_name         = module.rds.database_name
+  master_secret_arn     = module.rds.master_user_secret_arn
+  secrets = {
+    DB_APP_PASSWORD      = module.secrets.arns["db-app-password"]
+    DB_JIT_PASSWORD      = module.secrets.arns["db-jit-password"]
+    DB_READONLY_PASSWORD = module.secrets.arns["db-readonly-password"]
+    DB_MIGRATOR_PASSWORD = module.secrets.arns["db-migrator-password"]
+  }
+  rds_kms_key_arn     = module.kms_rds.key_arn
+  secret_kms_key_arns = [module.kms_secrets.key_arn]
+  log_kms_key_arn     = module.kms_logs.key_arn
 }
 
 # ---- compute -----------------------------------------------------------------------------------

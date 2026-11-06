@@ -1,8 +1,8 @@
 # Releasing images to ECR
 
-`.github/workflows/release.yml` (T-0030) builds the `api`, `worker` and `admin` images for one commit that
+`.github/workflows/release.yml` (T-0030) builds the `api`, `worker`, `admin` and `migrate` images (the last prepares the database, `docs/setup/database.md`) for one commit that
 is already on `main`. It pushes them to club-shared's ECR as `sha-<first 12 characters of the commit>`.
-That tag is what staging and prod deploy: their roots run `${ecr_registry}/kesher/{api,worker,admin}:${image_tag}`.
+That tag is what staging and prod deploy: their roots run `${ecr_registry}/kesher/{api,worker,admin}:${image_tag}`; the database task runs `kesher/migrate:${image_tag}`.
 
 - **Credentials.** The workflow gets them from GitHub OIDC, the way `preview.yml` does, so no access key
   exists anywhere.
@@ -46,7 +46,7 @@ Keep this root's `terraform.tfstate` in the team password manager (`infra/terraf
 
 This step creates:
 - the Organization, the staging and prod accounts and the SCP;
-- ECR with `kesher/api`, `kesher/worker` and `kesher/admin`, all `IMMUTABLE`;
+- ECR with `kesher/api`, `kesher/worker`, `kesher/admin` and `kesher/migrate`, all `IMMUTABLE`;
 - the hosted zone;
 - the GitHub CI role;
 - CloudTrail, Security Hub and the locked backup vault.
@@ -101,7 +101,7 @@ with no runner and no log.
 ## Check it worked
 
 ```sh
-for app in api worker admin; do
+for app in api worker admin migrate; do
   aws ecr describe-images --registry-id <shared id> --repository-name "kesher/${app}" \
     --image-ids imageTag=sha-<12 characters> --query 'imageDetails[0].imagePushedAt' --output text
 done
