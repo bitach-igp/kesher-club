@@ -148,3 +148,23 @@ describe('node-postgres reads what Terraform passes (T-0025)', () => {
     }
   });
 });
+
+describe('the authorisation service connects as club_jit with its own password (T-0045)', () => {
+  for (const file of ['infra/terraform/envs/staging/main.tf', 'infra/terraform/envs/prod/main.tf']) {
+    it(`${file}: module jit carries the club_jit URL and db-jit-password, and no other service does`, () => {
+      const hcl = read(file);
+      const block = (name: string) => hcl.slice(hcl.indexOf(`module "${name}" {`), hcl.indexOf('\nmodule "', hcl.indexOf(`module "${name}" {`) + 10));
+      expect(hcl).toMatch(/jit_database_url\s*=\s*"postgres:\/\/club_jit@/);
+      expect(hcl).toMatch(/jit_secrets\s*=\s*merge\(local\.common_secrets,\s*\{\s*PGPASSWORD\s*=\s*module\.secrets\.arns\["db-jit-password"\]/);
+      const jit = block('jit');
+      expect(jit).toMatch(/DATABASE_URL\s*=\s*local\.jit_database_url/);
+      expect(jit).toMatch(/secrets\s*=\s*local\.jit_secrets/);
+      expect(jit).not.toMatch(/club_app|db-app-password|common_secrets/);
+      for (const other of ['api', 'worker']) {
+        expect(block(other), `module ${other}`).not.toMatch(/jit_database_url|jit_secrets|db-jit-password/);
+      }
+      // The URL carries no password: it comes from PGPASSWORD, as for the other roles.
+      expect(hcl).not.toMatch(/postgres:\/\/club_jit:/);
+    });
+  }
+});

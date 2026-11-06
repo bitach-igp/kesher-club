@@ -119,6 +119,11 @@ run "staging_runs_one_service_per_market" {
   }
 
   assert {
+    condition     = alltrue([for m in values(module.jit) : startswith(m.environment["DATABASE_URL"], "postgres://club_jit@")]) && alltrue([for m in values(module.api) : startswith(m.environment["DATABASE_URL"], "postgres://club_app@")])
+    error_message = "T-0045: the jit service connects as club_jit and the api as club_app"
+  }
+
+  assert {
     condition     = alltrue(flatten([for svc in [module.api, module.jit, module.worker] : [for k, m in svc : m.environment["MARKET"] == upper(k)]]))
     error_message = "each service's MARKET must be its own market"
   }
@@ -166,6 +171,11 @@ run "prod_runs_one_service_per_market" {
 
   module {
     source = "./envs/prod"
+  }
+
+  assert {
+    condition     = alltrue([for m in values(module.jit) : startswith(m.environment["DATABASE_URL"], "postgres://club_jit@")]) && alltrue([for m in values(module.api) : startswith(m.environment["DATABASE_URL"], "postgres://club_app@")])
+    error_message = "T-0045: the jit service connects as club_jit and the api as club_app"
   }
 
   assert {

@@ -30,6 +30,11 @@ export async function dispatch(app: App, input: { method: string; url: string; h
   if (input.role === 'jit' && (app.mcp.owns(pathname) || !JIT_OPERATIONS.has(match(input.method, pathname)?.route.operationId ?? ''))) {
     return toProblem(new DomainError('NOT_FOUND', 'No such route'), traceId);
   }
+  // The authorisation host's health check answers without the database: club_jit cannot read the approvals the public status
+  // reads for incidents (T-0064), and a load balancer probe must not cost a query on the hot path (T-0045).
+  if (input.role === 'jit' && input.method === 'GET' && match(input.method, pathname)?.route.operationId === 'getStatus') {
+    return { status: 200, body: { role: 'jit', status: 'ok' } };
+  }
   // /mcp speaks JSON-RPC (T-1013), outside the REST route table and the contract.
   if (app.mcp.owns(pathname)) {
     const headers = Object.fromEntries(Object.entries(input.headers).map(([k, v]) => [k.toLowerCase(), v]));

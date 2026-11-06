@@ -38,6 +38,10 @@ locals {
 
   database_url = "postgres://club_app@${module.rds.address}:${module.rds.port}/${module.rds.database_name}?sslmode=verify-full&sslrootcert=/app/db/certs/rds-global-bundle.pem"
 
+  # The authorisation process connects as club_jit (T-0045): it can do what a decision does and nothing more (T-0064).
+
+  jit_database_url = "postgres://club_jit@${module.rds.address}:${module.rds.port}/${module.rds.database_name}?sslmode=verify-full&sslrootcert=/app/db/certs/rds-global-bundle.pem"
+
   common_env = {
     NODE_ENV              = "production"
     APP_ENV               = local.env
@@ -60,6 +64,9 @@ locals {
     PII_INDEX_KEY        = module.secrets.arns["pii-index-key"]
     STAFF_JWKS           = module.secrets.arns["staff-jwks"]
   }
+  # Same secrets, but the database password is the club_jit one.
+  jit_secrets = merge(local.common_secrets, { PGPASSWORD = module.secrets.arns["db-jit-password"] })
+
 }
 
 provider "aws" {
@@ -385,8 +392,8 @@ module "jit" {
   desired_count              = 2
   min_capacity               = 2
   max_capacity               = 6
-  environment                = merge(local.common_env, { SERVICE_ROLE = "jit", MARKET = each.value.code })
-  secrets                    = local.common_secrets
+  environment                = merge(local.common_env, { SERVICE_ROLE = "jit", MARKET = each.value.code, DATABASE_URL = local.jit_database_url })
+  secrets                    = local.jit_secrets
   secret_kms_key_arns        = [module.kms_secrets.key_arn]
   database_security_group_id = module.rds.security_group_id
   log_kms_key_arn            = module.kms_logs.key_arn
