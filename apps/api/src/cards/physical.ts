@@ -8,6 +8,7 @@ import { CardIssuingError, type Card, type CardIssuingPort } from '@kesher/ports
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import type { KycService } from '../kyc/service.ts';
+import { provisionPendingAccounts } from '../ledger/accounts.ts';
 import { controlsToWire, DEFAULT_VIRTUAL_CONTROLS, type CardService, type CardView } from './service.ts';
 
 export const PHYSICAL_FLAG = 'card.physical';
@@ -112,6 +113,7 @@ export class PhysicalCardService {
     const cardholderId = cardholder.rows[0]?.cardholder_id ?? (await this.provider(() => this.port.createCardholder({ partyId, kycSessionId: approved.rows[0]!.session_id }, `${wf}:cardholder`))).cardholderId;
     // The port carries the shipping country today; the processor adapter takes the full address alongside it.
     const card = await this.provider(() => this.port.issueCard({ cardholderId, type: 'physical', controls: DEFAULT_VIRTUAL_CONTROLS, shipTo: { country: shipTo.country } }, `${wf}:card`));
+    await provisionPendingAccounts(this.db, partyId); // T-0413: the authorisation path only reads accounts
     const r = await this.db.query<Row>(
       `insert into cards.card (id, party_id, processor, processor_card_id, cardholder_id, type, status, last4, currency, controls, locked_by_funder, workflow_id, issued_at, updated_at)
        values ($1, $2, $3, $4, $5, 'physical', $6, $7, $8, $9, '{}', $10, $11, $11)

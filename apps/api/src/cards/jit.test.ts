@@ -12,6 +12,7 @@ import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { CARD_SPEND_ENTITLEMENT, DECISION_BUDGET_MS, holdKey, JitService, VELOCITY_LIMIT_PER_MINUTE } from './jit.ts';
 import { AGENT_PURCHASE_ACTION, agentGrantIdFor } from '../intents/service.ts';
+import { provisionAuthorisationSystemAccounts } from '../ledger/accounts.ts';
 import { controlsToWire, DEFAULT_VIRTUAL_CONTROLS } from './service.ts';
 
 let db: TestDatabase;
@@ -391,6 +392,7 @@ describe('which purse pays (T-0409, ADR-007)', () => {
   const usdPay = (minor: bigint, country: string, now = NOW) => authorize({ card: ariCard, amount: minor, currency: 'USD', country, now });
 
   beforeAll(async () => {
+    await provisionAuthorisationSystemAccounts(db); // T-0413: a converted authorisation only reads these
     const s = await app.services.kyc.start(ari, 'T2', 'kyc-ari', NOW);
     await dispatch(app, { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: 'evt-ari', sessionId: s.sessionId, status: 'approved' }), now: NOW });
     ariCard = (await db.query<{ processor_card_id: string }>(`select processor_card_id from cards.card where party_id = $1`, [ari])).rows[0]!.processor_card_id;
@@ -421,6 +423,22 @@ describe('which purse pays (T-0409, ADR-007)', () => {
     expect(-(await app.services.ledger.balance(ariIls, 'ILS'))).toBe(50_000n - 18_639n);
   });
 
+  it('a converted purchase with a system account missing declines TIMEOUT, holds nothing and creates no account (T-0413)', async () => {
+    const accountCount = async () => Number((await db.query<{ n: string }>('select count(*) as n from ledger.account')).rows[0]!.n);
+    const before = await accountCount();
+    const heldBefore = -(await app.services.ledger.balance(ariIls, 'ILS'));
+    const missing = vi.spyOn(app.services.accounts, 'findSystemAccount').mockRejectedValue(new DomainError('NOT_FOUND', 'No fx_position account in USD'));
+    try {
+      const r = await usdPay(5_000n, 'IL');
+      expect(r.body).toEqual({ result: 'DECLINED', reason: 'TIMEOUT' });
+      expect(await holdPostings(r.authId)).toEqual([]);
+    } finally {
+      missing.mockRestore();
+    }
+    expect(await accountCount()).toBe(before);
+    expect(-(await app.services.ledger.balance(ariIls, 'ILS'))).toBe(heldBefore);
+  });
+
   it('in Israel with the shekel purse short, the dollar purse pays unconverted', async () => {
     await credit(ariUsd, 'USD', 100_000n, 'load:ari:usd');
     const r = await usdPay(100_000n, 'IL'); // $1,000 is ₪3,700 and more: the shekel purse cannot cover it
@@ -448,5 +466,48 @@ describe('which purse pays (T-0409, ADR-007)', () => {
     const later = new Date(NOW.getTime() + 20 * 60_000); // the port rate is good for 15 minutes
     expect((await usdPay(1_000n, 'IL', later)).body).toMatchObject({ result: 'APPROVED' }); // dollars pay, unconverted
     expect((await usdPay(100_000n, 'US', later)).body).toEqual({ result: 'DECLINED', reason: 'INSUFFICIENT_FUNDS' }); // the shekel purse would need a rate
+  });
+});
+
+// T-0413: the authorisation path only reads accounts, because its database role may not insert into ledger.account.
+describe('the authorisation never creates an account (T-0413)', () => {
+  const accountCount = async () => Number((await db.query<{ n: string }>('select count(*) as n from ledger.account')).rows[0]!.n);
+  const lena = uuidv7(new Date(NOW.getTime() + 7));
+  let lenaCard = '';
+
+  beforeAll(async () => {
+    const s = await app.services.kyc.start(lena, 'T2', 'kyc-lena', NOW);
+    await dispatch(app, { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: 'evt-lena', sessionId: s.sessionId, status: 'approved', tier: 'T2' }), now: NOW });
+    lenaCard = (await db.query<{ processor_card_id: string }>('select processor_card_id from cards.card where party_id = $1', [lena])).rows[0]!.processor_card_id;
+    const wallet = await app.services.accounts.memberAccount(lena, 'wallet', 'ILS');
+    const partner = await app.services.accounts.systemAccount('partner_settlement', 'ILS');
+    await app.services.ledger.post({ idempotencyKey: 'load:lena', kind: 'load', postings: [{ accountId: partner, currency: 'ILS', amountMinor: 50_000n }, { accountId: wallet, currency: 'ILS', amountMinor: -50_000n }] });
+  }, 60_000);
+
+  it('issuing the card provisioned the pending account in both currencies, once', async () => {
+    const rows = (await db.query<{ currency: string }>(`select currency::text from ledger.account where owner_party_id = $1 and type = 'pending' order by currency`, [lena])).rows;
+    expect(rows.map((r) => r.currency)).toEqual(['ILS', 'USD']);
+  });
+
+  it('an approved authorisation inserts no account', async () => {
+    const before = await accountCount();
+    const r = await authorize({ card: lenaCard, amount: 2_000n });
+    expect(r.body).toMatchObject({ result: 'APPROVED' });
+    expect(await accountCount()).toBe(before);
+  });
+
+  it('a card with no pending account at all (issued before this change) declines TIMEOUT and creates nothing', async () => {
+    const olga = uuidv7(new Date(NOW.getTime() + 9));
+    const s = await app.services.kyc.start(olga, 'T2', 'kyc-olga', NOW);
+    await dispatch(app, { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: 'evt-olga', sessionId: s.sessionId, status: 'approved', tier: 'T2' }), now: NOW });
+    const olgaCard = (await db.query<{ processor_card_id: string }>('select processor_card_id from cards.card where party_id = $1', [olga])).rows[0]!.processor_card_id;
+    const wallet = await app.services.accounts.memberAccount(olga, 'wallet', 'ILS');
+    const partner = await app.services.accounts.systemAccount('partner_settlement', 'ILS');
+    await app.services.ledger.post({ idempotencyKey: 'load:olga', kind: 'load', postings: [{ accountId: partner, currency: 'ILS', amountMinor: 50_000n }, { accountId: wallet, currency: 'ILS', amountMinor: -50_000n }] });
+    await db.query(`delete from ledger.account where owner_party_id = $1 and type = 'pending'`, [olga]);
+    const before = await accountCount();
+    const r = await authorize({ card: olgaCard, amount: 2_000n });
+    expect(r.body).toEqual({ result: 'DECLINED', reason: 'TIMEOUT' });
+    expect(await accountCount()).toBe(before);
   });
 });
