@@ -1,4 +1,4 @@
-h1:WLS5HYYa4wC5H/2yUHhn2pyB2EiU54UyPlz8uY1Cy8c=
+h1:S+8U5cykZNDrWHfFUh0+p4Yf4SUl2RlCulcdGTW04zA=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
@@ -26,3 +26,4 @@ h1:WLS5HYYa4wC5H/2yUHhn2pyB2EiU54UyPlz8uY1Cy8c=
 0025_plan_version_approval_kind.sql h1:j2xjD7tHuUDT8qdzB39f9TbamEskUDKcUy5eeKiEfm8=
 0026_vendor_idempotency.sql h1:FGHTKmybciRi9equ+aZ+VJhz9FEZMv7JZH9Jx1vVgZs=
 0027_institution_payout_reserve.sql h1:PD8G11eQZJUgsPMCz5ldGJKlIUASiY6kxMHU5fEyS4k=
+0028_club_jit_grants.sql h1:E5zUi/CYwJ/pWaVF2BlRd9oyL44BY8czpn0/eItnRuI=
