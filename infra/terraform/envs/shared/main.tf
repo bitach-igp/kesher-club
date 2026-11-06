@@ -203,6 +203,16 @@ resource "aws_route53_zone" "root" {
   comment = "Kesher Club public zone; records are written by env roots through the CI role"
 }
 
+module "mail_records" {
+  source               = "../../modules/mail-records"
+  zone_id              = aws_route53_zone.root.zone_id
+  domain               = var.root_domain
+  dmarc_policy         = var.dmarc_policy
+  dmarc_report_address = var.dmarc_report_address
+  dkim                 = var.postmark_dkim
+  caa_report_address   = var.caa_report_address
+}
+
 resource "aws_route53_query_log" "root" {
   zone_id                  = aws_route53_zone.root.zone_id
   cloudwatch_log_group_arn = aws_cloudwatch_log_group.dns.arn
