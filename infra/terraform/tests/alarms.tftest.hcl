@@ -125,8 +125,8 @@ run "dead_worker_pages" {
   }
 
   assert {
-    condition     = aws_cloudwatch_metric_alarm.job_stale["balance-proof"].period == 86400 && aws_cloudwatch_metric_alarm.job_stale["load-sweep"].period == 300
-    error_message = "daily jobs alarm over a day, minute sweeps over five minutes"
+    condition     = aws_cloudwatch_metric_alarm.job_stale["balance-proof"].period == 3600 && aws_cloudwatch_metric_alarm.job_stale["balance-proof"].evaluation_periods == 30 && aws_cloudwatch_metric_alarm.job_stale["load-sweep"].period == 300
+    error_message = "daily jobs alarm over a 30 hour window, minute sweeps over five minutes"
   }
 }
 
@@ -148,8 +148,8 @@ run "metrics_match_exactly" {
   }
 
   assert {
-    condition     = aws_cloudwatch_metric_alarm.transfer_stuck["pending_hold-il"].threshold > aws_cloudwatch_metric_alarm.transfer_stuck["pending-il"].threshold && aws_cloudwatch_metric_alarm.transfer_stuck["pending_hold-il"].threshold > 7200
-    error_message = "pending_hold is normally up to 2 hours, so its threshold is above that and above the pending one"
+    condition     = aws_cloudwatch_metric_alarm.transfer_stuck["pending_hold-il"].threshold > aws_cloudwatch_metric_alarm.transfer_stuck["pending-il"].threshold && aws_cloudwatch_metric_alarm.transfer_stuck["pending_hold-il"].threshold >= 259200
+    error_message = "pending_hold holds last days (payout cool-off 24 hours, ACH 3 business days), so its threshold is at least 3 days and above the pending one"
   }
 
   assert {

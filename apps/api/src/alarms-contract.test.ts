@@ -89,6 +89,16 @@ describe('runbook alert table and alarms (T-0054)', () => {
     expect(stale).toContain('treat_missing_data  = "breaching"');
   });
 
+  it('every environment watches desired versus running tasks on every worker service, and that alarm pages', () => {
+    // job.age_s has no market dimension, so one dead market worker is seen only by this alarm.
+    for (const env of ['staging', 'prod']) {
+      const main = read(`infra/terraform/envs/${env}/main.tf`);
+      expect(main, env).toMatch(/for k, m in module\.worker : "worker-\$\{k\}"/);
+    }
+    const ecs = /resource "aws_cloudwatch_metric_alarm" "ecs_tasks" \{[\s\S]*?\n\}/.exec(moduleSource())?.[0] ?? '';
+    expect(ecs).toContain('alarm_actions       = [local.pages_arn]');
+  });
+
   it('alarms on application metrics use the namespace and exact dimension sets the app emits', () => {
     const src = moduleSource();
     expect(src).toContain(`namespace   = "${METRICS_NAMESPACE}"`);

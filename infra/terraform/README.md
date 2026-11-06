@@ -61,7 +61,7 @@ replica, web apps on CloudFront. Staging is the same shape on db.t4g.large, one 
    terraform apply -var assume_role_name=OrganizationAccountAccessRole \
      -var account_id=<member id> -var shared_account_id=<id> -var hosted_zone_id=<zone> \
      -var ecr_registry=<id>.dkr.ecr.us-east-1.amazonaws.com -var image_tag=<sha> \
-     -var locked_backup_vault_arn=<from shared> -var temporal_address=<…> -var temporal_namespace=<…>
+     -var locked_backup_vault_arn=<from shared> -var temporal_address=<…> -var temporal_namespace=<…> -var pager_endpoint=<https pager integration URL>
    ```
    Later applies (and all CI applies) use the default `kesher-deploy`, which the CI role may
    assume. Prod additionally takes `break_glass_principal_arns`.

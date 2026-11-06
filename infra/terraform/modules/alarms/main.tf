@@ -14,7 +14,7 @@ locals {
   region      = data.aws_region.current.name
 
   # Every job of apps/worker/src/jobs.ts with its cycle in seconds (a daily job is 86400). `money` jobs page when they fail
-  # or go stale; the rest open a ticket. alarms-contract.test.ts fails when this table and the worker's job table differ.
+  # or go stale; the rest open a ticket. alarms-contract.test.ts fails when this table and the worker's job names differ.
   jobs = {
     "metrics-market"       = { cycle_s = 60, money = false }
     "metrics-recon"        = { cycle_s = 60, money = false }
@@ -44,12 +44,17 @@ locals {
   money_jobs = { for k, j in local.jobs : k => j if j.money }
   other_jobs = { for k, j in local.jobs : k => j if !j.money }
 
-  # Seconds a transfer may sit in a non-terminal state before the alarm fires. pending_hold is normally up to 2 hours (RUN-03 holds).
+  # Seconds a transfer may sit in a non-terminal state before the alarm fires: each is above the longest legitimate dwell.
+  # created: a transfer is submitted within the request (15 minutes). submitted: the provider answers in seconds to minutes (an
+  # hour). pending: an ACH debit waits for the bank, up to 3 business days (ACH_HOLD_BUSINESS_DAYS = 3; 3 business days plus a
+  # weekend and a bank holiday is under 6 calendar days, so 6 days). pending_hold: a payout cool-off is 24 hours (COOL_OFF_MS in
+  # payouts/service.ts) and an ACH load hold runs 3 business days, so 7 days. No metric says a hold is overdue, only how long the
+  # oldest has sat.
   transfer_states = {
-    created      = 300
-    submitted    = 600
-    pending      = 3600
-    pending_hold = 10800
+    created      = 900
+    submitted    = 3600
+    pending      = 518400
+    pending_hold = 604800
   }
   transfer_stuck = merge([
     for m in var.markets : {
@@ -265,7 +270,7 @@ resource "aws_cloudwatch_metric_alarm" "job_failure_ticket" {
   for_each = local.other_jobs
 
   alarm_name          = "${var.name}-job-failure-${each.key}"
-  alarm_description   = "Job failure (ticket): a run of job ${each.key} failed. It is not a money job, so it opens a ticket and does not page."
+  alarm_description   = "Job failure (ticket): a run of job ${each.key} failed. It is not a money job, so it opens a ticket and does not page. Nearest runbook RUN-05 (Webhook backlog: worker health)."
   comparison_operator = "GreaterThanOrEqualToThreshold"
   evaluation_periods  = 1
   datapoints_to_alarm = 1
@@ -311,20 +316,23 @@ resource "aws_cloudwatch_metric_alarm" "transfer_stuck" {
 
 # ---- job.age_s: a dead worker pages -------------------------------------------------------------------------------------
 # job.age_s is emitted only when a run finishes (0 on success, the seconds since the last success on a failure), so a worker that is
-# down emits nothing: missing data is BREACHING. The window covers at least two cycles of the job; a daily job has one 24 hour window.
+# down emits nothing: missing data is BREACHING. The window covers at least two cycles of the job; a daily job alarms only when
+# NONE of 30 hourly periods holds a run (a 30 hour window), so a run up to 6 hours late or shifted by DST does not page.
+# The series has no market dimension (T-0053): the IL and US workers share one {job} series, so one dead worker is hidden by the
+# other. Per-market dead-worker detection is the ecs_tasks alarm on each worker service; a market dimension on job.age_s is a follow-up.
 
 resource "aws_cloudwatch_metric_alarm" "job_stale" {
   for_each = local.jobs
 
   alarm_name          = "${var.name}-job-stale-${each.key}"
-  alarm_description   = each.key == "us-banking-recon" ? "US banking provider: the US reconciliation has not finished (no run in 24 hours; due 03:00 IL, deadline 06:00 IL), or no worker is reporting. Runbook RUN-09 (US banking provider)." : "Job stale: job ${each.key} has not finished a run in time, or no worker is reporting (a dead worker pages). Runbook RUN-05 (Webhook backlog: check worker health, scale workers)."
+  alarm_description   = each.key == "us-banking-recon" ? "US banking provider: the US reconciliation has not finished (no run in 30 hours; due 03:00 IL, deadline 06:00 IL), or no worker is reporting. Runbook RUN-09 (US banking provider)." : "Job stale: job ${each.key} has not finished a run in time, or no worker is reporting (a dead worker pages). One dead market worker is seen by the ecs_tasks alarm, not this one. Runbook RUN-05 (Webhook backlog: check worker health, scale workers)."
   comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = each.value.cycle_s >= 86400 ? 1 : (each.value.cycle_s >= 900 ? 2 : 3)
-  datapoints_to_alarm = each.value.cycle_s >= 86400 ? 1 : (each.value.cycle_s >= 900 ? 2 : 3)
+  evaluation_periods  = each.value.cycle_s >= 86400 ? 30 : (each.value.cycle_s >= 900 ? 2 : 3)
+  datapoints_to_alarm = each.value.cycle_s >= 86400 ? 30 : (each.value.cycle_s >= 900 ? 2 : 3)
   namespace           = local.namespace
   metric_name         = "job.age_s"
   statistic           = "Maximum"
-  period              = each.value.cycle_s >= 86400 ? 86400 : (each.value.cycle_s >= 3600 ? 3600 : (each.value.cycle_s >= 900 ? 900 : 300))
+  period              = each.value.cycle_s >= 3600 ? 3600 : (each.value.cycle_s >= 900 ? 900 : 300)
   threshold           = each.value.cycle_s >= 86400 ? 90000 : 3 * each.value.cycle_s
   treat_missing_data  = "breaching"
   alarm_actions       = each.value.money ? [local.pages_arn] : [local.tickets_arn]
@@ -602,22 +610,40 @@ resource "aws_cloudwatch_metric_alarm" "ecs_tasks" {
   }
 }
 
-# ---- AWS Backup job failure -> the page topic --------------------------------------------------------------------------
+# ---- AWS Backup job and copy job failure -> the page topic --------------------------------------------------------------------------
 
 resource "aws_cloudwatch_event_rule" "backup_failed" {
   name        = "${var.name}-backup-failed"
-  description = "Backup failure: an AWS Backup or copy job failed, expired or aborted. Runbook RUN-08 (Restore from backup): the newest recovery point may be missing."
+  description = "Backup failure: an AWS Backup job failed, expired or aborted. Runbook RUN-08 (Restore from backup): the newest recovery point may be missing."
   tags        = var.tags
 
   event_pattern = jsonencode({
     source        = ["aws.backup"]
-    "detail-type" = ["Backup Job State Change", "Copy Job State Change"]
+    "detail-type" = ["Backup Job State Change"]
     detail        = { state = ["FAILED", "EXPIRED", "ABORTED"] }
   })
 }
 
 resource "aws_cloudwatch_event_target" "backup_failed" {
   rule      = aws_cloudwatch_event_rule.backup_failed.name
+  target_id = "pages"
+  arn       = local.pages_arn
+}
+
+resource "aws_cloudwatch_event_rule" "backup_copy_failed" {
+  name        = "${var.name}-backup-copy-failed"
+  description = "Backup failure: an AWS Backup copy job to the DR or locked vault failed. Runbook RUN-08 (Restore from backup): the copy may be missing."
+  tags        = var.tags
+
+  event_pattern = jsonencode({
+    source        = ["aws.backup"]
+    "detail-type" = ["Copy Job State Change"]
+    detail        = { state = ["FAILED"] }
+  })
+}
+
+resource "aws_cloudwatch_event_target" "backup_copy_failed" {
+  rule      = aws_cloudwatch_event_rule.backup_copy_failed.name
   target_id = "pages"
   arn       = local.pages_arn
 }
