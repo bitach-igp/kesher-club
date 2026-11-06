@@ -14,7 +14,7 @@ import { LegalService } from './service.ts';
 let db: TestDatabase;
 let app: App;
 let legal: LegalService;
-let t0 = new Date('2026-11-10T09:00:00Z');
+const t0 = new Date('2026-11-10T09:00:00Z');
 const dana = uuidv7(t0);
 const noa = uuidv7(t0);
 const counsel = uuidv7(t0);
