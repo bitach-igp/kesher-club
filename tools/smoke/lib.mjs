@@ -4,6 +4,8 @@
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 const METHODS = new Set(['GET', 'HEAD', 'POST']);
+/** Headers that would authenticate a request: the suite never sends one (checked case-insensitively). */
+const CREDENTIAL_HEADERS = new Set(['authorization', 'proxy-authorization', 'cookie', 'x-api-key', 'x-auth-token']);
 
 /** A check that cannot tell is not a pass: `skip` is reported, and `--strict` turns it into a failure. */
 export class Skip extends Error {}
@@ -39,10 +41,22 @@ export function parseTarget(raw, label, { allowLocal = false } = {}) {
   return { url: u, origin: u.origin, host: u.hostname, port: u.port === '' ? (u.protocol === 'https:' ? 443 : 80) : Number(u.port), https: u.protocol === 'https:', local };
 }
 
+/**
+ * A path on a vetted target: must start with a single '/', and must resolve to the target's own origin (a string join of
+ * '.evil.example/x' or '//evil.example' would not). Returns the URL string.
+ */
+export function targetUrl(target, p, label = 'path') {
+  if (typeof p !== 'string' || !p.startsWith('/') || p.startsWith('//') || /[\\\s]/.test(p)) throw new Error(`${label} must start with a single "/" and have no backslash or whitespace: ${p}`);
+  const u = new URL(p, target.origin);
+  if (u.origin !== target.origin) throw new Error(`${label} leaves the target origin: ${p}`);
+  return u.href;
+}
+
 /** The only HTTP client the checks have. `fetchImpl` is injected by the tests to record what is sent. */
 export function makeClient({ fetchImpl = globalThis.fetch, timeoutMs = 10_000 } = {}) {
   async function send(method, url, { headers = {}, body } = {}) {
     if (!METHODS.has(method)) throw new Error(`smoke refuses to send ${method}`);
+    for (const k of Object.keys(headers)) if (CREDENTIAL_HEADERS.has(k.toLowerCase())) throw new Error(`smoke never sends a credential (${k})`);
     const res = await fetchImpl(url, {
       method,
       headers,
@@ -65,7 +79,5 @@ export function makeClient({ fetchImpl = globalThis.fetch, timeoutMs = 10_000 } 
     head: (url, opts) => send('HEAD', url, opts),
     /** A POST that is meant to be refused: the caller passes a body and headers that cannot be valid. */
     postInvalid: (url, body, headers = {}) => send('POST', url, { body, headers: { 'content-type': 'application/json', ...headers } }),
-    // Exposed so a test can prove the guard: nothing in the suite calls this.
-    _send: send,
   };
 }

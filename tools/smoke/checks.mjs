@@ -2,8 +2,9 @@
 // (via fail()) when it does not, and throws Skip (via skip()) when it cannot tell. Every request is a GET or HEAD, or a POST
 // that is deliberately invalid (a forged webhook signature); no check creates data.
 import fs from 'node:fs';
+import dns from 'node:dns';
 import tls from 'node:tls';
-import { fail, skip } from './lib.mjs';
+import { fail, skip, targetUrl } from './lib.mjs';
 
 export const STATUS_CAPABILITIES = ['wallet', 'card', 'p2p', 'fx', 'payouts'];
 export const CAPABILITY_STATES = ['ok', 'degraded', 'off'];
@@ -39,10 +40,19 @@ export const WEB_HEADER_RULES = [
   { name: 'content-security-policy', test: (h) => (h('content-security-policy') ?? '').trim() !== '', need: 'a Content-Security-Policy header' },
 ];
 
+/** A handshake refused because of the protocol version (what a TLS 1.3 only host sends to a TLS 1.2 client). */
+export function isVersionRefusal(e) {
+  const text = `${e?.code ?? ''} ${e?.message ?? ''}`;
+  return e?.code === 'ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION' || /protocol version|unsupported protocol/i.test(text);
+}
+
+/** Network failures that mean "nothing answered from here" (the admin host behind an allow-list or the VPN). */
+const REFUSAL_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT']);
+
 /** What the TLS probes do: injected in the tests, node:tls in the CLI. Resolves with the negotiated protocol, rejects on failure. */
 export function realTlsProbe({ host, port, minVersion, maxVersion, timeoutMs = 10_000 }) {
   return new Promise((resolve, reject) => {
-    const socket = tls.connect({ host, port, servername: host, ...(minVersion ? { minVersion } : {}), ...(maxVersion ? { maxVersion } : {}), timeout: timeoutMs }, () => {
+    const socket = tls.connect({ host: host.replace(/^\[|\]$/g, ''), port, servername: host.replace(/^\[|\]$/g, ''), ...(minVersion ? { minVersion } : {}), ...(maxVersion ? { maxVersion } : {}), timeout: timeoutMs }, () => {
       const protocol = socket.getProtocol();
       socket.end();
       resolve({ protocol });
@@ -105,8 +115,10 @@ export function buildChecks() {
         let old;
         try {
           old = await tlsProbe({ ...target, maxVersion: 'TLSv1.2' });
-        } catch {
-          old = undefined; // refused: what a TLS 1.3 only host does
+        } catch (e) {
+          // Only a protocol-version refusal is the answer wanted; a DNS, connect or certificate error says nothing about TLS 1.2.
+          if (!isVersionRefusal(e)) fail(`could not tell whether TLS 1.2 is refused: ${e instanceof Error ? e.message : String(e)}`);
+          old = undefined;
         }
         if (old) fail(`the API host completed a handshake at ${old.protocol} when offered TLS 1.2 at most`);
         let modern;
@@ -131,16 +143,24 @@ export function buildChecks() {
     },
     {
       name: 'admin-closed-outside-vpn',
-      async run({ client, urls }) {
+      async run({ client, urls, lookup = dns.promises.lookup }) {
         if (!urls.admin) skip('no admin URL given (--admin-url)');
+        // A name that does not resolve is a typo or a missing record, not a closed door.
+        try {
+          await lookup(urls.admin.host.replace(/^\[|\]$/g, ''));
+        } catch (e) {
+          fail(`the admin host does not resolve (${e?.code ?? 'error'}): that is not a refusal`);
+        }
         let r;
         try {
-          r = await client.get(join(urls.admin.origin, '/'));
+          r = await client.get(targetUrl(urls.admin, '/'));
         } catch (e) {
-          return `refused from here (${e instanceof Error ? e.name : 'error'}): no answer outside the VPN`;
+          const code = e?.cause?.code ?? e?.code;
+          if (REFUSAL_CODES.has(code) || e?.name === 'TimeoutError' || e?.name === 'AbortError') return `no answer from here (${code ?? e.name}): closed outside the VPN`;
+          fail(`the admin host failed in a way that is not a refusal: ${code ?? e?.name}: ${e instanceof Error ? e.message : String(e)}`);
         }
-        if (r.status >= 200 && r.status < 400) fail(`admin answered ${r.status} to a request from outside the VPN; it must refuse`);
-        return `refused with ${r.status}`;
+        if (r.status !== 403) fail(`admin answered ${r.status} to a request from outside the VPN; only 403, a refusal or a timeout counts as closed`);
+        return 'refused with 403';
       },
     },
     {
@@ -165,20 +185,16 @@ export function buildChecks() {
     {
       name: 'webhook-bad-signature',
       async run({ client, urls, webhookPath }) {
-        // Two identical deliveries with a wrong signature and one event id. The API keeps a refused delivery apart from genuine ones
-        // (T-0207), so both must be refused the same way. A 200, or a second answer that differs ("duplicate"), would mean the
-        // first one was accepted or claimed the id.
-        const url = join(urls.api.origin, webhookPath);
+        // One delivery with a wrong signature. The route verifies before it parses or processes, so the only right answer is
+        // 401 invalid_signature (apps/api webhooks/crowded.ts). The API keeps a refused delivery apart from genuine ones (T-0207);
+        // that is not observable from outside, so this proves the refusal and nothing more.
+        const url = targetUrl(urls.api, webhookPath, '--webhook-path');
         const body = JSON.stringify({ events: [{ id: 'smoke-forged-event', type: 'smoke.invalid' }] });
-        const headers = { 'x-webhook-signature': 'sha256=' + '0'.repeat(64), 'webhook-id': 'smoke-forged-event', 'webhook-timestamp': '1', 'webhook-signature': 'v1,AAAA', 'stripe-signature': 't=1,v1=00' };
-        const first = await client.postInvalid(url, body, headers);
-        const second = await client.postInvalid(url, body, headers);
-        for (const [n, r] of [['first', first], ['second', second]]) {
-          if (r.status < 400 || r.status > 499) fail(`${n} forged delivery answered ${r.status}, wanted 4xx`);
-          if (/duplicate/i.test(r.text)) fail(`${n} forged delivery was answered as a duplicate: it claimed an event id`);
-        }
-        if (first.status !== second.status) fail(`forged deliveries answered ${first.status} then ${second.status}: the first one changed what the second saw`);
-        return `forged delivery refused twice with ${first.status}, never a duplicate`;
+        const r = await client.postInvalid(url, body, { 'x-webhook-signature': 'sha256=' + '0'.repeat(64) });
+        if (r.status === 404) skip(`${webhookPath} answered 404 before checking the signature (flag institutions.usBanking off, or a wrong path): a signature refusal was not proven`);
+        if (r.status >= 200 && r.status < 300) fail(`forged delivery was accepted with ${r.status}`);
+        if (r.status !== 401 || r.json?.code !== 'invalid_signature') fail(`forged delivery answered ${r.status} ${r.text.slice(0, 80)}, wanted 401 with code invalid_signature`);
+        return '401 invalid_signature';
       },
     },
     {

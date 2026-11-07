@@ -7,7 +7,7 @@
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { realTlsProbe, runChecks } from './checks.mjs';
-import { makeClient, parseTarget } from './lib.mjs';
+import { makeClient, parseTarget, targetUrl } from './lib.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const OPTIONS = { 'base-url': 'SMOKE_BASE_URL', 'jit-url': 'SMOKE_JIT_URL', 'admin-url': 'SMOKE_ADMIN_URL', 'console-url': 'SMOKE_CONSOLE_URL', 'web-url': 'SMOKE_WEB_URL', 'openapi-url': 'SMOKE_OPENAPI_URL', 'expected-tag': 'SMOKE_EXPECTED_TAG', 'webhook-path': 'SMOKE_WEBHOOK_PATH' };
@@ -37,13 +37,17 @@ export async function main(argv, env = {}, deps = {}) {
   const out = deps.out ?? ((l) => console.log(l));
   let opts;
   let urls;
+  let openapi;
+  let webhookPath;
   try {
     opts = parseArgs(argv, env);
     if (!opts['base-url']) throw new Error('--base-url (or SMOKE_BASE_URL) is required: the API host, https://');
     const allowLocal = opts['allow-local'] === true;
     urls = { api: parseTarget(opts['base-url'], '--base-url', { allowLocal }) };
     for (const [k, label] of [['jit', '--jit-url'], ['admin', '--admin-url'], ['console', '--console-url'], ['web', '--web-url']]) if (opts[label.slice(2)]) urls[k] = parseTarget(opts[label.slice(2)], label, { allowLocal });
-    if (opts['openapi-url']) parseTarget(opts['openapi-url'], '--openapi-url', { allowLocal });
+    if (opts['openapi-url']) openapi = parseTarget(opts['openapi-url'], '--openapi-url', { allowLocal });
+    webhookPath = opts['webhook-path'] ?? '/v1/webhooks/crowded';
+    targetUrl(urls.api, webhookPath, '--webhook-path');
   } catch (e) {
     out(`FAIL setup: ${e instanceof Error ? e.message : String(e)}`);
     return 1;
@@ -52,10 +56,11 @@ export async function main(argv, env = {}, deps = {}) {
     client: makeClient(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     urls,
     expectedTag: opts['expected-tag'],
-    openapiUrl: opts['openapi-url'],
+    ...(openapi ? { openapiUrl: openapi.url.href } : {}),
     contractPath: deps.contractPath ?? path.join(root, 'contracts', 'openapi.yaml'),
-    webhookPath: opts['webhook-path'] ?? '/v1/webhooks/crowded',
+    webhookPath,
     tlsProbe: deps.tlsProbe ?? realTlsProbe,
+    ...(deps.lookup ? { lookup: deps.lookup } : {}),
   };
   const { ok, results } = await runChecks(ctx, out, { strict: opts['strict'] === true, ...(deps.checks ? { checks: deps.checks } : {}) });
   const skipped = results.filter((r) => r.status === 'skip').length;

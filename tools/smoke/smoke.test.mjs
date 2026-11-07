@@ -7,12 +7,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SimulatorHost } from '../../apps/simulators/src/index.ts';
 import { generateSigningKey } from '../../apps/api/src/auth/tokens.ts';
+import { StaticFlags } from '../../apps/api/src/billing/capabilities.ts';
 import { createApp } from '../../apps/api/src/app.ts';
 import { createServer } from '../../apps/api/src/server.ts';
 import { createTestDatabase } from '../../apps/api/src/test-db.ts';
 import { buildChecks, countOperations, runChecks, VERSION_HEADER } from './checks.mjs';
 import { main, parseArgs } from './index.mjs';
-import { makeClient, parseTarget } from './lib.mjs';
+import { makeClient, parseTarget, targetUrl } from './lib.mjs';
 
 const contractPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../contracts/openapi.yaml');
 let db;
@@ -29,6 +30,7 @@ const recordingFetch = (url, init) => {
   sent.push({ method: init?.method ?? 'GET', path: new URL(url).pathname, headers: init?.headers ?? {} });
   return fetch(url, init);
 };
+const lookupOk = async () => ({ address: '127.0.0.1' });
 const goodTls = async ({ maxVersion }) => {
   if (maxVersion === 'TLSv1.2') throw new Error('alert protocol version');
   return { protocol: 'TLSv1.3' };
@@ -38,7 +40,7 @@ const staticServer = (handler) => http.createServer((req, res) => handler(req, r
 
 before(async () => {
   db = await createTestDatabase();
-  const app = createApp({ db, registry: new SimulatorHost().registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example' });
+  const app = createApp({ db, registry: new SimulatorHost().registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', flags: new StaticFlags(undefined, { 'institutions.usBanking': true }) });
   apiServer = createServer(app);
   jitServer = createServer(app, { role: 'jit' });
   api = await listen(apiServer);
@@ -63,14 +65,14 @@ test('against a local createApp every check that can run passes, and each prints
   try {
     sent.length = 0;
     const { out, report } = lines();
-    const ctx = { client: makeClient({ fetchImpl: recordingFetch }), urls: { api: parseTarget(api, 'api', { allowLocal: true }), jit: parseTarget(jit, 'jit', { allowLocal: true }), web: parseTarget(webUrl, 'web', { allowLocal: true }), console: parseTarget(consoleUrl, 'console', { allowLocal: true }), admin: parseTarget(adminUrl, 'admin', { allowLocal: true }) }, contractPath, webhookPath: '/v1/webhooks/crowded', tlsProbe: goodTls };
+    const ctx = { client: makeClient({ fetchImpl: recordingFetch }), urls: { api: parseTarget(api, 'api', { allowLocal: true }), jit: parseTarget(jit, 'jit', { allowLocal: true }), web: parseTarget(webUrl, 'web', { allowLocal: true }), console: parseTarget(consoleUrl, 'console', { allowLocal: true }), admin: parseTarget(adminUrl, 'admin', { allowLocal: true }) }, contractPath, webhookPath: '/v1/webhooks/crowded', tlsProbe: goodTls, lookup: lookupOk };
     ctx.urls.api = { ...ctx.urls.api, https: true };
     const r = await runChecks(ctx, report);
     assert.equal(r.ok, true, out.join('\n'));
     assert.equal(out.length, buildChecks().length);
     assert.match(out.join('\n'), /PASS api-status: 200/);
     assert.match(out.join('\n'), /PASS jit-health/);
-    assert.match(out.join('\n'), /PASS webhook-bad-signature/);
+    assert.match(out.join('\n'), /PASS webhook-bad-signature: 401 invalid_signature/);
     assert.match(out.join('\n'), /PASS money-route-needs-auth/);
     assert.match(out.join('\n'), /SKIP api-tag/);
     assert.match(out.join('\n'), /SKIP openapi-operations/);
@@ -79,19 +81,40 @@ test('against a local createApp every check that can run passes, and each prints
   }
 });
 
-test('no check sends anything but GET, HEAD or a deliberately invalid POST', async () => {
-  const methods = new Set(sent.map((s) => s.method));
-  assert.ok(sent.length >= 8);
-  for (const m of methods) assert.ok(['GET', 'HEAD', 'POST'].includes(m), m);
+test('no check sends anything but GET, HEAD or a deliberately invalid POST, and never a credential', async () => {
+  sent.length = 0;
+  const closed = staticServer((_q, res) => res.writeHead(403).end('{}'));
+  const open = staticServer((q, res) => res.writeHead(200, q.url === '/healthz' ? {} : { 'strict-transport-security': 'max-age=31536000', 'x-content-type-options': 'nosniff', 'x-frame-options': 'DENY', 'content-security-policy': "default-src 'self'" }).end('{}'));
+  const [closedUrl, openUrl] = await Promise.all([listen(closed), listen(open)]);
+  const local = (u, l) => parseTarget(u, l, { allowLocal: true });
+  const ctx = { client: makeClient({ fetchImpl: recordingFetch }), urls: { api: { ...local(api, 'api'), https: true }, jit: local(jit, 'jit'), admin: local(closedUrl, 'admin'), console: local(openUrl, 'console'), web: local(openUrl, 'web') }, contractPath, webhookPath: '/v1/webhooks/crowded', tlsProbe: goodTls, lookup: lookupOk };
+  const r = await runChecks(ctx, () => {});
+  await Promise.all([closed, open].map(closeServer));
+  assert.equal(r.ok, true);
+  assert.ok(sent.length >= 7);
+  for (const m of new Set(sent.map((s) => s.method))) assert.ok(['GET', 'HEAD', 'POST'].includes(m), m);
   const posts = sent.filter((s) => s.method === 'POST');
-  assert.ok(posts.length > 0);
+  assert.equal(posts.length, 1);
   for (const p of posts) {
     assert.equal(p.path, '/v1/webhooks/crowded');
     assert.equal(p.headers['x-webhook-signature'], 'sha256=' + '0'.repeat(64), 'a POST carries only a wrong signature');
-    assert.equal(p.headers['authorization'], undefined, 'no credential is ever sent');
   }
+  for (const s of sent) assert.deepEqual(Object.keys(s.headers).filter((k) => ['authorization', 'cookie', 'x-api-key'].includes(k.toLowerCase())), []);
+});
+
+test('the client has no way to send PUT, PATCH or DELETE and refuses credential headers', async () => {
   const c = makeClient({ fetchImpl: recordingFetch });
-  for (const m of ['PUT', 'PATCH', 'DELETE']) await assert.rejects(() => c._send(m, `${api}/v1/status`), /refuses to send/);
+  assert.deepEqual(Object.keys(c).sort(), ['get', 'head', 'postInvalid']);
+  for (const h of ['Authorization', 'cookie', 'X-Api-Key', 'Proxy-Authorization']) {
+    await assert.rejects(() => c.get(`${api}/v1/status`, { headers: { [h]: 'x' } }), /never sends a credential/);
+    await assert.rejects(() => c.postInvalid(`${api}/v1/status`, '{}', { [h]: 'x' }), /never sends a credential/);
+  }
+});
+
+test('a path cannot leave the vetted origin', () => {
+  const t = parseTarget('https://api.example', 'api');
+  assert.equal(targetUrl(t, '/v1/webhooks/crowded'), 'https://api.example/v1/webhooks/crowded');
+  for (const p of ['.evil.example/x', '//evil.example/x', 'v1/x', '/a\\b', '/a b', '', undefined, 'https://evil.example/']) assert.throws(() => targetUrl(t, p), /--?path|must start|leaves/, String(p));
 });
 
 test('the first failure stops the run and names the check', async () => {
@@ -111,7 +134,7 @@ test('the first failure stops the run and names the check', async () => {
 });
 
 test('the CLI refuses http:// (except local with --allow-local), credentials and a missing base URL, and exits 1', async () => {
-  for (const argv of [['--base-url', 'http://api.staging.example'], ['--base-url', 'http://127.0.0.1:1'], ['--base-url', 'https://u:p@api.staging.example'], ['--base-url', 'ftp://x.example'], [], ['--base-url', 'https://api.example', '--jit-url', 'http://jit.example'], ['--base-url', 'https://api.example', '--bogus']]) {
+  for (const argv of [['--base-url', 'http://api.staging.example'], ['--base-url', 'http://127.0.0.1:1'], ['--base-url', 'https://u:p@api.staging.example'], ['--base-url', 'ftp://x.example'], [], ['--base-url', 'https://api.example', '--jit-url', 'http://jit.example'], ['--base-url', 'https://api.example', '--bogus'], ['--base-url', 'https://api.example', '--webhook-path', '.evil.example/x']]) {
     const { out, report } = lines();
     assert.equal(await main(argv, {}, { out: report, fetchImpl: () => assert.fail('no request may be sent') }), 1, argv.join(' '));
     assert.match(out[0], /^FAIL setup:/);
@@ -123,7 +146,7 @@ test('the CLI refuses http:// (except local with --allow-local), credentials and
 
 test('the CLI runs end to end against the local API, reading options from the environment', async () => {
   const { out, report } = lines();
-  const code = await main(['--allow-local'], { SMOKE_BASE_URL: api, SMOKE_JIT_URL: jit }, { out: report, tlsProbe: goodTls, contractPath });
+  const code = await main(['--allow-local'], { SMOKE_BASE_URL: api, SMOKE_JIT_URL: jit }, { out: report, tlsProbe: goodTls, contractPath, lookup: lookupOk });
   assert.equal(code, 0, out.join('\n'));
   assert.match(out.at(-1), /^smoke: \d+ passed, \d+ skipped$/);
 });
@@ -162,16 +185,24 @@ test('the TLS check wants TLS 1.2 refused and TLS 1.3 accepted', async () => {
   const run = (probe) => buildChecks().find((x) => x.name === 'api-tls13-only').run({ urls: { api: parseTarget('https://api.example', 'api') }, tlsProbe: probe });
   assert.match(await run(goodTls), /TLS 1.2 refused/);
   await assert.rejects(() => run(async () => ({ protocol: 'TLSv1.2' })), /completed a handshake at TLSv1.2/);
-  await assert.rejects(() => run(async ({ maxVersion }) => { if (maxVersion) throw new Error('refused'); throw new Error('no cert'); }), /did not complete a TLS 1.3 handshake: no cert/);
-  await assert.rejects(() => run(async ({ maxVersion }) => { if (maxVersion) throw new Error('refused'); return { protocol: 'TLSv1.2' }; }), /negotiated/);
+  await assert.rejects(() => run(async ({ maxVersion }) => { if (maxVersion) throw new Error('tlsv1 alert protocol version'); throw new Error('no cert'); }), /did not complete a TLS 1.3 handshake: no cert/);
+  await assert.rejects(() => run(async ({ maxVersion }) => { if (maxVersion) throw new Error('tlsv1 alert protocol version'); return { protocol: 'TLSv1.2' }; }), /negotiated/);
+  assert.match(await run(async ({ maxVersion }) => { if (maxVersion) throw Object.assign(new Error('x'), { code: 'ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION' }); return { protocol: 'TLSv1.3' }; }), /refused/);
+  for (const e of [Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' }), new Error('connect ECONNREFUSED'), new Error('certificate has expired')]) {
+    await assert.rejects(() => run(async ({ maxVersion }) => { if (maxVersion) throw e; return { protocol: 'TLSv1.3' }; }), /could not tell whether TLS 1.2 is refused/);
+  }
 });
 
-test('the admin check passes on a refusal or no answer and fails on a page', async () => {
-  const run = (impl) => buildChecks().find((x) => x.name === 'admin-closed-outside-vpn').run({ client: makeClient({ fetchImpl: async () => impl() }), urls: { admin: parseTarget('https://admin.example', 'admin') } });
+test('the admin check passes only on a 403 or a connection-level refusal, and fails on anything else', async () => {
+  const run = (impl, lookup = lookupOk) => buildChecks().find((x) => x.name === 'admin-closed-outside-vpn').run({ lookup, client: makeClient({ fetchImpl: async () => impl() }), urls: { admin: parseTarget('https://admin.example', 'admin') } });
+  const net = (code) => () => { throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) }); };
   assert.match(await run(() => new globalThis.Response('{}', { status: 403 })), /403/);
-  assert.match(await run(() => { throw new TypeError('fetch failed'); }), /refused from here/);
-  await assert.rejects(() => run(() => new globalThis.Response('hi', { status: 200 })), /must refuse/);
-  await assert.rejects(() => run(() => new globalThis.Response('', { status: 303 })), /must refuse/);
+  for (const code of ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT']) assert.match(await run(net(code)), new RegExp(code));
+  assert.match(await run(() => { throw Object.assign(new Error('t'), { name: 'TimeoutError' }); }), /TimeoutError/);
+  for (const status of [200, 303, 401, 404, 500, 502]) await assert.rejects(() => run(() => new globalThis.Response('x', { status })), /only 403/, String(status));
+  await assert.rejects(() => run(net('CERT_HAS_EXPIRED')), /not a refusal/);
+  await assert.rejects(() => run(net('ENOTFOUND')), /not a refusal/);
+  await assert.rejects(() => run(() => new globalThis.Response('x', { status: 403 }), async () => { throw Object.assign(new Error('nx'), { code: 'ENOTFOUND' }); }), /does not resolve/);
 });
 
 test('the web header check names every missing header, and the webhook check fails on a 200 or a duplicate', async () => {
@@ -179,15 +210,29 @@ test('the web header check names every missing header, and the webhook check fai
   await assert.rejects(() => web({ 'x-content-type-options': 'nosniff' }), (e) => /Strict-Transport-Security/.test(e.message) && /frame/.test(e.message) && /Content-Security-Policy/.test(e.message) && !/nosniff/.test(e.message));
   await assert.rejects(() => web({ 'strict-transport-security': 'max-age=60', 'x-content-type-options': 'nosniff', 'content-security-policy': "frame-ancestors 'none'" }), /max-age/);
   await web({ 'strict-transport-security': 'max-age=31536000', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'self'; frame-ancestors 'none'" });
-  const hook = (...answers) => {
-    let i = 0;
-    return buildChecks().find((x) => x.name === 'webhook-bad-signature').run({ client: makeClient({ fetchImpl: async () => answers[i++]() }), urls: { api: parseTarget('https://api.example', 'api') }, webhookPath: '/v1/webhooks/crowded' });
-  };
-  const r401 = () => new globalThis.Response('{}', { status: 401 });
-  assert.match(await hook(r401, r401), /twice with 401/);
-  await assert.rejects(() => hook(() => new globalThis.Response('{}', { status: 200 }), r401), /wanted 4xx/);
-  await assert.rejects(() => hook(r401, () => new globalThis.Response('{"duplicate":true}', { status: 409 })), /duplicate/);
-  await assert.rejects(() => hook(r401, () => new globalThis.Response('{}', { status: 404 })), /first one changed/);
+});
+
+test('the webhook check wants a real 401 invalid_signature, skips a 404 and fails anything else', async () => {
+  const hook = (res, webhookPath = '/v1/webhooks/crowded') => buildChecks().find((x) => x.name === 'webhook-bad-signature').run({ client: makeClient({ fetchImpl: async () => res() }), urls: { api: parseTarget('https://api.example', 'api') }, webhookPath });
+  const problem = (status, code) => () => new globalThis.Response(JSON.stringify({ status, code }), { status });
+  assert.match(await hook(problem(401, 'invalid_signature')), /401 invalid_signature/);
+  await assert.rejects(() => hook(problem(404, 'FEATURE_OFF')), (e) => e.constructor.name === 'Skip' && /404/.test(e.message));
+  await assert.rejects(() => hook(problem(401, 'UNAUTHENTICATED')), /invalid_signature/);
+  await assert.rejects(() => hook(problem(422, 'VALIDATION_FAILED')), /wanted 401/);
+  await assert.rejects(() => hook(problem(200, 'x')), /accepted with 200/);
+  await assert.rejects(() => hook(problem(500, 'INTERNAL')), /wanted 401/);
+  await assert.rejects(() => hook(problem(401, 'invalid_signature'), '.evil.example/x'), /--webhook-path/);
+});
+
+test('against the real API the forged delivery is refused 401 invalid_signature when the flag is on', async () => {
+  const { out, report } = lines();
+  const ctx = { client: makeClient(), urls: { api: parseTarget(api, 'api', { allowLocal: true }) }, webhookPath: '/v1/webhooks/crowded' };
+  const r = await runChecks(ctx, report, { checks: buildChecks().filter((c) => c.name === 'webhook-bad-signature') });
+  assert.equal(r.ok, true, out.join('\n'));
+  assert.match(out[0], /PASS webhook-bad-signature: 401 invalid_signature/);
+  // A wrong path is a 404 from the real router: skipped, so strict fails it.
+  const wrong = await runChecks({ ...ctx, webhookPath: '/v1/webhooks/nope' }, () => {}, { strict: true, checks: buildChecks().filter((c) => c.name === 'webhook-bad-signature') });
+  assert.equal(wrong.ok, false);
 });
 
 test('parseArgs reads flags over the environment', () => {
