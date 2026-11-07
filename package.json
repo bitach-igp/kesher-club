@@ -9,7 +9,7 @@
   "scripts": {
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test && node --test tools/*.test.mjs tools/secrets/*.test.mjs",
+    "test": "turbo run test && node --test tools/*.test.mjs tools/secrets/*.test.mjs tools/loadtest/*.test.mjs",
     "lint": "eslint .",
     "trace": "node tools/trace-check.mjs",
     "db:lint": "node db/lint.mjs && node --test db/*.test.mjs"
