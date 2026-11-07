@@ -8,3 +8,4 @@ coverage/
 *.log
 .DS_Store
 vendor/
+tools/loadtest/cards.json

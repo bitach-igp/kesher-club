@@ -1,0 +1,76 @@
+# JIT load test (T-0055, REQ-CRD-003, RUN-02): k6 replays signed card authorisations against the STAGING JIT host at
+# LOAD_RPS (default 50) with about 10 % declines and a burst of concurrent authorisations for one wallet, and fails the run
+# over p99 300 ms or 1 % errors. Manual and nightly only, never on a pull request, never against production: the target
+# comes from a repository variable and tools/loadtest/guard.mjs refuses a host that looks like production before k6 is installed.
+# Nothing here needs more than read access to the repository. The signing value is a secret only so it is masked in logs.
+name: loadtest
+on:
+  workflow_dispatch:
+    inputs:
+      rps:
+        description: Requests per second for the steady scenario
+        required: false
+        default: "50"
+      duration:
+        description: How long to run, in k6 duration syntax
+        required: false
+        default: "5m"
+  schedule:
+    - cron: "23 2 * * *"
+permissions:
+  contents: read
+concurrency:
+  group: loadtest
+  cancel-in-progress: false
+
+jobs:
+  jit:
+    name: k6 · JIT p99 under 300 ms
+    # Skipped until staging exists and its variables are set (deploy readiness review 2026-11-05); a fork has neither.
+    if: vars.STAGING_JIT_URL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      JIT_URL: ${{ vars.STAGING_JIT_URL }}
+      JIT_SIGNATURE: ${{ secrets.STAGING_JIT_SIGNATURE }}
+      LOAD_RPS: ${{ inputs.rps || '50' }}
+      LOAD_DURATION: ${{ inputs.duration || '5m' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Refuse anything that could be production
+        run: node tools/loadtest/guard.mjs "$JIT_URL"
+      - name: Cards to replay (staging card ids and funding, see tools/loadtest/README.md)
+        env:
+          LOADTEST_CARDS_JSON: ${{ vars.STAGING_LOADTEST_CARDS }}
+        run: |
+          test -n "$LOADTEST_CARDS_JSON" || { echo "repository variable STAGING_LOADTEST_CARDS is empty; run the seed steps in tools/loadtest/README.md"; exit 1; }
+          printf '%s' "$LOADTEST_CARDS_JSON" > tools/loadtest/cards.json
+      - uses: grafana/setup-k6-action@v1
+        with:
+          k6-version: "1.3.0"
+      - name: Probe the host with one decline-only request
+        run: node tools/loadtest/seed.mjs check --url "$JIT_URL"
+      - name: k6 run (exits non-zero over the thresholds)
+        run: k6 run --summary-export loadtest-summary.json tools/loadtest/jit.js
+      - name: Summary
+        if: always()
+        run: |
+          test -f loadtest-summary.json || exit 0
+          {
+            echo "### JIT load test at ${LOAD_RPS} req/s for ${LOAD_DURATION}"
+            echo
+            echo "| p95 ms | p99 ms | failed rate | requests |"
+            echo "|---|---|---|---|"
+            jq -r '.metrics | "| \(.http_req_duration["p(95)"]) | \(.http_req_duration["p(99)"]) | \(.http_req_failed.value) | \(.http_reqs.count) |"' loadtest-summary.json
+            echo
+            echo "Cross-check the server side: CloudWatch namespace Kesher, metric jit.decision_ms (p99) and jit.error (average) for this window."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: loadtest-summary
+          path: loadtest-summary.json
+          if-no-files-found: ignore
