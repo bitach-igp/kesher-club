@@ -384,7 +384,12 @@ export class LoadService implements LoadActivities {
 
   private async openUnknownLoadCase(transfer: Transfer, loadId: string, now: Date): Promise<void> {
     await this.d.db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_unknown', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
+      // A case people resolved or dismissed while the vendor still does not know the load is reopened (what they decided is kept in the
+      // payload), so the hold never stalls without anyone being told (T-0680); an open one is left alone.
+      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_unknown', $2, 'high', 'open', $3, $4)
+       on conflict (dedupe_key) do update set status = 'open', resolved_at = null, resolved_by = null, resolution = null,
+         payload = excluded.payload || jsonb_build_object('reopened', jsonb_build_object('at', excluded.opened_at, 'was', ops.case.status, 'resolution', ops.case.resolution))
+       where ops.case.status in ('resolved', 'dismissed')`,
       [uuidv7(now), unknownLoadKey(transfer.id), { transferId: transfer.id, loadId, state: transfer.state, amount: { minor: transfer.amount.minor.toString(), currency: transfer.amount.currency } }, now],
     );
   }
