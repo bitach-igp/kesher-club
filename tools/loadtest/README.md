@@ -10,11 +10,9 @@ latency is out of scope (ADR-006).
 | Scenario | Shape |
 |---|---|
 | `steady` | `LOAD_RPS` (default 50, twice the pilot peak) signed authorisations for `LOAD_DURATION` (default 5m), spread over the cards in `cards.json`. About 10 % are declines, half unknown cards (`UNKNOWN_CARD`) and half amounts no wallet holds (`INSUFFICIENT_FUNDS`). |
-| `burst` | Every `BURST_EVERY_S` (1) seconds, `BURST_SIZE` (5) authorisations for the one `burstCard` sent in parallel, so they race for the same funding wallet's lock. Some approve and some decline (balance, or the velocity rule of 10 per card per minute); both are normal answers. |
+| `burst` | Every `BURST_EVERY_S` (1) seconds, `BURST_SIZE` (5) authorisations for ONE wallet sent in parallel, so they race for that funding wallet's lock (`postNoOverdraft`, T-0544). Each burst uses the next of the `burstCards` in rotation: the velocity rule (10 approvals per card in a sliding minute) would otherwise decline a single card's burst after two seconds, before the lock path. With 30 burst cards each card is hit once every 30 s, 5 approvals per minute. The wallets are funded enough for every approval, so what this measures is latency under lock contention on one wallet; the in-lock INSUFFICIENT_FUNDS decline (a wallet drained between the early read and the hold) is proved by the T-0544 unit test, not here. |
 
-A decline is an HTTP 200, so it is not a failure. A non-200 answer, a transport error or an answer that is neither
-`APPROVED` nor `DECLINED` is. Thresholds (k6 exits non-zero when either is crossed): `http_req_duration` `p(99)<300` and
-`http_req_failed` `rate<0.01`.
+A decline is an HTTP 200, so `http_req_failed` does not count it; that metric sees only non-2xx/3xx answers and transport errors. The service also FAILS CLOSED: a throw or a budget overrun (250 ms) is a 200 `DECLINED` with reason `TIMEOUT`, which `http_req_failed` cannot see either, so the script reads the body. Thresholds (k6 exits non-zero when any is crossed): `http_req_duration` `p(99)<300`, `http_req_failed` `rate<0.01`, `jit_timeout_rate` `rate<0.01` (the share of answers that are `TIMEOUT`, the same event as `jit.error`), `jit_unexpected_rate` `rate<0.01` and `jit_unexpected` `count<1` (a non-200 or an answer that is neither `APPROVED` nor `DECLINED`).
 
 ## Variables
 
@@ -26,6 +24,7 @@ A decline is an HTTP 200, so it is not a failure. A non-200 answer, a transport 
 | `LOAD_RPS`, `LOAD_DURATION` | no | 50 and `5m`. |
 | `BURST_SIZE`, `BURST_EVERY_S` | no | 5 and 1. |
 | `DECLINE_SHARE` | no | 0.1. |
+| `ALLOW_FEW_CARDS` | no | Set to `1` for a smoke run with fewer cards than the velocity rule needs (the script otherwise refuses to start, see Seeding). |
 
 Signing: the card simulator's `parseAuthorization` checks `x-sim-signature === 'sim'` and parses the JSON body; there is no HMAC
 today. `lib.mjs` `signHeaders()` builds that header from `JIT_SIGNATURE` and `buildRequest()` makes the body in the shape
@@ -37,10 +36,10 @@ HMAC scheme is tested this way, `signHeaders` is the one place to add `k6/crypto
 The target is refused, before any request, when it could be production:
 
 - `lib.mjs` `assertNotProd(JIT_URL)` runs in `jit.js`'s init context, in `seed.mjs check` and, as `node tools/loadtest/guard.mjs "$JIT_URL"`, as the workflow's first step (before k6 is installed).
-- It refuses a host with a `prod`, `production`, `prd` or `live` label, a host that does not also name `staging`, `stage`, `stg`, `preview`, `sandbox`, `dev` or `localhost`, credentials in the URL, plain http outside localhost, and any path other than the JIT route.
+- It accepts only a host equal to `staging.kesher.example` or ending in `.staging.kesher.example` (the zone in `infra/terraform/envs/staging`), or `localhost` / `127.0.0.1`, and still refuses a `prod`, `production`, `prd` or `live` label inside it. It refuses a host with anything but lower-case letters, digits, dots and hyphens, any backslash, whitespace, control character or `@` (a URL parser reads a backslash as a slash and strips tabs and newlines, so the text could name one host and the client connect to another), a host the `URL` global reads differently, plain http outside localhost, and any path other than the JIT route.
 - The workflow has `workflow_dispatch` and a nightly `schedule` only, `permissions: contents: read`, and reads the target from the repository variable `STAGING_JIT_URL`. It is skipped while that variable is empty. Nothing is echoed; the signature is a secret and so masked.
 
-If staging's host does not contain one of those words, name it so or the guard will refuse it: the guard errs toward refusing.
+If staging's zone changes, change `STAGING_ZONE` in `lib.mjs` and the tests with it: the guard errs toward refusing.
 
 ## Seeding staging
 
@@ -48,9 +47,9 @@ The public API cannot make funded test cards on its own: sign-in needs a passkey
 5 minutes, and no endpoint returns the processor card id the JIT call is keyed by (`CardView` has only our id). So seeding is
 three steps; `seed.mjs` does the two that can be scripted:
 
-1. **Members and cards.** For each test member (a `+1555...` test number on the `sim` auth port), sign in through the app or the simulator panel, start a T2 KYC session (`POST /v1/kyc/sessions`) and post the simulator's approval to `POST /v1/hooks/kyc` (header `x-sim-signature: sim`, body `{ eventId, sessionId, status: "approved" }`); approval issues the virtual card (the same path as `jit.bench.test.ts`). Make at least 20 members for the steady scenario (the velocity rule allows 10 approvals per card per minute) plus one for the burst wallet.
-2. **Funds.** Load each purse with `POST /v1/loads` (payment method fixture `pm_ok`, a fresh step-up), enough for the run: about `LOAD_RPS x duration x 0.9 x 1,000 minor / cards`. The burst wallet should hold a little: it is meant to run dry and exercise the lock.
-3. **Manifest.** A person with read access to the staging database runs the seed query and saves its rows as JSON, then `node tools/loadtest/seed.mjs manifest --input rows.json` writes `cards.json` (active cards funded to at least `--min-balance`, the richest becomes `burstCard`). Store the file's contents in the repository variable `STAGING_LOADTEST_CARDS` for the workflow. Card ids are not secrets.
+1. **Members and cards.** For each test member (a `+1555...` test number on the `sim` auth port), sign in through the app or the simulator panel, start a T2 KYC session (`POST /v1/kyc/sessions`) and post the simulator's approval to `POST /v1/hooks/kyc` (header `x-sim-signature: sim`, body `{ eventId, sessionId, status: "approved" }`); approval issues the virtual card (the same path as `jit.bench.test.ts`). The velocity rule (10 approvals per card in a sliding minute) sets how many: the steady scenario needs `ceil(LOAD_RPS x 0.9 x 60 / 10)` cards (270 at 50 req/s) and the burst scenario `ceil(BURST_SIZE x 60 / (BURST_EVERY_S x 10))` burst cards (30 at the defaults). `jit.js` refuses to start with fewer (`ALLOW_FEW_CARDS=1` overrides for a smoke run, with a warning).
+2. **Funds.** Load each purse with `POST /v1/loads` (payment method fixture `pm_ok`, a fresh step-up), enough for the run: about `LOAD_RPS x duration x 0.9 x 1,000 minor / cards`. Fund the burst wallets too: they must cover every approval of the run, or the burst turns into balance declines instead of lock contention.
+3. **Manifest.** A person with read access to the staging database runs the seed query and saves its rows as JSON, then `node tools/loadtest/seed.mjs manifest --input rows.json` writes `cards.json` (active cards funded to at least `--min-balance`; the richest `--burst-cards`, default 30, become `burstCards`, the rest `cards`). Store the file's contents in the repository variable `STAGING_LOADTEST_CARDS` for the workflow. Card ids are not secrets.
 
 Seed query (read-only; run it from inside the VPC like the other staging queries):
 
@@ -63,7 +62,7 @@ select c.processor_card_id, c.status, (-coalesce(b.balance_minor, 0))::text as b
 ```
 
 (Balances are credit-normal, so the member's money is the negative of the ledger balance.) Check the target answers with
-`node tools/loadtest/seed.mjs check --url "$JIT_URL" --signature "$JIT_SIGNATURE"`: one unknown-card probe that moves no money.
+`JIT_SIGNATURE=... node tools/loadtest/seed.mjs check --url "$JIT_URL"`: one unknown-card probe that moves no money.
 
 ## Running it
 
@@ -77,6 +76,6 @@ wallets (`auth_hold` journals); they are test money on staging, and a fresh load
 
 ## Reading the result
 
-- **Client side (k6):** the end-of-run summary and `loadtest-summary.json` give `http_req_duration` p(95)/p(99) and `http_req_failed`; the run passes only if both thresholds hold. The workflow prints them in the job summary and attaches the JSON. `jit_approved`, `jit_declined` and `jit_unexpected` count the answers (declines should be about a tenth of the steady scenario, plus the burst's); `jit_unexpected` should be 0.
-- **Server side (cross-check):** the service emits one EMF line per decision (T-0053), namespace `Kesher`: `jit.decision_ms` (milliseconds, no dimensions) and `jit.error` (0 or 1; its Average is the error rate, 1 = failed closed with a TIMEOUT decline). In CloudWatch Metrics, graph `Kesher / jit.decision_ms` with statistic p99, period 1 minute, over the run's window, and `jit.error` Average. `jit.decision_ms` is the decision only, so it is lower than k6's number by the network and the HTTP stack; a p99 well above k6's, or `jit.error` over 0.01 while k6 saw no failures, means the service is declining TIMEOUT at its 250 ms budget (those are 200s, so k6 does not count them as failures). Logs Insights over the JIT log group: `filter ispresent(jit.decision_ms) | stats pct(jit.decision_ms, 99), avg(jit.error) by bin(1m)`.
+- **Client side (k6):** the end-of-run summary and `loadtest-summary.json` give `http_req_duration` p(95)/p(99) and `http_req_failed`; the run passes only if both thresholds hold. The workflow prints them in the job summary and attaches the JSON. `jit_approved`, `jit_declined` and `jit_unexpected` count the answers (declines should be about a tenth of the steady scenario); `jit_unexpected` must be 0 and `jit_timeout_rate` under 1 %.
+- **Server side (cross-check):** the service emits one EMF line per decision (T-0053), namespace `Kesher`: `jit.decision_ms` (milliseconds, no dimensions) and `jit.error` (0 or 1; its Average is the error rate, 1 = failed closed with a TIMEOUT decline). In CloudWatch Metrics, graph `Kesher / jit.decision_ms` with statistic p99, period 1 minute, over the run's window, and `jit.error` Average. `jit.decision_ms` is the decision only, so it is lower than k6's number by the network and the HTTP stack; a p99 well above k6's, or `jit.error` over 0.01 while k6 saw no failures, means the service is declining TIMEOUT at its 250 ms budget (those are 200s, which `http_req_failed` misses; `jit_timeout_rate` is the k6-side gate for them). Logs Insights over the JIT log group: `filter ispresent(jit.decision_ms) | stats pct(jit.decision_ms, 99), avg(jit.error) by bin(1m)`.
 - A failed run: follow RUN-02 (database CPU, replica lag, the `jit` service's desired count) and rerun at the same rate.

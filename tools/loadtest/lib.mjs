@@ -7,32 +7,70 @@ export const SIGNATURE_HEADER = 'x-sim-signature';
 /** Where the JIT route lives; JIT_URL is the full URL including this path. */
 export const JIT_PATH = '/v1/jit/card-authorizations';
 
-/** A host has to say it is not production AND say it is a test environment. Both lists are deliberately blunt. */
+/** The staging zone (infra/terraform/envs/staging/variables.tf, `domain`). A host is accepted only inside it, or as a local address. */
+export const STAGING_ZONE = 'staging.kesher.example';
 const PROD_WORDS = /(^|[.\-_])(prod|production|prd|live)([.\-_]|$)/i;
-const TEST_WORDS = /(^|[.\-_])(staging|stage|stg|preview|sandbox|dev|localhost)([.\-_]|$)|^127\.0\.0\.1$/i;
 
 /** Parses the pieces of a URL the guard needs without the URL global (older k6 builds lack it). */
 export function parseTarget(raw) {
-  const m = /^(https?):\/\/(?:[^/?#@]*@)?(\[[^\]]+\]|[^/?#:]+)(?::(\d+))?([^?#]*)/i.exec(String(raw ?? '').trim());
+  const m = /^(https?):\/\/([^/?#:]+)(?::(\d+))?([^?#]*)/.exec(String(raw ?? ''));
   if (!m) return undefined;
-  return { scheme: m[1].toLowerCase(), host: m[2].toLowerCase(), port: m[3], path: m[4] || '/' };
+  return { scheme: m[1], host: m[2], port: m[3], path: m[4] || '/' };
 }
 
 /**
- * Throws unless `raw` is a staging-looking JIT URL. Refuses an unparseable URL, a prod-looking host, a host that does
- * not name a test environment, a userinfo part (a credential or a host-spoofing trick), plain http outside localhost,
- * and any path but the JIT route.
+ * Throws unless `raw` is a JIT URL inside the staging zone (or localhost / 127.0.0.1). Refuses, before any label check:
+ * anything but lower-case letters, digits, dots and hyphens in the host, and any backslash, whitespace, control character
+ * or `@` anywhere before the path (WHATWG URL reads a backslash as a slash, strips tabs and newlines, and takes userinfo
+ * off the host, so the regex could name one host and a client connect to another). Where `URL` exists it must agree.
  */
 export function assertNotProd(raw) {
-  const t = parseTarget(raw);
-  if (!t) throw new Error('JIT_URL is missing or not an http(s) URL; refusing to run');
-  if (/^(https?):\/\/[^/?#]*@/i.test(String(raw).trim())) throw new Error('JIT_URL must not carry credentials; refusing to run');
-  if (PROD_WORDS.test(t.host)) throw new Error(`JIT_URL host "${t.host}" looks like production; refusing to run`);
-  if (!TEST_WORDS.test(t.host)) throw new Error(`JIT_URL host "${t.host}" does not look like staging, preview, sandbox or local; refusing to run`);
+  const s = String(raw ?? '');
+  if (s === '') throw new Error('JIT_URL is missing; refusing to run');
+  const authority = /^[a-z]+:\/\/([^/?#]*)/i.exec(s)?.[1] ?? '';
+  if (/[\\\s]/.test(s) || [...s].some((c) => c.charCodeAt(0) < 0x20 || c.charCodeAt(0) === 0x7f) || authority.includes('@')) {
+    throw new Error('JIT_URL has a backslash, whitespace, control character or credentials; refusing to run');
+  }
+  const t = parseTarget(s);
+  if (!t) throw new Error('JIT_URL is not a lower-case http(s) URL; refusing to run');
+  if (!/^[a-z0-9.-]+$/.test(t.host) || t.host.startsWith('.') || t.host.endsWith('.') || t.host.includes('..')) throw new Error(`JIT_URL host "${t.host}" is not a plain lower-case host name; refusing to run`);
+  if (typeof URL === 'function') {
+    let parsed;
+    try {
+      parsed = new URL(s);
+    } catch {
+      throw new Error('JIT_URL does not parse as a URL; refusing to run');
+    }
+    if (parsed.hostname !== t.host) throw new Error('JIT_URL host is read differently by the URL parser; refusing to run');
+  }
   const local = t.host === 'localhost' || t.host === '127.0.0.1';
+  if (PROD_WORDS.test(t.host)) throw new Error(`JIT_URL host "${t.host}" looks like production; refusing to run`);
+  if (!local && t.host !== STAGING_ZONE && !t.host.endsWith(`.${STAGING_ZONE}`)) throw new Error(`JIT_URL host "${t.host}" is not inside ${STAGING_ZONE} or local; refusing to run`);
   if (t.scheme !== 'https' && !local) throw new Error('JIT_URL must be https outside localhost; refusing to run');
   if (t.path.replace(/\/+$/, '') !== JIT_PATH) throw new Error(`JIT_URL path must be ${JIT_PATH}; refusing to run`);
   return t;
+}
+
+/**
+ * Cards the steady scenario needs so the velocity rule (jit.ts VELOCITY_LIMIT_PER_MINUTE, approvals per card in a sliding
+ * 60 s) never declines an approve request: ceil(rps x approve share x 60 / limit).
+ */
+export const VELOCITY_LIMIT_PER_MINUTE = 10;
+export function cardsNeeded(rps, declineShare = DECLINE_SHARE, limit = VELOCITY_LIMIT_PER_MINUTE) {
+  return Math.ceil((rps * (1 - declineShare) * 60) / limit);
+}
+
+/** Cards the burst scenario rotates through so no one card sees more than the velocity limit: ceil(size x 60 / (every seconds x limit)). */
+export function burstCardsNeeded(size, everySeconds, limit = VELOCITY_LIMIT_PER_MINUTE) {
+  return Math.ceil((size * 60) / (everySeconds * limit));
+}
+
+/** The error rate the gate watches that http_req_failed cannot see: the service failing closed answers 200 DECLINED TIMEOUT. */
+export function classify(status, body) {
+  if (status !== 200) return 'unexpected';
+  if (body && body.result === 'APPROVED') return 'approved';
+  if (body && body.result === 'DECLINED') return body.reason === 'TIMEOUT' ? 'timeout' : 'declined';
+  return 'unexpected';
 }
 
 /** The headers a request carries. `signature` is the processor's signing value for the target; for PROVIDER_CARD=sim it is the literal `sim`. */

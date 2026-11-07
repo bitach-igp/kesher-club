@@ -2,26 +2,27 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { CardIssuingSimulator } from '../../packages/ports/src/card-issuing.simulator.ts';
-import { assertNotProd, buildRequest, DECLINE_KINDS, DECLINE_SHARE, pickKind, signHeaders } from './lib.mjs';
+import { assertNotProd, buildRequest, burstCardsNeeded, cardsNeeded, classify, DECLINE_KINDS, DECLINE_SHARE, pickKind, signHeaders } from './lib.mjs';
 import { toManifest } from './seed.mjs';
 
 const OK = 'https://jit.staging.kesher.example/v1/jit/card-authorizations';
 
-test('the prod guard accepts staging, preview, sandbox and localhost hosts', () => {
-  for (const u of [OK, 'https://jit-stg.example.com/v1/jit/card-authorizations', 'https://pr-12.preview.example.com/v1/jit/card-authorizations/', 'http://localhost:8080/v1/jit/card-authorizations', 'http://127.0.0.1:3000/v1/jit/card-authorizations']) {
+test('the prod guard accepts hosts inside the staging zone and local addresses', () => {
+  for (const u of [OK, 'https://staging.kesher.example/v1/jit/card-authorizations', 'https://a.b.staging.kesher.example/v1/jit/card-authorizations/', 'http://localhost:8080/v1/jit/card-authorizations', 'http://127.0.0.1:3000/v1/jit/card-authorizations']) {
     assert.doesNotThrow(() => assertNotProd(u), u);
   }
 });
 
-test('the prod guard refuses prod-looking hosts, unnamed hosts, odd schemes, credentials and other paths', () => {
+test('the prod guard refuses prod-looking and foreign hosts, odd schemes and other paths', () => {
   for (const u of [
     'https://jit.kesher.example/v1/jit/card-authorizations',
     'https://jit.prod.kesher.example/v1/jit/card-authorizations',
-    'https://jit-production.kesher.example/v1/jit/card-authorizations',
-    'https://jit.live.kesher.example/v1/jit/card-authorizations',
-    'https://staging.prod.kesher.example/v1/jit/card-authorizations', // says both: prod wins
-    'https://user:pw@jit.staging.kesher.example/v1/jit/card-authorizations',
-    'https://staging.kesher.example@jit.prod.kesher.example/v1/jit/card-authorizations',
+    'https://jit.live.staging.kesher.example/v1/jit/card-authorizations',
+    'https://jit.staging.kesher.example.evil.test/v1/jit/card-authorizations',
+    'https://notstaging.kesher.example/v1/jit/card-authorizations',
+    'https://jit-stg.example.com/v1/jit/card-authorizations',
+    'https://pr-1.preview.example.com/v1/jit/card-authorizations',
+    'https://JIT.STAGING.KESHER.EXAMPLE/v1/jit/card-authorizations',
     'http://jit.staging.kesher.example/v1/jit/card-authorizations',
     'https://jit.staging.kesher.example/v1/cards',
     'ftp://jit.staging.kesher.example/v1/jit/card-authorizations',
@@ -31,6 +32,41 @@ test('the prod guard refuses prod-looking hosts, unnamed hosts, odd schemes, cre
   ]) {
     assert.throws(() => assertNotProd(u), /refusing to run/, String(u));
   }
+});
+
+test('the prod guard refuses a backslash, tab, newline, userinfo or odd host characters that a URL parser would read as another host', () => {
+  for (const u of [
+    'https://jit.kesher.club\\x.staging.kesher.example/v1/jit/card-authorizations',
+    'https://jit.kesher.club\\@x.staging.kesher.example/v1/jit/card-authorizations',
+    'https://jit.kesher.club\t.staging.kesher.example/v1/jit/card-authorizations',
+    'https://jit.kesher.club\n.staging.kesher.example/v1/jit/card-authorizations',
+    ' https://jit.staging.kesher.example/v1/jit/card-authorizations',
+    'https://user:pw@jit.staging.kesher.example/v1/jit/card-authorizations',
+    'https://jit.staging.kesher.example@jit.prod.kesher.example/v1/jit/card-authorizations',
+    'https://jit.staging.kesher.example@evil.test/v1/jit/card-authorizations',
+    'https://jit_x.staging.kesher.example/v1/jit/card-authorizations',
+    'https://jit..staging.kesher.example/v1/jit/card-authorizations',
+    'https://.staging.kesher.example/v1/jit/card-authorizations',
+  ]) {
+    assert.throws(() => assertNotProd(u), /refusing to run/, JSON.stringify(u));
+  }
+});
+
+test('the velocity rule sets how many cards a run needs: 270 at 50 req/s, and 30 burst cards for 5 per second', () => {
+  assert.equal(cardsNeeded(50), 270);
+  assert.equal(cardsNeeded(25), 135);
+  assert.equal(cardsNeeded(50, 0), 300);
+  assert.equal(burstCardsNeeded(5, 1), 30);
+  assert.equal(burstCardsNeeded(5, 2), 15);
+});
+
+test('an answer is classified so a fail-closed TIMEOUT decline is counted as an error and a plain decline is not', () => {
+  assert.equal(classify(200, { result: 'APPROVED' }), 'approved');
+  assert.equal(classify(200, { result: 'DECLINED', reason: 'INSUFFICIENT_FUNDS' }), 'declined');
+  assert.equal(classify(200, { result: 'DECLINED', reason: 'TIMEOUT' }), 'timeout');
+  assert.equal(classify(500, { result: 'APPROVED' }), 'unexpected');
+  assert.equal(classify(200, undefined), 'unexpected');
+  assert.equal(classify(200, { result: 'MAYBE' }), 'unexpected');
 });
 
 test('the signing function is accepted by the simulator real verification, and a wrong value is refused', async () => {
@@ -70,13 +106,15 @@ test('the decline mix is about 10 %, split between unknown cards and amounts no 
   assert.ok(BigInt(poor.amount.minor) > 10n ** 12n);
 });
 
-test('the seed manifest keeps funded active cards, makes the richest the burst wallet and compares bigint balances', () => {
-  const m = toManifest([
+test('the seed manifest keeps funded active cards, takes the richest as burst cards and compares bigint balances', () => {
+  const rows = [
     { processor_card_id: 'c1', status: 'active', balance_minor: '500000' },
     { processor_card_id: 'c2', status: 'frozen', balance_minor: '900000000' },
     { processor_card_id: 'c3', status: 'active', balance_minor: '9000000000000000000000' },
     { processor_card_id: 'c4', status: 'active', balance_minor: '50' },
-  ]);
-  assert.deepEqual(m, { burstCard: 'c3', cards: ['c1'] });
+    { processor_card_id: 'c5', status: 'active', balance_minor: '700000' },
+  ];
+  assert.deepEqual(toManifest(rows), { burstCards: ['c3'], cards: ['c5', 'c1'] });
+  assert.deepEqual(toManifest(rows, 100_000n, 2), { burstCards: ['c3', 'c5'], cards: ['c1'] });
   assert.throws(() => toManifest([{ processor_card_id: 'c4', status: 'active', balance_minor: '50' }]), /funded/);
 });
