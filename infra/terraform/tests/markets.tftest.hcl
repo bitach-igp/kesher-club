@@ -79,6 +79,18 @@ override_module {
   }
 }
 
+# The alarms module is exercised on its own (alarms.tftest.hcl); here only its inputs are checked.
+override_module {
+  target = module.alarms
+  outputs = {
+    pages_topic_arn    = "arn:aws:sns:il-central-1:111111111111:kesher-pages"
+    tickets_topic_arn  = "arn:aws:sns:il-central-1:111111111111:kesher-tickets"
+    kms_key_arn        = "arn:aws:kms:il-central-1:111111111111:key/00000000-0000-0000-0000-000000000000"
+    dashboard_names    = ["kesher-money-path", "kesher-infrastructure"]
+    alarm_descriptions = []
+  }
+}
+
 variables {
   account_id              = "111111111111"
   shared_account_id       = "222222222222"
@@ -92,6 +104,7 @@ variables {
   admin_oidc_issuer       = "https://identitycenter.example/oidc"
   admin_oidc_client_id    = "kesher-admin"
   admin_oidc_jwks_url     = "https://identitycenter.example/oidc/keys"
+  pager_endpoint          = "https://events.pager.example/integration/test/enqueue"
 }
 
 run "staging_certificate" {
