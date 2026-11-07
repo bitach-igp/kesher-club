@@ -498,13 +498,15 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
       const key = `load-unknown:${t.id}`;
       const ask = vi.spyOn(host.simulators.funding, 'getLoad').mockRejectedValue(new FundingError('UNKNOWN_LOAD', 'no such load'));
       await app.services.loads.release(t, NOW);
-      await db.query(`update ops.case set status = 'dismissed', resolution = 'looked, will check with the bank' where dedupe_key = $1`, [key]);
+      await db.query(`update ops.case set status = 'dismissed', resolution = 'looked, will check with the bank', decided_by = 'staff-1', assigned_to = 'staff-1' where dedupe_key = $1`, [key]);
       expect(await app.services.loads.unknownLoadOpen(t.id)).toBe(false);
       // The vendor is asked again, still does not know the load: the same case reopens (never a silent stall).
       expect((await app.services.loads.release(t, NOW)).state).toBe('pending_hold');
       const reopened = (await db.query<{ status: string; resolution: string | null; payload: { reopened?: { was: string; resolution: string | null } } }>(`select status, resolution, payload from ops.case where dedupe_key = $1`, [key])).rows;
       expect(reopened).toHaveLength(1);
       expect(reopened[0]).toMatchObject({ status: 'open', resolution: null });
+      // Nothing of the earlier decision or assignment lingers on the reopened case.
+      expect((await db.query(`select 1 from ops.case where dedupe_key = $1 and decided_by is null and assigned_to is null and disposition is null`, [key])).rows).toHaveLength(1);
       expect(reopened[0]!.payload.reopened).toMatchObject({ was: 'dismissed', resolution: 'looked, will check with the bank' });
       expect(await app.services.loads.unknownLoadOpen(t.id)).toBe(true);
       // Open again: not asked, not reopened twice.
