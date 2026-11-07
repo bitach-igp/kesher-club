@@ -57,3 +57,4 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-06 | T-0053 | #257 | independent changes-requested then fixed (invalid EMF unit, US-banking breaks missed, dead provider.error emit, mixed-currency sum) | green |
 | 2026-11-06 | T-0054 | #258 | independent changes-requested then fixed (nonexistent last(), thresholds that would page constantly, daily-job windows, connection alarm); terraform never run locally, CI was the first check | green |
 | 2026-11-07 | T-0055 | #259 | independent changes-requested then fixed (error gate blind to TIMEOUT declines, card count vs velocity rule, prod guard backslash bypass); k6 never run, first result pending a human run | green |
+| 2026-11-07 | T-0680 | #260 | Sonnet APPROVE (stale decision columns now cleared) | green |
