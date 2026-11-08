@@ -707,7 +707,8 @@ resource "aws_backup_selection" "rds" {
 
 # ---- alarms, paging, dashboards and budget (T-0054) --------------------------------------------------------------------
 # One alarm per row of the runbook alert table, each naming its RUN (modules/alarms). The pager endpoint has no default: an apply
-# says where pages go. Whoever applies passes it (-var pager_endpoint=... or TF_VAR_pager_endpoint); no workflow does.
+# says where pages go. A hand apply passes it (-var pager_endpoint=... or TF_VAR_pager_endpoint); the deploy workflow (T-0050) passes the
+# GitHub environment secret PAGER_ENDPOINT as TF_VAR_pager_endpoint and refuses to start without it.
 
 variable "pager_endpoint" {
   description = "HTTPS endpoint of the pager integration (PagerDuty or Opsgenie); no default, pages must go somewhere."
@@ -847,4 +848,17 @@ resource "aws_iam_role_policy_attachment" "break_glass" {
 
   role       = aws_iam_role.break_glass[0].name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AdministratorAccess"
+}
+
+# ---- services the deploy waits on (T-0050) -----------------------------------------------------------------------------
+# .github/workflows/deploy.yml waits for each of these ECS services to be stable after the apply rolls them, then checks that
+# each one runs the tag it deployed (a service the circuit breaker rolled back is "stable" too).
+output "ecs_service_names" {
+  description = "Every ECS service of the environment, keyed api-<market>, jit-<market>, worker-<market>, admin and console."
+  value = merge(
+    { for k, m in module.api : "api-${k}" => m.service_name },
+    { for k, m in module.jit : "jit-${k}" => m.service_name },
+    { for k, m in module.worker : "worker-${k}" => m.service_name },
+    { admin = module.admin.service_name, console = module.console.service_name },
+  )
 }
