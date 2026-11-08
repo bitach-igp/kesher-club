@@ -66,6 +66,8 @@
 | [T-0065](T-0065.md) | BIL | Legal documents: draft and publish through the two-person flow | — | 16 deploy |
 | [T-0066](T-0066.md) | BIL | A member who has not accepted the current terms is stopped at money routes (behind a flag) | — | 16 deploy |
 | [T-0067](T-0067.md) | BIL | legal.consent.ip is nullable: a consent no longer records an address it does not collect | — | 16 deploy |
+| [T-0068](T-0068.md) | SETUP | The console's large requests pass the WAF: a roster import is not blocked at 8 KB | — | 16 deploy |
+| [T-0069](T-0069.md) | SETUP | The console-to-API hop does not record the NAT gateway as the client address | — | 16 deploy |
 | [T-0062](T-0062.md) | BIL | The app shows the terms at sign-up and re-accept, and links them from settings | — | 16 deploy |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |

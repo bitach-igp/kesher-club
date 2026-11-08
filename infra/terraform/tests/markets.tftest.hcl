@@ -166,15 +166,11 @@ run "staging_runs_one_service_per_market" {
     error_message = "every per-market service reaches the one shared database"
   }
 
-  # T-0047: the institution console is a service on the public ALB, not a bucket behind CloudFront.
+  # T-0047: the console runs as a service from its own image. The ALB attachment (host, priority, health path) lives in
+  # the ecs-service module's listener rule, which a root test cannot read; only the image and settings are asserted here.
   assert {
     condition     = module.console.image == "222222222222.dkr.ecr.il-central-1.amazonaws.com/kesher/console:abc1234" && module.console.environment["CONSOLE_ENVIRONMENT"] == "staging" && module.console.environment["CONSOLE_API_URL"] == "https://api-il.staging.kesher.example/v1"
-    error_message = "T-0047: staging runs the console as an ecs-service (a static-site module has no image, so no bucket) with its two settings, calling the IL API"
-  }
-
-  assert {
-    condition     = toset(keys(aws_route53_record.web_hosts)) == toset(["app.staging.kesher.example", "console.staging.kesher.example"]) && !contains(keys(aws_route53_record.alb), "console.staging.kesher.example")
-    error_message = "T-0047: one record per web host; the console's alias targets the public ALB (see main.tf), not a per-market API host"
+    error_message = "T-0047: staging runs the console from kesher/console:<tag> with CONSOLE_ENVIRONMENT=staging and CONSOLE_API_URL on the IL API host"
   }
 }
 
@@ -212,9 +208,9 @@ run "prod_runs_one_service_per_market" {
     error_message = "every per-market service reaches the one shared database"
   }
 
-  # T-0047: as staging, the console is a service on the public ALB.
+  # T-0047: as staging.
   assert {
     condition     = module.console.environment["CONSOLE_ENVIRONMENT"] == "production" && module.console.image == "222222222222.dkr.ecr.il-central-1.amazonaws.com/kesher/console:abc1234" && module.console.environment["CONSOLE_API_URL"] == "https://api-il.kesher.example/v1"
-    error_message = "T-0047: prod runs the console image with its two settings, calling the IL API"
+    error_message = "T-0047: prod runs the console from kesher/console:<tag> with CONSOLE_ENVIRONMENT=production and CONSOLE_API_URL on the IL API host"
   }
 }

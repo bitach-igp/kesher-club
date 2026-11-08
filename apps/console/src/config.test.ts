@@ -90,6 +90,10 @@ describe('/healthz (T-0047)', () => {
     expect(m).toBeDefined();
     const re = new RegExp(`^${m!}$`);
     expect(re.test('/healthz')).toBe(false);
+    expect(re.test('/healthz/')).toBe(false);
     expect(re.test('/roster')).toBe(true);
+    // Exact: a page whose name merely starts with healthz still gets the proxy.
+    expect(re.test('/healthz-report')).toBe(true);
+    expect(re.test('/roster/healthz')).toBe(true);
   });
 });
