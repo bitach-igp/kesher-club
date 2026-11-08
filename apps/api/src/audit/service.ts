@@ -58,7 +58,10 @@ export class AuditService {
   async record(input: AuditInput, now: Date, db: Database = this.db): Promise<AuditEntry> {
     if (!input.reason.trim()) throw new DomainError('VALIDATION_FAILED', 'A reason is required for every admin action');
     return db.transaction(async (tx) => {
-      await tx.query('select pg_advisory_xact_lock($1::int, $2::int)', AUDIT_CHAIN_LOCK);
+      // The lock and the isolation level come back in one round trip. The chain forks under REPEATABLE READ or SERIALIZABLE
+      // (the snapshot is taken before the lock is granted), so a database or role configured that way is refused, not trusted.
+      const locked = await tx.query<{ level: string }>(`select current_setting('transaction_isolation') as level from (select pg_advisory_xact_lock($1::int, $2::int)) l`, AUDIT_CHAIN_LOCK);
+      if (locked.rows[0]?.level !== 'read committed') throw new Error('The audit chain needs READ COMMITTED transactions');
       const last = await tx.query<{ hash: string }>('select hash from audit.entry order by seq desc limit 1');
       const prevHash = last.rows[0]?.hash ?? GENESIS;
       const base = {

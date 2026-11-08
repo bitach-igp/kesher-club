@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { AuditService, GENESIS, canonical, hashState } from './service.ts';
+import { AUDIT_CHAIN_LOCK, AuditService, GENESIS, canonical, hashState } from './service.ts';
 
 let db: TestDatabase;
 let audit: AuditService;
@@ -106,11 +106,36 @@ describe('AuditService under the club_app role (T-0071)', () => {
     }
   }, 60_000);
 
-  it('runs at READ COMMITTED, which the advisory-lock serialisation relies on', async () => {
+  it('takes the chain lock and holds it until the outer transaction commits', async () => {
     const fresh = await createTestDatabase();
     try {
-      const seen = await fresh.transaction(async (tx) => (await tx.query<{ v: string }>(`select current_setting('transaction_isolation') as v`)).rows[0]!.v);
-      expect(seen).toBe('read committed');
+      const a = new AuditService(fresh);
+      const held = await fresh.transaction(async (tx) => {
+        const inTx = { query: tx.query.bind(tx), transaction: async <T>(fn: (c: typeof tx) => Promise<T>) => fn(tx) };
+        await a.record({ actorId: admin, actorRole: 'admin', action: 'flag.flip', subject: 'k', reason: 'r' }, new Date('2026-11-02T10:00:00Z'), inTx);
+        const r = await tx.query<{ n: string }>(`select count(*)::text as n from pg_locks where locktype = 'advisory' and granted and classid = $1 and objid = $2 and objsubid = 2`, AUDIT_CHAIN_LOCK);
+        return r.rows[0]!.n;
+      });
+      expect(held).toBe('1');
+      const after = await fresh.query<{ n: string }>(`select count(*)::text as n from pg_locks where locktype = 'advisory' and classid = $1 and objid = $2`, AUDIT_CHAIN_LOCK);
+      expect(after.rows[0]!.n).toBe('0');
+    } finally {
+      await fresh.close();
+    }
+  }, 60_000);
+
+  it('refuses to append outside READ COMMITTED, where the chain could fork', async () => {
+    const fresh = await createTestDatabase();
+    try {
+      const a = new AuditService(fresh);
+      await expect(
+        fresh.transaction(async (tx) => {
+          await tx.query('set transaction isolation level repeatable read');
+          const inTx = { query: tx.query.bind(tx), transaction: async <T>(fn: (c: typeof tx) => Promise<T>) => fn(tx) };
+          await a.record({ actorId: admin, actorRole: 'admin', action: 'flag.flip', subject: 'k', reason: 'r' }, new Date('2026-11-02T10:00:00Z'), inTx);
+        }),
+      ).rejects.toThrow('READ COMMITTED');
+      expect(await a.verify()).toEqual({ ok: true, entries: 0 });
     } finally {
       await fresh.close();
     }
