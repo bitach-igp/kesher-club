@@ -7,7 +7,7 @@ import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export type ApprovalKind = 'allowance_run' | 'payout' | 'flag_flip' | 'provider_binding' | 'ledger_correction' | 'fx_rate' | 'staff_grant' | 'institution_deposit' | 'credit_limit' | 'kyb_decision' | 'price_rule' | 'plan_version';
+export type ApprovalKind = 'allowance_run' | 'payout' | 'flag_flip' | 'provider_binding' | 'ledger_correction' | 'fx_rate' | 'staff_grant' | 'institution_deposit' | 'credit_limit' | 'kyb_decision' | 'price_rule' | 'plan_version' | 'legal_publish';
 export type ApprovalStatus = 'pending' | 'awaiting_second_approval' | 'approved' | 'rejected' | 'expired';
 
 /** ₪5,000 (REQ-INS-004): institution money over this needs a second finance approver. */
@@ -51,7 +51,7 @@ interface Row {
 
 /** How many distinct approvers an action needs. */
 export function approversRequired(kind: ApprovalKind, amount?: Money): number {
-  if (kind === 'flag_flip' || kind === 'provider_binding' || kind === 'ledger_correction' || kind === 'fx_rate' || kind === 'staff_grant' || kind === 'institution_deposit' || kind === 'credit_limit' || kind === 'kyb_decision' || kind === 'price_rule' || kind === 'plan_version') return 2;
+  if (kind === 'flag_flip' || kind === 'provider_binding' || kind === 'ledger_correction' || kind === 'fx_rate' || kind === 'staff_grant' || kind === 'institution_deposit' || kind === 'credit_limit' || kind === 'kyb_decision' || kind === 'price_rule' || kind === 'plan_version' || kind === 'legal_publish') return 2;
   if (amount && amount.currency === 'ILS' && amount.minor > SECOND_APPROVER_THRESHOLD_ILS_MINOR) return 2;
   if (amount && amount.currency === 'USD' && amount.minor > SECOND_APPROVER_THRESHOLD_ILS_MINOR / 4n) return 2; // ~₪5,000 at 1:4 as a conservative floor
   return 1;
@@ -129,6 +129,7 @@ export class ApprovalService {
       if (r.kind === 'fx_rate' && by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only finance approves club rates');
       if (r.kind === 'price_rule' && by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only finance approves add-on price rules');
       if (r.kind === 'plan_version' && by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only finance approves plan versions');
+      if (r.kind === 'legal_publish' && by.role !== 'admin') throw new DomainError('FORBIDDEN', 'Only admins approve legal documents');
       if (r.kind === 'institution_deposit' && by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only Kesher finance approves institution deposits');
       if ((r.kind === 'allowance_run' || r.kind === 'payout') && r.required >= 2 && reason !== 'requested' && by.role !== 'finance' && by.role !== 'org_admin') throw new DomainError('FORBIDDEN', 'A finance-role approver is required');
       try {

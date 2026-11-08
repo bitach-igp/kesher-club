@@ -856,6 +856,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/legal/documents": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Propose a new version of a legal document; it publishes only after a second admin approves it
+         * @description T-0065 (enabling). Staff token with the admin role; the proposer is the first of two approvers, so the request waits `awaiting_second_approval` and nothing is published. Both languages of title and body are required; `effectiveAt` cannot be in the past (422). Proposing the same text for the same document again answers the request already made (200) instead of a second one (201). A request not approved within seven days expires.
+         */
+        readonly post: operations["proposeAdminLegalDocument"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/legal/documents/{requestId}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Second-approve a proposed legal document version; it is published once and audited
+         * @description T-0065 (enabling). Staff token with the admin role, not the proposer (409). The version publishes in the same step and is in force from its effective date (from now if that has passed). A request already decided, or expired, answers 409 and publishes nothing more.
+         */
+        readonly post: operations["approveAdminLegalDocument"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/payout-accounts/{id}/approve": {
         readonly parameters: {
             readonly query?: never;
@@ -4334,6 +4374,26 @@ export interface components {
         readonly LegalDocuments: {
             readonly items: readonly components["schemas"]["LegalDocument"][];
         };
+        readonly LegalProposal: {
+            readonly approvals: number;
+            readonly body: components["schemas"]["Localised"];
+            readonly changeSummary?: components["schemas"]["Localised"];
+            readonly docKey: components["schemas"]["LegalDocKey"];
+            /** Format: date-time */
+            readonly effectiveAt: string;
+            /** Format: date-time */
+            readonly expiresAt: string;
+            /** Format: uuid */
+            readonly id: string;
+            readonly material: boolean;
+            /** @description Present once approved */
+            readonly published?: components["schemas"]["LegalDocument"];
+            /** Format: uuid */
+            readonly requestedBy: string;
+            /** @enum {string} */
+            readonly status: "pending" | "awaiting_second_approval" | "approved" | "rejected" | "expired";
+            readonly title: components["schemas"]["Localised"];
+        };
         readonly Load: {
             readonly amount: components["schemas"]["Money"];
             readonly clientSecret?: string;
@@ -6454,6 +6514,72 @@ export interface operations {
                         readonly approval: components["schemas"]["ApprovalRequest"];
                         readonly decision?: components["schemas"]["KybDecision"];
                     };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly proposeAdminLegalDocument: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly body: components["schemas"]["Localised"];
+                    readonly changeSummary?: components["schemas"]["Localised"];
+                    readonly docKey: components["schemas"]["LegalDocKey"];
+                    /** Format: date-time */
+                    readonly effectiveAt: string;
+                    /** @description A material change must be accepted again */
+                    readonly material: boolean;
+                    readonly title: components["schemas"]["Localised"];
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The request already made for this document and text */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["LegalProposal"];
+                };
+            };
+            /** @description The proposal, awaiting a second admin */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["LegalProposal"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveAdminLegalDocument: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly requestId: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The approved proposal with the published version */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["LegalProposal"];
                 };
             };
             readonly default: components["responses"]["Problem"];
