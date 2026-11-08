@@ -189,6 +189,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/admin/plans', operationId: 'proposeAdminPlanVersion' },
   { method: 'POST', path: '/admin/plans/{code}/versions/{version}/approve', operationId: 'approveAdminPlanVersion' },
   { method: 'POST', path: '/admin/plans/{code}/versions/{version}/reject', operationId: 'rejectAdminPlanVersion' },
+  { method: 'POST', path: '/admin/legal/documents', operationId: 'proposeAdminLegalDocument' },
+  { method: 'POST', path: '/admin/legal/documents/{requestId}/approve', operationId: 'approveAdminLegalDocument' },
 ];
 
 export type HandlerTable = Partial<Record<string, Handler>>;

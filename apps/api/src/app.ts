@@ -10,6 +10,7 @@ import { fxAdminHandlers } from './fx/admin.ts';
 import { PriceRules, priceRuleHandlers } from './addons/price-rules.ts';
 import { LegalService } from './legal/service.ts';
 import { legalHandlers } from './legal/routes.ts';
+import { LegalAdmin, legalAdminHandlers } from './legal/admin.ts';
 import { DisplayNameService, displayNameHandlers } from './me/display-name.ts';
 import { RecipientLookup } from './p2p/recipients.ts';
 import { CimdRegistry, type Fetcher, type Resolver } from './mcp/cimd.ts';
@@ -373,6 +374,7 @@ export function createApp(o: AppOptions): App {
     ...preferenceHandlers(s.preferences),
     ...displayNameHandlers(s.displayNames),
     ...legalHandlers(new LegalService(o.db)),
+    ...legalAdminHandlers(new LegalAdmin(o.db, s.approvals, s.audit)),
     ...oauthHandlers({ authorize: s.authorize, cfg: s.oauthConfig, jwks: () => s.tokens.jwks(), flags: s.flags }),
     ...consentHandlers({ consent: s.consent, stepUp: s.stepUp, flags: s.flags }),
     ...tokenHandler({ endpoint: s.tokenEndpoint, flags: s.flags }),

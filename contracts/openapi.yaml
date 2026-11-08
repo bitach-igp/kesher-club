@@ -2763,6 +2763,68 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/PlanVersion" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/legal/documents:
+    post:
+      operationId: proposeAdminLegalDocument
+      tags: [admin]
+      summary: Propose a new version of a legal document; it publishes only after a second admin approves it
+      description: >-
+        T-0065 (enabling). Staff token with the admin role; the proposer is the first of two approvers, so the request
+        waits `awaiting_second_approval` and nothing is published. Both languages of title and body are required and are
+        plain text, never markup: no control characters other than line breaks and tabs in a body or summary (none in a
+        title), and no bidirectional overrides; limits count code points. `effectiveAt` is RFC 3339 with Z or an offset
+        and cannot be in the past (422), nor earlier than a version of the same document already scheduled (422). The
+        same draft while its request is open answers that request (200) instead of a second one (201); a corrected draft,
+        or the same text after the earlier request was approved, refused or expired, is a new request. A request not
+        approved within seven days expires.
+      security: [{ staff: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [docKey, title, body, material, effectiveAt]
+              properties:
+                docKey: { $ref: "#/components/schemas/LegalDocKey" }
+                title: { $ref: "#/components/schemas/LegalTitle" }
+                body: { $ref: "#/components/schemas/LegalBody" }
+                material: { type: boolean, description: A material change must be accepted again }
+                changeSummary: { $ref: "#/components/schemas/LegalSummary" }
+                effectiveAt: { type: string, format: date-time, description: RFC 3339 with Z or an offset; not in the past }
+      responses:
+        "201":
+          description: The proposal, awaiting a second admin
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LegalProposal" }
+        "200":
+          description: The request already made for this document and text
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LegalProposal" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/legal/documents/{requestId}/approve:
+    post:
+      operationId: approveAdminLegalDocument
+      tags: [admin]
+      summary: Second-approve a proposed legal document version; it is published once and audited
+      description: >-
+        T-0065 (enabling). Staff token with the admin role, not the proposer (409). The version publishes in the same step
+        and is in force from its effective date. An approval after the effective date has passed answers 409 and publishes
+        nothing (propose again with a new date), as does one dated before a version of the document already scheduled: the
+        highest version already in force is the one shown, so a later-numbered version with an earlier date would shadow
+        a scheduled one. A request already decided, or expired, answers 409 and publishes nothing more.
+      security: [{ staff: [] }]
+      parameters:
+        - { name: requestId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The approved proposal with the published version
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LegalProposal" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/flags:
     get:
       operationId: listAdminFlags
@@ -4562,6 +4624,43 @@ components:
         material: { type: boolean, description: A material change must be accepted again }
         changeSummary: { $ref: "#/components/schemas/Localised" }
         effectiveAt: { type: string, format: date-time }
+    LegalTitle:
+      type: object
+      required: [en, he]
+      description: Plain text, never markup. No control characters. Limits count code points.
+      properties:
+        en: { type: string, minLength: 1, maxLength: 200 }
+        he: { type: string, minLength: 1, maxLength: 200 }
+    LegalBody:
+      type: object
+      required: [en, he]
+      description: Plain text, never markup. Line breaks and tabs only; no other control characters or bidirectional overrides. Limits count code points.
+      properties:
+        en: { type: string, minLength: 1, maxLength: 200000 }
+        he: { type: string, minLength: 1, maxLength: 200000 }
+    LegalSummary:
+      type: object
+      required: [en, he]
+      description: Plain text, never markup. Line breaks and tabs only. Limits count code points.
+      properties:
+        en: { type: string, minLength: 1, maxLength: 2000 }
+        he: { type: string, minLength: 1, maxLength: 2000 }
+    LegalProposal:
+      type: object
+      required: [id, docKey, title, body, material, effectiveAt, status, approvals, requestedBy, expiresAt]
+      properties:
+        id: { type: string, format: uuid }
+        docKey: { $ref: "#/components/schemas/LegalDocKey" }
+        title: { $ref: "#/components/schemas/Localised" }
+        body: { $ref: "#/components/schemas/Localised" }
+        material: { type: boolean }
+        changeSummary: { $ref: "#/components/schemas/Localised" }
+        effectiveAt: { type: string, format: date-time }
+        status: { type: string, enum: [pending, awaiting_second_approval, approved, rejected, expired] }
+        approvals: { type: integer, minimum: 0 }
+        requestedBy: { type: string, format: uuid }
+        expiresAt: { type: string, format: date-time }
+        published: { $ref: "#/components/schemas/LegalDocument", description: Present once approved }
     LegalDocuments:
       type: object
       required: [items]

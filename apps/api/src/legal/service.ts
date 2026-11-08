@@ -59,6 +59,14 @@ interface ConsentRow {
   accepted_at: string | Date;
 }
 
+/**
+ * Serialises publishers of one document for the rest of the transaction. The one-bigint advisory keyspace, so it cannot collide with the
+ * audit chain's two-int lock. Lock order for a publish: the approval row, then this, then the audit chain.
+ */
+export async function lockDocument(db: SqlClient, docKey: DocKey): Promise<void> {
+  await db.query(`select pg_advisory_xact_lock(hashtextextended('legal:' || $1::text, 0))`, [docKey]);
+}
+
 export class LegalService {
   private readonly db: Database;
   constructor(db: Database) {
@@ -69,6 +77,8 @@ export class LegalService {
     if (!input.body.en.trim() || !input.body.he.trim()) throw new DomainError('VALIDATION_FAILED', 'Both en and he bodies are required (ui.hebrew)');
     const hash = createHash('sha256').update(`${input.docKey}\n${input.body.en}\n${input.body.he}`).digest('hex');
     return this.db.transaction(async (tx) => {
+      // Two publishes of one document would read the same max(version); the lock (held to commit) makes the second wait and number after the first.
+      await lockDocument(tx, input.docKey);
       const last = await tx.query<{ v: number | null }>('select max(version) as v from legal.document_version where doc_key = $1', [input.docKey]);
       const version = (last.rows[0]?.v ?? 0) + 1;
       await tx.query(
