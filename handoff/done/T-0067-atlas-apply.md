@@ -11,3 +11,11 @@ Steps (from repo root, PowerShell on Windows unless stated; the password below i
 8. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema including legal (0002 applied). Step 5 shows `ip | YES`. Step 7 prints `SET` and `INSERT 0 1` and then count 1: one row with a null ip, inserted as club_app.
 Report back: the console output of steps 4, 5 and 7, and `docker --version`.
+
+## Result
+PASS, 2026-11-08 19:10 (Asia/Jerusalem), desktop runner at 0343fd3 (Docker 29.9.2, build a82e528).
+- Step 4: all nine schemas `ok` (ledger, identity, org, billing, legal, addons, notify, audit, agent); legal "Migrating to version 0002 (2 migrations in total)", `alter table legal.consent alter column ip drop not null;` -> ok (14.8ms).
+- Step 5: `ip | YES` (1 row).
+- Step 6: `INSERT 0 1`.
+- Step 7: `SET`, `INSERT 0 1`, count `1` (null-ip row inserted as club_app).
+- Step 8: container removed.
