@@ -3,8 +3,8 @@
 // (T-0304) keeps the versions and the consents; this file is only the wire.
 //
 // Acceptance is recorded against the device the token is bound to and the locale the member read it in. No IP address is
-// collected: the consent table's column is `inet not null`, so the unspecified address 0.0.0.0 is stored, which means "not
-// collected" (making the column nullable is a follow-up migration). Recording the same (document, version) again is a no-op.
+// collected: the consent records none (the column is nullable since T-0067; rows written before it hold 0.0.0.0, which meant the
+// same). Recording the same (document, version) again is a no-op.
 import { DomainError } from '@kesher/domain';
 import { ok, requirePrincipal, route, type Handler } from '../http.ts';
 import type { Consent, DocKey, DocumentVersion, LegalService } from './service.ts';
@@ -12,7 +12,6 @@ import type { Consent, DocKey, DocumentVersion, LegalService } from './service.t
 export const DOC_KEYS: readonly DocKey[] = ['terms', 'privacy', 'cardholder', 'esim', 'insurance', 'p2p', 'funder'];
 /** A request names at most one version per document. */
 const MAX_DOCUMENTS = DOC_KEYS.length;
-const NOT_COLLECTED = '0.0.0.0';
 
 const wireConsent = (c: Consent) => ({ docKey: c.docKey, version: c.version, hash: c.hash, locale: c.locale, acceptedAt: c.acceptedAt });
 
@@ -73,7 +72,7 @@ export function legalHandlers(legal: LegalService): Record<string, Handler> {
         if (current.get(a.docKey) !== a.version) throw new DomainError('VALIDATION_FAILED', `${a.docKey} version ${a.version} is not the version in force`, { field: 'documents' });
       }
       const recorded: Consent[] = [];
-      for (const a of asked) recorded.push(await legal.accept({ partyId: p.partyId, docKey: a.docKey, version: a.version, deviceId: p.deviceId, ip: NOT_COLLECTED, locale: body.locale }, req.now));
+      for (const a of asked) recorded.push(await legal.accept({ partyId: p.partyId, docKey: a.docKey, version: a.version, deviceId: p.deviceId, locale: body.locale }, req.now));
       return ok({ accepted: recorded.map(wireConsent) }, 201);
     }),
   };
