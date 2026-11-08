@@ -69,6 +69,8 @@
 | [T-0068](T-0068.md) | SETUP | The console's large requests pass the WAF: a roster import is not blocked at 8 KB | — | 16 deploy |
 | [T-0069](T-0069.md) | SETUP | The console-to-API hop does not record the NAT gateway as the client address | — | 16 deploy |
 | [T-0070](T-0070.md) | SETUP | Prod is reachable only from the prod environment job: per-environment CI roles or deploy-role trust on the OIDC subject | — | 16 deploy |
+| [T-0071](T-0071.md) | SETUP | AuditService.record is refused under club_app on a real Postgres: serialise the hash chain with an advisory lock, not a table lock | — | 16 deploy |
+| [T-0072](T-0072.md) | SETUP | Needs owner decision: where the first Kesher admin lives, and whether legal documents get a draft state | — | 16 deploy |
 | [T-0062](T-0062.md) | BIL | The app shows the terms at sign-up and re-accept, and links them from settings | — | 16 deploy |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
