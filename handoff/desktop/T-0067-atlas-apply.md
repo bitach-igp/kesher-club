@@ -9,5 +9,5 @@ Steps (from repo root, PowerShell on Windows unless stated; the password below i
 6. docker exec kesher-pg psql -U postgres -d club -c "insert into legal.document_version (doc_key, version, title_en, title_he, body_en, body_he, hash, material, published_by, effective_at, published_at) values ('terms', 1, 't', 't', 'b', 'b', 'h', true, gen_random_uuid(), now(), now())"
 7. docker exec kesher-pg psql -U postgres -d club -c "set role club_app; insert into legal.consent (id, party_id, doc_key, version, hash, device_id, ip, locale, accepted_at) values (gen_random_uuid(), gen_random_uuid(), 'terms', 1, 'h', 'd', null, 'en', now()); select count(*) from legal.consent where ip is null"
 8. docker rm -f kesher-pg
-Expected: step 4 prints `ok` for every schema including legal (0002 applied). Step 5 shows `ip | YES`. Step 7 inserts one row with a null ip as club_app and prints count 1.
+Expected: step 4 prints `ok` for every schema including legal (0002 applied). Step 5 shows `ip | YES`. Step 7 prints `SET` and `INSERT 0 1` and then count 1: one row with a null ip, inserted as club_app.
 Report back: the console output of steps 4, 5 and 7, and `docker --version`.

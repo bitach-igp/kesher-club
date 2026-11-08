@@ -93,7 +93,7 @@ export class LegalService {
   }
 
   /** Records consent; the same (party, doc, version) is a no-op returning the original record. */
-  async accept(input: { partyId: string; docKey: DocKey; version: number; deviceId: string; ip?: string; locale: 'en' | 'he' }, now: Date): Promise<Consent> {
+  async accept(input: { partyId: string; docKey: DocKey; version: number; deviceId: string; ip?: string | undefined; locale: 'en' | 'he' }, now: Date): Promise<Consent> {
     const v = await this.get(input.docKey, input.version);
     if (!v) throw new DomainError('NOT_FOUND', 'Document version not found');
     try {
