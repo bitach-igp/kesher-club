@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { AuditService, GENESIS, canonical, hashState } from './service.ts';
+import { AUDIT_CHAIN_LOCK, AuditService, GENESIS, canonical, hashState } from './service.ts';
 
 let db: TestDatabase;
 let audit: AuditService;
@@ -56,4 +56,88 @@ describe('AuditService (REQ-ADM-001)', () => {
     expect(canonical({ b: 1n, a: { d: 2, c: 3 } })).toBe(canonical({ a: { c: 3, d: 2 }, b: 1n }));
     expect(hashState({ x: 1 })).not.toBe(hashState({ x: 2 }));
   });
+});
+
+// T-0071: the service role has select and insert on audit.entry and nothing else, so the chain must be serialised
+// without a table lock (LOCK TABLE ... SHARE ROW EXCLUSIVE needs UPDATE, DELETE or TRUNCATE).
+describe('AuditService under the club_app role (T-0071)', () => {
+  const rec = (a: AuditService, n: number, at: Date) =>
+    a.record({ actorId: admin, actorRole: 'admin', action: 'flag.flip', subject: `k${n}`, reason: `r${n}` }, at);
+
+  it('records under club_app and the chain verifies', async () => {
+    const fresh = await createTestDatabase();
+    try {
+      const a = new AuditService(fresh);
+      await fresh.asRole('club_app', async () => {
+        await rec(a, 1, new Date('2026-11-02T10:00:00Z'));
+        await rec(a, 2, new Date('2026-11-02T10:00:01Z'));
+      });
+      expect(await a.verify()).toEqual({ ok: true, entries: 2 });
+    } finally {
+      await fresh.close();
+    }
+  }, 60_000);
+
+  it('two records started together form one unbroken chain', async () => {
+    const fresh = await createTestDatabase();
+    try {
+      const a = new AuditService(fresh);
+      await fresh.asRole('club_app', async () => {
+        await Promise.all([rec(a, 1, new Date('2026-11-02T10:00:00Z')), rec(a, 2, new Date('2026-11-02T10:00:00Z')), rec(a, 3, new Date('2026-11-02T10:00:00Z'))]);
+      });
+      expect(await a.verify()).toEqual({ ok: true, entries: 3 });
+    } finally {
+      await fresh.close();
+    }
+  }, 60_000);
+
+  it('the role still cannot update or delete an entry, and takes no table lock', async () => {
+    const fresh = await createTestDatabase();
+    try {
+      const a = new AuditService(fresh);
+      await rec(a, 1, new Date('2026-11-02T10:00:00Z'));
+      await fresh.asRole('club_app', async () => {
+        await expect(fresh.query(`update audit.entry set reason = 'x'`)).rejects.toMatchObject({ code: '42501' });
+        await expect(fresh.query(`delete from audit.entry`)).rejects.toMatchObject({ code: '42501' });
+        await expect(fresh.transaction((tx) => tx.query(`lock table audit.entry in share row exclusive mode`))).rejects.toMatchObject({ code: '42501' });
+      });
+    } finally {
+      await fresh.close();
+    }
+  }, 60_000);
+
+  it('takes the chain lock and holds it until the outer transaction commits', async () => {
+    const fresh = await createTestDatabase();
+    try {
+      const a = new AuditService(fresh);
+      const held = await fresh.transaction(async (tx) => {
+        const inTx = { query: tx.query.bind(tx), transaction: async <T>(fn: (c: typeof tx) => Promise<T>) => fn(tx) };
+        await a.record({ actorId: admin, actorRole: 'admin', action: 'flag.flip', subject: 'k', reason: 'r' }, new Date('2026-11-02T10:00:00Z'), inTx);
+        const r = await tx.query<{ n: string }>(`select count(*)::text as n from pg_locks where locktype = 'advisory' and granted and classid = $1 and objid = $2 and objsubid = 2`, AUDIT_CHAIN_LOCK);
+        return r.rows[0]!.n;
+      });
+      expect(held).toBe('1');
+      const after = await fresh.query<{ n: string }>(`select count(*)::text as n from pg_locks where locktype = 'advisory' and classid = $1 and objid = $2`, AUDIT_CHAIN_LOCK);
+      expect(after.rows[0]!.n).toBe('0');
+    } finally {
+      await fresh.close();
+    }
+  }, 60_000);
+
+  it('refuses to append outside READ COMMITTED, where the chain could fork', async () => {
+    const fresh = await createTestDatabase();
+    try {
+      const a = new AuditService(fresh);
+      await expect(
+        fresh.transaction(async (tx) => {
+          await tx.query('set transaction isolation level repeatable read');
+          const inTx = { query: tx.query.bind(tx), transaction: async <T>(fn: (c: typeof tx) => Promise<T>) => fn(tx) };
+          await a.record({ actorId: admin, actorRole: 'admin', action: 'flag.flip', subject: 'k', reason: 'r' }, new Date('2026-11-02T10:00:00Z'), inTx);
+        }),
+      ).rejects.toThrow('READ COMMITTED');
+      expect(await a.verify()).toEqual({ ok: true, entries: 0 });
+    } finally {
+      await fresh.close();
+    }
+  }, 60_000);
 });

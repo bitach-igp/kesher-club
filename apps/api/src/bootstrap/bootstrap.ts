@@ -3,8 +3,8 @@
 // (ledger.account: owner, type, currency), so a second run creates nothing. `run` is pure of process state: the caller passes the
 // database and the environment name, so tests drive it on PGlite and `index.ts` binds node-postgres.
 //
-// No audit entry: AuditService.record locks audit.entry in SHARE ROW EXCLUSIVE mode, which club_app (select, insert) may not do on
-// a real Postgres (PGlite enforces it too), and the task's own log line per account is the record of a one-off run.
+// No audit entry: the task's own log line per account is the record of a one-off run. (AuditService.record used to take a table lock
+// that club_app cannot take; since T-0071 it uses an advisory lock, so that is no longer the reason.)
 //
 // What it does NOT do, and why (docs/setup/bootstrap.md):
 //   - the first Kesher admin: a Kesher admin has no database account (staff sign in by SSO and the API verifies a console token),

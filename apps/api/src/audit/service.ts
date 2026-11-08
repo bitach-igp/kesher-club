@@ -37,17 +37,31 @@ export function entryHash(e: Omit<AuditEntry, 'hash' | 'seq'>): string {
   return sha([e.id, e.actorId, e.actorRole, e.action, e.subject, e.reason, e.beforeHash ?? '', e.afterHash ?? '', canonical(e.payload ?? {}), e.at, e.prevHash].join('\n'));
 }
 
+/**
+ * The audit chain's advisory lock, in the two-int4 keyspace of pg_advisory_xact_lock. The worker's job locks and the ledger and
+ * credit locks all use the one-bigint keyspace, which Postgres keeps apart from this one, so no key there can collide with it.
+ */
+export const AUDIT_CHAIN_LOCK: readonly [number, number] = [0x4b455348, 1];
+
 export class AuditService {
   private readonly db: Database;
   constructor(db: Database) {
     this.db = db;
   }
 
-  /** Appends one entry. Serialised through a row lock on the last entry so the chain never forks. */
+  /**
+   * Appends one entry. Writers are serialised by a transaction-level advisory lock taken before the last hash is read, so
+   * the chain never forks. A table lock would need UPDATE, DELETE or TRUNCATE on audit.entry, which the service role must
+   * never hold (T-0071). The lock is released when the transaction ends, so a caller's outer transaction keeps it until commit.
+   * It serialises only under READ COMMITTED (the default here): the last hash is read after the lock, with a fresh snapshot.
+   */
   async record(input: AuditInput, now: Date, db: Database = this.db): Promise<AuditEntry> {
     if (!input.reason.trim()) throw new DomainError('VALIDATION_FAILED', 'A reason is required for every admin action');
     return db.transaction(async (tx) => {
-      await tx.query('lock table audit.entry in share row exclusive mode');
+      // The lock and the isolation level come back in one round trip. The chain forks under REPEATABLE READ or SERIALIZABLE
+      // (the snapshot is taken before the lock is granted), so a database or role configured that way is refused, not trusted.
+      const locked = await tx.query<{ level: string }>(`select current_setting('transaction_isolation') as level from (select pg_advisory_xact_lock($1::int, $2::int)) l`, AUDIT_CHAIN_LOCK);
+      if (locked.rows[0]?.level !== 'read committed') throw new Error('The audit chain needs READ COMMITTED transactions');
       const last = await tx.query<{ hash: string }>('select hash from audit.entry order by seq desc limit 1');
       const prevHash = last.rows[0]?.hash ?? GENESIS;
       const base = {
