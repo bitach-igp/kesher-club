@@ -1,18 +1,20 @@
 // T-0659 (REQ-INS-022, REQ-INS-025): the provider registry a process runs on. `sim` binds every port to the
 // simulators; a per-port override binds `institution-banking` to the Crowded adapter and nothing else.
-import { computeCrowdedSignature, CrowdedInstitutionBankingAdapter, FakeCrowded, InMemoryKeyLedger, SANDBOX_BASE_URL, type KeyLedger } from '@kesher/adapters';
+import { AiraloEsimAdapter, AppleFederatedIdPAdapter, CoverGeniusInsuranceAdapter, GoogleFederatedIdPAdapter, WorkOsOrgIdPAdapter, computeCrowdedSignature, CrowdedInstitutionBankingAdapter, FakeCrowded, InMemoryKeyLedger, SANDBOX_BASE_URL, type KeyLedger } from '@kesher/adapters';
+import { generateKeyPairSync } from 'node:crypto';
 import { Secret } from '@kesher/domain';
-import type { InstitutionBankingPort } from '@kesher/ports';
+import type { EsimPort, FederatedIdPPort, InstitutionBankingPort, InsurancePort, OrgIdPPort } from '@kesher/ports';
 import { PORTS } from '@kesher/ports';
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from './db.ts';
-import { createRegistry, crowdedWebhookSecrets, IGNORED_LIVE_BINDING_WARNING, LIVE_BINDING_WARNING, overridesFromConfig, systemClock, type CrowdedBankingOverride } from './registry.ts';
+import { AppleGoogleFederatedIdP, createRegistry, crowdedWebhookSecrets, IGNORED_LIVE_BINDING_WARNING, LIVE_BINDING_WARNING, overridesFromConfig, systemClock, type CrowdedBankingOverride } from './registry.ts';
 
 const BASE = 'https://crowded.test/api/v1';
 const TOKEN = 'crowded-token-do-not-print';
 const CURRENT = 'whsec-current-0123456789';
 const PREVIOUS = 'whsec-previous-0123456789';
 const MARKETS = ['IL', 'US'] as const;
+const ALL_SIM = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim' };
 
 const override = (extra: Partial<CrowdedBankingOverride> = {}): CrowdedBankingOverride => ({
   provider: 'crowded',
@@ -30,13 +32,13 @@ describe('createRegistry (T-0021, T-0659)', () => {
       expect(registry.resolve('institution-banking', market)).toBe(simulators.simulators['institution-banking']);
       expect(registry.bindingFor('institution-banking', market)).toMatchObject({ provider: 'simulator', mode: 'sim' });
     }
-    expect(providers).toEqual({ 'institution-banking': 'sim' });
+    expect(providers).toEqual(ALL_SIM);
   });
 
   it('sandbox is the same registry under the staging label; live and anything else are refused (T-0040)', () => {
     const { registry, simulators, providers } = createRegistry('sandbox');
     expect(registry.resolve('institution-banking', 'US')).toBe(simulators.simulators['institution-banking']);
-    expect(providers).toEqual({ 'institution-banking': 'sim' });
+    expect(providers).toEqual(ALL_SIM);
     expect(() => createRegistry('live')).toThrow(/not accepted/);
   });
 
@@ -58,7 +60,7 @@ describe('createRegistry (T-0021, T-0659)', () => {
       expect(registry.resolve<InstitutionBankingPort>('institution-banking', market)).toBeInstanceOf(CrowdedInstitutionBankingAdapter);
       expect(registry.bindingFor('institution-banking', market)).toMatchObject({ provider: 'crowded' });
     }
-    expect(providers).toEqual({ 'institution-banking': 'crowded' });
+    expect(providers).toEqual({ ...ALL_SIM, 'institution-banking': 'crowded' });
   });
 
   it('binds in sandbox mode for any base URL, the sandbox one or not, and says nothing', () => {
@@ -234,5 +236,143 @@ describe('overridesFromConfig (T-0659)', () => {
     })();
     expect(err.message).toMatch(/CROWDED_WEBHOOK_SECRETS/);
     expect(err.message).not.toContain(TOKEN);
+  });
+});
+
+// T-0042: the marketplace and identity ports, bound only when chosen.
+const APPLE_PEM = generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+const CREDS = {
+  AIRALO_CLIENT_SECRET: 'airalo-secret-do-not-print',
+  COVER_GENIUS_API_SECRET: 'xcover-secret-do-not-print',
+  WORKOS_API_KEY: 'sk_workos_do_not_print',
+  GOOGLE_CLIENT_SECRET: 'google-secret-do-not-print',
+};
+const chosen = {
+  PROVIDER_ESIM: 'airalo' as const,
+  AIRALO_BASE_URL: 'https://sandbox-partners-api.airalo.com',
+  AIRALO_CLIENT_ID: new Secret('airalo-id'),
+  AIRALO_CLIENT_SECRET: new Secret(CREDS.AIRALO_CLIENT_SECRET),
+  PROVIDER_INSURANCE: 'cover-genius' as const,
+  COVER_GENIUS_BASE_URL: 'https://api.sandbox.xcover.com',
+  COVER_GENIUS_PARTNER_CODE: new Secret('KESHER'),
+  COVER_GENIUS_API_KEY: new Secret('xcover-key'),
+  COVER_GENIUS_API_SECRET: new Secret(CREDS.COVER_GENIUS_API_SECRET),
+  COVER_GENIUS_PRODUCTS: { gadget: { policyType: 'gadget_protection', commissionBps: 2000n } },
+  COVER_GENIUS_LICENSED_ENTITY: 'XCover (Cover Genius Ltd), licensed insurance intermediary',
+  COVER_GENIUS_COMMISSION_DISCLOSURE: 'Kesher earns a commission on this policy.',
+  PROVIDER_ORG_IDP: 'workos' as const,
+  WORKOS_CLIENT_ID: new Secret('client_workos'),
+  WORKOS_API_KEY: new Secret(CREDS.WORKOS_API_KEY),
+  WORKOS_WEBHOOK_SECRET: new Secret('whsec_workos'),
+  PROVIDER_FEDERATED_IDP: 'oidc' as const,
+  APPLE_CLIENT_ID: new Secret('club.kesher.signin'),
+  APPLE_TEAM_ID: new Secret('TEAM123456'),
+  APPLE_KEY_ID: new Secret('KEY1234567'),
+  APPLE_PRIVATE_KEY: new Secret(APPLE_PEM),
+  GOOGLE_CLIENT_ID: new Secret('google-id.apps.googleusercontent.com'),
+  GOOGLE_CLIENT_SECRET: new Secret(CREDS.GOOGLE_CLIENT_SECRET),
+};
+const nodb = {} as SqlClient;
+const bind = (config: Parameters<typeof overridesFromConfig>[0]) => createRegistry('sandbox', systemClock(), overridesFromConfig(config, nodb));
+const thrownBy = (fn: () => unknown): Error => {
+  try {
+    fn();
+  } catch (e) {
+    return e as Error;
+  }
+  throw new Error('expected a throw');
+};
+
+describe('marketplace and identity bindings (T-0042)', () => {
+  it('defaults to the simulators on every one of the four ports', () => {
+    const { registry, simulators, providers } = bind({ PROVIDER_INSTITUTION_BANKING: 'sim' });
+    for (const capability of ['esim', 'insurance', 'org-idp', 'federated-idp'] as const) {
+      for (const market of MARKETS) {
+        expect(registry.resolve(capability, market)).toBe(simulators.simulators[capability]);
+        expect(registry.bindingFor(capability, market)).toMatchObject({ provider: 'simulator', mode: 'sim' });
+      }
+    }
+    expect(providers).toEqual(ALL_SIM);
+    // Credentials present while the choice stays sim bind nothing.
+    expect(bind({ PROVIDER_INSTITUTION_BANKING: 'sim', ...chosen, PROVIDER_ESIM: 'sim', PROVIDER_INSURANCE: 'sim', PROVIDER_ORG_IDP: 'sim', PROVIDER_FEDERATED_IDP: 'sim' }).providers).toEqual(ALL_SIM);
+  });
+
+  it('each choice binds its adapter in both markets, in sandbox mode, and leaves the other ports alone', () => {
+    const cases = [
+      ['esim', 'airalo', AiraloEsimAdapter, { PROVIDER_ESIM: 'airalo' as const }],
+      ['insurance', 'cover-genius', CoverGeniusInsuranceAdapter, { PROVIDER_INSURANCE: 'cover-genius' as const }],
+      ['org-idp', 'workos', WorkOsOrgIdPAdapter, { PROVIDER_ORG_IDP: 'workos' as const }],
+      ['federated-idp', 'oidc', AppleGoogleFederatedIdP, { PROVIDER_FEDERATED_IDP: 'oidc' as const }],
+    ] as const;
+    for (const [capability, provider, adapterClass, pick] of cases) {
+      const { registry, simulators, providers } = bind({ PROVIDER_INSTITUTION_BANKING: 'sim', ...chosen, PROVIDER_ESIM: 'sim', PROVIDER_INSURANCE: 'sim', PROVIDER_ORG_IDP: 'sim', PROVIDER_FEDERATED_IDP: 'sim', ...pick });
+      for (const market of MARKETS) {
+        expect(registry.resolve(capability, market)).toBeInstanceOf(adapterClass);
+        expect(registry.bindingFor(capability, market)).toMatchObject({ provider, mode: 'sandbox' });
+      }
+      expect(providers).toEqual({ ...ALL_SIM, [capability]: provider });
+      for (const other of ['esim', 'insurance', 'org-idp', 'federated-idp'] as const) {
+        if (other !== capability) expect(registry.resolve(other, 'US')).toBe(simulators.simulators[other]);
+      }
+      expect(registry.resolve(capability, 'US')).toBe(registry.resolve(capability, 'IL'));
+    }
+  });
+
+  it('all four chosen together bind all four, and the types line up with the ports', () => {
+    const { registry, providers } = bind({ PROVIDER_INSTITUTION_BANKING: 'sim', ...chosen });
+    expect(providers).toEqual({ ...ALL_SIM, esim: 'airalo', insurance: 'cover-genius', 'org-idp': 'workos', 'federated-idp': 'oidc' });
+    expect(registry.resolve<EsimPort>('esim', 'US')).toBeInstanceOf(AiraloEsimAdapter);
+    expect(registry.resolve<InsurancePort>('insurance', 'IL')).toBeInstanceOf(CoverGeniusInsuranceAdapter);
+    expect(registry.resolve<OrgIdPPort>('org-idp', 'US')).toBeInstanceOf(WorkOsOrgIdPAdapter);
+    expect(registry.resolve<FederatedIdPPort>('federated-idp', 'US')).toBeInstanceOf(AppleGoogleFederatedIdP);
+  });
+
+  it('the federated port routes each provider to its own adapter and refuses another', async () => {
+    const apple = new AppleFederatedIdPAdapter({ clientId: 'c', teamId: 't', keyId: 'k', privateKeyPem: APPLE_PEM });
+    const google = new GoogleFederatedIdPAdapter({ clientId: 'g', clientSecret: 's' });
+    const port = new AppleGoogleFederatedIdP(apple, google);
+    const input = { state: 's1', nonce: 'n1', redirectUri: 'https://app.kesher.club/cb' };
+    expect((await port.authorizationUrl('apple', input)).url).toContain('appleid.apple.com');
+    expect((await port.authorizationUrl('google', input)).url).toContain('accounts.google.com');
+    await expect(port.authorizationUrl('github' as never, input)).rejects.toMatchObject({ code: 'UNSUPPORTED_PROVIDER' });
+  });
+
+  it('a registry given a half-built Apple and Google pair refuses it', () => {
+    const { apple, google } = overridesFromConfig({ PROVIDER_INSTITUTION_BANKING: 'sim', ...chosen }, nodb).federatedIdp!;
+    for (const half of [{ provider: 'oidc' as const, apple, google: undefined }, { provider: 'oidc' as const, apple: undefined, google }]) {
+      const err = thrownBy(() => createRegistry('sim', systemClock(), { federatedIdp: half as never }));
+      expect(err.message).toMatch(/both Apple and Google/);
+    }
+  });
+
+  it('a chosen adapter without its full set fails closed, naming keys and never a value', () => {
+    const base = { PROVIDER_INSTITUTION_BANKING: 'sim' as const, ...chosen };
+    const drops: [string, string][] = [
+      ['AIRALO_CLIENT_SECRET', 'PROVIDER_ESIM=airalo'],
+      ['COVER_GENIUS_PRODUCTS', 'PROVIDER_INSURANCE=cover-genius'],
+      ['WORKOS_WEBHOOK_SECRET', 'PROVIDER_ORG_IDP=workos'],
+      ['GOOGLE_CLIENT_SECRET', 'PROVIDER_FEDERATED_IDP=oidc'],
+      ['APPLE_KEY_ID', 'PROVIDER_FEDERATED_IDP=oidc'],
+    ];
+    for (const [key, choice] of drops) {
+      const err = thrownBy(() => overridesFromConfig({ ...base, [key]: undefined }, nodb));
+      expect(err.message).toContain(key);
+      expect(err.message).toContain(choice);
+      for (const v of [...Object.values(CREDS), APPLE_PEM]) expect(err.message).not.toContain(v);
+    }
+  });
+
+  it('refuses a base URL that is not https without echoing a credential', () => {
+    for (const patch of [{ AIRALO_BASE_URL: 'http://airalo.test' }, { COVER_GENIUS_BASE_URL: 'http://xcover.test' }]) {
+      const err = thrownBy(() => bind({ PROVIDER_INSTITUTION_BANKING: 'sim', ...chosen, ...patch }));
+      expect(err.message).toMatch(/needs an https baseUrl/);
+      for (const v of Object.values(CREDS)) expect(err.message).not.toContain(v);
+    }
+  });
+
+  it('adapter constructors that refuse (empty disclosure wording) do not echo a credential', () => {
+    const err = thrownBy(() => bind({ PROVIDER_INSTITUTION_BANKING: 'sim', ...chosen, COVER_GENIUS_COMMISSION_DISCLOSURE: 'no mention' }));
+    expect(err.message).toMatch(/commission/);
+    for (const v of Object.values(CREDS)) expect(err.message).not.toContain(v);
   });
 });

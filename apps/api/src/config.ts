@@ -53,7 +53,58 @@ const secretPair = () =>
  */
 export const PROVIDER_PORTS = {
   'institution-banking': { env: 'PROVIDER_INSTITUTION_BANKING', adapters: { crowded: ['CROWDED_BASE_URL', 'CROWDED_API_TOKEN', 'CROWDED_WEBHOOK_SECRETS'] } },
+  // T-0042: the marketplace and identity ports. Each set is all-there-or-refused, like Crowded's.
+  esim: { env: 'PROVIDER_ESIM', adapters: { airalo: ['AIRALO_BASE_URL', 'AIRALO_CLIENT_ID', 'AIRALO_CLIENT_SECRET'] } },
+  insurance: {
+    env: 'PROVIDER_INSURANCE',
+    adapters: {
+      'cover-genius': [
+        'COVER_GENIUS_BASE_URL',
+        'COVER_GENIUS_PARTNER_CODE',
+        'COVER_GENIUS_API_KEY',
+        'COVER_GENIUS_API_SECRET',
+        'COVER_GENIUS_PRODUCTS',
+        'COVER_GENIUS_LICENSED_ENTITY',
+        'COVER_GENIUS_COMMISSION_DISCLOSURE',
+      ],
+    },
+  },
+  'org-idp': { env: 'PROVIDER_ORG_IDP', adapters: { workos: ['WORKOS_CLIENT_ID', 'WORKOS_API_KEY', 'WORKOS_WEBHOOK_SECRET'] } },
+  // Sign in with Apple and Google are offered together or not at all (auth.social.enabled, REQ-AUTH-004): one set holds both.
+  'federated-idp': {
+    env: 'PROVIDER_FEDERATED_IDP',
+    adapters: { oidc: ['APPLE_CLIENT_ID', 'APPLE_TEAM_ID', 'APPLE_KEY_ID', 'APPLE_PRIVATE_KEY', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'] },
+  },
 } as const satisfies Record<string, { env: string; adapters: Record<string, readonly string[]> }>;
+
+/** A JSON object of our insurance product codes to XCover policy types. The message never quotes the value. */
+const coverGeniusProducts = () =>
+  z.string().transform((raw, ctx): Record<string, { policyType: string; policyTypeVersion?: number; commissionBps: bigint }> => {
+    const bad = 'must be a JSON object of product code to { "policyType": string, "commissionBps": integer 0..10000, "policyTypeVersion"?: integer }';
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && Object.keys(parsed).length > 0) {
+        const out: Record<string, { policyType: string; policyTypeVersion?: number; commissionBps: bigint }> = {};
+        for (const [code, v] of Object.entries(parsed)) {
+          const p = v as { policyType?: unknown; policyTypeVersion?: unknown; commissionBps?: unknown } | null;
+          const ok =
+            typeof p === 'object' && p !== null && typeof p.policyType === 'string' && p.policyType !== '' &&
+            typeof p.commissionBps === 'number' && Number.isInteger(p.commissionBps) && p.commissionBps >= 0 && p.commissionBps <= 10_000 &&
+            (p.policyTypeVersion === undefined || (typeof p.policyTypeVersion === 'number' && Number.isInteger(p.policyTypeVersion)));
+          if (!ok) throw new Error('shape');
+          out[code] = { policyType: p.policyType as string, commissionBps: BigInt(p.commissionBps as number), ...(p.policyTypeVersion !== undefined ? { policyTypeVersion: p.policyTypeVersion as number } : {}) };
+        }
+        return out;
+      }
+    } catch {
+      // reported below
+    }
+    ctx.addIssue({ code: 'custom', message: bad });
+    return z.NEVER;
+  });
+
+/** A Sign in with Apple key: the .p8 contents, PKCS#8 PEM. The message never quotes the value. */
+const applePrivateKey = () => secret().refine((k) => /-----BEGIN PRIVATE KEY-----[\s\S]+-----END PRIVATE KEY-----/.test(k.reveal()), 'must be a PKCS#8 PEM private key');
 
 const shared = {
   /**
@@ -69,6 +120,32 @@ const shared = {
   CROWDED_WEBHOOK_SECRETS: secretPair().optional(),
   /** The member token key: a private ES256 JWK as JSON, from Secrets Manager. Checked here, because a
    *  JSON.parse error quotes its input and would carry the key into a boot log. */
+  /** Which vendor backs each marketplace and identity port (T-0042): `sim` by default; a named adapter needs its whole credential set. */
+  PROVIDER_ESIM: z.enum(['sim', 'airalo']).default('sim'),
+  AIRALO_BASE_URL: httpsUrl().optional(),
+  AIRALO_CLIENT_ID: secret().optional(),
+  AIRALO_CLIENT_SECRET: secret().optional(),
+  PROVIDER_INSURANCE: z.enum(['sim', 'cover-genius']).default('sim'),
+  COVER_GENIUS_BASE_URL: httpsUrl().optional(),
+  COVER_GENIUS_PARTNER_CODE: secret().optional(),
+  COVER_GENIUS_API_KEY: secret().optional(),
+  COVER_GENIUS_API_SECRET: secret().optional(),
+  /** Our product codes to XCover policy types, as JSON (T-0720). */
+  COVER_GENIUS_PRODUCTS: coverGeniusProducts().optional(),
+  /** The compliance-approved wording the adapter requires; it refuses to build without it. */
+  COVER_GENIUS_LICENSED_ENTITY: z.string().trim().min(1).optional(),
+  COVER_GENIUS_COMMISSION_DISCLOSURE: z.string().refine((v) => /commission/i.test(v), 'must disclose the commission').optional(),
+  PROVIDER_ORG_IDP: z.enum(['sim', 'workos']).default('sim'),
+  WORKOS_CLIENT_ID: secret().optional(),
+  WORKOS_API_KEY: secret().optional(),
+  WORKOS_WEBHOOK_SECRET: secret().optional(),
+  PROVIDER_FEDERATED_IDP: z.enum(['sim', 'oidc']).default('sim'),
+  APPLE_CLIENT_ID: secret().optional(),
+  APPLE_TEAM_ID: secret().optional(),
+  APPLE_KEY_ID: secret().optional(),
+  APPLE_PRIVATE_KEY: applePrivateKey().optional(),
+  GOOGLE_CLIENT_ID: secret().optional(),
+  GOOGLE_CLIENT_SECRET: secret().optional(),
   JWT_SIGNING_KEY: secret().refine((k) => {
     try {
       const jwk = JSON.parse(k.reveal()) as Record<string, unknown>;
@@ -94,22 +171,20 @@ const shared = {
 const processRules = (cfg: unknown, ctx: z.RefinementCtx) => {
   const c = cfg as {
     PROVIDER_MODE_DEFAULT: string;
-    PROVIDER_INSTITUTION_BANKING: 'sim' | 'crowded';
-    CROWDED_BASE_URL?: string | undefined;
-    CROWDED_API_TOKEN?: Secret | undefined;
-    CROWDED_WEBHOOK_SECRETS?: Secret[] | undefined;
     PII_DATA_KEY: Secret;
     PII_INDEX_KEY: Secret;
-  };
+  } & Record<string, unknown>;
   if (c.PROVIDER_MODE_DEFAULT !== 'sim' && c.PROVIDER_MODE_DEFAULT !== 'sandbox') {
     ctx.addIssue({ code: 'custom', path: ['PROVIDER_MODE_DEFAULT'], message: 'only sim or sandbox; live waits for the production guard (T-0043)' });
   }
-  // The Crowded keys come as a set: `crowded` needs all three, and a partial set is refused even while the port stays on the
-  // simulator (half a credential is a mistake, not a choice). A key left out is reported as missing by name.
-  const crowdedKeys = ['CROWDED_BASE_URL', 'CROWDED_API_TOKEN', 'CROWDED_WEBHOOK_SECRETS'] as const;
-  const present = crowdedKeys.filter((k) => c[k] !== undefined);
-  if (c.PROVIDER_INSTITUTION_BANKING === 'crowded' || present.length > 0) {
-    for (const k of crowdedKeys) if (c[k] === undefined) ctx.addIssue({ code: 'custom', path: [k], message: 'required when any Crowded key is set or PROVIDER_INSTITUTION_BANKING=crowded' });
+  // Each adapter's keys come as a set: choosing the adapter needs all of them, and a partial set is refused even while the port
+  // stays on the simulator (half a credential is a mistake, not a choice). A key left out is reported as missing by name.
+  for (const port of Object.values(PROVIDER_PORTS)) {
+    for (const [adapter, keys] of Object.entries(port.adapters)) {
+      if (c[port.env] !== adapter && !(keys as readonly string[]).some((k) => c[k] !== undefined)) continue;
+      const why = adapter === 'oidc' ? '; Apple and Google are offered together or not at all (auth.social.enabled)' : '';
+      for (const k of keys) if (c[k] === undefined) ctx.addIssue({ code: 'custom', path: [k], message: `required when any ${adapter} key is set or ${port.env}=${adapter}${why}` });
+    }
   }
   if (c.PII_DATA_KEY.reveal() === c.PII_INDEX_KEY.reveal()) {
     ctx.addIssue({ code: 'custom', path: ['PII_INDEX_KEY'], message: 'must differ from PII_DATA_KEY' });
@@ -140,7 +215,7 @@ const missingProviderKeys = (env: Record<string, string | undefined>): string[] 
   const missing: string[] = [];
   for (const port of Object.values(PROVIDER_PORTS)) {
     for (const [adapter, keys] of Object.entries(port.adapters)) {
-      if (env[port.env] === adapter || keys.some(set)) missing.push(...keys.filter((k) => !set(k)));
+      if (env[port.env] === adapter || (keys as readonly string[]).some(set)) missing.push(...(keys as readonly string[]).filter((k) => !set(k)));
     }
   }
   return missing;

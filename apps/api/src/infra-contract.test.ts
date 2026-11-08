@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { describe, expect, it } from 'vitest';
 import { randomBytes } from 'node:crypto';
-import { apiConfigSchema, loadApiConfig, loadWorkerConfig, workerConfigSchema } from './config.ts';
+import { apiConfigSchema, loadApiConfig, loadWorkerConfig, PROVIDER_PORTS, workerConfigSchema } from './config.ts';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const read = (p: string): string => fs.readFileSync(path.join(ROOT, p), 'utf8');
@@ -110,6 +110,44 @@ describe('the process config and Terraform agree (T-0025)', () => {
       it('health-checks the API on the route it serves', () => {
         expect(hcl).toMatch(/health_check_path\s*=\s*"\/v1\/status"/);
       });
+    });
+  }
+});
+
+describe('marketplace and identity providers are opt-in in Terraform (T-0042)', () => {
+  for (const file of ['infra/terraform/envs/staging/main.tf', 'infra/terraform/envs/prod/main.tf']) {
+    it(`${file}: PROVIDER_* default to sim, and each adapter's whole credential set is a Secrets Manager container mapped for it`, () => {
+      const hcl = read(file);
+      const env = keys(block(hcl, 'common_env'));
+      // `names = [ … ]` is a list, not a block: read it directly.
+      const names = new Set([...(/names\s*=\s*\[([\s\S]*?)\]/.exec(hcl.slice(hcl.indexOf('module "secrets"')))?.[1] ?? '').matchAll(/"([a-z0-9-]+)"/g)].map((m) => m[1]!));
+      expect(names.size).toBeGreaterThan(10);
+      for (const [capability, port] of Object.entries(PROVIDER_PORTS)) {
+        if (capability === 'institution-banking') continue; // Crowded is wired by its own card
+        expect(env, port.env).toContain(port.env);
+        const variable = port.env.toLowerCase();
+        expect(hcl, port.env).toMatch(new RegExp(`${port.env}\\s*=\\s*var\\.${variable}\\b`));
+        expect(hcl, variable).toMatch(new RegExp(`variable "${variable}" \\{[\\s\\S]*?default\\s*=\\s*"sim"`));
+        for (const [adapter, adapterKeys] of Object.entries(port.adapters)) {
+          const mapped = block(hcl, 'adapter_secrets').slice(block(hcl, 'adapter_secrets').search(new RegExp(`^\\s*"?${adapter}"?\\s*=\\s*tomap`, 'm')));
+          for (const k of adapterKeys) {
+            const container = k.toLowerCase().replace(/_/g, '-');
+            expect(mapped, k).toMatch(new RegExp(`${k}\\s*=\\s*module\\.secrets\\.arns\\["${container}"\\]`));
+            expect(names.has(container), `${container} container`).toBe(true);
+          }
+        }
+      }
+    });
+
+    it(`${file}: a sim choice passes the config, and the API, worker and jit services all receive the chosen sets`, () => {
+      const hcl = read(file);
+      const raw = { ...VALID, APP_ENV: 'staging', PROVIDER_MODE_DEFAULT: 'sandbox', PROVIDER_ESIM: 'sim', PROVIDER_INSURANCE: 'sim', PROVIDER_ORG_IDP: 'sim', PROVIDER_FEDERATED_IDP: 'sim' } as Record<string, string>;
+      for (const load of [loadApiConfig, loadWorkerConfig]) expect(() => load(raw)).not.toThrow();
+      expect(hcl).toMatch(/jit_secrets\s*=\s*merge\([^)]*local\.provider_secrets\)/);
+      for (const module of ['api', 'worker']) {
+        const body = hcl.slice(hcl.indexOf(`module "${module}" {`), hcl.indexOf('\nmodule "', hcl.indexOf(`module "${module}" {`) + 10));
+        expect(body, `module ${module}`).toMatch(/secrets\s*=\s*merge\([^\n]*local\.provider_secrets\)/);
+      }
     });
   }
 });

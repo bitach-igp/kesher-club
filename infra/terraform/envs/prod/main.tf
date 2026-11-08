@@ -52,6 +52,12 @@ locals {
     TOKEN_ISSUER          = local.token_issuer
     JWT_SIGNING_KID       = "kesher-${local.env}-1"
     PORT                  = "3000"
+    # Which vendor backs each marketplace and identity port (T-0042). `sim` until an operator opts in with a tfvars value;
+    # a named adapter also maps its credential set from Secrets Manager below.
+    PROVIDER_ESIM          = var.provider_esim
+    PROVIDER_INSURANCE     = var.provider_insurance
+    PROVIDER_ORG_IDP       = var.provider_org_idp
+    PROVIDER_FEDERATED_IDP = var.provider_federated_idp
   }
 
   common_secrets = {
@@ -64,7 +70,46 @@ locals {
     STAFF_JWKS           = module.secrets.arns["staff-jwks"]
   }
   # Same secrets, but the database password is the club_jit one.
-  jit_secrets = merge(local.common_secrets, { PGPASSWORD = module.secrets.arns["db-jit-password"] })
+  jit_secrets = merge(local.common_secrets, { PGPASSWORD = module.secrets.arns["db-jit-password"] }, local.provider_secrets)
+
+  # Each adapter's whole credential set (T-0042). The process config refuses a partial set, so a set is mapped whole or not at all;
+  # an ECS secret with no value would also stop a task from starting, so only the chosen adapter's containers are mapped.
+  adapter_secrets = {
+    airalo = tomap({
+      AIRALO_BASE_URL      = module.secrets.arns["airalo-base-url"]
+      AIRALO_CLIENT_ID     = module.secrets.arns["airalo-client-id"]
+      AIRALO_CLIENT_SECRET = module.secrets.arns["airalo-client-secret"]
+    })
+    cover-genius = tomap({
+      COVER_GENIUS_BASE_URL              = module.secrets.arns["cover-genius-base-url"]
+      COVER_GENIUS_PARTNER_CODE          = module.secrets.arns["cover-genius-partner-code"]
+      COVER_GENIUS_API_KEY               = module.secrets.arns["cover-genius-api-key"]
+      COVER_GENIUS_API_SECRET            = module.secrets.arns["cover-genius-api-secret"]
+      COVER_GENIUS_PRODUCTS              = module.secrets.arns["cover-genius-products"]
+      COVER_GENIUS_LICENSED_ENTITY       = module.secrets.arns["cover-genius-licensed-entity"]
+      COVER_GENIUS_COMMISSION_DISCLOSURE = module.secrets.arns["cover-genius-commission-disclosure"]
+    })
+    workos = tomap({
+      WORKOS_CLIENT_ID      = module.secrets.arns["workos-client-id"]
+      WORKOS_API_KEY        = module.secrets.arns["workos-api-key"]
+      WORKOS_WEBHOOK_SECRET = module.secrets.arns["workos-webhook-secret"]
+    })
+    # Sign in with Apple and Google are offered together or not at all (auth.social.enabled): one set holds both.
+    oidc = tomap({
+      APPLE_CLIENT_ID      = module.secrets.arns["apple-client-id"]
+      APPLE_TEAM_ID        = module.secrets.arns["apple-team-id"]
+      APPLE_KEY_ID         = module.secrets.arns["apple-key-id"]
+      APPLE_PRIVATE_KEY    = module.secrets.arns["apple-private-key"]
+      GOOGLE_CLIENT_ID     = module.secrets.arns["google-client-id"]
+      GOOGLE_CLIENT_SECRET = module.secrets.arns["google-client-secret"]
+    })
+  }
+  provider_secrets = merge(
+    var.provider_esim == "airalo" ? local.adapter_secrets["airalo"] : tomap({}),
+    var.provider_insurance == "cover-genius" ? local.adapter_secrets["cover-genius"] : tomap({}),
+    var.provider_org_idp == "workos" ? local.adapter_secrets["workos"] : tomap({}),
+    var.provider_federated_idp == "oidc" ? local.adapter_secrets["oidc"] : tomap({}),
+  )
 
 }
 
@@ -231,6 +276,25 @@ module "secrets" {
     "stripe-api-key",
     "stripe-webhook-secret",
     "provider-webhook-secrets",
+    "airalo-base-url",
+    "airalo-client-id",
+    "airalo-client-secret",
+    "cover-genius-base-url",
+    "cover-genius-partner-code",
+    "cover-genius-api-key",
+    "cover-genius-api-secret",
+    "cover-genius-products",
+    "cover-genius-licensed-entity",
+    "cover-genius-commission-disclosure",
+    "workos-client-id",
+    "workos-api-key",
+    "workos-webhook-secret",
+    "apple-client-id",
+    "apple-team-id",
+    "apple-key-id",
+    "apple-private-key",
+    "google-client-id",
+    "google-client-secret",
     "pii-data-key",
     "pii-index-key",
     "staff-jwks",
@@ -338,7 +402,7 @@ module "api" {
   min_capacity               = 2
   max_capacity               = 8
   environment                = merge(local.common_env, { SERVICE_ROLE = "api", MARKET = each.value.code })
-  secrets                    = merge(local.common_secrets, { STRIPE_API_KEY = module.secrets.arns["stripe-api-key"], STRIPE_WEBHOOK_SECRET = module.secrets.arns["stripe-webhook-secret"], PROVIDER_WEBHOOK_SECRETS = module.secrets.arns["provider-webhook-secrets"] })
+  secrets                    = merge(local.common_secrets, { STRIPE_API_KEY = module.secrets.arns["stripe-api-key"], STRIPE_WEBHOOK_SECRET = module.secrets.arns["stripe-webhook-secret"], PROVIDER_WEBHOOK_SECRETS = module.secrets.arns["provider-webhook-secrets"] }, local.provider_secrets)
   secret_kms_key_arns        = [module.kms_secrets.key_arn]
   database_security_group_id = module.rds.security_group_id
   log_kms_key_arn            = module.kms_logs.key_arn
@@ -420,7 +484,7 @@ module "worker" {
   min_capacity               = 2
   max_capacity               = 6
   environment                = merge(local.common_env, { SERVICE_ROLE = "worker", MARKET = each.value.code })
-  secrets                    = merge(local.common_secrets, { STRIPE_API_KEY = module.secrets.arns["stripe-api-key"] })
+  secrets                    = merge(local.common_secrets, { STRIPE_API_KEY = module.secrets.arns["stripe-api-key"] }, local.provider_secrets)
   secret_kms_key_arns        = [module.kms_secrets.key_arn]
   database_security_group_id = module.rds.security_group_id
   log_kms_key_arn            = module.kms_logs.key_arn
@@ -861,4 +925,47 @@ output "ecs_service_names" {
     { for k, m in module.worker : "worker-${k}" => m.service_name },
     { admin = module.admin.service_name, console = module.console.service_name },
   )
+}
+
+# ---- marketplace and identity providers (T-0042) -------------------------------------------------
+# `sim` binds the simulator; a named adapter needs its credential containers filled first (docs/setup/secrets.md), or the
+# process refuses to boot naming the missing keys.
+variable "provider_esim" {
+  description = "Which provider backs eSIM: sim or airalo."
+  type        = string
+  default     = "sim"
+  validation {
+    condition     = contains(["sim", "airalo"], var.provider_esim)
+    error_message = "provider_esim must be sim or airalo."
+  }
+}
+
+variable "provider_insurance" {
+  description = "Which provider backs insurance: sim or cover-genius."
+  type        = string
+  default     = "sim"
+  validation {
+    condition     = contains(["sim", "cover-genius"], var.provider_insurance)
+    error_message = "provider_insurance must be sim or cover-genius."
+  }
+}
+
+variable "provider_org_idp" {
+  description = "Which provider backs institution SSO: sim or workos."
+  type        = string
+  default     = "sim"
+  validation {
+    condition     = contains(["sim", "workos"], var.provider_org_idp)
+    error_message = "provider_org_idp must be sim or workos."
+  }
+}
+
+variable "provider_federated_idp" {
+  description = "Which provider backs Sign in with Apple and Google (both or neither): sim or oidc."
+  type        = string
+  default     = "sim"
+  validation {
+    condition     = contains(["sim", "oidc"], var.provider_federated_idp)
+    error_message = "provider_federated_idp must be sim or oidc."
+  }
 }

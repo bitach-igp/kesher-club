@@ -37,6 +37,10 @@ value (re-run with `--rotate` to replace both). `pair-incomplete` means the seco
 | `admin-oidc-client-secret` | vendor (WorkOS or the chosen IdP) | admin console | From the IdP application for the admin SSO. |
 | `stripe-api-key`, `stripe-webhook-secret` | vendor (Stripe dashboard) | api, worker | Restricted key and the endpoint signing secret. Sandbox keys in staging. |
 | `provider-webhook-secrets` | vendor | api | Other providers' endpoint secrets. |
+| `airalo-base-url`, `airalo-client-id`, `airalo-client-secret` | vendor (Airalo partner portal) | api, worker, jit | Mapped only when `provider_esim = "airalo"` (T-0042); load all three first, a partial set refuses boot. Sandbox host in staging. |
+| `cover-genius-base-url`, `-partner-code`, `-api-key`, `-api-secret`, `-products`, `-licensed-entity`, `-commission-disclosure` | vendor (XCover) and compliance | api, worker, jit | Mapped only when `provider_insurance = "cover-genius"` (T-0042). `-products` is JSON of product code to `{policyType, commissionBps}`; the last two are the compliance-approved wording (the commission one must mention the commission). |
+| `workos-client-id`, `workos-api-key`, `workos-webhook-secret` | vendor (WorkOS) | api, worker, jit | Mapped only when `provider_org_idp = "workos"` (T-0042). |
+| `apple-client-id`, `apple-team-id`, `apple-key-id`, `apple-private-key`, `google-client-id`, `google-client-secret` | vendor (Apple Developer, Google Cloud) | api, worker, jit | Mapped only when `provider_federated_idp = "oidc"` (T-0042). Apple and Google come together: `auth.social.enabled` is both or neither. `apple-private-key` is the `.p8` PEM. |
 | `temporal-client-cert`, `temporal-client-key` | vendor (Temporal Cloud) | all services | Needed only once ADR-002 turns Temporal on; see decision D1 in `docs/ops/deploy-readiness.md`. |
 
 ## Webhook ingress
