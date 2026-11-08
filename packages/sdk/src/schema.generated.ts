@@ -867,7 +867,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Propose a new version of a legal document; it publishes only after a second admin approves it
-         * @description T-0065 (enabling). Staff token with the admin role; the proposer is the first of two approvers, so the request waits `awaiting_second_approval` and nothing is published. Both languages of title and body are required; `effectiveAt` cannot be in the past (422). Proposing the same text for the same document again answers the request already made (200) instead of a second one (201). A request not approved within seven days expires.
+         * @description T-0065 (enabling). Staff token with the admin role; the proposer is the first of two approvers, so the request waits `awaiting_second_approval` and nothing is published. Both languages of title and body are required and are plain text, never markup: no control characters other than line breaks and tabs in a body or summary (none in a title), and no bidirectional overrides; limits count code points. `effectiveAt` is RFC 3339 with Z or an offset and cannot be in the past (422), nor earlier than a version of the same document already scheduled (422). The same draft while its request is open answers that request (200) instead of a second one (201); a corrected draft, or the same text after the earlier request was approved, refused or expired, is a new request. A request not approved within seven days expires.
          */
         readonly post: operations["proposeAdminLegalDocument"];
         readonly delete?: never;
@@ -887,7 +887,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Second-approve a proposed legal document version; it is published once and audited
-         * @description T-0065 (enabling). Staff token with the admin role, not the proposer (409). The version publishes in the same step and is in force from its effective date (from now if that has passed). A request already decided, or expired, answers 409 and publishes nothing more.
+         * @description T-0065 (enabling). Staff token with the admin role, not the proposer (409). The version publishes in the same step and is in force from its effective date. An approval after the effective date has passed answers 409 and publishes nothing (propose again with a new date), as does one dated before a version of the document already scheduled: the highest version already in force is the one shown, so a later-numbered version with an earlier date would shadow a scheduled one. A request already decided, or expired, answers 409 and publishes nothing more.
          */
         readonly post: operations["approveAdminLegalDocument"];
         readonly delete?: never;
@@ -4356,6 +4356,11 @@ export interface components {
             /** @enum {string} */
             readonly status: "none" | "pending" | "approved" | "rejected" | "review";
         };
+        /** @description Plain text, never markup. Line breaks and tabs only; no other control characters or bidirectional overrides. Limits count code points. */
+        readonly LegalBody: {
+            readonly en: string;
+            readonly he: string;
+        };
         /** @enum {string} */
         readonly LegalDocKey: "terms" | "privacy" | "cardholder" | "esim" | "insurance" | "p2p" | "funder";
         readonly LegalDocument: {
@@ -4393,6 +4398,16 @@ export interface components {
             /** @enum {string} */
             readonly status: "pending" | "awaiting_second_approval" | "approved" | "rejected" | "expired";
             readonly title: components["schemas"]["Localised"];
+        };
+        /** @description Plain text, never markup. Line breaks and tabs only. Limits count code points. */
+        readonly LegalSummary: {
+            readonly en: string;
+            readonly he: string;
+        };
+        /** @description Plain text, never markup. No control characters. Limits count code points. */
+        readonly LegalTitle: {
+            readonly en: string;
+            readonly he: string;
         };
         readonly Load: {
             readonly amount: components["schemas"]["Money"];
@@ -6529,14 +6544,17 @@ export interface operations {
         readonly requestBody: {
             readonly content: {
                 readonly "application/json": {
-                    readonly body: components["schemas"]["Localised"];
-                    readonly changeSummary?: components["schemas"]["Localised"];
+                    readonly body: components["schemas"]["LegalBody"];
+                    readonly changeSummary?: components["schemas"]["LegalSummary"];
                     readonly docKey: components["schemas"]["LegalDocKey"];
-                    /** Format: date-time */
+                    /**
+                     * Format: date-time
+                     * @description RFC 3339 with Z or an offset; not in the past
+                     */
                     readonly effectiveAt: string;
                     /** @description A material change must be accepted again */
                     readonly material: boolean;
-                    readonly title: components["schemas"]["Localised"];
+                    readonly title: components["schemas"]["LegalTitle"];
                 };
             };
         };
