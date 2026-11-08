@@ -12,10 +12,8 @@
 //     "admin invite", so none is created. The address is validated and reported masked, nothing is stored.
 //   - legal documents: legal.document_version has no draft state, a row is published at once; placeholder text would go live.
 //   - plans: an empty billing.plan is the catalogue the A13 propose/approve flow starts from; prices are finance's to enter.
-import { type Currency } from '@kesher/domain';
 import type { Database } from '../db.ts';
-import { AccountService, CURRENCIES, SYSTEM_OWNER, type AccountType } from '../ledger/accounts.ts';
-import { PostgresLedger } from '../ledger/post.ts';
+import { CURRENCIES, ensureAccountRowReport, SYSTEM_OWNER, type AccountType } from '../ledger/accounts.ts';
 
 /** Environments the bootstrap runs in. `development`, `test` and `preview` use the demo seed (T-0032); anything else is refused. */
 export const BOOTSTRAP_ENVS = ['staging', 'prod'] as const;
@@ -70,16 +68,11 @@ export async function run(db: Database, opts: BootstrapOptions): Promise<Bootstr
   if (opts.adminEmail !== undefined && !EMAIL.test(opts.adminEmail)) throw new BootstrapError('refused: --admin-email is not an e-mail address');
   const report: BootstrapReport = { created: [], existing: [], notes: [] };
 
-  const accounts = new AccountService(db, new PostgresLedger(db));
   for (const type of BOOTSTRAP_SYSTEM_ACCOUNTS) {
     for (const currency of CURRENCIES) {
-      const label = `system account ${type} ${currency}`;
-      if (await systemAccountExists(db, type, currency)) report.existing.push(label);
-      else {
-        // The (owner, type, currency) unique key is the idempotency key; a concurrent run converges on one row.
-        await accounts.systemAccount(type, currency);
-        report.created.push(label);
-      }
+      // The (owner, type, currency) unique key is the idempotency key; of two racing runs exactly one inserts and reports it.
+      const { created } = await ensureAccountRowReport(db, SYSTEM_OWNER, type, currency);
+      (created ? report.created : report.existing).push(`system account ${type} ${currency}`);
     }
   }
   if (opts.adminEmail !== undefined) {
@@ -90,9 +83,4 @@ export async function run(db: Database, opts: BootstrapOptions): Promise<Bootstr
   const plans = await db.query<{ n: string }>('select count(*)::text as n from billing.plan');
   report.notes.push(`plans: ${plans.rows[0]?.n ?? '0'} in the catalogue; nothing created (prices go through the A13 propose/approve flow)`);
   return report;
-}
-
-async function systemAccountExists(db: Database, type: AccountType, currency: Currency): Promise<boolean> {
-  const r = await db.query('select 1 from ledger.account where owner_party_id = $1 and type = $2 and currency = $3', [SYSTEM_OWNER, type, currency]);
-  return r.rows.length > 0;
 }

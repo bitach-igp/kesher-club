@@ -19,7 +19,7 @@ That is every kind the code asks `systemAccount(` / `findSystemAccount(` for, ei
 `payout_reserve` and `institution_master` are per institution (created with the institution), and nothing posts to
 `interchange_income`, so none of those exist as a system account. A test lists the source and fails when the code starts
 asking for a kind this list lacks. The idempotency key of each insert is the table's own key (`ledger.account`: owner, type,
-currency), so a re-run, or two runs at once, change nothing.
+currency), so a re-run, or two runs at once, change nothing, and of two racing runs exactly one reports an account as created.
 
 It then reads, without writing, how many of the seven legal document kinds have a version and how many plans exist, and
 prints them.
@@ -45,7 +45,7 @@ prints them.
 
 ## Run it
 
-Run it after the migrate task and before the first deploy of the services. It uses the api task definition (image,
+Run it right after the first apply (the migrate task has run), before traffic is sent to the services. It uses the api task definition (image,
 `DATABASE_URL`, `PGPASSWORD` from `db-app-password`, `APP_ENV`), so it connects as `club_app`, with a command override. The
 container is named like the task family, `kesher-<env>-api-<market>`; the system accounts are not per market, run it once.
 
@@ -56,7 +56,11 @@ aws ecs run-task --cluster kesher-<env> --launch-type FARGATE \
   --overrides '{"containerOverrides":[{"name":"kesher-<env>-api-il","command":["node","--experimental-strip-types","--disable-warning=ExperimentalWarning","src/bootstrap/index.ts","--admin-email","<address>"]}]}'
 ```
 
-`<env>` is `staging` or `prod`. The working directory is the image's `/app/apps/api`. The task terminates by itself; it does
+`<env>` is `staging` or `prod`. `<api security group>` is not a root output: take the security group of the api service, for example `aws ecs describe-services --cluster kesher-<env> --services kesher-<env>-api-il --query 'services[0].networkConfiguration.awsvpcConfiguration'` (subnets and security groups together), or `module.api["il"]`'s security group id in the Terraform state.
+
+The admin address is a command argument, so it is visible unmasked in the task's overrides (`describe-tasks`), in the ECS console and in CloudTrail (`RunTask`). The command prints it only masked and stores it nowhere; treat the address as an ordinary work e-mail, not a secret.
+
+From a checkout, `pnpm --filter @kesher/api bootstrap --admin-email <address>` runs the same file (no `--` is needed; one is tolerated). The working directory is the image's `/app/apps/api`. The task terminates by itself; it does
 not start a server. A Terraform one-off task definition is not part of this card.
 
 ## Verify
@@ -65,5 +69,6 @@ not start a server. A Terraform one-off task definition is not part of this card
    `created: 8`. The task's stop code is `EssentialContainerExited` with exit code 0.
 2. Run it again: `done` with `created: 0, existing: 8`.
 3. In `psql` as `club_readonly`: `select type, currency from ledger.account where owner_party_id = '00000000-0000-7000-8000-000000000000' order by 1, 2;` shows eight rows.
-4. A refused run (wrong `APP_ENV`, missing `DATABASE_URL`, missing `--admin-email`) exits 1 with one `failed` line. Nothing
-   prints the database URL, the password or the unmasked address.
+4. A refused run (wrong `APP_ENV`, missing `DATABASE_URL`, missing or unknown argument) exits 1 with one `failed` line. A
+   database failure prints only the error class and its code (a SQLSTATE such as `28P01`, or `ECONNREFUSED`), never its
+   text. Nothing prints the database URL, the password, an argument's value or the unmasked address.

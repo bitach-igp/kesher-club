@@ -17,20 +17,25 @@ export const SYSTEM_OWNER = '00000000-0000-7000-8000-000000000000';
 const CREDIT_NORMAL = new Set<AccountType>(['wallet', 'pending', 'institution_master', 'addon_payable', 'payout_reserve']);
 
 /**
- * Inserts the account unless it exists and returns its id; concurrent callers converge on one row. Free-standing so the places that
- * provision accounts (card issue, the bootstrap, test and demo setup) need no service wiring.
+ * Inserts the account unless it exists and says whether this call inserted it; concurrent callers converge on one row and exactly one
+ * of them sees `created`. Free-standing so the places that provision accounts (card issue, the bootstrap, test and demo setup) need no
+ * service wiring.
  */
-async function ensureAccountRow(db: Database, ownerPartyId: string, type: AccountType, currency: Currency): Promise<string> {
+export async function ensureAccountRowReport(db: Database, ownerPartyId: string, type: AccountType, currency: Currency): Promise<{ id: string; created: boolean }> {
   const found = await db.query<{ id: string }>('select id from ledger.account where owner_party_id = $1 and type = $2 and currency = $3', [ownerPartyId, type, currency]);
-  if (found.rows[0]) return found.rows[0].id;
+  if (found.rows[0]) return { id: found.rows[0].id, created: false };
   const id = uuidv7();
   try {
     await db.query('insert into ledger.account (id, owner_party_id, type, currency, normal_side) values ($1, $2, $3, $4, $5)', [id, ownerPartyId, type, currency, CREDIT_NORMAL.has(type) ? 'C' : 'D']);
-    return id;
+    return { id, created: true };
   } catch (e) {
-    if (isPgError(e, PG.UNIQUE_VIOLATION)) return ensureAccountRow(db, ownerPartyId, type, currency);
+    if (isPgError(e, PG.UNIQUE_VIOLATION)) return { ...(await ensureAccountRowReport(db, ownerPartyId, type, currency)), created: false };
     throw e;
   }
+}
+
+async function ensureAccountRow(db: Database, ownerPartyId: string, type: AccountType, currency: Currency): Promise<string> {
+  return (await ensureAccountRowReport(db, ownerPartyId, type, currency)).id;
 }
 
 /**
@@ -41,7 +46,7 @@ export async function provisionPendingAccounts(db: Database, partyId: string): P
   for (const currency of CURRENCIES) await ensureAccountRow(db, partyId, 'pending', currency);
 }
 
-/** The system accounts a converted card authorisation posts to, in every currency (T-0413); the production bootstrap (T-0046) and the demo seed call this. */
+/** The system accounts a converted card authorisation posts to, in every currency (T-0413); the demo seed calls this. The production bootstrap (T-0046) uses `ensureAccountRowReport` so it can say which accounts it created. */
 export const AUTHORISATION_SYSTEM_ACCOUNTS = ['fx_position', 'fee_income'] as const;
 export async function provisionAuthorisationSystemAccounts(db: Database): Promise<void> {
   for (const type of AUTHORISATION_SYSTEM_ACCOUNTS) for (const currency of CURRENCIES) await ensureAccountRow(db, SYSTEM_OWNER, type, currency);
