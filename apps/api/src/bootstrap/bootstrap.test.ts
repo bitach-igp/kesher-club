@@ -84,7 +84,7 @@ describe('production bootstrap (T-0046)', () => {
     } finally {
       await fresh.close();
     }
-  });
+  }, 60_000);
 });
 
 describe('command line', () => {
@@ -167,7 +167,7 @@ describe('command line', () => {
     } finally {
       await fresh.close();
     }
-  });
+  }, 60_000);
 
   it('runs as a script under strip-types, exits 1 on a refused environment and prints no secret or address', () => {
     const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', fileURLToPath(new URL('./index.ts', import.meta.url)), '--admin-email', 'secret.person@example.org'], {

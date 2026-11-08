@@ -63,6 +63,9 @@ const until = async (done: () => boolean, ms: number, what: () => string): Promi
   }
 };
 
+// T-0042: the start-up log names all five overridable ports; the new four stay on the simulator unless chosen.
+const ALL_SIM = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim' };
+
 describe('main (T-0022)', () => {
   it('boots on Postgres and the simulators, runs one cycle of every job, and stops cleanly', async () => {
     const lines: Line[] = [];
@@ -143,13 +146,13 @@ describe('Crowded wiring (T-0659)', () => {
   it('on the simulator (the default) the banking port stays on its simulator', async () => {
     const { registry, lines } = await boot(env);
     expect(registry.bindingFor('institution-banking', 'US')).toMatchObject({ provider: 'simulator', mode: 'sim' });
-    expect(started(lines)).toMatchObject({ mode: 'sim', providers: '{"institution-banking":"sim"}' });
+    expect(started(lines)).toMatchObject({ mode: 'sim', providers: JSON.stringify(ALL_SIM) });
   });
 
   it('logs the mode and the provider per port at start-up, and never the token or a secret', async () => {
     const { lines } = await boot(crowdedEnv());
-    expect(started(lines)).toMatchObject({ market: 'IL', mode: 'sim', providers: '{"institution-banking":"crowded"}', jobs: 0 });
-    expect(JSON.parse(String(started(lines)['providers']))).toEqual({ 'institution-banking': 'crowded' });
+    expect(started(lines)).toMatchObject({ market: 'IL', mode: 'sim', providers: JSON.stringify({ ...ALL_SIM, 'institution-banking': 'crowded' }), jobs: 0 });
+    expect(JSON.parse(String(started(lines)['providers']))).toEqual({ ...ALL_SIM, 'institution-banking': 'crowded' });
     for (const s of [TOKEN, CURRENT, PREVIOUS]) expect(JSON.stringify(lines)).not.toContain(s);
     expect(lines.filter((l) => l.event === 'warning')).toEqual([]);
   });

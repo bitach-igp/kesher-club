@@ -1,6 +1,6 @@
 // T-0020: the API and worker configuration. Missing or bad values crash with every problem named;
 // a secret never reaches an error message or a log line.
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { ConfigError, Secret } from '@kesher/domain';
 import { describe, expect, it } from 'vitest';
 import { loadApiConfig, loadWorkerConfig } from './config.ts';
@@ -222,5 +222,162 @@ describe('Crowded banking override (T-0659)', () => {
       expect(JSON.stringify([e.missing, e.invalid])).not.toContain(s);
     }
     expect(String(loadApiConfig({ ...env, ...crowded }).CROWDED_API_TOKEN)).toBe('[redacted]');
+  });
+});
+
+// T-0042: Airalo, Cover Genius, WorkOS and the Apple + Google pair.
+const APPLE_KEY = generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+const RSA_PEM = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+const GOOGLE_SECRET = 'google-secret-do-not-print';
+const AIRALO_SECRET = 'airalo-secret-do-not-print';
+const SETS: Record<string, { choose: Record<string, string>; keys: Record<string, string> }> = {
+  airalo: {
+    choose: { PROVIDER_ESIM: 'airalo' },
+    keys: { AIRALO_BASE_URL: 'https://sandbox-partners-api.airalo.com', AIRALO_CLIENT_ID: 'airalo-id', AIRALO_CLIENT_SECRET: AIRALO_SECRET },
+  },
+  'cover-genius': {
+    choose: { PROVIDER_INSURANCE: 'cover-genius' },
+    keys: {
+      COVER_GENIUS_BASE_URL: 'https://api.sandbox.xcover.com',
+      COVER_GENIUS_PARTNER_CODE: 'KESHER',
+      COVER_GENIUS_API_KEY: 'xcover-key',
+      COVER_GENIUS_API_SECRET: 'xcover-secret-do-not-print',
+      COVER_GENIUS_PRODUCTS: '{"gadget":{"policyType":"gadget_protection","commissionBps":2000}}',
+      COVER_GENIUS_LICENSED_ENTITY: 'XCover (Cover Genius Ltd), licensed insurance intermediary',
+      COVER_GENIUS_COMMISSION_DISCLOSURE: 'Kesher earns a commission on this policy.',
+    },
+  },
+  workos: {
+    choose: { PROVIDER_ORG_IDP: 'workos' },
+    keys: { WORKOS_CLIENT_ID: 'client_workos', WORKOS_API_KEY: 'sk_workos_do_not_print', WORKOS_WEBHOOK_SECRET: 'whsec_workos' },
+  },
+  oidc: {
+    choose: { PROVIDER_FEDERATED_IDP: 'oidc' },
+    keys: {
+      APPLE_CLIENT_ID: 'club.kesher.signin',
+      APPLE_TEAM_ID: 'TEAM123456',
+      APPLE_KEY_ID: 'KEY1234567',
+      APPLE_PRIVATE_KEY: APPLE_KEY,
+      GOOGLE_CLIENT_ID: 'google-id.apps.googleusercontent.com',
+      GOOGLE_CLIENT_SECRET: GOOGLE_SECRET,
+    },
+  },
+};
+
+describe('marketplace and identity provider choices (T-0042)', () => {
+  it('default to sim and need none of their keys', () => {
+    const c = loadApiConfig(env);
+    expect([c.PROVIDER_ESIM, c.PROVIDER_INSURANCE, c.PROVIDER_ORG_IDP, c.PROVIDER_FEDERATED_IDP]).toEqual(['sim', 'sim', 'sim', 'sim']);
+    expect(c.AIRALO_CLIENT_ID).toBeUndefined();
+    expect(c.APPLE_PRIVATE_KEY).toBeUndefined();
+    expect(loadWorkerConfig({ ...env }).PROVIDER_ESIM).toBe('sim');
+  });
+
+  it('refuses a vendor name it does not know', () => {
+    for (const key of ['PROVIDER_ESIM', 'PROVIDER_INSURANCE', 'PROVIDER_ORG_IDP', 'PROVIDER_FEDERATED_IDP']) {
+      expect(thrown(() => loadApiConfig({ ...env, [key]: 'holafly' })).invalid.join()).toMatch(new RegExp(key));
+    }
+  });
+
+  for (const [name, { choose, keys }] of Object.entries(SETS)) {
+    describe(name, () => {
+      it('loads a full set for the API and the worker, credentials as Secrets', () => {
+        const c = loadApiConfig({ ...env, ...choose, ...keys }) as unknown as Record<string, unknown>;
+        expect(Object.values(choose)[0]).toBe(name);
+        for (const k of Object.keys(keys)) expect(c[k]).toBeDefined();
+        expect(loadWorkerConfig({ ...env, ...choose, ...keys })).toBeDefined();
+      });
+
+      it('refuses the choice with any key missing, naming only that key', () => {
+        for (const key of Object.keys(keys)) {
+          const { [key]: _drop, ...rest } = keys;
+          const e = thrown(() => loadApiConfig({ ...env, ...choose, ...rest }));
+          expect(e.missing).toEqual([key]);
+        }
+        expect(thrown(() => loadApiConfig({ ...env, ...choose })).missing).toEqual(Object.keys(keys));
+      });
+
+      it('refuses a partial set even while the port stays on sim, and accepts the full set while on sim', () => {
+        const [first, ...others] = Object.keys(keys);
+        const e = thrown(() => loadApiConfig({ ...env, [first!]: keys[first!] }));
+        expect(e.missing).toEqual(others);
+        expect(() => loadApiConfig({ ...env, ...keys })).not.toThrow();
+      });
+
+      it('reports a half-set credential alongside other problems and never prints a value', () => {
+        const [first, ...others] = Object.keys(keys);
+        const { MARKET: _m, ...noMarket } = env;
+        const e = thrown(() => loadApiConfig({ ...noMarket, ...choose, [first!]: keys[first!] }));
+        expect(e.missing).toEqual(['MARKET', ...others]);
+        const printed = `${e.message} ${e.missing.join()} ${e.invalid.join()}`;
+        for (const v of Object.values(keys)) expect(printed).not.toContain(v);
+        expect(printed).not.toContain('do-not-print');
+      });
+    });
+  }
+
+  it('Apple and Google come together: either one alone is refused, naming the other half and the flag', () => {
+    const { keys } = SETS['oidc']!;
+    const appleOnly = Object.fromEntries(Object.entries(keys).filter(([k]) => k.startsWith('APPLE_')));
+    const googleOnly = Object.fromEntries(Object.entries(keys).filter(([k]) => k.startsWith('GOOGLE_')));
+    for (const [only, absent] of [[appleOnly, 'GOOGLE_'], [googleOnly, 'APPLE_']] as const) {
+      for (const choose of [{}, { PROVIDER_FEDERATED_IDP: 'oidc' }]) {
+        const e = thrown(() => loadApiConfig({ ...env, ...choose, ...only }));
+        expect(e.missing.length).toBeGreaterThan(0);
+        expect(e.missing.every((k) => k.startsWith(absent))).toBe(true);
+      }
+    }
+    // The rule itself is reported, on a key that is present (a missing key is reported by name only).
+    for (const [only, other] of [[appleOnly, 'GOOGLE_*'], [googleOnly, 'APPLE_*']] as const) {
+      const e = thrown(() => loadApiConfig({ ...env, ...only }));
+      expect(e.invalid.join('\n')).toContain(`Sign in with Apple and Google are offered together or not at all (auth.social.enabled): the ${other} keys are missing`);
+    }
+  });
+
+  it('checks the values it can: https URLs, the product map, the commission wording and the PEM, without quoting them', () => {
+    const bad: [string, Record<string, string>, string][] = [
+      ['airalo', { AIRALO_BASE_URL: 'http://airalo.test' }, 'AIRALO_BASE_URL'],
+      ['cover-genius', { COVER_GENIUS_BASE_URL: 'api.xcover.com' }, 'COVER_GENIUS_BASE_URL'],
+      ['cover-genius', { COVER_GENIUS_PRODUCTS: '{"gadget":{"policyType":"x"}}' }, 'COVER_GENIUS_PRODUCTS'],
+      ['cover-genius', { COVER_GENIUS_PRODUCTS: '[]' }, 'COVER_GENIUS_PRODUCTS'],
+      ['cover-genius', { COVER_GENIUS_PRODUCTS: 'not json' }, 'COVER_GENIUS_PRODUCTS'],
+      ['cover-genius', { COVER_GENIUS_COMMISSION_DISCLOSURE: 'nothing to see' }, 'COVER_GENIUS_COMMISSION_DISCLOSURE'],
+      ['oidc', { APPLE_PRIVATE_KEY: 'apple-key-do-not-print' }, 'APPLE_PRIVATE_KEY'],
+      ['oidc', { APPLE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nanVuay1iYXNlNjQtZG8tbm90LXByaW50\n-----END PRIVATE KEY-----' }, 'APPLE_PRIVATE_KEY'],
+      ['oidc', { APPLE_PRIVATE_KEY: RSA_PEM }, 'APPLE_PRIVATE_KEY'],
+      ['cover-genius', { COVER_GENIUS_PRODUCTS: '{"__proto__":{"policyType":"x","commissionBps":1}}' }, 'COVER_GENIUS_PRODUCTS'],
+      ['cover-genius', { COVER_GENIUS_PRODUCTS: '{"constructor":{"policyType":"x","commissionBps":1}}' }, 'COVER_GENIUS_PRODUCTS'],
+      ['cover-genius', { COVER_GENIUS_PRODUCTS: '{"":{"policyType":"x","commissionBps":1}}' }, 'COVER_GENIUS_PRODUCTS'],
+    ];
+    for (const [name, patch, key] of bad) {
+      const { choose, keys } = SETS[name]!;
+      const e = thrown(() => loadApiConfig({ ...env, ...choose, ...keys, ...patch }));
+      expect(e.invalid.join()).toMatch(new RegExp(key));
+      expect(`${e.message} ${e.invalid.join()}`).not.toContain('do-not-print');
+    }
+    const { choose, keys } = SETS['cover-genius']!;
+    const c = loadApiConfig({ ...env, ...choose, ...keys });
+    expect(c.COVER_GENIUS_PRODUCTS).toEqual({ gadget: { policyType: 'gadget_protection', commissionBps: 2000n } });
+  });
+
+  it('accepts a real P-256 key, and rejects a PEM pasted with literal backslash-n sequences with a clear message', () => {
+    const { choose, keys } = SETS['oidc']!;
+    expect(() => loadApiConfig({ ...env, ...choose, ...keys })).not.toThrow();
+    const pasted = keys['APPLE_PRIVATE_KEY']!.replace(/\n/g, '\\n');
+    const e = thrown(() => loadApiConfig({ ...env, ...choose, ...keys, APPLE_PRIVATE_KEY: pasted }));
+    expect(e.invalid.join()).toMatch(/APPLE_PRIVATE_KEY: has literal backslash-n sequences/);
+    expect(e.invalid.join()).not.toContain('BEGIN PRIVATE KEY-----\\n');
+  });
+
+  it('product codes are plain own keys: __proto__ never becomes a code', () => {
+    const { choose, keys } = SETS['cover-genius']!;
+    const c = loadApiConfig({ ...env, ...choose, ...keys });
+    expect(Object.keys(c.COVER_GENIUS_PRODUCTS ?? {})).toEqual(['gadget']);
+  });
+
+  it('prints no credential through String() or JSON', () => {
+    const c = loadApiConfig({ ...env, ...SETS['airalo']!.choose, ...SETS['airalo']!.keys, ...SETS['oidc']!.keys });
+    expect(String(c.AIRALO_CLIENT_SECRET)).toBe('[redacted]');
+    expect(JSON.stringify({ a: c.AIRALO_CLIENT_SECRET, g: c.GOOGLE_CLIENT_SECRET, k: c.APPLE_PRIVATE_KEY })).not.toMatch(/do-not-print/);
   });
 });

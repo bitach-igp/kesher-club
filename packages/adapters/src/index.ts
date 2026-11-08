@@ -12,3 +12,4 @@ export * from './twilio/index.ts';
 export * from './concierge/index.ts';
 export * from './workos/index.ts';
 export * from './crowded/index.ts';
+export { FederatedIdPRouter } from './federated-idp.oidc.ts';

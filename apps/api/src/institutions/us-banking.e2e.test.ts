@@ -176,7 +176,7 @@ beforeAll(async () => {
     },
   });
   registry = created.registry;
-  expect(created.providers).toEqual({ 'institution-banking': 'crowded' });
+  expect(created.providers).toEqual({ 'institution-banking': 'crowded', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim' });
   expect(registry.bindingFor('institution-banking', 'IL')).toMatchObject({ provider: CROWDED_PROVIDER });
 
   // The platform's own entity is created through that config-built adapter, and the simulator approves it over HTTP.
