@@ -58,3 +58,7 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-06 | T-0054 | #258 | independent changes-requested then fixed (nonexistent last(), thresholds that would page constantly, daily-job windows, connection alarm); terraform never run locally, CI was the first check | green |
 | 2026-11-07 | T-0055 | #259 | independent changes-requested then fixed (error gate blind to TIMEOUT declines, card count vs velocity rule, prod guard backslash bypass); k6 never run, first result pending a human run | green |
 | 2026-11-07 | T-0680 | #260 | Sonnet APPROVE (stale decision columns now cleared) | green |
+| 2026-11-07 | T-0051 | #263 | independent changes-requested then fixed (vacuous webhook check, admin check passing on any network error, impossible strict gate command, URL-guard bypass); never run against a deployed environment | green |
+| 2026-11-08 | T-0047 | #264 | independent APPROVE (no blockers; 2 known limits recorded as T-0068/T-0069); desktop docker run PASS after one fix (tokens build) | green |
+| 2026-11-08 | T-0049 | #265 | independent changes-requested then fixed (scan gate could never fail: missing pipefail; nonexistent Terraform resource; gate passing without an enhanced scan); admin image tokens fix | green |
+| 2026-11-08 | T-0050 | #266 | independent changes-requested then fixed (staging pager, account-id agreement, stale soak, orphaned migrate task, vacuous tests); prod IAM scope gap recorded as T-0070; never run against AWS | green |
