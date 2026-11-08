@@ -85,7 +85,7 @@ gh variable set AWS_STAGING_ACCOUNT_ID --repo bitach-igp/kesher-club --body "$(t
 gh variable set AWS_PROD_ACCOUNT_ID    --repo bitach-igp/kesher-club --body "$(terraform output -json member_account_ids | jq -r .prod)"
 ```
 
-The deploy workflow also needs the GitHub environments `staging` and `prod` (required reviewers and a wait timer on prod), the environment variable `TERRAFORM_VARS` and the prod secret `PAGER_ENDPOINT`: `docs/setup/deploy.md`, "Human steps".
+The deploy workflow also needs the GitHub environments `staging` and `prod` (required reviewers and a wait timer on prod), the environment variable `TERRAFORM_VARS` and the environment secret `PAGER_ENDPOINT` (on both): `docs/setup/deploy.md`, "Human steps".
 
 | Variable | Where the value comes from | Used by |
 |---|---|---|

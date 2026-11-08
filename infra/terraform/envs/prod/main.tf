@@ -707,7 +707,8 @@ resource "aws_backup_selection" "rds" {
 
 # ---- alarms, paging, dashboards and budget (T-0054) --------------------------------------------------------------------
 # One alarm per row of the runbook alert table, each naming its RUN (modules/alarms). The pager endpoint has no default: an apply
-# says where pages go. Whoever applies passes it (-var pager_endpoint=... or TF_VAR_pager_endpoint); no workflow does.
+# says where pages go. A hand apply passes it (-var pager_endpoint=... or TF_VAR_pager_endpoint); the deploy workflow (T-0050) passes the
+# GitHub environment secret PAGER_ENDPOINT as TF_VAR_pager_endpoint and refuses to start without it.
 
 variable "pager_endpoint" {
   description = "HTTPS endpoint of the pager integration (PagerDuty or Opsgenie); no default, pages must go somewhere."

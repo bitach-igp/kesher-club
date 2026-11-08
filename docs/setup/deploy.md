@@ -11,21 +11,28 @@ that is applied is `main`'s, the images are the tag's: deploying an older tag ru
 
 ## What a run does
 
+The decisions are small scripts in `tools/release/deploy/` that the workflow calls and `tools/release/deploy-workflow.test.mjs` runs against a stub `aws`.
+
 | # | Job / step | What |
 |---|---|---|
 | 1 | `verify` | The tag is valid, the run is from `main`, and `kesher/{api,worker,admin,console,migrate}:<tag>` all exist in club-shared's ECR. One missing image fails the run. |
-| 2 | `deploy` starts | Runs on the GitHub environment `staging` or `prod`. For prod, GitHub holds the job until the environment's required reviewers approve and its wait timer ends (a human setting, below). |
-| 3 | credentials | The CI role through GitHub OIDC (subject `environment:<name>`), no access key anywhere. Terraform's providers then assume `kesher-deploy` in the environment's account, as they always have. The AWS CLI steps use a profile chained to the same deploy role (`--profile deploy`). |
-| 4 | prod gate (prod only) | The staging parameter `/kesher/staging/deployed-image-tag`, read through the staging deploy role, must hold the same tag and have been last written at least an hour ago. Otherwise the run fails with the reason. One exception, for rollback: a tag that appears in the history of prod's own parameter (written only after a deploy passed its smoke suite) needs no staging soak. |
-| 5 | previous tag | `/kesher/<env>/deployed-image-tag` is read before anything changes (`none` on a first deploy). It is printed in the summary and in the failure message. |
-| 6 | `terraform init`, migrate plan | A plan limited to `module.migrate` (`-target`), written to the job summary. The step then reads the plan as JSON and fails if it changes anything outside the module. |
-| 7 | migrate apply and run | The targeted plan is applied (a new revision of the migrate task definition, running `kesher/migrate:<tag>`), then `aws ecs run-task` starts that revision with the network configuration from `terraform output migrate_task`. The run waits (30 minutes at most) and **fails the deploy unless the container exits 0**. No service has been touched yet. |
-| 8 | whole-root plan and apply | Planned after step 7, so the saved plan is not stale; shown in the job summary; the saved plan (`-out`) is what is applied, with no `-auto-approve`. This is the step that rolls the services. |
-| 9 | stability | `aws ecs wait services-stable` for each service in `terraform output ecs_service_names` (api, jit and worker per market, admin, console), then a check that each has a single `COMPLETED` deployment whose task definition runs the tag. The wait alone is not enough: the circuit breaker in `modules/ecs-service` rolls a failed task set back, and a rolled-back service is "stable" too. |
-| 10 | smoke | `tools/smoke/index.mjs` for each market (the non-strict command in the next section; admin and the portal once, with the IL market), with `--expected-tag`. On failure the run fails and the message names the previous tag. |
-| 11 | record | Only when everything above passed: `aws ssm put-parameter --overwrite` writes `/kesher/<env>/deployed-image-tag` (the tag) and `/kesher/<env>/deployed-at` (UTC time). |
+| 2 | prod gate (prod only, `prod-gate.sh`) | Still in `verify`, so a tag that has not soaked never asks the reviewers to approve. The tag must be one staging has run, **alone**, for an hour: staging has no `/kesher/staging/deploy-in-progress` marker, `/kesher/staging/deployed-image-tag` names this tag, and that parameter was last written at least 3600 seconds ago (its own `LastModifiedDate`). All reads go through the staging deploy role; any read error other than "no such parameter" (AccessDenied...) fails the gate. One exception, for rollback: a tag in the history of prod's own `deployed-image-tag` (written only after a deploy passed its smoke suite) needs no staging soak. |
+| 3 | `deploy` starts | Runs on the GitHub environment `staging` or `prod`. For prod, GitHub holds the job until the environment's required reviewers approve and its wait timer ends. The prod gate runs again, now that they have, because staging may have moved meanwhile. |
+| 4 | credentials | The CI role through GitHub OIDC (subject `environment:<name>`), no access key anywhere. Terraform's providers then assume `kesher-deploy` in the environment's account. The AWS CLI steps use a profile chained to the same deploy role (`--profile deploy`). |
+| 5 | checks | Secrets and variables are present (`PAGER_ENDPOINT` must be an `https://` URL on **both** environments: the roots take `pager_endpoint` with no default and `modules/alarms` requires https). `check-account.sh` then proves that Terraform's account (`account_id` and `shared_account_id` in `TERRAFORM_VARS`), the CLI's `deploy` profile (built from `AWS_*_ACCOUNT_ID`) and the repository variables all name the same accounts, before anything changes. |
+| 6 | previous tag, in-progress mark | `/kesher/<env>/deployed-image-tag` is read (`none` on a first deploy), then `/kesher/<env>/deploy-in-progress` is set to the tag. The mark stays if the deploy dies and is cleared only by the success record, so a record left by an earlier success is not trusted while a later deploy is unsettled. |
+| 7 | `terraform init`, migrate plan | A plan limited to `module.migrate` (`-target`), written to the job summary. `check-plan.sh` reads it as JSON and fails if it changes anything outside the module. |
+| 8 | migrate apply and run | The targeted plan is applied (a new revision of the migrate task definition, running `kesher/migrate:<tag>`), then `run-migrate.sh` verifies that revision runs the tag, starts it with `aws ecs run-task` and the network configuration from `terraform output migrate_task`, and waits (30 minutes at most). It **fails the deploy unless the container exits 0**. A failed `describe-tasks` is retried five times; if the script ends for any reason before the task stopped (polling gave up, the deadline, a cancelled run) it stops the task, so a re-run never starts a second migration beside a first. No service has been touched yet. |
+| 9 | whole-root plan and apply | Planned after step 8, so the saved plan is not stale; shown in the job summary; the saved plan (`-out`) is what is applied, with no `-auto-approve`. This is the step that rolls the services. |
+| 10 | stability | `check-services.sh`: `aws ecs wait services-stable` for each service in `terraform output ecs_service_names` (api, jit and worker per market, admin, console), then each service must have a single `COMPLETED` deployment whose task definition runs only images ending in the tag. The wait alone is not enough: the circuit breaker in `modules/ecs-service` rolls a failed task set back, and a rolled-back service is "stable" too. |
+| 11 | smoke | `tools/smoke/index.mjs` for each market (the non-strict command in the next section; admin and the portal once, with the IL market), with `--expected-tag`. On failure the run fails and the message names the previous tag (or says there is none to roll back to). |
+| 12 | record | Only when everything above passed: `aws ssm put-parameter --overwrite` writes `/kesher/<env>/deployed-image-tag` (the tag) and `/kesher/<env>/deployed-at` (UTC time), then the in-progress mark is deleted. |
 
-A failure after step 5 ends with a summary that names the previous tag and how to roll back.
+A failure after step 9 ends with a summary that names the previous tag and how to roll back. A failure before it ends with "nothing rolled": the services were not applied, so there is nothing to roll back.
+
+### Sessions
+
+A role assumed from OIDC lasts an hour, and the CLI deploy-role profile is chained from it and cannot outlive it. The workflow therefore takes a new OIDC session before the migration, before the whole-root plan and apply, and before the service wait; each stretch (the migration is capped at 30 minutes) fits in one. A single stability wait is capped at 10 minutes per service by the CLI waiter.
 
 ## Why migrate first, and how the order is enforced
 
@@ -51,7 +58,7 @@ Rolling back is the same workflow with the previous tag: environment `<env>`, `i
 `aws ssm get-parameter --name /kesher/<env>/deployed-image-tag`; older values: `aws ssm get-parameter-history --name /kesher/<env>/deployed-image-tag`).
 The migrate task runs again (nothing to do, it is idempotent), the services roll back to the old images, smoke runs. Migrations are expand-only, so the old
 image runs on the newer schema; a **contract** migration ships one release after the code stopped reading the old shape, which is what keeps this true. Prod accepts the
-old tag without a new staging soak because prod already ran it (step 4). If a deploy was stopped halfway by the circuit breaker, the services already
+old tag without a new staging soak because prod already ran it (step 2). If a deploy was stopped halfway by the circuit breaker, the services already
 rolled themselves back; deploy again with the previous tag to make the SSM record and the Terraform state agree.
 
 ## Human steps (once)
@@ -66,10 +73,13 @@ These need an owner or admin; the workflow cannot do them. Nothing was verified 
 3. **Environment variable `TERRAFORM_VARS`** on each GitHub environment: the root's required Terraform variables as HCL, one per line, no secrets
    (`account_id`, `shared_account_id`, `hosted_zone_id`, `ecr_registry`, `locked_backup_vault_arn`, `temporal_address`, `temporal_namespace`, `admin_oidc_issuer`,
    `admin_oidc_client_id`, `admin_oidc_jwks_url`, and any default you override, such as `domain`). The workflow writes it to `deploy.auto.tfvars`; `image_tag` is passed on the command line and wins.
-4. **Environment secret `PAGER_ENDPOINT`** on `prod` (`envs/prod` takes `pager_endpoint` with no default; the workflow passes it as `TF_VAR_pager_endpoint`).
+4. **Environment secret `PAGER_ENDPOINT`** on **both** `staging` and `prod`: the pager integration's `https://` URL (both roots take `pager_endpoint` with no default and `modules/alarms` requires https). The workflow passes it as `TF_VAR_pager_endpoint` and refuses to start without it.
 5. **Deploy roles.** `kesher-deploy` exists in each member account once the root was applied by hand (it is `PowerUserAccess` plus IAM on `kesher-*` roles, so it already may
-   `ssm:PutParameter` on `/kesher/<env>/*`, run ECS tasks and pass the migrate execution role). The CI role may assume both (`modules/oidc`, `assumable_role_arns`) and
-   trusts the subjects `environment:staging` and `environment:prod`. No IAM change was needed for this workflow.
+   `ssm:PutParameter` on `/kesher/<env>/*`, run ECS tasks and pass the migrate execution role). This card changes no IAM. **Know what that means: the GitHub
+   required reviewers, the wait timer and the staging soak gate are not enforced in AWS today.** `modules/oidc` lets `main`, `pull_request`, `environment:staging` and
+   `environment:prod` all assume ONE CI role, and that role may assume every deploy role, prod's included; so any workflow in this repository (a pull request's too) can reach
+   the prod deploy role without passing through the `prod` environment. The gates protect the path this workflow offers, not the account. Card T-0070 closes it (per-environment
+   CI roles or deploy-role trust on the OIDC subject, so prod is reachable only from the `prod` environment job). Until then treat write access to the repository as access to prod.
 6. Actions minutes (a run with none fails every job at once).
 
 ## Not covered
@@ -78,7 +88,8 @@ These need an owner or admin; the workflow cannot do them. Nothing was verified 
   Deploy only a tag whose `release.yml` run is green.
 - Blue/green traffic shifting. Services roll in place (min 100 percent, max 200 percent) behind the circuit breaker.
 - `--strict` smoke: see the next section.
-- Credentials last one hour per assumption; the workflow takes a second CI session after the migration. A deploy where Terraform or the stability waits together exceed an hour can fail on expiry.
+- A stale `deploy-in-progress` mark (a deploy that died) blocks the prod gate on staging until a staging deploy succeeds; delete the parameter only after checking what state staging is in.
+- Credentials: see Sessions above.
 
 ## Smoke test of a deployed environment
 
