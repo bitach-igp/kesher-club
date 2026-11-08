@@ -6,7 +6,7 @@ first failure, names the check and exits 1.
 
 ## Run it
 
-A command that can pass today (the tag and OpenAPI checks skip, the console `/healthz` check is left out because the console has none yet):
+A command that can pass today (the tag and OpenAPI checks skip, and the console check is left out until a console image is deployed: it serves `/healthz` since T-0047):
 
 ```sh
 node tools/smoke/index.mjs \
@@ -26,8 +26,8 @@ node tools/smoke/index.mjs --strict \
   --expected-tag sha-0123456789ab
 ```
 
-It fails today for three reasons, each a follow-up: `api-tag` skips because the API reports no deployed tag; `openapi-operations`
-has no document to read because the API serves none; and `console-healthz` fails because the console has no `/healthz` until T-0047.
+It fails today for two reasons, each a follow-up: `api-tag` skips because the API reports no deployed tag; and `openapi-operations`
+has no document to read because the API serves none. `console-healthz` passes once the console image from T-0047 is deployed.
 `webhook-bad-signature` also skips (so fails under `--strict`) while the flag `institutions.usBanking` is off, which is its default.
 Do not wire `--strict` into a deploy gate until those land.
 
@@ -81,4 +81,4 @@ directly with `node:tls` and does not go through an HTTP proxy.
   status body if the API ever sends one, and otherwise SKIPs with that message (a failure under `--strict`). A follow-up should
   have the API return its `IMAGE_TAG`.
 - **The API serves no OpenAPI document.** The same reasoning: `openapi-operations` needs `--openapi-url`, and skips without it.
-- **The console has no `/healthz` yet** (only the admin app does); the check fails against a console that lacks it until that exists.
+- **The console serves `/healthz`** (T-0047: 200 only when `CONSOLE_ENVIRONMENT` and `CONSOLE_API_URL` are valid), so `console-healthz` passes against a deployed console image.

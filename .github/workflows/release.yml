@@ -1,4 +1,4 @@
-# Release images (T-0030): builds the api, worker, admin and migrate images for one commit already on main and
+# Release images (T-0030): builds the api, worker, admin, console and migrate images for one commit already on main and
 # pushes them to club-shared's ECR as `sha-<12-char commit>`, the tag staging and prod deploy with
 # `terraform apply -var image_tag=…`. Run by hand from the Actions tab. Credentials come from GitHub OIDC,
 # as in preview.yml, with no static keys. The repositories are IMMUTABLE, so an image already pushed for
@@ -79,6 +79,7 @@ jobs:
           - { app: api, file: apps/api/Dockerfile }
           - { app: worker, file: apps/worker/Dockerfile }
           - { app: admin, file: apps/admin/Dockerfile }
+          - { app: console, file: apps/console/Dockerfile }
           - { app: migrate, file: tools/migrate/Dockerfile }
     env:
       APP: ${{ matrix.app }}
@@ -154,7 +155,7 @@ jobs:
           {
             echo "### Images for ${SHA}"
             echo
-            echo "api, worker, admin and migrate are in ECR as \`${TAG}\`. Deploy staging or prod with:"
+            echo "api, worker, admin, console and migrate are in ECR as \`${TAG}\`. Deploy staging or prod with:"
             echo
             echo '```sh'
             echo "terraform apply -var image_tag=${TAG} …"

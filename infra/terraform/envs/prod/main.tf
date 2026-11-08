@@ -471,6 +471,39 @@ module "admin" {
   }
 }
 
+# The institution console (T-0047): a Next server app, so it runs as a service, not from a bucket. It is
+# reached by institution staff, who are not on the VPN, so it sits on the public ALB (and its WAF) at its
+# own host. It holds no database credential and no secret: it signs in through the IL API with the staff
+# member's own tokens. Its host is the only one on this listener that is not an API host.
+module "console" {
+  source        = "../../modules/ecs-service"
+  name          = "${local.name}-console"
+  cluster_arn   = aws_ecs_cluster.this.arn
+  cluster_name  = aws_ecs_cluster.this.name
+  vpc_id        = module.network.vpc_id
+  subnet_ids    = module.network.private_subnet_ids
+  image         = "${var.ecr_registry}/kesher/console:${var.image_tag}"
+  cpu           = 512
+  memory        = 1024
+  desired_count = 2
+  min_capacity  = 2
+  max_capacity  = 4
+  environment = {
+    NODE_ENV            = "production"
+    APP_ENV             = local.env
+    CONSOLE_ENVIRONMENT = "production"
+    CONSOLE_API_URL     = "https://${local.market_hosts.il.api}/v1"
+  }
+  log_kms_key_arn = module.kms_logs.key_arn
+  ingress = {
+    listener_arn          = module.alb.https_listener_arn
+    alb_security_group_id = module.alb.security_group_id
+    host_headers          = [local.hosts.console]
+    priority              = 30
+    health_check_path     = "/healthz"
+  }
+}
+
 resource "aws_vpc_security_group_ingress_rule" "db_from_services" {
   for_each = merge(
     { for k, m in module.api : "api-${k}" => m.security_group_id },
@@ -535,17 +568,6 @@ module "web" {
   cloudfront_log_bucket_domain_name = module.logs_bucket.bucket_domain_name
 }
 
-module "console" {
-  source                            = "../../modules/cloudfront-waf"
-  name                              = "${local.name}-console"
-  bucket_name                       = "${local.name}-console-${var.account_id}"
-  domain_names                      = [local.hosts.console]
-  certificate_arn                   = aws_acm_certificate_validation.this.certificate_arn
-  kms_key_arn                       = module.kms_s3.key_arn
-  s3_access_log_bucket              = module.logs_bucket.bucket_name
-  cloudfront_log_bucket_domain_name = module.logs_bucket.bucket_domain_name
-}
-
 # ---- DNS ---------------------------------------------------------------------------------------
 
 resource "aws_route53_record" "alb" {
@@ -575,21 +597,37 @@ resource "aws_route53_record" "admin" {
   }
 }
 
-resource "aws_route53_record" "cloudfront" {
+# The member web app's alias is the only one left on CloudFront. The console's record (which pointed at
+# the removed static-site distribution) now points at the public ALB; the keys are unchanged, so it
+# updates in place instead of being destroyed and created under the same name.
+resource "aws_route53_record" "web_hosts" {
   provider = aws.dns
   for_each = {
-    (local.hosts.app)     = module.web
-    (local.hosts.console) = module.console
+    (local.hosts.app) = {
+      dns_name               = module.web.distribution_domain_name
+      zone_id                = module.web.distribution_hosted_zone_id
+      evaluate_target_health = false
+    }
+    (local.hosts.console) = {
+      dns_name               = module.alb.dns_name
+      zone_id                = module.alb.zone_id
+      evaluate_target_health = true
+    }
   }
 
   zone_id = var.hosted_zone_id
   name    = each.key
   type    = "A"
   alias {
-    name                   = each.value.distribution_domain_name
-    zone_id                = each.value.distribution_hosted_zone_id
-    evaluate_target_health = false
+    name                   = each.value.dns_name
+    zone_id                = each.value.zone_id
+    evaluate_target_health = each.value.evaluate_target_health
   }
+}
+
+moved {
+  from = aws_route53_record.cloudfront
+  to   = aws_route53_record.web_hosts
 }
 
 # ---- backups and DR ----------------------------------------------------------------------------
@@ -708,6 +746,7 @@ module "alarms" {
     { for k, m in module.api : "api-${k}" => { load_balancer_arn = module.alb.arn, target_group_arn = m.target_group_arn, run = "RUN-05" } },
     { for k, m in module.jit : "jit-${k}" => { load_balancer_arn = module.alb.arn, target_group_arn = m.target_group_arn, run = "RUN-02" } },
     { admin = { load_balancer_arn = module.admin_alb.arn, target_group_arn = module.admin.target_group_arn, run = "RUN-05" } },
+    { console = { load_balancer_arn = module.alb.arn, target_group_arn = module.console.target_group_arn, run = "RUN-05" } },
   )
 
   ecs_services = merge(
@@ -715,6 +754,7 @@ module "alarms" {
     { for k, m in module.jit : "jit-${k}" => { cluster_name = aws_ecs_cluster.this.name, service_name = m.service_name, run = "RUN-02" } },
     { for k, m in module.worker : "worker-${k}" => { cluster_name = aws_ecs_cluster.this.name, service_name = m.service_name, run = "RUN-05" } },
     { admin = { cluster_name = aws_ecs_cluster.this.name, service_name = module.admin.service_name, run = "RUN-05" } },
+    { console = { cluster_name = aws_ecs_cluster.this.name, service_name = module.console.service_name, run = "RUN-05" } },
   )
 }
 
