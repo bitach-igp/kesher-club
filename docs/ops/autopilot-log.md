@@ -62,3 +62,4 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-08 | T-0047 | #264 | independent APPROVE (no blockers; 2 known limits recorded as T-0068/T-0069); desktop docker run PASS after one fix (tokens build) | green |
 | 2026-11-08 | T-0049 | #265 | independent changes-requested then fixed (scan gate could never fail: missing pipefail; nonexistent Terraform resource; gate passing without an enhanced scan); admin image tokens fix | green |
 | 2026-11-08 | T-0050 | #266 | independent changes-requested then fixed (staging pager, account-id agreement, stale soak, orphaned migrate task, vacuous tests); prod IAM scope gap recorded as T-0070; never run against AWS | green |
+| 2026-11-08 | T-0046 | — | bootstrap creates the 8 system accounts only; first admin (no admin account to invite) and legal shells (no draft state) reported as blockers; AuditService lock vs club_app noted; not run against AWS | pending |

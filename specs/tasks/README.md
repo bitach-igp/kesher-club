@@ -45,7 +45,7 @@
 | [T-0043](T-0043.md) | SETUP | Production boots on simulators only for ports whose flags are off | — | 16 deploy |
 | [T-0044](T-0044.md) | SETUP | The database is prepared from inside the VPC: a migrate task creates roles, sets passwords and applies every schema | — | 16 deploy |
 | [T-0045](T-0045.md) | SETUP | The JIT service connects as club_jit, with its own password (after T-0063, T-0064) | — | 16 deploy |
-| [T-0046](T-0046.md) | SETUP | Production bootstrap: a one-time idempotent command creates the system accounts, the first admin invite and the legal and plan shells | — | 16 deploy |
+| [T-0046](T-0046.md) | SETUP | Production bootstrap: a one-time idempotent command creates the system accounts (first admin, legal and plan shells reported as blocked or not needed) | — | 16 deploy |
 | [T-0047](T-0047.md) | SETUP | The institution console ships as an image and runs as a service, not a static bucket | — | 16 deploy |
 | [T-0048](T-0048.md) | SETUP | apps/web: marketing, versioned legal pages and the domain-association files, as a static site on the existing bucket | — | 16 deploy |
 | [T-0049](T-0049.md) | SETUP | Release hardening: ECR scan gate, SBOM, pinned base images and the console image in the release | — | 16 deploy |

@@ -6,7 +6,8 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run --passWithNoTests",
-    "start": "node --experimental-strip-types src/index.ts"
+    "start": "node --experimental-strip-types src/index.ts",
+    "bootstrap": "node --experimental-strip-types src/bootstrap/index.ts"
   },
   "dependencies": {
     "@kesher/adapters": "workspace:*",
