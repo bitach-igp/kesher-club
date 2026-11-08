@@ -4,7 +4,7 @@
 # --experimental-strip-types and the workspace layout is kept, because Node refuses to strip types under
 # node_modules and the worker imports the API's services as @kesher/api/*. No port: the worker serves
 # nothing; ECS stops it with SIGTERM, and it lets running jobs finish before it exits.
-FROM node:22.22.0-bookworm-slim
+FROM node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.28.0 --activate
 COPY --chown=node:node . .

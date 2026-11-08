@@ -2,8 +2,10 @@
 # pushes them to club-shared's ECR as `sha-<12-char commit>`, the tag staging and prod deploy with
 # `terraform apply -var image_tag=…`. Run by hand from the Actions tab. Credentials come from GitHub OIDC,
 # as in preview.yml, with no static keys. The repositories are IMMUTABLE, so an image already pushed for
-# this commit is skipped, never pushed again. Deploying is not this workflow's job. One-time setup:
-# docs/setup/release.md.
+# this commit is skipped, never pushed again. Each image is then gated (T-0049): its CycloneDX SBOM is a run
+# artifact and an OCI referrer on the ECR image, and the release FAILS on a critical finding that has a fix
+# (Amazon Inspector enhanced scanning) unless .github/security/image-scan-ignore.json excuses it. Deploying is not
+# this workflow's job. One-time setup and the exception process: docs/setup/release.md.
 name: release
 on:
   workflow_dispatch:
@@ -89,6 +91,14 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # A malformed or over-30-day exception fails the release before anything is built or pushed.
+      - name: Validate the scan exception list
+        run: node tools/release/check-findings.mjs --ignore .github/security/image-scan-ignore.json
+
       - name: Assume the CI role (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -123,6 +133,7 @@ jobs:
         if: steps.existing.outputs.found == 'false'
 
       - name: Build and push
+        id: push
         if: steps.existing.outputs.found == 'false'
         uses: docker/build-push-action@v6
         with:
@@ -135,12 +146,138 @@ jobs:
           cache-to: type=gha,scope=${{ matrix.app }},mode=max
           provenance: false
 
+      # The digest the tag points to, for the SBOM, the referrer and the scan findings (also on a rerun that skipped
+      # the push, so a rerun is gated too).
+      - name: Resolve the image digest
+        id: digest
+        env:
+          REGISTRY_ID: ${{ vars.AWS_SHARED_ACCOUNT_ID }}
+        run: |
+          digest="$(aws ecr describe-images --registry-id "$REGISTRY_ID" --repository-name "kesher/${APP}" --image-ids "imageTag=${TAG}" --query 'imageDetails[0].imageDigest' --output text)"
+          if ! [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::Could not resolve the digest of kesher/${APP}:${TAG} (got: ${digest})."
+            exit 1
+          fi
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+
+      # CycloneDX SBOM from the pushed image, by digest (syft reads the registry login written above).
+      - name: Generate the SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0.20.5
+        with:
+          image: ${{ steps.ecr.outputs.registry }}/kesher/${{ matrix.app }}@${{ steps.digest.outputs.digest }}
+          format: cyclonedx-json
+          output-file: sbom-${{ matrix.app }}.cdx.json
+          upload-artifact: false
+
+      - name: Upload the SBOM to the run
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ matrix.app }}
+          path: sbom-${{ matrix.app }}.cdx.json
+          if-no-files-found: error
+
+      - name: Install oras
+        uses: oras-project/setup-oras@v1
+        with:
+          version: 1.2.3
+
+      # Attached as an OCI referrer (artifact type application/vnd.cyclonedx+json) to the image's digest, which
+      # ECR's OCI 1.1 referrers support stores without a new tag. A rerun that finds one does not attach another.
+      - name: Attach the SBOM to the ECR image
+        id: attach
+        env:
+          REF: ${{ steps.ecr.outputs.registry }}/kesher/${{ matrix.app }}@${{ steps.digest.outputs.digest }}
+        run: |
+          # The default shell has no pipefail: without it a failed `oras discover` would read as "0 referrers" or garbage.
+          set -o pipefail
+          existing="$(oras discover --artifact-type application/vnd.cyclonedx+json --format json "$REF" | jq '(.manifests // .referrers // []) | length')"
+          if ! [[ "$existing" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not list the referrers of ${REF} (got: ${existing})."
+            exit 1
+          fi
+          if [ "$existing" -gt 0 ]; then
+            echo "${REF} already has an SBOM referrer; not attaching another."
+            echo "sbom=already attached" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          oras attach --artifact-type application/vnd.cyclonedx+json "$REF" "sbom-${APP}.cdx.json:application/vnd.cyclonedx+json"
+          echo "sbom=attached" >> "$GITHUB_OUTPUT"
+
+      # With the registry still on basic scanning, or Inspector not enabled, the findings query below answers an empty list
+      # and the gate would pass with no scan behind it. Refuse to gate unless the registry is on enhanced scanning.
+      - name: Require enhanced scanning on the registry
+        run: |
+          scan_type="$(aws ecr get-registry-scanning-configuration --query 'scanningConfiguration.scanType' --output text)"
+          if [ "$scan_type" != "ENHANCED" ]; then
+            echo "::error::The registry's scan type is ${scan_type}, not ENHANCED; apply infra/terraform/envs/shared (docs/setup/release.md)."
+            exit 1
+          fi
+
+      # Enhanced scanning starts on push. Wait for Amazon Inspector to finish (or time out after 20 minutes).
+      - name: Wait for the ECR scan
+        env:
+          REGISTRY_ID: ${{ vars.AWS_SHARED_ACCOUNT_ID }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          deadline=$((SECONDS + 1200))
+          while true; do
+            if out="$(aws ecr describe-image-scan-findings --registry-id "$REGISTRY_ID" --repository-name "kesher/${APP}" --image-id "imageDigest=${DIGEST}" --max-results 1 --output json 2>&1)"; then
+              status="$(jq -r '.imageScanStatus.status' <<<"$out")"
+              completed="$(jq -r '.imageScanFindings.imageScanCompletedAt // empty' <<<"$out")"
+              echo "scan status: ${status}"
+              case "$status" in
+                COMPLETE)
+                  break
+                  ;;
+                ACTIVE)
+                  if [ -n "$completed" ]; then break; fi
+                  ;;
+                FAILED | UNSUPPORTED_IMAGE | SCAN_ELIGIBILITY_EXPIRED | LIMIT_EXCEEDED | FINDINGS_UNAVAILABLE | IMAGE_ARCHIVED)
+                  echo "::error::The ECR scan of kesher/${APP} ended as ${status}."
+                  exit 1
+                  ;;
+              esac
+            elif ! grep -q ScanNotFoundException <<<"$out"; then
+              echo "$out"
+              exit 1
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::The ECR scan of kesher/${APP} did not finish within 20 minutes."
+              exit 1
+            fi
+            sleep 15
+          done
+
+      # Critical with a fix (YES, or PARTIAL: a fix for some of the affected packages), active or suppressed: the findings that
+      # stop a release. SUPPRESSED is included so an Inspector suppression rule is not a way around the gate; only the
+      # ignore list excuses a finding, by id.
+      - name: Fail on critical findings that have a fix
+        env:
+          DIGEST: ${{ steps.digest.outputs.digest }}
+          FINDINGS: ${{ runner.temp }}/findings-${{ matrix.app }}.json
+        run: |
+          set -o pipefail
+          criteria="$(jq -nc --arg digest "$DIGEST" --arg repo "kesher/${APP}" '{
+            ecrImageHash: [{comparison: "EQUALS", value: $digest}],
+            ecrImageRepositoryName: [{comparison: "EQUALS", value: $repo}],
+            severity: [{comparison: "EQUALS", value: "CRITICAL"}],
+            fixAvailable: [{comparison: "EQUALS", value: "YES"}, {comparison: "EQUALS", value: "PARTIAL"}],
+            findingStatus: [{comparison: "EQUALS", value: "ACTIVE"}, {comparison: "EQUALS", value: "SUPPRESSED"}]
+          }')"
+          aws inspector2 list-findings --filter-criteria "$criteria" --output json \
+            --query 'findings[].{id: packageVulnerabilityDetails.vulnerabilityId, package: packageVulnerabilityDetails.vulnerablePackages[0].name, fixedIn: packageVulnerabilityDetails.vulnerablePackages[0].fixedInVersion}' \
+            > "$FINDINGS"
+          node tools/release/check-findings.mjs --ignore .github/security/image-scan-ignore.json --image "kesher/${APP}" --findings "$FINDINGS" | tee -a "$GITHUB_STEP_SUMMARY"
+          # pipefail makes a failing check fail this step even though tee succeeds.
+
       - name: Record the result
         env:
           FOUND: ${{ steps.existing.outputs.found }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+          SBOM: ${{ steps.attach.outputs.sbom }}
         run: |
           if [ "$FOUND" = "true" ]; then state="already there, skipped"; else state="pushed"; fi
-          echo "kesher/${APP}:${TAG}: ${state}" >> "$GITHUB_STEP_SUMMARY"
+          echo "kesher/${APP}:${TAG}: ${state}, ${DIGEST}, scanned, SBOM ${SBOM}" >> "$GITHUB_STEP_SUMMARY"
 
   summary:
     name: tag to deploy
@@ -155,7 +292,7 @@ jobs:
           {
             echo "### Images for ${SHA}"
             echo
-            echo "api, worker, admin, console and migrate are in ECR as \`${TAG}\`. Deploy staging or prod with:"
+            echo "api, worker, admin, console and migrate are in ECR as \`${TAG}\`, scanned with no critical finding that has a fix. Deploy staging or prod with:"
             echo
             echo '```sh'
             echo "terraform apply -var image_tag=${TAG} …"

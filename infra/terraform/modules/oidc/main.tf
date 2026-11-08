@@ -46,6 +46,7 @@ data "aws_iam_policy_document" "ci" {
       "ecr:BatchCheckLayerAvailability",
       "ecr:BatchGetImage",
       "ecr:CompleteLayerUpload",
+      "ecr:DescribeImageScanFindings",
       "ecr:DescribeImages",
       "ecr:DescribeRepositories",
       "ecr:GetDownloadUrlForLayer",
@@ -62,6 +63,23 @@ data "aws_iam_policy_document" "ci" {
   statement {
     sid       = "EcrLogin"
     actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  # The release's scan gate reads the enhanced (Amazon Inspector) findings for an image (T-0049). ListFindings
+  # is account-scoped and filters by repository in the request, so it only accepts "*" as a resource.
+  #tfsec:ignore:aws-iam-no-policy-wildcards
+  statement {
+    sid       = "InspectorReadFindings"
+    actions   = ["inspector2:ListFindings"]
+    resources = ["*"]
+  }
+
+  # Reads the registry's scan type so the gate refuses to pass when scanning is not enhanced (T-0049). Account-scoped.
+  #tfsec:ignore:aws-iam-no-policy-wildcards
+  statement {
+    sid       = "EcrRegistryScanningRead"
+    actions   = ["ecr:GetRegistryScanningConfiguration"]
     resources = ["*"]
   }
 

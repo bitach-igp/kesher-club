@@ -8,6 +8,13 @@ That tag is what staging and prod deploy: their roots run `${ecr_registry}/keshe
   exists anywhere.
 - **Reruns.** The repositories are `IMMUTABLE`, so a second run for the same commit skips the push for
   each image already there.
+- **Scan gate, SBOM and base images (T-0049).** After each push (and on a rerun that skipped the push) the job
+  generates a CycloneDX SBOM with Syft, uploads it as the run artifact `sbom-<app>` and attaches it to the ECR image as an OCI
+  referrer (`application/vnd.cyclonedx+json`, `oras attach`). It then waits up to 20 minutes for the Amazon Inspector enhanced scan
+  (`envs/shared`: `aws_inspector2_enabler` and `aws_ecr_registry_scanning_configuration`, scan on push for `kesher/*`) and
+  fails on any CRITICAL finding (active or suppressed) that has a full or partial fix, unless the exception list below excuses it. The images are built
+  `FROM node:22.22.0-bookworm-slim@sha256:<index digest>`; a test (`tools/release/release.test.mjs`) fails if the Dockerfiles disagree.
+  A run that fails the gate leaves its image in ECR (the tags are immutable) but prints no deploy line: do not deploy that tag.
 - **Deploying.** Not part of this workflow; it is a card of its own.
 
 The workflow does nothing useful until a person with AWS administrator access has done the one-time steps
@@ -98,6 +105,40 @@ summary prints the tag and the `terraform apply -var image_tag=…` line for sta
 The run needs GitHub Actions minutes. While the account's minutes are used up, every job fails at once,
 with no runner and no log.
 
+## Scan exceptions
+
+`.github/security/image-scan-ignore.json` is the only sanctioned way past the scan gate. (Findings an Inspector suppression rule hides still count against the gate, and the gate refuses to run unless the registry is on enhanced scanning.) The gate looks at CRITICAL findings whose fix is available in full (YES) or in part (PARTIAL). It is reviewed like code: one pull
+request, one owner who signs it.
+
+```json
+{
+  "entries": [
+    {
+      "id": "CVE-2026-12345",
+      "image": "kesher/api",
+      "reason": "Why it cannot be exploited here, and the card that removes it.",
+      "owner": "@github-handle-of-the-person-who-accepts-the-risk",
+      "signedOn": "2026-11-10",
+      "expires": "2026-12-10"
+    }
+  ]
+}
+```
+
+- `id` is a `CVE-YYYY-NNNN…` or `GHSA-xxxx-xxxx-xxxx` id (GHSA in its own lower case); `image` is one of `kesher/api`, `kesher/worker`, `kesher/admin`, `kesher/console`, `kesher/migrate` or `*`. A typo fails the release.
+- `expires` is at most 30 days after `signedOn`, and `signedOn` is not in the future. An entry is in force through its
+  `expires` day (UTC). To extend one, sign a new entry with a new reason; there is no renewal in place.
+- An expired entry excuses nothing: the finding blocks the release again. A malformed entry, or one that lasts
+  more than 30 days, fails every release, even once expired, so delete lapsed entries.
+- The list is checked first thing in every image job, before anything is built, by `tools/release/check-findings.mjs`
+  (`node tools/release/check-findings.mjs --ignore .github/security/image-scan-ignore.json` checks it on your machine).
+
+## Updating the pinned base image
+
+The digest in the five Dockerfiles is the multi-architecture index digest of `node:22.22.0-bookworm-slim`. To move to a new
+tag, resolve its digest (`docker buildx imagetools inspect node:<tag> --format '{{.Manifest.Digest}}'`) and change all five
+`FROM` lines in one commit; the Dockerfile test fails if one is missed.
+
 ## Check it worked
 
 ```sh
@@ -107,7 +148,8 @@ for app in api worker admin console migrate; do
 done
 ```
 
-Each line prints a push time. Run the workflow again for the same commit: each image's job reports
+Each line prints a push time. A referrer exists too: `oras discover --artifact-type application/vnd.cyclonedx+json <registry>/kesher/api@<digest>`
+lists the SBOM, and the finished run has `sbom-api` and the other artifacts. Run the workflow again for the same commit: each image's job reports
 "already there, skipped", and the run is green.
 
 ## Known limitations of the console on the public ALB (T-0047)
