@@ -51,6 +51,9 @@ describe('routing on the session', () => {
     expect(guard(true, ['(tabs)', 'home'])).toBeUndefined();
     expect(guard(false, ['(tabs)', 'home'])).toBe('/(auth)/sign-in');
     expect(guard(true, ['+not-found'])).toBe('/(tabs)/home');
+    // The terms to accept (T-0062) are read signed in, so the signed-in member stays on that auth screen.
+    expect(guard(true, ['(auth)', 'consent'])).toBeUndefined();
+    expect(guard(true, ['(auth)', 'sign-in'])).toBe('/(tabs)/home');
   });
 
   it('an assistant\'s consent request survives sign-in; nothing else does (T-1017)', async () => {
@@ -89,6 +92,47 @@ describe('routing on the session', () => {
     deps.session.signIn({ accessToken: 'at', refreshToken: 'rt', accessExpiresAt: '2026-11-01T09:10:00Z' });
     rerender(<RootLayoutView deps={deps} router={router} segments={['(auth)', 'sign-in']} />);
     expect(router.current()).toBe('/(auth)/invite?token=tok-1');
+  });
+});
+
+describe('a consent that is owed keeps the member on the consent screen (T-0062)', () => {
+  it('guard sends every route but the consent screen there, and releases the member after acceptance', async () => {
+    const { guard } = await layoutFor('preview');
+    const consent = (returnTo: string) => `/(auth)/consent?returnTo=${encodeURIComponent(returnTo)}`;
+    expect(guard(true, ['(tabs)', 'home'], undefined, true)).toBe(consent('/(tabs)/home'));
+    expect(guard(true, ['card'], undefined, true)).toBe(consent('/card'));
+    expect(guard(true, ['pay', 'confirm'], undefined, true)).toBe(consent('/pay/confirm'));
+    expect(guard(true, ['fund', 'add-money'], undefined, true)).toBe(consent('/fund/add-money'));
+    expect(guard(true, ['settings', 'legal'], undefined, true)).toBe(consent('/settings/legal'));
+    expect(guard(true, ['(auth)', 'sign-in'], '/connect/x', true)).toBe(consent('/connect/x'));
+    expect(guard(true, ['(auth)', 'invite'], undefined, true)).toBe(consent('/'));
+    expect(guard(true, ['(auth)', 'consent'], undefined, true)).toBeUndefined();
+    // After acceptance the same routes are reachable.
+    expect(guard(true, ['(tabs)', 'home'], undefined, false)).toBeUndefined();
+    expect(guard(true, ['pay', 'confirm'], undefined, false)).toBeUndefined();
+    // Signed out, the consent screen is not a place to stay (sign out lands on sign-in).
+    expect(guard(false, ['(auth)', 'consent'])).toBe('/(auth)/sign-in');
+  });
+
+  it('the root layout holds the member there while the gate is set, and lets them go back to returnTo once it is cleared', async () => {
+    const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+    const deps = createRootDeps(config);
+    deps.session.signIn({ accessToken: 'at', refreshToken: 'rt', accessExpiresAt: '2026-11-01T09:10:00Z' });
+    const router = memoryRouter('/card');
+    const { rerender } = render(<RootLayoutView deps={deps} router={router} segments={['card']} />);
+    expect(router.current()).toBe('/card');
+    act(() => deps.consent.set({ pending: true }));
+    expect(router.current()).toBe('/(auth)/consent?returnTo=%2Fcard');
+    router.push('/pay');
+    rerender(<RootLayoutView deps={deps} router={router} segments={['pay']} />);
+    expect(router.current()).toBe('/(auth)/consent?returnTo=%2Fpay');
+    // On the consent screen it stays, then the accepted model clears the gate and replaces to returnTo.
+    rerender(<RootLayoutView deps={deps} router={router} segments={['(auth)', 'consent']} />);
+    expect(router.current()).toBe('/(auth)/consent?returnTo=%2Fpay');
+    act(() => deps.consent.set({ pending: false }));
+    router.replace('/pay');
+    rerender(<RootLayoutView deps={deps} router={router} segments={['pay']} />);
+    expect(router.current()).toBe('/pay');
   });
 });
 
