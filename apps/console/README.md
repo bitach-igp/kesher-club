@@ -12,6 +12,15 @@ console's server keeps the token pair in httpOnly cookies and calls the API with
 - Config (`src/config.ts`, crashes when missing): `CONSOLE_ENVIRONMENT` (`local` | `preview` | `staging` |
   `production`) and `CONSOLE_API_URL` (with `/v1`).
 
+## Deploy
+
+The console is a Next server app, built as an image (`apps/console/Dockerfile`, `output: 'standalone'`; one
+image for every environment, no settings baked in) and released to ECR as `kesher/console` by
+`release.yml`. Staging and prod run it as an ECS service on the public ALB at `console.<domain>`, health
+path `/healthz` (200 only when the config loads). A bad or missing setting writes one `boot_failed` line
+naming the keys and exits 1 (`instrumentation.ts`, `src/boot.ts`). Outside `local`, `CONSOLE_API_URL` must be https and
+not a loopback host.
+
 ## Run it locally
 
 With the demo stack running and the yeshiva seeded (docs/setup/demo.md, T-0034):

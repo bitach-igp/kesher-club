@@ -32,5 +32,5 @@ export default async function proxy(request: NextRequest): Promise<NextResponse>
   return res;
 }
 
-// Every page but sign-in (and its server actions) and Next's own assets.
-export const config = { matcher: ['/((?!sign-in|_next/|favicon.ico).*)'] };
+// Every page but sign-in (and its server actions), the load balancer's /healthz (T-0047) and Next's own assets.
+export const config = { matcher: ['/((?!sign-in|healthz$|healthz/|_next/|favicon.ico).*)'] };
