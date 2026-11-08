@@ -7,7 +7,7 @@
 ARG ATLAS_IMAGE=arigaio/atlas:1.3.8
 FROM ${ATLAS_IMAGE} AS atlas
 
-FROM node:22.22.0-bookworm-slim
+FROM node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94
 RUN apt-get update \
  && apt-get install -y --no-install-recommends postgresql-client ca-certificates \
  && rm -rf /var/lib/apt/lists/*

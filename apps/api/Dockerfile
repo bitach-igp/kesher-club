@@ -5,7 +5,7 @@
 # strip types under node_modules, so the workspace layout is kept: a filtered production install links
 # @kesher/* to packages/* and apps/* instead of copying them (which is what `pnpm deploy` would do, and
 # why it is not used here).
-FROM node:22.22.0-bookworm-slim
+FROM node:22.22.0-bookworm-slim@sha256:dd9d21971ec4395903fa6143c2b9267d048ae01ca6d3ea96f16cb30df6187d94
 WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@10.28.0 --activate
 COPY --chown=node:node . .
