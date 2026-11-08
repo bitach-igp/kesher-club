@@ -15,7 +15,7 @@ That tag is what staging and prod deploy: their roots run `${ecr_registry}/keshe
   fails on any CRITICAL finding (active or suppressed) that has a full or partial fix, unless the exception list below excuses it. The images are built
   `FROM node:22.22.0-bookworm-slim@sha256:<index digest>`; a test (`tools/release/release.test.mjs`) fails if the Dockerfiles disagree.
   A run that fails the gate leaves its image in ECR (the tags are immutable) but prints no deploy line: do not deploy that tag.
-- **Deploying.** Not part of this workflow; it is a card of its own.
+- **Deploying.** Not part of this workflow: `deploy.yml` (T-0050, `docs/setup/deploy.md`) takes the tag this one prints, migrates the database, rolls the services, runs the smoke suite and records the tag. Staging on demand; prod only after staging has run the tag for an hour and the GitHub environment's reviewers approve.
 
 The workflow does nothing useful until a person with AWS administrator access has done the one-time steps
 below, in this order.
@@ -82,13 +82,17 @@ from `envs/shared`, or under Settings → Secrets and variables → Actions → 
 gh variable set AWS_CI_ROLE_ARN        --repo bitach-igp/kesher-club --body "$(terraform output -raw ci_role_arn)"
 gh variable set AWS_SHARED_ACCOUNT_ID  --repo bitach-igp/kesher-club --body "<shared id>"
 gh variable set AWS_STAGING_ACCOUNT_ID --repo bitach-igp/kesher-club --body "$(terraform output -json member_account_ids | jq -r .staging)"
+gh variable set AWS_PROD_ACCOUNT_ID    --repo bitach-igp/kesher-club --body "$(terraform output -json member_account_ids | jq -r .prod)"
 ```
+
+The deploy workflow also needs the GitHub environments `staging` and `prod` (required reviewers and a wait timer on prod), the environment variable `TERRAFORM_VARS` and the prod secret `PAGER_ENDPOINT`: `docs/setup/deploy.md`, "Human steps".
 
 | Variable | Where the value comes from | Used by |
 |---|---|---|
 | `AWS_CI_ROLE_ARN` | `envs/shared` output `ci_role_arn` | release, preview |
 | `AWS_SHARED_ACCOUNT_ID` | `aws sts get-caller-identity` in club-shared | release (ECR registry), preview |
-| `AWS_STAGING_ACCOUNT_ID` | `envs/shared` output `member_account_ids.staging` | preview |
+| `AWS_STAGING_ACCOUNT_ID` | `envs/shared` output `member_account_ids.staging` | preview, deploy |
+| `AWS_PROD_ACCOUNT_ID` | `envs/shared` output `member_account_ids.prod` | deploy |
 
 ## Release a commit
 
@@ -100,7 +104,7 @@ gh workflow run release.yml --repo bitach-igp/kesher-club --ref main -f ref=<com
 ```
 
 In the Actions tab, this is release → Run workflow, with "Use workflow from" set to `main`. The run's
-summary prints the tag and the `terraform apply -var image_tag=…` line for staging or prod.
+summary prints the tag (and an older `terraform apply -var image_tag=…` line: deploy with `deploy.yml` and that `image_tag` instead, `docs/setup/deploy.md`).
 
 The run needs GitHub Actions minutes. While the account's minutes are used up, every job fails at once,
 with no runner and no log.

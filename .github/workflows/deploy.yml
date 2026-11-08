@@ -1,0 +1,485 @@
+# Deploy (T-0050): rolls one release tag (built by release.yml, `sha-<12 characters>`) onto staging or prod. Run by hand from the
+# Actions tab, from main. In order: (1) verify the five images exist in club-shared's ECR; (2) the job runs on the GitHub
+# environment `staging` or `prod` (prod has required reviewers and a wait timer, set in GitHub: docs/setup/deploy.md); (3) assume
+# the CI role through OIDC, then work as the environment's deploy role (no static keys); (4) apply ONLY the migrate task definition
+# for the new tag, run the migrate task and wait for exit 0, BEFORE any service rolls; (5) plan the whole root, show the plan in the
+# job summary and apply that saved plan, which rolls the services; (6) wait for every ECS service to be stable and running the tag;
+# (7) run the smoke suite; (8) record the tag in SSM. A failure after the plan prints the previously deployed tag: rolling back is
+# this same workflow with that tag (migrations are expand-only, so the old image runs on the newer schema). Prod takes a tag only
+# when staging has run it for an hour. The reasoning for each choice is in docs/setup/deploy.md.
+name: deploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Where to deploy. prod waits for the reviewers of the GitHub environment.
+        type: choice
+        required: true
+        options:
+          - staging
+          - prod
+      image_tag:
+        description: "Release tag from release.yml: sha-<12 lowercase hex characters>."
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  id-token: write
+
+# One deploy per environment at a time. A second run queues instead of cancelling the first: a cancelled apply would leave the
+# state lock held and the services half-rolled.
+concurrency:
+  group: deploy-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  TERRAFORM_VERSION: "1.9.8"
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "0"
+
+jobs:
+  verify:
+    name: verify the images
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      TAG: ${{ inputs.image_tag }}
+      REGISTRY_ID: ${{ vars.AWS_SHARED_ACCOUNT_ID }}
+      CI_ROLE: ${{ vars.AWS_CI_ROLE_ARN }}
+    steps:
+      # The CI role trusts `ref:refs/heads/main` for a job without an environment (infra/terraform/modules/oidc), so a run from
+      # another branch could not assume it. Say so now. Inputs reach the script only through env, never through the script text.
+      - name: Check the inputs and the repository variables
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Run this workflow from main (Use workflow from: main)."
+            exit 1
+          fi
+          if ! [[ "$TAG" =~ ^sha-[0-9a-f]{12}$ ]]; then
+            echo "::error::image_tag must look like sha-0123456789ab (sha- and 12 lowercase hex characters, as release.yml prints it)."
+            exit 1
+          fi
+          if [ "$ENVIRONMENT" != "staging" ] && [ "$ENVIRONMENT" != "prod" ]; then
+            echo "::error::environment must be staging or prod."
+            exit 1
+          fi
+          if [ -z "$CI_ROLE" ] || [ -z "$REGISTRY_ID" ]; then
+            echo "::error::Set the repository variables AWS_CI_ROLE_ARN and AWS_SHARED_ACCOUNT_ID first; see docs/setup/release.md."
+            exit 1
+          fi
+
+      - name: Assume the CI role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: deploy-verify-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # All five images or none: the migrate task runs kesher/migrate:<tag> and the services run the other four.
+      - name: Every image exists in ECR for the tag
+        run: |
+          set -euo pipefail
+          missing=0
+          for app in api worker admin console migrate; do
+            if out="$(aws ecr describe-images --registry-id "$REGISTRY_ID" --repository-name "kesher/${app}" --image-ids "imageTag=${TAG}" --query 'imageDetails[0].imageDigest' --output text 2>&1)"; then
+              echo "kesher/${app}:${TAG} is in ECR (${out})"
+            elif grep -q ImageNotFoundException <<<"$out"; then
+              echo "::error::kesher/${app}:${TAG} is not in ECR. Run release.yml for that commit first."
+              missing=$((missing + 1))
+            else
+              echo "$out"
+              exit 1
+            fi
+          done
+          if [ "$missing" -gt 0 ]; then
+            exit 1
+          fi
+          echo "All five images exist for ${TAG}." >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: deploy to ${{ inputs.environment }}
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    # The approval gate: for prod, GitHub holds this job until the environment's required reviewers approve and its wait timer ends.
+    environment: ${{ inputs.environment }}
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      TAG: ${{ inputs.image_tag }}
+      TF_VAR_pager_endpoint: ${{ secrets.PAGER_ENDPOINT }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: infra/terraform/envs/${{ inputs.environment }}
+    steps:
+      # First, because the default working directory (the environment's Terraform root) exists only once the repository is checked out.
+      - uses: actions/checkout@v4
+
+      # The deploy job's OIDC subject is `environment:<name>`, which does not name a branch, so the main-only rule is checked here too.
+      - name: Check the inputs, the variables and the secrets
+        env:
+          CI_ROLE: ${{ vars.AWS_CI_ROLE_ARN }}
+          STAGING_ACCOUNT: ${{ vars.AWS_STAGING_ACCOUNT_ID }}
+          PROD_ACCOUNT: ${{ vars.AWS_PROD_ACCOUNT_ID }}
+          TFVARS: ${{ vars.TERRAFORM_VARS }}
+          PAGER: ${{ secrets.PAGER_ENDPOINT }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Run this workflow from main (Use workflow from: main)."
+            exit 1
+          fi
+          if ! [[ "$TAG" =~ ^sha-[0-9a-f]{12}$ ]]; then
+            echo "::error::image_tag must look like sha-0123456789ab."
+            exit 1
+          fi
+          if [ -z "$CI_ROLE" ] || [ -z "$STAGING_ACCOUNT" ]; then
+            echo "::error::Set the repository variables AWS_CI_ROLE_ARN and AWS_STAGING_ACCOUNT_ID; see docs/setup/release.md."
+            exit 1
+          fi
+          if [ "$ENVIRONMENT" = "prod" ] && [ -z "$PROD_ACCOUNT" ]; then
+            echo "::error::Set the repository variable AWS_PROD_ACCOUNT_ID; see docs/setup/deploy.md."
+            exit 1
+          fi
+          if [ -z "$TFVARS" ]; then
+            echo "::error::Set the variable TERRAFORM_VARS on the GitHub environment ${ENVIRONMENT} (the root's required Terraform variables); see docs/setup/deploy.md."
+            exit 1
+          fi
+          if [ "$ENVIRONMENT" = "prod" ] && [ -z "$PAGER" ]; then
+            echo "::error::Set the secret PAGER_ENDPOINT on the GitHub environment prod (envs/prod takes pager_endpoint, no default); see docs/setup/deploy.md."
+            exit 1
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Terraform's backend and its dns provider use these credentials; its aws providers assume kesher-deploy from them.
+      - name: Assume the CI role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: deploy-${{ inputs.environment }}-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # The AWS CLI steps work as the environment's deploy role (and, for prod, read staging's record as staging's deploy role): one
+      # profile each, chained from the CI role's credentials in the environment. Every CLI call below names its profile, because an
+      # AWS_PROFILE variable would lose to the environment's access keys. The CI role stays the ambient identity for Terraform.
+      - name: Configure the deploy-role profiles
+        env:
+          STAGING_ACCOUNT: ${{ vars.AWS_STAGING_ACCOUNT_ID }}
+          PROD_ACCOUNT: ${{ vars.AWS_PROD_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          if [ "$ENVIRONMENT" = "prod" ]; then
+            account="$PROD_ACCOUNT"
+          else
+            account="$STAGING_ACCOUNT"
+          fi
+          for value in "$account" "$STAGING_ACCOUNT"; do
+            if ! [[ "$value" =~ ^[0-9]{12}$ ]]; then
+              echo "::error::An account id variable is not a 12-digit AWS account id."
+              exit 1
+            fi
+          done
+          mkdir -p "$HOME/.aws"
+          {
+            echo "[profile deploy]"
+            echo "role_arn = arn:aws:iam::${account}:role/kesher-deploy"
+            echo "credential_source = Environment"
+            echo "role_session_name = deploy-${ENVIRONMENT}-${GITHUB_RUN_ID}"
+            echo "region = ${AWS_REGION}"
+            echo
+            echo "[profile staging]"
+            echo "role_arn = arn:aws:iam::${STAGING_ACCOUNT}:role/kesher-deploy"
+            echo "credential_source = Environment"
+            echo "role_session_name = deploy-read-staging-${GITHUB_RUN_ID}"
+            echo "region = ${AWS_REGION}"
+          } > "$HOME/.aws/config"
+          aws sts get-caller-identity --profile deploy --query Arn --output text
+
+      # First step of the prod path: a tag reaches prod only after staging has run it for an hour. The staging parameter is read through
+      # the staging deploy role. A rollback is the one other way in: a tag that prod itself already ran (it is in the history of prod's
+      # parameter, which is written only after a deploy's smoke suite passed) needs no staging soak, because it is the way back.
+      - name: Prod gate - the tag must have run on staging for an hour
+        if: ${{ inputs.environment == 'prod' }}
+        run: |
+          set -euo pipefail
+          min_age=3600
+          staging_tag=""
+          staging_age=""
+          if out="$(aws ssm get-parameter --profile staging --name /kesher/staging/deployed-image-tag --output json 2>&1)"; then
+            staging_tag="$(jq -r '.Parameter.Value' <<<"$out")"
+            modified="$(jq -r '.Parameter.LastModifiedDate' <<<"$out")"
+            if [[ "$modified" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+              modified_epoch="${modified%%.*}"
+            else
+              modified_epoch="$(date -u -d "$modified" +%s)"
+            fi
+            staging_age=$(($(date -u +%s) - modified_epoch))
+          elif ! grep -q ParameterNotFound <<<"$out"; then
+            echo "$out"
+            exit 1
+          fi
+          if [ "$staging_tag" = "$TAG" ] && [ -n "$staging_age" ] && [ "$staging_age" -ge "$min_age" ]; then
+            echo "Staging has run ${TAG} for ${staging_age} seconds (at least ${min_age}); prod may take it."
+            exit 0
+          fi
+          if history="$(aws ssm get-parameter-history --profile deploy --name /kesher/prod/deployed-image-tag --output json 2>&1)"; then
+            if jq -e --arg tag "$TAG" '.Parameters | map(.Value) | index($tag) != null' <<<"$history" >/dev/null; then
+              echo "::notice::${TAG} was deployed to prod before, so this is a rollback; the staging soak does not apply."
+              exit 0
+            fi
+          elif ! grep -q ParameterNotFound <<<"$history"; then
+            echo "$history"
+            exit 1
+          fi
+          if [ -z "$staging_tag" ]; then
+            echo "::error::Staging has no deployed-image-tag record. Deploy ${TAG} to staging first and let it run for an hour."
+          elif [ "$staging_tag" != "$TAG" ]; then
+            echo "::error::Staging runs ${staging_tag}, not ${TAG}. Deploy ${TAG} to staging first and let it run for an hour."
+          else
+            echo "::error::Staging has run ${TAG} for ${staging_age} seconds; prod needs ${min_age}. Try again later."
+          fi
+          exit 1
+
+      # Read before anything changes: this is the tag to roll back to.
+      - name: Read the previously deployed tag
+        id: previous
+        run: |
+          set -euo pipefail
+          previous="none"
+          if out="$(aws ssm get-parameter --profile deploy --name "/kesher/${ENVIRONMENT}/deployed-image-tag" --query Parameter.Value --output text 2>&1)"; then
+            previous="$out"
+            if ! [[ "$previous" =~ ^sha-[0-9a-f]{12}$ ]]; then
+              echo "::warning::The recorded tag is not a release tag; treating it as unknown."
+              previous="unknown"
+            fi
+          elif ! grep -q ParameterNotFound <<<"$out"; then
+            echo "$out"
+            exit 1
+          fi
+          echo "value=${previous}" >> "$GITHUB_OUTPUT"
+          echo "Deploying ${TAG} to ${ENVIRONMENT}; the previous tag is ${previous}." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Not secrets: the root's required variables (account ids, hosted zone, registry, Temporal endpoint, OIDC client id...).
+      - name: Write the Terraform variables
+        env:
+          TFVARS: ${{ vars.TERRAFORM_VARS }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$TFVARS" > deploy.auto.tfvars
+
+      - name: Terraform init
+        run: terraform init -backend-config=backend.hcl
+
+      # ORDER, the point of this card. The services must not roll before the database is ready, and one `terraform apply` rolls
+      # them. So the new migrate image goes in first, alone: a plan limited to module.migrate (a new revision of its task definition)
+      # that is applied before anything else. The check below refuses a targeted plan that would also change anything outside
+      # the module, so this step cannot roll a service.
+      - name: Plan the migrate task definition only
+        run: |
+          set -euo pipefail
+          terraform plan -no-color -lock-timeout=10m -target=module.migrate -var "image_tag=${TAG}" -out=migrate.tfplan | tee migrate-plan.txt
+          {
+            echo "### Terraform plan, step 1: the migrate task definition only (${ENVIRONMENT}, ${TAG})"
+            echo '```'
+            head -c 900000 migrate-plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          terraform show -json migrate.tfplan > migrate-plan.json
+          outside="$(jq -r '[.resource_changes[]? | select(.change.actions | all(. != "no-op" and . != "read")) | select(.address | startswith("module.migrate.") | not) | .address] | join(", ")' migrate-plan.json)"
+          if [ -n "$outside" ]; then
+            echo "::error::The migrate-only plan also changes: ${outside}. Services must not roll before the migration, so nothing is applied. Apply that change on its own first (infra/terraform/README.md) and run this workflow again."
+            exit 1
+          fi
+
+      - name: Apply the migrate task definition
+        run: terraform apply -no-color -lock-timeout=10m migrate.tfplan
+
+      # Waits for exit code 0. Anything else (a failed step, a task that never starts, 30 minutes without finishing) fails the deploy
+      # here, and no service has been touched.
+      - name: Run the migrate task and wait for exit 0
+        run: |
+          set -euo pipefail
+          cfg="$(terraform output -json migrate_task)"
+          cluster="$(jq -r '.cluster' <<<"$cfg")"
+          family="$(jq -r '.task_definition' <<<"$cfg")"
+          container="$(jq -r '.container' <<<"$cfg")"
+          network="$(jq -c '{awsvpcConfiguration: {subnets: .network_configuration.subnets, securityGroups: .network_configuration.security_groups, assignPublicIp: (if .network_configuration.assign_public_ip then "ENABLED" else "DISABLED" end)}}' <<<"$cfg")"
+          definition="$(aws ecs describe-task-definition --profile deploy --task-definition "$family" --query taskDefinition --output json)"
+          definition_arn="$(jq -r '.taskDefinitionArn' <<<"$definition")"
+          image="$(jq -r --arg name "$container" '.containerDefinitions[] | select(.name == $name) | .image' <<<"$definition")"
+          case "$image" in
+            */kesher/migrate:"${TAG}") echo "Running ${definition_arn} (${image})." ;;
+            *)
+              echo "::error::The latest migrate task definition runs ${image}, not kesher/migrate:${TAG}; refusing to migrate with another image."
+              exit 1
+              ;;
+          esac
+          started="$(aws ecs run-task --profile deploy --cluster "$cluster" --task-definition "$definition_arn" --launch-type FARGATE --count 1 --started-by "deploy-${GITHUB_RUN_ID}" --network-configuration "$network" --output json)"
+          if [ "$(jq '.failures | length' <<<"$started")" -gt 0 ]; then
+            echo "::error::ecs run-task failed: $(jq -c '.failures' <<<"$started")"
+            exit 1
+          fi
+          task_arn="$(jq -r '.tasks[0].taskArn' <<<"$started")"
+          echo "Started ${task_arn}"
+          deadline=$((SECONDS + 1800))
+          while true; do
+            task="$(aws ecs describe-tasks --profile deploy --cluster "$cluster" --tasks "$task_arn" --output json)"
+            status="$(jq -r '.tasks[0].lastStatus' <<<"$task")"
+            echo "migrate task: ${status}"
+            if [ "$status" = "STOPPED" ]; then
+              break
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              aws ecs stop-task --profile deploy --cluster "$cluster" --task "$task_arn" --reason "deploy ${GITHUB_RUN_ID}: migrate timed out" >/dev/null
+              echo "::error::The migrate task did not finish within 30 minutes; it was stopped. No service was rolled."
+              exit 1
+            fi
+            sleep 15
+          done
+          exit_code="$(jq -r --arg name "$container" '[.tasks[0].containers[] | select(.name == $name) | .exitCode][0] // "none"' <<<"$task")"
+          aws logs tail "/kesher/${family}" --profile deploy --since 2h --format short | tail -n 60 || true
+          if [ "$exit_code" != "0" ]; then
+            echo "::error::The migrate task exited with ${exit_code} ($(jq -r '.tasks[0].stoppedReason // "no reason given"' <<<"$task")). No service was rolled."
+            exit 1
+          fi
+          echo "The migrate task exited 0." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The migrate step may have used part of the CI session; take a fresh one for the rest.
+      - name: Assume the CI role again (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: deploy-${{ inputs.environment }}-${{ github.run_id }}-b
+          aws-region: ${{ env.AWS_REGION }}
+
+      # Planned after the targeted apply, so the saved plan is not stale; the services are the only thing left to change.
+      - name: Plan the whole root
+        run: |
+          set -euo pipefail
+          terraform plan -no-color -lock-timeout=10m -var "image_tag=${TAG}" -out=deploy.tfplan | tee deploy-plan.txt
+          {
+            echo "### Terraform plan, step 2: the whole root (${ENVIRONMENT}, ${TAG})"
+            echo '```'
+            head -c 900000 deploy-plan.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply the saved plan (rolls the services)
+        run: terraform apply -no-color -lock-timeout=10m deploy.tfplan
+
+      # The circuit breaker rolls a failed task set back, and a rolled-back service is "stable" again, so stable is not enough:
+      # every service must have a single COMPLETED deployment whose task definition runs the tag.
+      - name: Wait for every ECS service to be stable on the tag
+        run: |
+          set -euo pipefail
+          cluster="$(terraform output -raw cluster_name)"
+          names="$(terraform output -json ecs_service_names)"
+          mapfile -t services < <(jq -r 'to_entries[] | .value' <<<"$names")
+          if [ "${#services[@]}" -eq 0 ]; then
+            echo "::error::terraform output ecs_service_names is empty."
+            exit 1
+          fi
+          for service in "${services[@]}"; do
+            echo "Waiting for ${service} to be stable."
+            aws ecs wait services-stable --profile deploy --cluster "$cluster" --services "$service"
+          done
+          failed=0
+          for service in "${services[@]}"; do
+            described="$(aws ecs describe-services --profile deploy --cluster "$cluster" --services "$service" --output json)"
+            primary="$(jq -c '[.services[0].deployments[] | select(.status == "PRIMARY")][0]' <<<"$described")"
+            count="$(jq '.services[0].deployments | length' <<<"$described")"
+            state="$(jq -r '.rolloutState' <<<"$primary")"
+            definition_arn="$(jq -r '.taskDefinition' <<<"$primary")"
+            definition="$(aws ecs describe-task-definition --profile deploy --task-definition "$definition_arn" --output json)"
+            mapfile -t images < <(jq -r '.taskDefinition.containerDefinitions[].image' <<<"$definition")
+            wrong=0
+            if [ "${#images[@]}" -eq 0 ]; then
+              wrong=1
+            fi
+            for image in "${images[@]}"; do
+              case "$image" in
+                *:"${TAG}") ;;
+                *) wrong=1 ;;
+              esac
+            done
+            if [ "$count" != "1" ] || [ "$state" != "COMPLETED" ] || [ "$wrong" -ne 0 ]; then
+              echo "::error::${service}: ${count} deployment(s), rollout ${state}, images ${images[*]:-none}; wanted one COMPLETED deployment on ${TAG} (the circuit breaker may have rolled it back)."
+              failed=1
+            else
+              echo "${service}: stable on ${TAG}."
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+
+      # The documented command that can pass today (docs/setup/deploy.md): not --strict, no --console-url, no --openapi-url. The
+      # tag check is given the tag; it skips until the API reports one. Each market's API and JIT; admin and the portal once.
+      - name: Smoke suite
+        env:
+          PREVIOUS: ${{ steps.previous.outputs.value }}
+        run: |
+          set -euo pipefail
+          hosts="$(terraform output -json hosts)"
+          field() {
+            jq -er "$1" <<<"$hosts" || { echo "::error::terraform output hosts has no ${1}."; return 1; }
+          }
+          admin="$(field '.admin')"
+          web="$(field '.app')"
+          mapfile -t markets < <(jq -r '.markets | keys[]' <<<"$hosts")
+          if [ "${#markets[@]}" -eq 0 ]; then
+            echo "::error::terraform output hosts lists no market."
+            exit 1
+          fi
+          failed=0
+          for market in "${markets[@]}"; do
+            api="$(field ".markets.${market}.api")"
+            jit="$(field ".markets.${market}.jit")"
+            args=(--base-url "https://${api}" --jit-url "https://${jit}" --expected-tag "$TAG")
+            if [ "$market" = "il" ]; then
+              args+=(--admin-url "https://${admin}" --web-url "https://${web}")
+            fi
+            echo "== smoke ${market}"
+            if ! node "$GITHUB_WORKSPACE/tools/smoke/index.mjs" "${args[@]}"; then
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::The smoke suite failed for ${TAG} on ${ENVIRONMENT}. The previous tag was ${PREVIOUS}: run this workflow with image_tag=${PREVIOUS} to roll back."
+            exit 1
+          fi
+
+      # Last, and only after the smoke suite passed: the record the prod gate and the next deploy's rollback hint read.
+      - name: Record the deployed tag in SSM
+        run: |
+          set -euo pipefail
+          now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          aws ssm put-parameter --profile deploy --name "/kesher/${ENVIRONMENT}/deployed-image-tag" --type String --overwrite --value "$TAG" --description "Image tag last deployed to ${ENVIRONMENT} by the deploy workflow (T-0050)"
+          aws ssm put-parameter --profile deploy --name "/kesher/${ENVIRONMENT}/deployed-at" --type String --overwrite --value "$now" --description "When ${ENVIRONMENT} last finished a deploy of the tag in deployed-image-tag (UTC)"
+          echo "Deployed ${TAG} to ${ENVIRONMENT} at ${now}." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Say how to roll back
+        if: ${{ failure() && steps.previous.outcome == 'success' }}
+        env:
+          PREVIOUS: ${{ steps.previous.outputs.value }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Deploy of ${TAG} to ${ENVIRONMENT} failed"
+            echo
+            echo "Previous tag: \`${PREVIOUS}\`."
+            echo
+            echo "To roll back, run this workflow again with environment \`${ENVIRONMENT}\` and image_tag \`${PREVIOUS}\`. Migrations are expand-only, so that image runs on the schema the failed deploy migrated. The failed step says whether the services rolled (the circuit breaker may already have rolled them back)."
+          } | tee -a "$GITHUB_STEP_SUMMARY"
