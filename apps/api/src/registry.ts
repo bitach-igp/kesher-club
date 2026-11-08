@@ -7,6 +7,7 @@
 import {
   AiraloEsimAdapter,
   AppleFederatedIdPAdapter,
+  FederatedIdPRouter,
   CoverGeniusInsuranceAdapter,
   type CoverGeniusProduct,
   GoogleFederatedIdPAdapter,
@@ -21,13 +22,8 @@ import {
 } from '@kesher/adapters';
 import type { Secret } from '@kesher/domain';
 import {
-  FederatedIdPError,
   type AdvanceableClock,
   type EsimPort,
-  type FederatedAuthorization,
-  type FederatedIdentity,
-  type FederatedIdPPort,
-  type FederatedProvider,
   type InsurancePort,
   type OrgIdPPort,
   type ProviderRegistry,
@@ -148,30 +144,6 @@ export type ProviderSummary = {
   'federated-idp': 'sim' | 'oidc';
 };
 
-/** The two OIDC adapters behind one FederatedIdPPort: each serves its own provider and refuses the other's. */
-export class AppleGoogleFederatedIdP implements FederatedIdPPort {
-  private readonly apple: FederatedIdPPort;
-  private readonly google: FederatedIdPPort;
-  constructor(apple: FederatedIdPPort, google: FederatedIdPPort) {
-    this.apple = apple;
-    this.google = google;
-  }
-  private pick(provider: FederatedProvider): FederatedIdPPort {
-    if (provider === 'apple') return this.apple;
-    if (provider === 'google') return this.google;
-    throw new FederatedIdPError('UNSUPPORTED_PROVIDER', 'Unsupported federated provider');
-  }
-  async authorizationUrl(provider: FederatedProvider, input: { state: string; nonce: string; redirectUri: string }): Promise<FederatedAuthorization> {
-    return this.pick(provider).authorizationUrl(provider, input);
-  }
-  async exchangeCode(provider: FederatedProvider, input: { code: string; nonce: string; redirectUri: string }): Promise<FederatedIdentity> {
-    return this.pick(provider).exchangeCode(provider, input);
-  }
-  async revoke(provider: FederatedProvider, refreshToken: string, idempotencyKey: string): Promise<{ revoked: true; auditRef: string }> {
-    return this.pick(provider).revoke(provider, refreshToken, idempotencyKey);
-  }
-}
-
 const requireHttps = (what: string, url: string): string => {
   if (!/^https:\/\/[^/\s?#]+/.test(url) || !URL.canParse(url)) throw new Error(`${what} needs an https baseUrl`);
   return url;
@@ -267,7 +239,7 @@ export function createRegistry(
       ...transport,
     });
     const google = new GoogleFederatedIdPAdapter({ clientId: federated.google.clientId.reveal(), clientSecret: federated.google.clientSecret.reveal(), clock, ...transport });
-    bindBoth('federated-idp', 'oidc', new AppleGoogleFederatedIdP(apple, google));
+    bindBoth('federated-idp', 'oidc', new FederatedIdPRouter({ apple, google }));
     providers['federated-idp'] = 'oidc';
   }
   return { registry: simulators.registry, simulators, providers };
@@ -314,12 +286,13 @@ const needs = (choice: string, have: Record<string, unknown>): string => {
 };
 
 /** The overrides for the marketplace and identity ports a config chooses. Fails closed, naming keys and never a value. */
-function marketplaceOverrides(config: ProviderConfig): RegistryOverrides {
+function marketplaceOverrides(config: ProviderConfig, fetch?: typeof globalThis.fetch): RegistryOverrides {
   const out: RegistryOverrides = {};
+  const transport = fetch ? { fetch } : {};
   if (config.PROVIDER_ESIM === 'airalo') {
     const { AIRALO_BASE_URL: baseUrl, AIRALO_CLIENT_ID: clientId, AIRALO_CLIENT_SECRET: clientSecret } = config;
     if (!baseUrl || !clientId || !clientSecret) throw new Error(needs('PROVIDER_ESIM=airalo', { AIRALO_BASE_URL: baseUrl, AIRALO_CLIENT_ID: clientId, AIRALO_CLIENT_SECRET: clientSecret }));
-    out.esim = { provider: 'airalo', baseUrl, clientId, clientSecret };
+    out.esim = { provider: 'airalo', baseUrl, clientId, clientSecret, ...transport };
   }
   if (config.PROVIDER_INSURANCE === 'cover-genius') {
     const { COVER_GENIUS_BASE_URL: baseUrl, COVER_GENIUS_PARTNER_CODE: partnerCode, COVER_GENIUS_API_KEY: apiKey, COVER_GENIUS_API_SECRET: apiSecret } = config;
@@ -337,12 +310,12 @@ function marketplaceOverrides(config: ProviderConfig): RegistryOverrides {
         }),
       );
     }
-    out.insurance = { provider: 'cover-genius', baseUrl, partnerCode, apiKey, apiSecret, products, disclosures: { licensedEntity, commissionDisclosure } };
+    out.insurance = { provider: 'cover-genius', baseUrl, partnerCode, apiKey, apiSecret, products, disclosures: { licensedEntity, commissionDisclosure }, ...transport };
   }
   if (config.PROVIDER_ORG_IDP === 'workos') {
     const { WORKOS_CLIENT_ID: clientId, WORKOS_API_KEY: apiKey, WORKOS_WEBHOOK_SECRET: webhookSecret } = config;
     if (!clientId || !apiKey || !webhookSecret) throw new Error(needs('PROVIDER_ORG_IDP=workos', { WORKOS_CLIENT_ID: clientId, WORKOS_API_KEY: apiKey, WORKOS_WEBHOOK_SECRET: webhookSecret }));
-    out.orgIdp = { provider: 'workos', clientId, apiKey, webhookSecret };
+    out.orgIdp = { provider: 'workos', clientId, apiKey, webhookSecret, ...transport };
   }
   if (config.PROVIDER_FEDERATED_IDP === 'oidc') {
     const { APPLE_CLIENT_ID: appleClient, APPLE_TEAM_ID: teamId, APPLE_KEY_ID: keyId, APPLE_PRIVATE_KEY: privateKey, GOOGLE_CLIENT_ID: googleClient, GOOGLE_CLIENT_SECRET: googleSecret } = config;
@@ -358,7 +331,7 @@ function marketplaceOverrides(config: ProviderConfig): RegistryOverrides {
         }),
       );
     }
-    out.federatedIdp = { provider: 'oidc', apple: { clientId: appleClient, teamId, keyId, privateKey }, google: { clientId: googleClient, clientSecret: googleSecret } };
+    out.federatedIdp = { provider: 'oidc', apple: { clientId: appleClient, teamId, keyId, privateKey }, google: { clientId: googleClient, clientSecret: googleSecret }, ...transport };
   }
   return out;
 }
@@ -367,8 +340,9 @@ function marketplaceOverrides(config: ProviderConfig): RegistryOverrides {
  * The registry's overrides for a process's config, with the Crowded key ledger in Postgres so a restart loses no key. The config
  * has already refused a `crowded` choice without all three Crowded keys; the check here only narrows the types and fails closed.
  */
-export function overridesFromConfig(config: ProviderConfig, db: SqlClient, warn?: (message: string) => void): RegistryOverrides {
-  const marketplace = marketplaceOverrides(config);
+export function overridesFromConfig(config: ProviderConfig, db: SqlClient, warn?: (message: string) => void, fetch?: typeof globalThis.fetch): RegistryOverrides {
+  // `fetch` is the transport for the marketplace and identity adapters (T-0042); tests inject a fake vendor, a process passes none.
+  const marketplace = marketplaceOverrides(config, fetch);
   if (config.PROVIDER_INSTITUTION_BANKING !== 'crowded') {
     // A stray live binds nothing while the port is on the simulator; say so rather than accept it silently.
     if (config.CROWDED_BINDING === 'live') warn?.(IGNORED_LIVE_BINDING_WARNING);

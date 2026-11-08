@@ -1,6 +1,6 @@
 // T-0020: the API and worker configuration. Missing or bad values crash with every problem named;
 // a secret never reaches an error message or a log line.
-import { randomBytes } from 'node:crypto';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { ConfigError, Secret } from '@kesher/domain';
 import { describe, expect, it } from 'vitest';
 import { loadApiConfig, loadWorkerConfig } from './config.ts';
@@ -226,7 +226,8 @@ describe('Crowded banking override (T-0659)', () => {
 });
 
 // T-0042: Airalo, Cover Genius, WorkOS and the Apple + Google pair.
-const APPLE_KEY = '-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg-do-not-print\n-----END PRIVATE KEY-----';
+const APPLE_KEY = generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+const RSA_PEM = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 const GOOGLE_SECRET = 'google-secret-do-not-print';
 const AIRALO_SECRET = 'airalo-secret-do-not-print';
 const SETS: Record<string, { choose: Record<string, string>; keys: Record<string, string> }> = {
@@ -326,7 +327,11 @@ describe('marketplace and identity provider choices (T-0042)', () => {
         expect(e.missing.every((k) => k.startsWith(absent))).toBe(true);
       }
     }
-    expect(thrown(() => loadApiConfig({ ...env, ...appleOnly })).message).toBeDefined();
+    // The rule itself is reported, on a key that is present (a missing key is reported by name only).
+    for (const [only, other] of [[appleOnly, 'GOOGLE_*'], [googleOnly, 'APPLE_*']] as const) {
+      const e = thrown(() => loadApiConfig({ ...env, ...only }));
+      expect(e.invalid.join('\n')).toContain(`Sign in with Apple and Google are offered together or not at all (auth.social.enabled): the ${other} keys are missing`);
+    }
   });
 
   it('checks the values it can: https URLs, the product map, the commission wording and the PEM, without quoting them', () => {
@@ -338,6 +343,11 @@ describe('marketplace and identity provider choices (T-0042)', () => {
       ['cover-genius', { COVER_GENIUS_PRODUCTS: 'not json' }, 'COVER_GENIUS_PRODUCTS'],
       ['cover-genius', { COVER_GENIUS_COMMISSION_DISCLOSURE: 'nothing to see' }, 'COVER_GENIUS_COMMISSION_DISCLOSURE'],
       ['oidc', { APPLE_PRIVATE_KEY: 'apple-key-do-not-print' }, 'APPLE_PRIVATE_KEY'],
+      ['oidc', { APPLE_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\nanVuay1iYXNlNjQtZG8tbm90LXByaW50\n-----END PRIVATE KEY-----' }, 'APPLE_PRIVATE_KEY'],
+      ['oidc', { APPLE_PRIVATE_KEY: RSA_PEM }, 'APPLE_PRIVATE_KEY'],
+      ['cover-genius', { COVER_GENIUS_PRODUCTS: '{"__proto__":{"policyType":"x","commissionBps":1}}' }, 'COVER_GENIUS_PRODUCTS'],
+      ['cover-genius', { COVER_GENIUS_PRODUCTS: '{"constructor":{"policyType":"x","commissionBps":1}}' }, 'COVER_GENIUS_PRODUCTS'],
+      ['cover-genius', { COVER_GENIUS_PRODUCTS: '{"":{"policyType":"x","commissionBps":1}}' }, 'COVER_GENIUS_PRODUCTS'],
     ];
     for (const [name, patch, key] of bad) {
       const { choose, keys } = SETS[name]!;
@@ -348,6 +358,21 @@ describe('marketplace and identity provider choices (T-0042)', () => {
     const { choose, keys } = SETS['cover-genius']!;
     const c = loadApiConfig({ ...env, ...choose, ...keys });
     expect(c.COVER_GENIUS_PRODUCTS).toEqual({ gadget: { policyType: 'gadget_protection', commissionBps: 2000n } });
+  });
+
+  it('accepts a real P-256 key, and rejects a PEM pasted with literal backslash-n sequences with a clear message', () => {
+    const { choose, keys } = SETS['oidc']!;
+    expect(() => loadApiConfig({ ...env, ...choose, ...keys })).not.toThrow();
+    const pasted = keys['APPLE_PRIVATE_KEY']!.replace(/\n/g, '\\n');
+    const e = thrown(() => loadApiConfig({ ...env, ...choose, ...keys, APPLE_PRIVATE_KEY: pasted }));
+    expect(e.invalid.join()).toMatch(/APPLE_PRIVATE_KEY: has literal backslash-n sequences/);
+    expect(e.invalid.join()).not.toContain('BEGIN PRIVATE KEY-----\\n');
+  });
+
+  it('product codes are plain own keys: __proto__ never becomes a code', () => {
+    const { choose, keys } = SETS['cover-genius']!;
+    const c = loadApiConfig({ ...env, ...choose, ...keys });
+    expect(Object.keys(c.COVER_GENIUS_PRODUCTS ?? {})).toEqual(['gadget']);
   });
 
   it('prints no credential through String() or JSON', () => {

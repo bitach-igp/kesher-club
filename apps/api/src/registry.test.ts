@@ -1,13 +1,13 @@
 // T-0659 (REQ-INS-022, REQ-INS-025): the provider registry a process runs on. `sim` binds every port to the
 // simulators; a per-port override binds `institution-banking` to the Crowded adapter and nothing else.
-import { AiraloEsimAdapter, AppleFederatedIdPAdapter, CoverGeniusInsuranceAdapter, GoogleFederatedIdPAdapter, WorkOsOrgIdPAdapter, computeCrowdedSignature, CrowdedInstitutionBankingAdapter, FakeCrowded, InMemoryKeyLedger, SANDBOX_BASE_URL, type KeyLedger } from '@kesher/adapters';
+import { AiraloEsimAdapter, FederatedIdPRouter, AppleFederatedIdPAdapter, CoverGeniusInsuranceAdapter, GoogleFederatedIdPAdapter, WorkOsOrgIdPAdapter, computeCrowdedSignature, CrowdedInstitutionBankingAdapter, FakeCrowded, InMemoryKeyLedger, SANDBOX_BASE_URL, type KeyLedger } from '@kesher/adapters';
 import { generateKeyPairSync } from 'node:crypto';
 import { Secret } from '@kesher/domain';
 import type { EsimPort, FederatedIdPPort, InstitutionBankingPort, InsurancePort, OrgIdPPort } from '@kesher/ports';
 import { PORTS } from '@kesher/ports';
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from './db.ts';
-import { AppleGoogleFederatedIdP, createRegistry, crowdedWebhookSecrets, IGNORED_LIVE_BINDING_WARNING, LIVE_BINDING_WARNING, overridesFromConfig, systemClock, type CrowdedBankingOverride } from './registry.ts';
+import { createRegistry, crowdedWebhookSecrets, IGNORED_LIVE_BINDING_WARNING, LIVE_BINDING_WARNING, overridesFromConfig, systemClock, type CrowdedBankingOverride } from './registry.ts';
 
 const BASE = 'https://crowded.test/api/v1';
 const TOKEN = 'crowded-token-do-not-print';
@@ -302,7 +302,7 @@ describe('marketplace and identity bindings (T-0042)', () => {
       ['esim', 'airalo', AiraloEsimAdapter, { PROVIDER_ESIM: 'airalo' as const }],
       ['insurance', 'cover-genius', CoverGeniusInsuranceAdapter, { PROVIDER_INSURANCE: 'cover-genius' as const }],
       ['org-idp', 'workos', WorkOsOrgIdPAdapter, { PROVIDER_ORG_IDP: 'workos' as const }],
-      ['federated-idp', 'oidc', AppleGoogleFederatedIdP, { PROVIDER_FEDERATED_IDP: 'oidc' as const }],
+      ['federated-idp', 'oidc', FederatedIdPRouter, { PROVIDER_FEDERATED_IDP: 'oidc' as const }],
     ] as const;
     for (const [capability, provider, adapterClass, pick] of cases) {
       const { registry, simulators, providers } = bind({ PROVIDER_INSTITUTION_BANKING: 'sim', ...chosen, PROVIDER_ESIM: 'sim', PROVIDER_INSURANCE: 'sim', PROVIDER_ORG_IDP: 'sim', PROVIDER_FEDERATED_IDP: 'sim', ...pick });
@@ -324,13 +324,13 @@ describe('marketplace and identity bindings (T-0042)', () => {
     expect(registry.resolve<EsimPort>('esim', 'US')).toBeInstanceOf(AiraloEsimAdapter);
     expect(registry.resolve<InsurancePort>('insurance', 'IL')).toBeInstanceOf(CoverGeniusInsuranceAdapter);
     expect(registry.resolve<OrgIdPPort>('org-idp', 'US')).toBeInstanceOf(WorkOsOrgIdPAdapter);
-    expect(registry.resolve<FederatedIdPPort>('federated-idp', 'US')).toBeInstanceOf(AppleGoogleFederatedIdP);
+    expect(registry.resolve<FederatedIdPPort>('federated-idp', 'US')).toBeInstanceOf(FederatedIdPRouter);
   });
 
   it('the federated port routes each provider to its own adapter and refuses another', async () => {
     const apple = new AppleFederatedIdPAdapter({ clientId: 'c', teamId: 't', keyId: 'k', privateKeyPem: APPLE_PEM });
     const google = new GoogleFederatedIdPAdapter({ clientId: 'g', clientSecret: 's' });
-    const port = new AppleGoogleFederatedIdP(apple, google);
+    const port = new FederatedIdPRouter({ apple, google });
     const input = { state: 's1', nonce: 'n1', redirectUri: 'https://app.kesher.club/cb' };
     expect((await port.authorizationUrl('apple', input)).url).toContain('appleid.apple.com');
     expect((await port.authorizationUrl('google', input)).url).toContain('accounts.google.com');
@@ -343,6 +343,20 @@ describe('marketplace and identity bindings (T-0042)', () => {
       const err = thrownBy(() => createRegistry('sim', systemClock(), { federatedIdp: half as never }));
       expect(err.message).toMatch(/both Apple and Google/);
     }
+  });
+
+  it('the configured base URL reaches the wire for Airalo and Cover Genius, never a default production host', async () => {
+    const urls: string[] = [];
+    const fetch: typeof globalThis.fetch = async (input) => {
+      urls.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+      return new Response('{}', { status: 500 });
+    };
+    const { registry } = createRegistry('sandbox', systemClock(), overridesFromConfig({ PROVIDER_INSTITUTION_BANKING: 'sim', ...chosen }, nodb, undefined, fetch));
+    await registry.resolve<EsimPort>('esim', 'US').listPackages('IL').catch(() => undefined);
+    await registry.resolve<InsurancePort>('insurance', 'US').quote({ product: 'gadget', memberId: 'm1', market: 'US', startsAt: '2026-12-01T00:00:00Z', days: 3 }).catch(() => undefined);
+    expect(urls.some((u) => u.startsWith(chosen.AIRALO_BASE_URL))).toBe(true);
+    expect(urls.some((u) => u.startsWith(chosen.COVER_GENIUS_BASE_URL))).toBe(true);
+    expect(urls.filter((u) => !u.startsWith(chosen.AIRALO_BASE_URL) && !u.startsWith(chosen.COVER_GENIUS_BASE_URL))).toEqual([]);
   });
 
   it('a chosen adapter without its full set fails closed, naming keys and never a value', () => {

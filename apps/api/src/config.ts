@@ -10,6 +10,7 @@
 // PROVIDER_WEBHOOK_SECRETS as an ECS secret that no code reads yet, and refusing it would stop the boot.
 // `loadConfig` throws ConfigError naming every missing or invalid key; secrets never print.
 import { ConfigError, defineConfig, loadConfig, secret, Secret, type Config } from '@kesher/domain';
+import { createPrivateKey } from 'node:crypto';
 import type { JWK } from 'jose';
 import { z } from 'zod';
 
@@ -80,12 +81,13 @@ export const PROVIDER_PORTS = {
 /** A JSON object of our insurance product codes to XCover policy types. The message never quotes the value. */
 const coverGeniusProducts = () =>
   z.string().transform((raw, ctx): Record<string, { policyType: string; policyTypeVersion?: number; commissionBps: bigint }> => {
-    const bad = 'must be a JSON object of product code to { "policyType": string, "commissionBps": integer 0..10000, "policyTypeVersion"?: integer }';
+    const bad = 'must be a JSON object (codes non-empty, never __proto__, constructor or prototype) of product code to { "policyType": string, "commissionBps": integer 0..10000, "policyTypeVersion"?: integer }';
     try {
       const parsed: unknown = JSON.parse(raw);
       if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) && Object.keys(parsed).length > 0) {
-        const out: Record<string, { policyType: string; policyTypeVersion?: number; commissionBps: bigint }> = {};
+        const out: Record<string, { policyType: string; policyTypeVersion?: number; commissionBps: bigint }> = Object.create(null) as Record<string, { policyType: string; policyTypeVersion?: number; commissionBps: bigint }>;
         for (const [code, v] of Object.entries(parsed)) {
+          if (code === '' || code === '__proto__' || code === 'constructor' || code === 'prototype') throw new Error('code');
           const p = v as { policyType?: unknown; policyTypeVersion?: unknown; commissionBps?: unknown } | null;
           const ok =
             typeof p === 'object' && p !== null && typeof p.policyType === 'string' && p.policyType !== '' &&
@@ -103,8 +105,25 @@ const coverGeniusProducts = () =>
     return z.NEVER;
   });
 
-/** A Sign in with Apple key: the .p8 contents, PKCS#8 PEM. The message never quotes the value. */
-const applePrivateKey = () => secret().refine((k) => /-----BEGIN PRIVATE KEY-----[\s\S]+-----END PRIVATE KEY-----/.test(k.reveal()), 'must be a PKCS#8 PEM private key');
+/**
+ * A Sign in with Apple key: the .p8 contents, a PKCS#8 PEM holding an EC P-256 key. Parsed here so a bad paste fails at boot, not at the
+ * first sign-in. Node's error text can quote input, so only the rule that failed is reported.
+ */
+const applePrivateKey = () =>
+  secret().superRefine((k, ctx) => {
+    const raw = k.reveal();
+    if (raw.includes('\\n')) {
+      ctx.addIssue({ code: 'custom', message: 'has literal backslash-n sequences instead of line breaks; store the PEM with real newlines' });
+      return;
+    }
+    try {
+      const key = createPrivateKey({ key: raw, format: 'pem' });
+      if (key.asymmetricKeyType === 'ec' && key.asymmetricKeyDetails?.namedCurve === 'prime256v1') return;
+      ctx.addIssue({ code: 'custom', message: 'must be an EC P-256 private key' });
+    } catch {
+      ctx.addIssue({ code: 'custom', message: 'must be a PKCS#8 PEM private key' });
+    }
+  });
 
 const shared = {
   /**
@@ -118,8 +137,6 @@ const shared = {
   CROWDED_API_TOKEN: secret().optional(),
   /** The endpoint secret and, during a rotation, the previous one, comma-separated. */
   CROWDED_WEBHOOK_SECRETS: secretPair().optional(),
-  /** The member token key: a private ES256 JWK as JSON, from Secrets Manager. Checked here, because a
-   *  JSON.parse error quotes its input and would carry the key into a boot log. */
   /** Which vendor backs each marketplace and identity port (T-0042): `sim` by default; a named adapter needs its whole credential set. */
   PROVIDER_ESIM: z.enum(['sim', 'airalo']).default('sim'),
   AIRALO_BASE_URL: httpsUrl().optional(),
@@ -146,6 +163,8 @@ const shared = {
   APPLE_PRIVATE_KEY: applePrivateKey().optional(),
   GOOGLE_CLIENT_ID: secret().optional(),
   GOOGLE_CLIENT_SECRET: secret().optional(),
+  /** The member token key: a private ES256 JWK as JSON, from Secrets Manager. Checked here, because a
+   *  JSON.parse error quotes its input and would carry the key into a boot log. */
   JWT_SIGNING_KEY: secret().refine((k) => {
     try {
       const jwk = JSON.parse(k.reveal()) as Record<string, unknown>;
@@ -182,9 +201,18 @@ const processRules = (cfg: unknown, ctx: z.RefinementCtx) => {
   for (const port of Object.values(PROVIDER_PORTS)) {
     for (const [adapter, keys] of Object.entries(port.adapters)) {
       if (c[port.env] !== adapter && !(keys as readonly string[]).some((k) => c[k] !== undefined)) continue;
-      const why = adapter === 'oidc' ? '; Apple and Google are offered together or not at all (auth.social.enabled)' : '';
-      for (const k of keys) if (c[k] === undefined) ctx.addIssue({ code: 'custom', path: [k], message: `required when any ${adapter} key is set or ${port.env}=${adapter}${why}` });
+      for (const k of keys) if (c[k] === undefined) ctx.addIssue({ code: 'custom', path: [k], message: `required when any ${adapter} key is set or ${port.env}=${adapter}` });
     }
+  }
+  // auth.social.enabled is both or neither (REQ-AUTH-004). The issue sits on a key that IS present, because loadConfig reports an absent
+  // key by name only and drops its message.
+  const apple = PROVIDER_PORTS['federated-idp'].adapters.oidc.filter((k) => k.startsWith('APPLE_'));
+  const google = PROVIDER_PORTS['federated-idp'].adapters.oidc.filter((k) => k.startsWith('GOOGLE_'));
+  const appleHas = apple.filter((k) => c[k] !== undefined);
+  const googleHas = google.filter((k) => c[k] !== undefined);
+  if ((appleHas.length > 0) !== (googleHas.length > 0)) {
+    const present = appleHas.length > 0 ? appleHas : googleHas;
+    ctx.addIssue({ code: 'custom', path: [present[0]!], message: `Sign in with Apple and Google are offered together or not at all (auth.social.enabled): the ${appleHas.length > 0 ? 'GOOGLE_*' : 'APPLE_*'} keys are missing` });
   }
   if (c.PII_DATA_KEY.reveal() === c.PII_INDEX_KEY.reveal()) {
     ctx.addIssue({ code: 'custom', path: ['PII_INDEX_KEY'], message: 'must differ from PII_DATA_KEY' });

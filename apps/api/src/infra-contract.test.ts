@@ -139,11 +139,16 @@ describe('marketplace and identity providers are opt-in in Terraform (T-0042)', 
       }
     });
 
-    it(`${file}: a sim choice passes the config, and the API, worker and jit services all receive the chosen sets`, () => {
+    it(`${file}: a sim choice passes the config, the API and worker receive the chosen sets and jit receives none`, () => {
       const hcl = read(file);
       const raw = { ...VALID, APP_ENV: 'staging', PROVIDER_MODE_DEFAULT: 'sandbox', PROVIDER_ESIM: 'sim', PROVIDER_INSURANCE: 'sim', PROVIDER_ORG_IDP: 'sim', PROVIDER_FEDERATED_IDP: 'sim' } as Record<string, string>;
       for (const load of [loadApiConfig, loadWorkerConfig]) expect(() => load(raw)).not.toThrow();
-      expect(hcl).toMatch(/jit_secrets\s*=\s*merge\([^)]*local\.provider_secrets\)/);
+      // The authorisation service (jit) is mapped none of the adapter secrets and runs all four ports on sim, so it boots without them.
+      expect(hcl).not.toMatch(/jit_secrets\s*=[^\n]*provider_secrets/);
+      const jit = hcl.slice(hcl.indexOf('module "jit" {'), hcl.indexOf('\nmodule "', hcl.indexOf('module "jit" {') + 10));
+      expect(jit).not.toMatch(/provider_secrets|adapter_secrets/);
+      for (const port of ['PROVIDER_ESIM', 'PROVIDER_INSURANCE', 'PROVIDER_ORG_IDP', 'PROVIDER_FEDERATED_IDP']) expect(jit, port).toMatch(new RegExp(`${port}\\s*=\\s*"sim"`));
+      expect(() => loadApiConfig({ ...raw, SERVICE_ROLE: 'jit' })).not.toThrow();
       for (const module of ['api', 'worker']) {
         const body = hcl.slice(hcl.indexOf(`module "${module}" {`), hcl.indexOf('\nmodule "', hcl.indexOf(`module "${module}" {`) + 10));
         expect(body, `module ${module}`).toMatch(/secrets\s*=\s*merge\([^\n]*local\.provider_secrets\)/);

@@ -71,7 +71,7 @@ locals {
     STAFF_JWKS           = module.secrets.arns["staff-jwks"]
   }
   # Same secrets, but the database password is the club_jit one.
-  jit_secrets = merge(local.common_secrets, { PGPASSWORD = module.secrets.arns["db-jit-password"] }, local.provider_secrets)
+  jit_secrets = merge(local.common_secrets, { PGPASSWORD = module.secrets.arns["db-jit-password"] })
 
   # Each adapter's whole credential set (T-0042). The process config refuses a partial set, so a set is mapped whole or not at all;
   # an ECS secret with no value would also stop a task from starting, so only the chosen adapter's containers are mapped.
@@ -443,20 +443,21 @@ resource "aws_lb_listener_rule" "webhooks" {
 }
 
 module "jit" {
-  source                     = "../../modules/ecs-service"
-  for_each                   = local.markets
-  name                       = "${local.name}-jit-${each.key}"
-  cluster_arn                = aws_ecs_cluster.this.arn
-  cluster_name               = aws_ecs_cluster.this.name
-  vpc_id                     = module.network.vpc_id
-  subnet_ids                 = module.network.private_subnet_ids
-  image                      = "${var.ecr_registry}/kesher/api:${var.image_tag}"
-  cpu                        = 1024
-  memory                     = 2048
-  desired_count              = 2
-  min_capacity               = 2
-  max_capacity               = 6
-  environment                = merge(local.common_env, { SERVICE_ROLE = "jit", MARKET = each.value.code, DATABASE_URL = local.jit_database_url })
+  source        = "../../modules/ecs-service"
+  for_each      = local.markets
+  name          = "${local.name}-jit-${each.key}"
+  cluster_arn   = aws_ecs_cluster.this.arn
+  cluster_name  = aws_ecs_cluster.this.name
+  vpc_id        = module.network.vpc_id
+  subnet_ids    = module.network.private_subnet_ids
+  image         = "${var.ecr_registry}/kesher/api:${var.image_tag}"
+  cpu           = 1024
+  memory        = 2048
+  desired_count = 2
+  min_capacity  = 2
+  max_capacity  = 6
+  # The authorisation path never calls a marketplace or identity vendor: it runs those ports on `sim` and is mapped none of their secrets.
+  environment                = merge(local.common_env, { SERVICE_ROLE = "jit", MARKET = each.value.code, DATABASE_URL = local.jit_database_url, PROVIDER_ESIM = "sim", PROVIDER_INSURANCE = "sim", PROVIDER_ORG_IDP = "sim", PROVIDER_FEDERATED_IDP = "sim" })
   secrets                    = local.jit_secrets
   secret_kms_key_arns        = [module.kms_secrets.key_arn]
   database_security_group_id = module.rds.security_group_id
