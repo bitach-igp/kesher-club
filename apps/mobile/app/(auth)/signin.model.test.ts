@@ -5,6 +5,7 @@ import type { AuthApi, MyConsents, OtpPurpose } from '../../src/api.ts';
 import { memoryRouter } from '../../src/navigation.ts';
 import { fakeAuthenticator } from '../../src/passkeys.ts';
 import { memorySession } from '../../src/session.ts';
+import { createConsentGate } from '../../src/consent.ts';
 import { createSignInModel, isE164 } from './signin.model.ts';
 
 class ApiProblem extends Error {
@@ -202,7 +203,8 @@ describe('the terms come before home (T-0062)', () => {
     const { api } = fakeAuthApi();
     const session = memorySession('test-install');
     const router = memoryRouter('/sign-in');
-    const model = createSignInModel({ api, authenticator: fakeAuthenticator(), session, router, now, locale: 'en', legal: { mine } });
+    const gate = createConsentGate();
+    const model = createSignInModel({ api, authenticator: fakeAuthenticator(), session, router, now, locale: 'en', legal: { mine }, gate });
     model.startSignUp();
     model.setPhone('+972501234567');
     await model.sendCode();
@@ -210,18 +212,28 @@ describe('the terms come before home (T-0062)', () => {
     await model.submitCode();
     await model.createPasskey();
     await new Promise((r) => setTimeout(r, 0));
-    return { router, session };
+    return { router, session, gate };
   }
 
   it('a new account goes to the consent screen (and so before KYC), which returns to home', async () => {
     const pending = [{ docKey: 'terms', version: 1, title: { en: 't', he: 't' }, body: { en: 'b', he: 'b' }, hash: 'h', material: true, effectiveAt: '2026-11-01T00:00:00Z', reason: 'first' }] as MyConsents['pending'];
-    const { router, session } = await signUp(async () => ({ ...owing, pending }));
+    const { router, session, gate } = await signUp(async () => ({ ...owing, pending }));
     expect(session.accessToken()).toBe('at-register');
+    expect(gate.get().pending).toBe(true);
     expect(router.current()).toBe('/(auth)/consent?returnTo=%2F');
   });
 
   it('a member who owes nothing goes straight home', async () => {
-    const { router } = await signUp(async () => owing);
+    const { router, gate } = await signUp(async () => owing);
     expect(router.current()).toBe('/');
+    expect(gate.get().pending).toBe(false);
+  });
+
+  it('a check that fails still routes to the consent screen and holds the gate', async () => {
+    const { router, gate } = await signUp(async () => {
+      throw new TypeError('offline');
+    });
+    expect(router.current()).toBe('/(auth)/consent?returnTo=%2F');
+    expect(gate.get().pending).toBe(true);
   });
 });

@@ -17,6 +17,8 @@ import { buildEnv, parseMobileConfig, type MobileConfig } from '../src/config.ts
 import { DeviceProvider, type Device } from '../src/device.ts';
 import { LocaleProvider, t, useLocale, type Locale } from '../src/i18n.ts';
 import { OpenerProvider, type Opener } from '../src/linking.ts';
+import { CONSENT_HREF, ConsentGateProvider, createConsentGate, type ConsentGate } from '../src/consent.ts';
+import { useStore } from '../src/model.ts';
 import { activeTab, ParamsProvider, RouterProvider, TABS, type Router } from '../src/navigation.ts';
 import { AuthenticatorProvider, seededAuthenticator, webAuthnAuthenticator, type Authenticator, type SeededDevice } from '../src/passkeys.ts';
 import { installId, memorySession, SessionProvider, type Session } from '../src/session.ts';
@@ -46,13 +48,22 @@ export interface RootDeps {
   opener: Opener;
   locale: Locale;
   device: Device;
+  /** Held while the member owes a consent (T-0062). */
+  consent: ConsentGate;
   personas?: PersonaPicker | undefined;
 }
 
 /** Where the member belongs for these segments, or undefined to stay; `resume` replaces Home after sign-in. */
-export function guard(signedIn: boolean, segments: readonly string[], resume?: string): string | undefined {
+export function guard(signedIn: boolean, segments: readonly string[], resume?: string, consentPending = false): string | undefined {
   const inAuth = segments[0] === '(auth)';
-  if (!signedIn) return inAuth ? undefined : SIGN_IN_HREF;
+  if (!signedIn) return inAuth && segments[1] !== 'consent' ? undefined : SIGN_IN_HREF;
+  // While a consent is owed (T-0062) every route but the consent screen sends the member there, whatever opened it
+  // (a deep link, the URL bar, a push); they come back to where they were headed once they have accepted.
+  if (consentPending) {
+    if (inAuth && segments[1] === 'consent') return undefined;
+    const here = segments.length === 0 || inAuth || segments.some((x) => x.startsWith('+') || x.startsWith('[')) ? (resume ?? '/') : `/${segments.join('/')}`;
+    return `${CONSENT_HREF}?returnTo=${encodeURIComponent(here)}`;
+  }
   // An invite link is read signed out and accepted signed in (T-0626), and a funder's invite (T-0309) is read and
   // accepted signed in: the auth screens that keep a member.
   if (inAuth && (segments[1] === 'invite' || segments[1] === 'join' || segments[1] === 'consent')) return undefined;
@@ -78,7 +89,8 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
   // Remembered while signed out, used once after sign-in.
   const resume = useRef<string | undefined>(undefined);
   if (!signedIn) resume.current = resumable(segments, params) ?? resume.current;
-  const target = guard(signedIn, segments, resume.current);
+  const pendingConsent = useStore(deps.consent).pending;
+  const target = guard(signedIn, segments, resume.current, pendingConsent);
   // expo-router refuses to navigate before its root navigator has mounted.
   useEffect(() => {
     if (!ready || !target) return;
@@ -88,22 +100,24 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
   return (
     <LocaleProvider value={deps.locale}>
       <ApiProvider value={deps.api}>
-        <SessionProvider value={deps.session}>
-          <AuthenticatorProvider value={deps.authenticator}>
-            <OpenerProvider value={deps.opener}>
-              <DeviceProvider value={deps.device}>
-                <RouterProvider value={router}>
-                  <ParamsProvider value={params}>
-                    {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
-                    <Chrome signedIn={signedIn} segments={segments} router={router}>
-                      {children}
-                    </Chrome>
-                  </ParamsProvider>
-                </RouterProvider>
-              </DeviceProvider>
-            </OpenerProvider>
-          </AuthenticatorProvider>
-        </SessionProvider>
+        <ConsentGateProvider value={deps.consent}>
+          <SessionProvider value={deps.session}>
+            <AuthenticatorProvider value={deps.authenticator}>
+              <OpenerProvider value={deps.opener}>
+                <DeviceProvider value={deps.device}>
+                  <RouterProvider value={router}>
+                    <ParamsProvider value={params}>
+                      {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
+                      <Chrome signedIn={signedIn} segments={segments} router={router}>
+                        {children}
+                      </Chrome>
+                    </ParamsProvider>
+                  </RouterProvider>
+                </DeviceProvider>
+              </OpenerProvider>
+            </AuthenticatorProvider>
+          </SessionProvider>
+        </ConsentGateProvider>
       </ApiProvider>
     </LocaleProvider>
   );
@@ -228,6 +242,7 @@ export function createRootDeps(config: MobileConfig, platform: Platform = {}): R
     opener,
     locale: platform.language?.startsWith('he') ? 'he' : 'en',
     device: webDevice(platform.navigator),
+    consent: createConsentGate(),
     ...(loadPersonas ? { personas: { load: loadPersonas, current: () => persona, choose: (key: string) => void (persona = key) } } : {}),
   };
 }

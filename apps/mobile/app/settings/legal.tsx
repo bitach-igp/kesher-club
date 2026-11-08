@@ -22,7 +22,7 @@ export function LegalView({ model }: { model: LegalModel }) {
   const s = useStore(model.store);
   const locale = useLocale();
   useEffect(() => void model.load(), [model]);
-  const day = (iso: string) => new Intl.DateTimeFormat(intlLocale(locale), { dateStyle: 'medium', timeZone: 'UTC' }).format(new Date(iso));
+  const day = (iso: string) => new Date(iso).toLocaleDateString(intlLocale(locale), { day: 'numeric', month: 'short', year: 'numeric' });
   const anyPending = s.rows.some((r) => r.pending);
   return (
     <Screen title={t('legal.title', locale)} subtitle={t('legal.subtitle', locale)} testID="screen-legal">
@@ -39,6 +39,11 @@ export function LegalView({ model }: { model: LegalModel }) {
           <Txt tone="secondary" testID={`legal-status-${r.docKey}`}>
             {r.acceptedVersion !== undefined && r.acceptedAt ? t('legal.accepted', locale, { version: r.acceptedVersion, date: day(r.acceptedAt) }) : t('legal.notAccepted', locale)}
           </Txt>
+          {r.pending ? (
+            <Txt tone="secondary" testID={`legal-pending-${r.docKey}`}>
+              {t('legal.row.pending', locale)}
+            </Txt>
+          ) : null}
           <Button label={t(s.open === r.docKey ? 'legal.hide' : 'legal.read', locale)} variant="secondary" onPress={() => model.toggleText(r.docKey)} testID={`legal-toggle-${r.docKey}`} />
           {/* The text is ours (published by the legal service), shown as written. */}
           {s.open === r.docKey ? <Txt testID={`legal-body-${r.docKey}`}>{r.body}</Txt> : null}

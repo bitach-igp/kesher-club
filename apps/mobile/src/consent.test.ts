@@ -1,7 +1,7 @@
 // T-0062: the terms at sign-up and re-accept. The model is driven directly; the view takes it.
 import { describe, expect, it } from 'vitest';
 import type { LegalApi, LegalDocument, MyConsents, PendingLegalDocument } from './api.ts';
-import { createConsentModel, legalLink, routeIfPending, safeReturnTo, summaryOf, type ConsentDeps } from './consent.ts';
+import { createConsentGate, createConsentModel, legalLink, routeIfPending, safeReturnTo, summaryOf, type ConsentDeps } from './consent.ts';
 import { memoryRouter } from './navigation.ts';
 
 class ApiProblem extends Error {
@@ -26,22 +26,25 @@ const doc = (docKey: LegalDocument['docKey'], version = 1, extra: Partial<LegalD
 });
 const pending = (d: LegalDocument, reason: PendingLegalDocument['reason'] = 'first'): PendingLegalDocument => ({ ...d, reason });
 
-function fakeLegal(opts: { inForce?: LegalDocument[]; pending?: PendingLegalDocument[]; accepted?: MyConsents['accepted']; failRecord?: unknown[]; failDocuments?: unknown } = {}) {
+function fakeLegal(opts: { inForce?: LegalDocument[]; pending?: PendingLegalDocument[]; accepted?: MyConsents['accepted']; failRecord?: unknown[]; failDocuments?: unknown; afterFailure?: () => void } = {}) {
   const inForce = opts.inForce ?? [doc('terms'), doc('privacy')];
   const posts: Parameters<LegalApi['record']>[0][] = [];
   const failures = [...(opts.failRecord ?? [])];
   const api: LegalApi = {
     async documents() {
       if (opts.failDocuments) throw opts.failDocuments;
-      return { items: inForce };
+      return { items: opts.inForce ?? inForce };
     },
     async mine() {
-      return { accepted: opts.accepted ?? [], pending: opts.pending ?? inForce.map((d) => pending(d)) };
+      return { accepted: opts.accepted ?? [], pending: opts.pending ?? (opts.inForce ?? inForce).map((d) => pending(d)) };
     },
     async record(input) {
       posts.push(input);
       const failure = failures.shift();
-      if (failure) throw failure;
+      if (failure) {
+        opts.afterFailure?.();
+        throw failure;
+      }
       return { accepted: input.documents.map((d) => ({ ...d, hash: 'h', locale: input.locale, acceptedAt: '2026-11-01T09:00:00Z' })) };
     },
   };
@@ -52,8 +55,10 @@ function setup(opts: Parameters<typeof fakeLegal>[0] = {}, deps: Partial<Consent
   const legal = fakeLegal(opts);
   const router = memoryRouter('/(auth)/consent');
   const opened: string[] = [];
-  const model = createConsentModel({ legal: legal.api, router, locale: 'en', webBaseUrl: 'https://legal.example.test', linkRequired: true, openURL: async (u) => void opened.push(u), ...deps });
-  return { model, router, opened, ...legal };
+  const gate = createConsentGate();
+  gate.set({ pending: true });
+  const model = createConsentModel({ legal: legal.api, router, gate, locale: 'en', webBaseUrl: 'https://legal.example.test', openURL: async (u) => void opened.push(u), ...deps });
+  return { model, router, opened, gate, ...legal };
 }
 
 describe('the consent model (T-0062)', () => {
@@ -67,6 +72,7 @@ describe('the consent model (T-0062)', () => {
       ['privacy', 1, false],
     ]);
     expect(s.items[0]?.summary.length).toBeLessThanOrEqual(281);
+    expect(s.items[0]?.body).toContain('Body of terms.');
     expect(s.items[0]?.url).toBe('https://legal.example.test/legal/terms?lang=en');
     expect(model.canContinue()).toBe(false);
   });
@@ -74,21 +80,23 @@ describe('the consent model (T-0062)', () => {
   it('needs an explicit tap per document: one tap does not accept the other, and submit stays closed until all are tapped', async () => {
     const { model, posts } = setup();
     await model.load();
-    model.toggle('terms');
+    model.set('terms', true);
     expect(model.canContinue()).toBe(false);
     await model.submit();
     expect(posts).toEqual([]);
-    model.toggle('privacy');
+    model.set('privacy', true);
     expect(model.canContinue()).toBe(true);
-    model.toggle('privacy'); // a second tap takes it back
+    model.set('privacy', true); // the same value twice (a double-fired switch) changes nothing
+    expect(model.canContinue()).toBe(true);
+    model.set('privacy', false);
     expect(model.canContinue()).toBe(false);
   });
 
   it('posts exactly the documents shown, once, with the UI locale, and continues to returnTo', async () => {
     const { model, posts, router } = setup({}, { locale: 'he', returnTo: '/card' });
     await model.load();
-    model.toggle('terms');
-    model.toggle('privacy');
+    model.set('terms', true);
+    model.set('privacy', true);
     await model.submit();
     expect(posts).toEqual([{ documents: [{ docKey: 'terms', version: 1 }, { docKey: 'privacy', version: 1 }], locale: 'he' }]);
     expect(model.store.get().mode).toBe('done');
@@ -107,8 +115,8 @@ describe('the consent model (T-0062)', () => {
   it('a failure records nothing, says why, and the same button tries again', async () => {
     const { model, posts, router } = setup({ failRecord: [new TypeError('Network request failed')] });
     await model.load();
-    model.toggle('terms');
-    model.toggle('privacy');
+    model.set('terms', true);
+    model.set('privacy', true);
     await model.submit();
     expect(model.store.get()).toMatchObject({ mode: 'ready', busy: false, error: 'consent.error.offline' });
     expect(router.current()).toBe('/(auth)/consent');
@@ -123,8 +131,8 @@ describe('the consent model (T-0062)', () => {
     for (const status of [422, 409]) {
       const { model, posts } = setup({ failRecord: [new ApiProblem(status === 422 ? 'VALIDATION_FAILED' : 'IDEMPOTENCY_CONFLICT', status)] });
       await model.load();
-      model.toggle('terms');
-      model.toggle('privacy');
+      model.set('terms', true);
+      model.set('privacy', true);
       await model.submit();
       const s = model.store.get();
       expect(s.error).toBe('consent.error.changed');
@@ -136,8 +144,8 @@ describe('the consent model (T-0062)', () => {
   it('a 503 reads as unavailable; a failed load offers retry', async () => {
     const down = setup({ failRecord: [new ApiProblem('PROVIDER_UNAVAILABLE', 503)] });
     await down.model.load();
-    down.model.toggle('terms');
-    down.model.toggle('privacy');
+    down.model.set('terms', true);
+    down.model.set('privacy', true);
     await down.model.submit();
     expect(down.model.store.get().error).toBe('common.error.unavailable');
 
@@ -152,16 +160,104 @@ describe('the consent model (T-0062)', () => {
     expect(router.current()).toBe('/pay');
   });
 
-  it('fails closed without a web base URL outside development, and shows no link inside it', async () => {
-    const closed = setup({}, { webBaseUrl: undefined });
-    await closed.model.load();
-    expect(closed.model.store.get()).toMatchObject({ mode: 'error', error: 'consent.error.unavailable' });
-    expect(closed.model.canContinue()).toBe(false);
+  it('without a web base URL there is no link and nothing is blocked: the full text is in the app', async () => {
+    const { model, posts } = setup({}, { webBaseUrl: undefined });
+    await model.load();
+    expect(model.store.get().mode).toBe('ready');
+    expect(model.store.get().items.every((i) => i.url === undefined && i.body.length > 0)).toBe(true);
+    model.set('terms', true);
+    model.set('privacy', true);
+    await model.submit();
+    expect(posts).toHaveLength(1);
+  });
 
-    const dev = setup({}, { webBaseUrl: undefined, linkRequired: false });
-    await dev.model.load();
-    expect(dev.model.store.get().mode).toBe('ready');
-    expect(dev.model.store.get().items[0]?.url).toBeUndefined();
+  it('a double submit sends one POST, and success clears the consent gate', async () => {
+    const { model, posts, gate } = setup();
+    await model.load();
+    model.set('terms', true);
+    model.set('privacy', true);
+    await Promise.all([model.submit(), model.submit()]);
+    expect(posts).toHaveLength(1);
+    expect(gate.get().pending).toBe(false);
+  });
+
+  it('a failure leaves the consent gate held', async () => {
+    const { model, gate } = setup({ failRecord: [new TypeError('x')] });
+    await model.load();
+    model.set('terms', true);
+    model.set('privacy', true);
+    await model.submit();
+    expect(gate.get().pending).toBe(true);
+  });
+
+  it('after a 422 the new version is shown and the next POST carries it', async () => {
+    const live = { inForce: [doc('terms', 1), doc('privacy', 1)] };
+    const legal = fakeLegal({
+      inForce: live.inForce,
+      failRecord: [new ApiProblem('VALIDATION_FAILED', 422)],
+      afterFailure: () => void (live.inForce[0] = doc('terms', 2)),
+    });
+    const router = memoryRouter('/(auth)/consent');
+    const model = createConsentModel({ legal: legal.api, router, gate: createConsentGate(), locale: 'en', webBaseUrl: undefined });
+    await model.load();
+    model.set('terms', true);
+    model.set('privacy', true);
+    await model.submit();
+    expect(model.store.get().items.find((i) => i.docKey === 'terms')?.version).toBe(2);
+    expect(model.store.get().error).toBe('consent.error.changed');
+    model.set('terms', true);
+    model.set('privacy', true);
+    await model.submit();
+    expect(legal.posts[1]?.documents).toEqual([{ docKey: 'terms', version: 2 }, { docKey: 'privacy', version: 1 }]);
+  });
+
+  it('fails closed when a pending document is not in force or at another version: error, never "done"', async () => {
+    const missing = setup({ inForce: [doc('terms')], pending: [pending(doc('terms')), pending(doc('privacy'))] });
+    await missing.model.load();
+    expect(missing.model.store.get()).toMatchObject({ mode: 'error', error: 'consent.error.changed', items: [] });
+    expect(missing.router.current()).toBe('/(auth)/consent');
+    expect(missing.gate.get().pending).toBe(true);
+
+    const other = setup({ inForce: [doc('terms', 3)], pending: [pending(doc('terms', 2))] });
+    await other.model.load();
+    expect(other.model.store.get().mode).toBe('error');
+  });
+
+  it('uses the pending entry\'s reason and change summary', async () => {
+    const terms = doc('terms', 2, { changeSummary: { en: 'Fees changed.', he: 'העמלות השתנו.' } });
+    const { model } = setup({ inForce: [terms], pending: [pending(terms, 'material_change')] });
+    await model.load();
+    expect(model.store.get().items[0]).toMatchObject({ summary: 'Fees changed.', reason: 'material_change', version: 2 });
+  });
+
+  it('tells a network failure from a bug, and a 401 sends the member to sign in instead of retrying', async () => {
+    const bug = setup({ failRecord: [new Error('undefined is not a function')] });
+    await bug.model.load();
+    bug.model.set('terms', true);
+    bug.model.set('privacy', true);
+    await bug.model.submit();
+    expect(bug.model.store.get().error).toBe('common.error.generic');
+
+    const expired = setup({ failRecord: [new ApiProblem('UNAUTHENTICATED', 401)] });
+    await expired.model.load();
+    expired.model.set('terms', true);
+    expired.model.set('privacy', true);
+    await expired.model.submit();
+    expect(expired.model.store.get()).toMatchObject({ mode: 'error', error: 'consent.error.session', signedOut: true });
+  });
+
+  it('signing out ends the session, releases the gate and goes to sign-in', () => {
+    let out = 0;
+    const { model, router, gate } = setup({}, { signOut: () => void (out += 1) });
+    model.signOut();
+    expect([out, gate.get().pending, router.current()]).toEqual([1, false, '/(auth)/sign-in']);
+  });
+
+  it('a rejected openURL is caught and shown', async () => {
+    const { model } = setup({}, { openURL: async () => Promise.reject(new Error('no handler')) });
+    await model.load();
+    await model.open('terms');
+    expect(model.store.get()).toMatchObject({ mode: 'ready', error: 'consent.error.link' });
   });
 
   it('opens a document\'s web page', async () => {
@@ -196,27 +292,35 @@ describe('a returning member (the server gate, T-0066, is not built: the app ask
   it('pending consents route to the consent screen with returnTo, and the screen sends them back', async () => {
     const legal = fakeLegal();
     const router = memoryRouter('/(auth)/sign-in');
-    expect(await routeIfPending({ legal: legal.api, router }, '/card/lost')).toBe(true);
+    const gate = createConsentGate();
+    expect(await routeIfPending({ legal: legal.api, router, gate }, '/card/lost')).toBe(true);
+    expect(gate.get().pending).toBe(true);
     expect(router.current()).toBe('/(auth)/consent?returnTo=%2Fcard%2Flost');
 
     const returnTo = decodeURIComponent(router.current().split('returnTo=')[1] ?? '');
-    const model = createConsentModel({ legal: legal.api, router, locale: 'en', webBaseUrl: 'https://legal.example.test', linkRequired: true, returnTo });
+    const model = createConsentModel({ legal: legal.api, router, gate, locale: 'en', webBaseUrl: 'https://legal.example.test', returnTo });
     await model.load();
-    model.toggle('terms');
-    model.toggle('privacy');
+    model.set('terms', true);
+    model.set('privacy', true);
     await model.submit();
     expect(router.current()).toBe('/card/lost');
+    expect(gate.get().pending).toBe(false);
   });
 
   it('nothing pending stays put; a failed check goes to the screen, which asks again', async () => {
     const none = fakeLegal({ pending: [] });
     const r1 = memoryRouter('/');
-    expect(await routeIfPending({ legal: none.api, router: r1 }, '/')).toBe(false);
+    const g1 = createConsentGate();
+    g1.set({ pending: true });
+    expect(await routeIfPending({ legal: none.api, router: r1, gate: g1 }, '/')).toBe(false);
+    expect(g1.get().pending).toBe(false);
     expect(r1.current()).toBe('/');
 
     const r2 = memoryRouter('/');
     const broken = { async mine(): Promise<MyConsents> { throw new TypeError('offline'); } };
-    expect(await routeIfPending({ legal: broken, router: r2 }, '/')).toBe(true);
+    const g2 = createConsentGate();
+    expect(await routeIfPending({ legal: broken, router: r2, gate: g2 }, '/')).toBe(true);
+    expect(g2.get().pending).toBe(true);
     expect(r2.current()).toBe('/(auth)/consent?returnTo=%2F');
   });
 });

@@ -5,6 +5,7 @@ import { View } from 'react-native';
 import { useApi } from '../../src/api.ts';
 import { Banner, Button, OtpInput, Screen, TextField, Txt } from '../../src/components/index.ts';
 import { useNow } from '../../src/clock.ts';
+import { useConsentGate } from '../../src/consent.ts';
 import { t, useLocale } from '../../src/i18n.ts';
 import { useStore } from '../../src/model.ts';
 import { useRouter } from '../../src/navigation.ts';
@@ -20,7 +21,8 @@ export function useSignInModel(): SignInModel {
   const router = useRouter();
   const now = useNow();
   const locale = useLocale();
-  return useMemo(() => createSignInModel({ api: api.auth, legal: api.legal, authenticator, session, router, now, locale }), [api, authenticator, session, router, now, locale]);
+  const gate = useConsentGate();
+  return useMemo(() => createSignInModel({ api: api.auth, legal: api.legal, gate, authenticator, session, router, now, locale }), [api, gate, authenticator, session, router, now, locale]);
 }
 
 /** Route component: builds the model from the app contexts. */
