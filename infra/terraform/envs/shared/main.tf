@@ -160,7 +160,7 @@ resource "aws_ecr_repository" "this" {
 # rescanning it as new advisories appear. The release workflow waits for that scan and fails on a critical
 # finding that has a fix. Enhanced scanning is a registry setting and replaces the repositories' basic
 # `scan_on_push` (kept above, so the repositories fall back to basic scanning if this is ever removed).
-resource "aws_inspector2_enable" "ecr" {
+resource "aws_inspector2_enabler" "ecr" {
   account_ids    = [var.shared_account_id]
   resource_types = ["ECR"]
 }
@@ -176,7 +176,7 @@ resource "aws_ecr_registry_scanning_configuration" "this" {
     }
   }
 
-  depends_on = [aws_inspector2_enable.ecr]
+  depends_on = [aws_inspector2_enabler.ecr]
 }
 
 resource "aws_ecr_lifecycle_policy" "this" {

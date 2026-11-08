@@ -11,7 +11,7 @@ That tag is what staging and prod deploy: their roots run `${ecr_registry}/keshe
 - **Scan gate, SBOM and base images (T-0049).** After each push (and on a rerun that skipped the push) the job
   generates a CycloneDX SBOM with Syft, uploads it as the run artifact `sbom-<app>` and attaches it to the ECR image as an OCI
   referrer (`application/vnd.cyclonedx+json`, `oras attach`). It then waits up to 20 minutes for the Amazon Inspector enhanced scan
-  (`envs/shared`: `aws_inspector2_enable` and `aws_ecr_registry_scanning_configuration`, scan on push for `kesher/*`) and
+  (`envs/shared`: `aws_inspector2_enabler` and `aws_ecr_registry_scanning_configuration`, scan on push for `kesher/*`) and
   fails on any active CRITICAL finding that has a fix, unless the exception list below excuses it. The images are built
   `FROM node:22.22.0-bookworm-slim@sha256:<index digest>`; a test (`tools/release/release.test.mjs`) fails if the Dockerfiles disagree.
   A run that fails the gate leaves its image in ECR (the tags are immutable) but prints no deploy line: do not deploy that tag.
