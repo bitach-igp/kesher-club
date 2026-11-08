@@ -6,7 +6,10 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { applyIgnoreList, todayUtc, validateIgnoreList } from './ignore-list.mjs';
 
+export const USAGE = 'usage: node tools/release/check-findings.mjs --ignore <file> [--image kesher/api --findings <file.json>] [--today YYYY-MM-DD]';
+
 export function parseArgs(argv) {
+  if (argv.includes('--help')) return { help: 'true' };
   const out = {};
   for (let i = 0; i < argv.length; i += 2) {
     const flag = argv[i];
@@ -28,6 +31,7 @@ const readJson = (file, what) => {
 /** Returns { code, lines }; the CLI prints the lines. `::error::` lines are GitHub annotations. */
 export function run(args, today = todayUtc()) {
   const lines = [];
+  if (args.help) return { code: 0, lines: [USAGE] };
   if (!args.ignore) return { code: 2, lines: ['::error::--ignore <file> is required'] };
   const day = args.today ?? today;
   let doc;

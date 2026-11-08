@@ -4,9 +4,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { applyIgnoreList, parseDay, validateIgnoreList } from './ignore-list.mjs';
-import { run } from './check-findings.mjs';
+import { parseArgs, run } from './check-findings.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const TODAY = '2026-11-10';
@@ -110,4 +111,45 @@ test('admin and console build @kesher/tokens before the app', () => {
     assert.ok(text.indexOf('pnpm --filter @kesher/tokens build') > 0, `${app} must build tokens`);
     assert.ok(text.indexOf('pnpm --filter @kesher/tokens build') < text.indexOf(`pnpm --filter @kesher/${app} build`));
   }
+});
+
+test('ids and images are checked for typos', () => {
+  assert.deepEqual(validateIgnoreList({ entries: [entry({ id: 'GHSA-cfgh-2345-wxrv' }), entry({ image: '*' })] }, TODAY), []);
+  assert.equal(validateIgnoreList({ entries: [entry({ id: 'cve-2026-0001' })] }, TODAY).length, 1);
+  assert.equal(validateIgnoreList({ entries: [entry({ id: 'CVE-26-1' })] }, TODAY).length, 1);
+  assert.equal(validateIgnoreList({ entries: [entry({ image: 'kesher/apii' })] }, TODAY).length, 1);
+});
+
+test('--help prints the usage and exits 0', () => {
+  const r = run(parseArgs(['--help']));
+  assert.equal(r.code, 0);
+  assert.match(r.lines[0], /usage:/);
+});
+
+test('a failing check fails a `| tee` pipeline under pipefail, as the release step does (regression)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scan-pipe-'));
+  const ignore = path.join(dir, 'ignore.json');
+  const findings = path.join(dir, 'findings.json');
+  fs.writeFileSync(ignore, '{"entries":[]}');
+  fs.writeFileSync(findings, '[{"id":"CVE-2026-9999"}]');
+  const cli = path.join(root, 'tools/release/check-findings.mjs');
+  const pipeline = `node "${cli}" --ignore "${ignore}" --image kesher/api --findings "${findings}" | tee /dev/null`;
+  assert.equal(spawnSync('bash', ['-e', '-c', pipeline]).status, 0, 'without pipefail the failure is lost');
+  assert.notEqual(spawnSync('bash', ['-e', '-c', `set -o pipefail; ${pipeline}`]).status, 0);
+});
+
+test('the release workflow keeps pipefail and the enhanced-scanning guard on its gate steps', () => {
+  const yml = fs.readFileSync(path.join(root, '.github/workflows/release.yml'), 'utf8');
+  const step = (name) => {
+    const start = yml.indexOf(`- name: ${name}`);
+    assert.ok(start > 0, `step "${name}" is missing`);
+    const next = yml.indexOf('\n      - ', start + 1);
+    return yml.slice(start, next > 0 ? next : undefined);
+  };
+  assert.match(step('Fail on critical findings that have a fix'), /set -o pipefail/);
+  assert.match(step('Fail on critical findings that have a fix'), /PARTIAL/);
+  assert.match(step('Fail on critical findings that have a fix'), /SUPPRESSED/);
+  assert.match(step('Attach the SBOM to the ECR image'), /set -o pipefail/);
+  assert.match(step('Attach the SBOM to the ECR image'), /-gt 0/);
+  assert.match(step('Require enhanced scanning on the registry'), /get-registry-scanning-configuration/);
 });

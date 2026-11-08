@@ -12,7 +12,7 @@ That tag is what staging and prod deploy: their roots run `${ecr_registry}/keshe
   generates a CycloneDX SBOM with Syft, uploads it as the run artifact `sbom-<app>` and attaches it to the ECR image as an OCI
   referrer (`application/vnd.cyclonedx+json`, `oras attach`). It then waits up to 20 minutes for the Amazon Inspector enhanced scan
   (`envs/shared`: `aws_inspector2_enabler` and `aws_ecr_registry_scanning_configuration`, scan on push for `kesher/*`) and
-  fails on any active CRITICAL finding that has a fix, unless the exception list below excuses it. The images are built
+  fails on any CRITICAL finding (active or suppressed) that has a full or partial fix, unless the exception list below excuses it. The images are built
   `FROM node:22.22.0-bookworm-slim@sha256:<index digest>`; a test (`tools/release/release.test.mjs`) fails if the Dockerfiles disagree.
   A run that fails the gate leaves its image in ECR (the tags are immutable) but prints no deploy line: do not deploy that tag.
 - **Deploying.** Not part of this workflow; it is a card of its own.
@@ -107,7 +107,7 @@ with no runner and no log.
 
 ## Scan exceptions
 
-`.github/security/image-scan-ignore.json` is the only way past the scan gate. It is reviewed like code: one pull
+`.github/security/image-scan-ignore.json` is the only sanctioned way past the scan gate. (Findings an Inspector suppression rule hides still count against the gate, and the gate refuses to run unless the registry is on enhanced scanning.) The gate looks at CRITICAL findings whose fix is available in full (YES) or in part (PARTIAL). It is reviewed like code: one pull
 request, one owner who signs it.
 
 ```json
@@ -125,7 +125,7 @@ request, one owner who signs it.
 }
 ```
 
-- `id` is the vulnerability id Inspector reports (`CVE-…`); `image` is the repository (`kesher/api`) or `*`.
+- `id` is a `CVE-YYYY-NNNN…` or `GHSA-xxxx-xxxx-xxxx` id (GHSA in its own lower case); `image` is one of `kesher/api`, `kesher/worker`, `kesher/admin`, `kesher/console`, `kesher/migrate` or `*`. A typo fails the release.
 - `expires` is at most 30 days after `signedOn`, and `signedOn` is not in the future. An entry is in force through its
   `expires` day (UTC). To extend one, sign a new entry with a new reason; there is no renewal in place.
 - An expired entry excuses nothing: the finding blocks the release again. A malformed entry, or one that lasts

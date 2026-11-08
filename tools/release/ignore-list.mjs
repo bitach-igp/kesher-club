@@ -6,6 +6,8 @@ const DAY_MS = 86_400_000;
 export const MAX_DAYS = 30;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const OWNER = /^@[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
+const ID = /^(?:CVE-\d{4}-\d{4,}|GHSA(?:-[23456789cfghjmpqrvwx]{4}){3})$/;
+export const IMAGES = ['kesher/api', 'kesher/worker', 'kesher/admin', 'kesher/console', 'kesher/migrate', '*'];
 const REQUIRED = ['id', 'image', 'reason', 'owner', 'signedOn', 'expires'];
 
 /** A YYYY-MM-DD string as UTC midnight milliseconds, or null when it is not a real calendar date. */
@@ -41,6 +43,12 @@ export function validateIgnoreList(doc, today = todayUtc()) {
     }
     for (const key of Object.keys(entry)) {
       if (!REQUIRED.includes(key)) problems.push(`${at} has an unknown field "${key}"`);
+    }
+    if (typeof entry.id === 'string' && entry.id.trim() !== '' && !ID.test(entry.id)) {
+      problems.push(`${at}.id must be a CVE id (CVE-2026-12345) or a GHSA id in the advisory's own case`);
+    }
+    if (typeof entry.image === 'string' && entry.image.trim() !== '' && !IMAGES.includes(entry.image)) {
+      problems.push(`${at}.image must be one of ${IMAGES.join(', ')}`);
     }
     if (typeof entry.owner === 'string' && entry.owner.trim() !== '' && !OWNER.test(entry.owner)) {
       problems.push(`${at}.owner must be a GitHub handle such as @owner`);

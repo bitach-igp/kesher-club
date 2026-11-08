@@ -51,7 +51,6 @@ data "aws_iam_policy_document" "ci" {
       "ecr:DescribeRepositories",
       "ecr:GetDownloadUrlForLayer",
       "ecr:InitiateLayerUpload",
-      "ecr:ListImageReferrers",
       "ecr:ListImages",
       "ecr:PutImage",
       "ecr:UploadLayerPart",
@@ -73,6 +72,14 @@ data "aws_iam_policy_document" "ci" {
   statement {
     sid       = "InspectorReadFindings"
     actions   = ["inspector2:ListFindings"]
+    resources = ["*"]
+  }
+
+  # Reads the registry's scan type so the gate refuses to pass when scanning is not enhanced (T-0049). Account-scoped.
+  #tfsec:ignore:aws-iam-no-policy-wildcards
+  statement {
+    sid       = "EcrRegistryScanningRead"
+    actions   = ["ecr:GetRegistryScanningConfiguration"]
     resources = ["*"]
   }
 

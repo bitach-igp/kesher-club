@@ -184,15 +184,34 @@ jobs:
       # Attached as an OCI referrer (artifact type application/vnd.cyclonedx+json) to the image's digest, which
       # ECR's OCI 1.1 referrers support stores without a new tag. A rerun that finds one does not attach another.
       - name: Attach the SBOM to the ECR image
+        id: attach
         env:
           REF: ${{ steps.ecr.outputs.registry }}/kesher/${{ matrix.app }}@${{ steps.digest.outputs.digest }}
         run: |
+          # The default shell has no pipefail: without it a failed `oras discover` would read as "0 referrers" or garbage.
+          set -o pipefail
           existing="$(oras discover --artifact-type application/vnd.cyclonedx+json --format json "$REF" | jq '(.manifests // .referrers // []) | length')"
-          if [ "$existing" != "0" ]; then
+          if ! [[ "$existing" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not list the referrers of ${REF} (got: ${existing})."
+            exit 1
+          fi
+          if [ "$existing" -gt 0 ]; then
             echo "${REF} already has an SBOM referrer; not attaching another."
+            echo "sbom=already attached" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           oras attach --artifact-type application/vnd.cyclonedx+json "$REF" "sbom-${APP}.cdx.json:application/vnd.cyclonedx+json"
+          echo "sbom=attached" >> "$GITHUB_OUTPUT"
+
+      # With the registry still on basic scanning, or Inspector not enabled, the findings query below answers an empty list
+      # and the gate would pass with no scan behind it. Refuse to gate unless the registry is on enhanced scanning.
+      - name: Require enhanced scanning on the registry
+        run: |
+          scan_type="$(aws ecr get-registry-scanning-configuration --query 'scanningConfiguration.scanType' --output text)"
+          if [ "$scan_type" != "ENHANCED" ]; then
+            echo "::error::The registry's scan type is ${scan_type}, not ENHANCED; apply infra/terraform/envs/shared (docs/setup/release.md)."
+            exit 1
+          fi
 
       # Enhanced scanning starts on push. Wait for Amazon Inspector to finish (or time out after 20 minutes).
       - name: Wait for the ECR scan
@@ -229,31 +248,36 @@ jobs:
             sleep 15
           done
 
-      # Critical, active, fix available: the findings that stop a release. The ignore list excuses by id.
+      # Critical with a fix (YES, or PARTIAL: a fix for some of the affected packages), active or suppressed: the findings that
+      # stop a release. SUPPRESSED is included so an Inspector suppression rule is not a way around the gate; only the
+      # ignore list excuses a finding, by id.
       - name: Fail on critical findings that have a fix
         env:
           DIGEST: ${{ steps.digest.outputs.digest }}
           FINDINGS: ${{ runner.temp }}/findings-${{ matrix.app }}.json
         run: |
+          set -o pipefail
           criteria="$(jq -nc --arg digest "$DIGEST" --arg repo "kesher/${APP}" '{
             ecrImageHash: [{comparison: "EQUALS", value: $digest}],
             ecrImageRepositoryName: [{comparison: "EQUALS", value: $repo}],
             severity: [{comparison: "EQUALS", value: "CRITICAL"}],
-            fixAvailable: [{comparison: "EQUALS", value: "YES"}],
-            findingStatus: [{comparison: "EQUALS", value: "ACTIVE"}]
+            fixAvailable: [{comparison: "EQUALS", value: "YES"}, {comparison: "EQUALS", value: "PARTIAL"}],
+            findingStatus: [{comparison: "EQUALS", value: "ACTIVE"}, {comparison: "EQUALS", value: "SUPPRESSED"}]
           }')"
           aws inspector2 list-findings --filter-criteria "$criteria" --output json \
             --query 'findings[].{id: packageVulnerabilityDetails.vulnerabilityId, package: packageVulnerabilityDetails.vulnerablePackages[0].name, fixedIn: packageVulnerabilityDetails.vulnerablePackages[0].fixedInVersion}' \
             > "$FINDINGS"
           node tools/release/check-findings.mjs --ignore .github/security/image-scan-ignore.json --image "kesher/${APP}" --findings "$FINDINGS" | tee -a "$GITHUB_STEP_SUMMARY"
+          # pipefail makes a failing check fail this step even though tee succeeds.
 
       - name: Record the result
         env:
           FOUND: ${{ steps.existing.outputs.found }}
           DIGEST: ${{ steps.digest.outputs.digest }}
+          SBOM: ${{ steps.attach.outputs.sbom }}
         run: |
           if [ "$FOUND" = "true" ]; then state="already there, skipped"; else state="pushed"; fi
-          echo "kesher/${APP}:${TAG}: ${state}, ${DIGEST}, scanned, SBOM attached" >> "$GITHUB_STEP_SUMMARY"
+          echo "kesher/${APP}:${TAG}: ${state}, ${DIGEST}, scanned, SBOM ${SBOM}" >> "$GITHUB_STEP_SUMMARY"
 
   summary:
     name: tag to deploy
