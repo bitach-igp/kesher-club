@@ -75,7 +75,7 @@ describe('GET and POST /me/consents', () => {
 
     const row = (await db.query<{ device_id: string; ip: string; hash: string }>('select device_id, host(ip) as ip, hash from legal.consent where party_id = $1 and doc_key = $2', [dana, 'terms'])).rows[0]!;
     expect(row.device_id).toBe('phone-dana');
-    expect(row.ip).toBe('0.0.0.0');
+    expect(row.ip).toBeNull(); // no address is collected (T-0067)
     expect(row.hash).toBe(accepted[0]!.hash);
 
     const after = (await call('dana', 'GET', '/me/consents')).body as { accepted: unknown[]; pending: unknown[] };

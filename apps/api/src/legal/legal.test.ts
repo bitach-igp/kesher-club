@@ -70,4 +70,21 @@ describe('LegalService', () => {
     const history = await legal.consents(party);
     expect(history.map((h) => h.version)).toEqual([1, 2]);
   });
+
+  // T-0067: a consent no longer records an address it does not collect.
+  it('records no address when none is given, still records one when the caller has it, and leaves a stored 0.0.0.0 alone', async () => {
+    const none = uuidv7();
+    const withIp = uuidv7();
+    const legacy = uuidv7();
+    const c = await legal.accept({ partyId: none, docKey: 'terms', version: 2, deviceId: 'd', locale: 'en' }, t0);
+    expect(c.ip).toBeNull();
+    expect((await db.query<{ ip: string | null }>('select host(ip) as ip from legal.consent where party_id = $1', [none])).rows[0]!.ip).toBeNull();
+
+    expect((await legal.accept({ partyId: withIp, docKey: 'terms', version: 2, deviceId: 'd', ip: '203.0.113.9', locale: 'en' }, t0)).ip).toBe('203.0.113.9');
+
+    // A row written before the migration (T-0061 stored the unspecified address) reads back exactly as stored.
+    const hash = (await legal.get('terms', 2))!.hash;
+    await db.query(`insert into legal.consent (id, party_id, doc_key, version, hash, device_id, ip, locale, accepted_at) values ($1, $2, 'terms', 2, $3, 'd', '0.0.0.0', 'en', $4)`, [uuidv7(t0), legacy, hash, t0]);
+    expect((await legal.consents(legacy))[0]!.ip).toBe('0.0.0.0');
+  });
 });

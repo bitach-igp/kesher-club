@@ -27,7 +27,8 @@ export interface Consent {
   version: number;
   hash: string;
   deviceId: string;
-  ip: string;
+  /** The caller's address when one was collected; null when it was not (T-0067). Older rows may hold 0.0.0.0, which meant the same. */
+  ip: string | null;
   locale: 'en' | 'he';
   acceptedAt: string;
 }
@@ -53,7 +54,7 @@ interface ConsentRow {
   version: number;
   hash: string;
   device_id: string;
-  ip: string;
+  ip: string | null;
   locale: 'en' | 'he';
   accepted_at: string | Date;
 }
@@ -92,13 +93,13 @@ export class LegalService {
   }
 
   /** Records consent; the same (party, doc, version) is a no-op returning the original record. */
-  async accept(input: { partyId: string; docKey: DocKey; version: number; deviceId: string; ip: string; locale: 'en' | 'he' }, now: Date): Promise<Consent> {
+  async accept(input: { partyId: string; docKey: DocKey; version: number; deviceId: string; ip?: string | undefined; locale: 'en' | 'he' }, now: Date): Promise<Consent> {
     const v = await this.get(input.docKey, input.version);
     if (!v) throw new DomainError('NOT_FOUND', 'Document version not found');
     try {
       await this.db.query(
         `insert into legal.consent (id, party_id, doc_key, version, hash, device_id, ip, locale, accepted_at) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [uuidv7(now), input.partyId, input.docKey, input.version, v.hash, input.deviceId, input.ip, input.locale, now],
+        [uuidv7(now), input.partyId, input.docKey, input.version, v.hash, input.deviceId, input.ip ?? null, input.locale, now],
       );
     } catch (e) {
       if (!isPgError(e, PG.UNIQUE_VIOLATION)) throw e;
