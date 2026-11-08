@@ -10,6 +10,7 @@ RUN corepack enable && corepack prepare pnpm@10.28.0 --activate
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm install --frozen-lockfile --filter @kesher/console... \
+ && pnpm --filter @kesher/tokens build \
  && pnpm --filter @kesher/console build
 
 FROM node:22.22.0-bookworm-slim
