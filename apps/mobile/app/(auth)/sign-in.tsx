@@ -20,7 +20,7 @@ export function useSignInModel(): SignInModel {
   const router = useRouter();
   const now = useNow();
   const locale = useLocale();
-  return useMemo(() => createSignInModel({ api: api.auth, authenticator, session, router, now, locale }), [api, authenticator, session, router, now, locale]);
+  return useMemo(() => createSignInModel({ api: api.auth, legal: api.legal, authenticator, session, router, now, locale }), [api, authenticator, session, router, now, locale]);
 }
 
 /** Route component: builds the model from the app contexts. */

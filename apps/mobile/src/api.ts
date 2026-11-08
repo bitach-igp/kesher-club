@@ -44,7 +44,20 @@ export type MemberIntent = Schemas['MemberIntent'];
 export type ApprovedIntent = Schemas['ApprovedIntent'];
 export type AutoReloadRuleRequest = Schemas['AutoReloadRuleRequest'];
 export type FxConversion = Schemas['FxConversion'];
+export type LegalDocument = Schemas['LegalDocument'];
+export type PendingLegalDocument = Schemas['PendingLegalDocument'];
+export type ConsentRecord = Schemas['ConsentRecord'];
+export type MyConsents = Schemas['MyConsents'];
+export type LegalDocKey = Schemas['LegalDocKey'];
 export type OtpPurpose = 'register' | 'recovery';
+
+/** The legal documents and the member's consents (T-0061, read by T-0062). `documents` is public; the other two need a signed-in member. */
+export interface LegalApi {
+  documents(): Promise<{ items: readonly LegalDocument[] }>;
+  mine(): Promise<MyConsents>;
+  /** One call for every document shown; the server records each version in force, and the same one again is a no-op. */
+  record(input: { documents: readonly { docKey: LegalDocKey; version: number }[]; locale: Locale }): Promise<{ accepted: readonly ConsentRecord[] }>;
+}
 
 export interface AuthApi {
   startOtp(input: { phone: string; locale: Locale }): Promise<OtpStart>;
@@ -257,6 +270,7 @@ export interface Api {
   concierge: ConciergeApi;
   invites: InvitesApi;
   funder: FunderApi;
+  legal: LegalApi;
 }
 
 export const ApiContext = createContext<Api | undefined>(undefined);
@@ -398,6 +412,11 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
       joinAccept: (token, idempotencyKey) => client.post('/funder-invites/{token}/accept', { path: { token }, idempotencyKey }),
       memberships: () => client.get('/memberships'),
       cancelMembership: (id, idempotencyKey) => client.post('/memberships/{id}/cancel', { path: { id }, idempotencyKey }),
+    },
+    legal: {
+      documents: () => client.get('/legal/documents'),
+      mine: () => client.get('/me/consents'),
+      record: ({ documents, locale }) => client.post('/me/consents', { body: { documents: documents.map((d) => ({ docKey: d.docKey, version: d.version })), locale } }),
     },
     invites: {
       preview: (token) => client.get('/invites/{token}', { path: { token } }),

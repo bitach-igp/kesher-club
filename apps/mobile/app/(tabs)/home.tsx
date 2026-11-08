@@ -3,6 +3,7 @@
 // T-0911: the incident banner while a money capability is degraded (text only) and the quick actions
 // for capabilities that are ok.
 import { useEffect, useMemo } from 'react';
+import { LEGAL_SETTINGS_HREF } from '../../src/consent.ts';
 import { useApi } from '../../src/api.ts';
 import { useNow } from '../../src/clock.ts';
 import { Pressable, StyleSheet, View } from 'react-native';
@@ -94,7 +95,8 @@ export function HomeView({ model }: { model: HomeModel }) {
       <Card testID="home-settings">
         <ListRow title={t('home.receiveIn', locale)} onPress={model.goReceiveIn} testID="home-receive-in" />
         {/* Member text, shown as written. */}
-        <ListRow title={t('home.yourName', locale)} subtitle={s.displayName ?? t('home.yourName.notSet', locale)} onPress={model.goName} last testID="home-your-name" />
+        <ListRow title={t('home.yourName', locale)} subtitle={s.displayName ?? t('home.yourName.notSet', locale)} onPress={model.goName} testID="home-your-name" />
+        <ListRow title={t('legal.entry', locale)} subtitle={t('legal.entry.hint', locale)} onPress={() => router.push(LEGAL_SETTINGS_HREF)} last testID="home-legal" />
       </Card>
       {/* Funder mode (decision 1): any signed-in adult may pay for someone's membership (T-0308). */}
       <Card testID="home-funder">

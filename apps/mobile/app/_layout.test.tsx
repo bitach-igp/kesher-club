@@ -51,6 +51,9 @@ describe('routing on the session', () => {
     expect(guard(true, ['(tabs)', 'home'])).toBeUndefined();
     expect(guard(false, ['(tabs)', 'home'])).toBe('/(auth)/sign-in');
     expect(guard(true, ['+not-found'])).toBe('/(tabs)/home');
+    // The terms to accept (T-0062) are read signed in, so the signed-in member stays on that auth screen.
+    expect(guard(true, ['(auth)', 'consent'])).toBeUndefined();
+    expect(guard(true, ['(auth)', 'sign-in'])).toBe('/(tabs)/home');
   });
 
   it('an assistant\'s consent request survives sign-in; nothing else does (T-1017)', async () => {

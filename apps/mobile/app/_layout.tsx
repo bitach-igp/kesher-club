@@ -55,7 +55,7 @@ export function guard(signedIn: boolean, segments: readonly string[], resume?: s
   if (!signedIn) return inAuth ? undefined : SIGN_IN_HREF;
   // An invite link is read signed out and accepted signed in (T-0626), and a funder's invite (T-0309) is read and
   // accepted signed in: the auth screens that keep a member.
-  if (inAuth && (segments[1] === 'invite' || segments[1] === 'join')) return undefined;
+  if (inAuth && (segments[1] === 'invite' || segments[1] === 'join' || segments[1] === 'consent')) return undefined;
   const nowhere = segments.length === 0 || segments[0]!.startsWith('+') || segments[0]!.startsWith('[');
   return inAuth || nowhere ? (resume ?? HOME_HREF) : undefined;
 }

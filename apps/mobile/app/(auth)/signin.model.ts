@@ -1,6 +1,7 @@
 // M03 sign in / sign up view model (T-0113). Passkey is the default credential (REQ-AUTH-002); the
 // OTP path exists for sign-up and recovery only (REQ-AUTH-001, REQ-AUTH-003). Pure over injected deps.
-import { errorIs, type AuthApi, type OtpPurpose } from '../../src/api.ts';
+import { errorIs, type AuthApi, type LegalApi, type OtpPurpose } from '../../src/api.ts';
+import { routeIfPending } from '../../src/consent.ts';
 import type { CopyKey, Locale } from '../../src/i18n.ts';
 import { createStore, type Store } from '../../src/model.ts';
 import type { Router } from '../../src/navigation.ts';
@@ -32,6 +33,8 @@ export interface SignInDeps {
   locale: Locale;
   deviceName?: string | undefined;
   homeHref?: string | undefined;
+  /** The terms check after sign-in (T-0062): a member owing a consent goes to the consent screen first, then on to `homeHref`. */
+  legal?: Pick<LegalApi, 'mine'> | undefined;
 }
 
 const E164 = /^\+[1-9]\d{6,14}$/;
@@ -75,7 +78,9 @@ export function createSignInModel(deps: SignInDeps): SignInModel {
   const finish = (tokens: { accessToken: string; refreshToken: string; accessExpiresAt: string; restrictedUntil?: string }) => {
     deps.session.signIn(tokens);
     store.patch({ mode: 'done', busy: false, error: undefined, recoveryHold: tokens.restrictedUntil !== undefined, code: '' });
-    deps.router.replace(home);
+    // Signed in either way (a restricted recovery included): owing a consent comes before home, and so before KYC and money.
+    if (deps.legal) void routeIfPending({ legal: deps.legal, router: deps.router }, home).then((routed) => (routed ? undefined : deps.router.replace(home)));
+    else deps.router.replace(home);
   };
 
   return {
