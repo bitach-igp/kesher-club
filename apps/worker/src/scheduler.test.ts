@@ -137,6 +137,18 @@ describe('Scheduler', () => {
     await s.stop();
   });
 
+  it('a run that reports how many vendor reads it made says so on its log line (T-0681); one that reports none logs as before', async () => {
+    const reading: Job = { name: 'sweep', scope: 'market', everyMs: 60_000, run: async () => ({ attempted: 3, vendorReads: 2 }) };
+    const quiet: Job = { name: 'quiet', scope: 'market', everyMs: 60_000, run: async () => ({ attempted: 3 }) };
+    const { log, lines } = recorder();
+    const s = new Scheduler([reading, quiet], noLock, log);
+    s.start();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await s.stop();
+    expect(lines.find((l) => l.fields['job'] === 'sweep')).toEqual({ event: 'job_ran', fields: { job: 'sweep', ms: 0, vendorReads: 2 } });
+    expect(lines.find((l) => l.fields['job'] === 'quiet')).toEqual({ event: 'job_ran', fields: { job: 'quiet', ms: 0 } });
+  });
+
   it('stop() lets an in-flight run finish and schedules nothing more', async () => {
     const job = countingJob('drain', 10_000, 5_000);
     const { log, lines } = recorder();

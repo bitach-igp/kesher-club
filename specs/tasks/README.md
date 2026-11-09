@@ -244,6 +244,7 @@
 | [T-0678](T-0678.md) | DSN | Hebrew copy and number format audit | REQ-WAL-001 | later |
 | [T-0679](T-0679.md) | DSN | Fold the purse cards into the Home hero | REQ-WAL-001 | later |
 | [T-0680](T-0680.md) | WAL | Fix: a resolved "unknown load" case reopens when the vendor still does not know the load | REQ-WAL-003, REQ-LED-004 | fix |
+| [T-0681](T-0681.md) | WAL | Sweeps report how many times they asked the vendor | REQ-WAL-003 | fix |
 | [T-0701](T-0701.md) | MKT | addon_order lifecycle + ledger postings | REQ-MKT-001 | 7 |
 | [T-0702](T-0702.md) | MKT | Catalogue sync + price rules | REQ-MKT-002 | 7 |
 | [T-0710](T-0710.md) | MKT | Airalo adapter (must pass esimContract) | REQ-ESIM-001 | 7 |
