@@ -8,6 +8,14 @@
 //   by name (organizations, chapters, collections) and reuses an exact match; and a KeyLedger remembers key -> result
 //   (and body, so the same key with another body is IDEMPOTENCY_CONFLICT). The default ledger is in memory: production
 //   wires one that persists (T-0650). Creates that do take a key (sub-accounts, payments) send a UUIDv5 of ours.
+// - Crowded does not keep anything of ours but a name: an organization takes an ein or metadata without complaint and
+//   returns neither (checked against the sandbox, T-0657), and two organizations may share a name. So an organization
+//   and its chapter are named `<legal name> [<our institution id>]` and found again by that exact name (a search on the
+//   id, then an exact match), never by the legal name alone; two institutions with the same legal name stay two. A
+//   collection's title is payer-facing and capped at 50, so it carries no tag: a retry reuses a same-titled, same-amount
+//   collection that no other key has claimed (the claim is noted in the ledger), so two fee items that look alike get
+//   two collections. With the ledger lost entirely, two look-alike fee items cannot be told apart (the objects are
+//   interchangeable, but a retry may then be given the other one's ref).
 // - A payment intent needs the payer's IP and consent. The port carries neither, and an adapter must not assert
 //   consent for someone: the caller supplies `payer` explicitly, or createPaymentPage refuses.
 // - Quoting an ACH needs a saved counterparty (`collectionCounterpartyRef`, Kesher's collection account), set up by ops.
@@ -163,14 +171,19 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
   // ---- entity, application, account -----------------------------------------------------------------------------
 
   async createEntity(input: { holder: Holder; institutionId: string; legalName: string; ein: string; idempotencyKey: string }): Promise<{ entityRef: string }> {
-    const name = input.legalName.trim();
-    if (!name || name.length > 255 || !/^\d{2}-?\d{7}$/.test(input.ein)) throw new InstitutionBankingError('VALIDATION_FAILED', 'A legal name and a 9-digit EIN are required');
+    const legal = input.legalName.trim();
+    if (!legal || legal.length > 255 || !/^\d{2}-?\d{7}$/.test(input.ein)) throw new InstitutionBankingError('VALIDATION_FAILED', 'A legal name and a 9-digit EIN are required');
+    // Our id goes in the name (the only field Crowded keeps); it must be a plain identifier so it cannot fake or break the tag.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{3,63}$/.test(input.institutionId)) throw new InstitutionBankingError('VALIDATION_FAILED', 'An institution id is a plain identifier');
+    const tag = ` [${input.institutionId}]`;
+    const name = `${legal}${tag}`;
+    if (name.length > 255) throw new InstitutionBankingError('VALIDATION_FAILED', 'The legal name is too long once our id is added');
+    const ours = (o: Record<string, unknown>) => o['name'] === name;
     return this.call(() =>
       this.idem('entity', input.idempotencyKey, input, async () => {
-        const orgId =
-          (await this.findByName('/organizations', name, {}, (o) => o['name'] === name)) ?? str(((await this.c.post('/organizations', { name })).data as Record<string, unknown>)['id']);
+        const orgId = (await this.findByName('/organizations', input.institutionId, {}, ours)) ?? str(((await this.c.post('/organizations', { name })).data as Record<string, unknown>)['id']);
         const chapterId =
-          (await this.findByName('/chapters', name, { 'filter[organizationId]': orgId }, (o) => o['name'] === name)) ??
+          (await this.findByName('/chapters', input.institutionId, { 'filter[organizationId]': orgId }, ours)) ??
           str(((await this.c.post('/chapters', { name, organizationId: orgId, businessVertical: this.o.businessVertical ?? 'EducationalServices' })).data as Record<string, unknown>)['id']);
         await this.note(`holder:${chapterId}`, input.holder);
         return { entityRef: chapterId };
@@ -245,8 +258,18 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
         input,
         async () => {
           if (input.amount.minor < MIN_CENTS) throw new InstitutionBankingError('VALIDATION_FAILED', 'A collection is at least $1.00');
-          const found = await this.findByName(`/chapters/${chapterId}/collections`, title, {}, (c) => sameCents(c['requestedAmount'], input.amount) && c['title'] === title);
+          // Reuse a same-titled, same-amount collection only if no other key has claimed it; then claim it (T-0657).
+          let found: string | undefined;
+          for await (const item of this.c.list(`/chapters/${chapterId}/collections`, { search: title })) {
+            if (!isRecord(item) || item['title'] !== title || !sameCents(item['requestedAmount'], input.amount)) continue;
+            const owner = await this.noted(`claim:${chapterId}:${str(item['id'])}`);
+            if (owner === undefined || owner === input.idempotencyKey) {
+              found = str(item['id']);
+              break;
+            }
+          }
           const id = found ?? str(((await this.c.post(`/chapters/${chapterId}/collections`, { title, requestedAmount: toCents(input.amount) })).data as Record<string, unknown>)['id']);
+          await this.note(`claim:${chapterId}:${id}`, input.idempotencyKey);
           return { collectionRef: ref(chapterId!, id) };
         },
         async () => void (await this.openAccount(chapterId!)),

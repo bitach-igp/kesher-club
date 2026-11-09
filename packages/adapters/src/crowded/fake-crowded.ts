@@ -117,6 +117,13 @@ export class FakeCrowded {
     return this[kind === 'organizations' ? 'orgs' : kind].length;
   }
 
+  /** The names (titles for collections) of what has been created, oldest first: what a lookup by name can see. */
+  names(kind: 'organizations' | 'chapters' | 'collections'): string[] {
+    if (kind === 'organizations') return this.orgs.map((o) => o.name);
+    if (kind === 'chapters') return this.chapters.map((c) => c.name);
+    return this.collections.map((c) => c.title);
+  }
+
   // ---- state helpers --------------------------------------------------------------------------------------------
 
   private chapter(id: string): Chapter {
