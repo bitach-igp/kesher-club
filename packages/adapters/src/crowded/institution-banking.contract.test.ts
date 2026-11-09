@@ -71,6 +71,66 @@ describe('CrowdedInstitutionBankingAdapter over the fake', () => {
     expect(again.fake.count('organizations')).toBe(0);
   });
 
+  describe('objects are matched on our id, not the name (T-0657)', () => {
+    const A = '0190a0a0-0000-7000-8000-00000000000a';
+    const B = '0190a0a0-0000-7000-8000-00000000000b';
+    const as = (institutionId: string, key: string, legalName = 'American Friends of Yeshiva Or') => ({ holder: 'institution' as const, institutionId, legalName, ein: '12-3456789', idempotencyKey: key });
+
+    it('two institutions with the same legal name get two organizations and two chapters, each named with its own id', async () => {
+      const h = harness();
+      const a = await h.adapter.createEntity(as(A, 'key-entity-000A'));
+      const b = await h.adapter.createEntity(as(B, 'key-entity-000B'));
+      expect(a.entityRef).not.toBe(b.entityRef);
+      expect([h.fake.count('organizations'), h.fake.count('chapters')]).toEqual([2, 2]);
+      expect(h.fake.names('organizations')).toEqual([`American Friends of Yeshiva Or [${A}]`, `American Friends of Yeshiva Or [${B}]`]);
+      expect(h.fake.names('chapters')).toEqual([`American Friends of Yeshiva Or [${A}]`, `American Friends of Yeshiva Or [${B}]`]);
+    });
+
+    it('a retry after a lost response finds its own organization and chapter even with a namesake present; nothing is made twice; the same id under another legal name is another entity, as the port contract says', async () => {
+      const h = harness();
+      const a = await h.adapter.createEntity(as(A, 'key-entity-000A'));
+      const b = await h.adapter.createEntity(as(B, 'key-entity-000B'));
+      const fresh = () => new CrowdedInstitutionBankingAdapter({ client: new CrowdedClient({ baseUrl: BASE, token: TOKEN, fetch: h.fake.fetch }), ledger: new InMemoryKeyLedger() });
+      expect(await fresh().createEntity(as(A, 'key-entity-000A'))).toEqual(a);
+      expect(await fresh().createEntity(as(B, 'key-entity-000B'))).toEqual(b);
+      expect([h.fake.count('organizations'), h.fake.count('chapters')]).toEqual([2, 2]);
+      expect((await fresh().createEntity(as(A, 'key-entity-000C', 'American Friends of Yeshiva Or, Inc.'))).entityRef).not.toBe(a.entityRef);
+    });
+
+    it('an id that is not a plain identifier, or a name too long once the id is added, is refused before anything is sent', async () => {
+      const h = harness();
+      await expect(h.adapter.createEntity(as('x] [evil', 'key-entity-000A'))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      await expect(h.adapter.createEntity(as(A, 'key-entity-000B', 'N'.repeat(250)))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      expect(h.fake.count('organizations')).toBe(0);
+    });
+
+    it('two fee items with the same title and amount get two collections; each retry, with the ledger kept, answers its own', async () => {
+      const h = harness();
+      const entityRef = await approvedEntity(h);
+      const one = { entityRef, title: 'Trip', amount: money(45_000n, 'USD'), idempotencyKey: 'key-col-0000A' };
+      const two = { ...one, idempotencyKey: 'key-col-0000B' };
+      const first = await h.adapter.createCollection(one);
+      const second = await h.adapter.createCollection(two);
+      expect(first.collectionRef).not.toBe(second.collectionRef);
+      expect(h.fake.count('collections')).toBe(2);
+      expect(await h.adapter.createCollection(one)).toEqual(first);
+      expect(await h.adapter.createCollection(two)).toEqual(second);
+      expect(h.fake.count('collections')).toBe(2);
+    });
+
+    it('a retry after a lost response, before its collection was noted, reuses it; the next same-titled fee item still gets its own', async () => {
+      const h = harness();
+      const entityRef = await approvedEntity(h);
+      const one = { entityRef, title: 'Trip', amount: money(45_000n, 'USD'), idempotencyKey: 'key-col-0000A' };
+      const first = await h.adapter.createCollection(one);
+      const fresh = new CrowdedInstitutionBankingAdapter({ client: new CrowdedClient({ baseUrl: BASE, token: TOKEN, fetch: h.fake.fetch }), ledger: new InMemoryKeyLedger() });
+      expect(await fresh.createCollection(one)).toEqual(first);
+      const next = await fresh.createCollection({ ...one, idempotencyKey: 'key-col-0000B' });
+      expect(next.collectionRef).not.toBe(first.collectionRef);
+      expect(h.fake.count('collections')).toBe(2);
+    });
+  });
+
   it('a 201 whose status says Rejected is a failure', async () => {
     const h = harness();
     const entityRef = await approvedEntity(h);
