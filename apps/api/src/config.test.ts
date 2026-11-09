@@ -3,7 +3,9 @@
 import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { ConfigError, Secret } from '@kesher/domain';
 import { describe, expect, it } from 'vitest';
-import { loadApiConfig, loadWorkerConfig } from './config.ts';
+import { readFileSync } from 'node:fs';
+import { SimulatorHost } from '@kesher/simulators';
+import { assertNoLiveFlagOnSimulator, loadApiConfig, loadWorkerConfig, PORT_FLAGS, simulatorFlagViolations } from './config.ts';
 
 const SIGNING_JWK = '{"kty":"EC","crv":"P-256","x":"x","y":"y","d":"super-secret-d"}';
 const DATA_KEY = randomBytes(32).toString('base64');
@@ -90,11 +92,10 @@ describe('API and worker config (T-0020)', () => {
     }
   });
 
-  it('takes sim or sandbox as the environment label, refuses live, and never allows simulators in production', () => {
+  it('takes sim or sandbox as the environment label, and refuses live', () => {
     expect(loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox' }).PROVIDER_MODE_DEFAULT).toBe('sandbox');
     expect(loadWorkerConfig({ ...env, PROVIDER_MODE_DEFAULT: 'sandbox' }).PROVIDER_MODE_DEFAULT).toBe('sandbox');
     expect(thrown(() => loadApiConfig({ ...env, PROVIDER_MODE_DEFAULT: 'live' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: only sim or sandbox/);
-    expect(thrown(() => loadApiConfig({ ...env, APP_ENV: 'prod' })).invalid.join()).toMatch(/PROVIDER_MODE_DEFAULT: simulators are not allowed in production/);
   });
 });
 
@@ -379,5 +380,40 @@ describe('marketplace and identity provider choices (T-0042)', () => {
     const c = loadApiConfig({ ...env, ...SETS['airalo']!.choose, ...SETS['airalo']!.keys, ...SETS['oidc']!.keys });
     expect(String(c.AIRALO_CLIENT_SECRET)).toBe('[redacted]');
     expect(JSON.stringify({ a: c.AIRALO_CLIENT_SECRET, g: c.GOOGLE_CLIENT_SECRET, k: c.APPLE_PRIVATE_KEY })).not.toMatch(/do-not-print/);
+  });
+});
+
+describe('simulators in production (T-0043)', () => {
+  it('boots in prod with the simulator label; the guard, not the label, decides', () => {
+    expect(loadApiConfig({ ...env, APP_ENV: 'prod' }).PROVIDER_MODE_DEFAULT).toBe('sim');
+  });
+
+  it('names every port that stays on a simulator while a flag it gates is on', () => {
+    const on = new Set(['card.virtual', 'fx.enabled']);
+    const modes: Record<string, 'sim' | 'sandbox'> = { 'card-issuing': 'sim', fx: 'sim', payout: 'sandbox' };
+    const found = simulatorFlagViolations((cap) => modes[cap], (k) => on.has(k));
+    expect(found).toEqual([
+      { port: 'card-issuing', flag: 'card.virtual' },
+      { port: 'fx', flag: 'fx.enabled' },
+    ]);
+  });
+
+  it('allows a simulator whose flags are all off, and a vendor-bound port whatever its flags', () => {
+    expect(simulatorFlagViolations(() => 'sim', () => false)).toEqual([]);
+    expect(simulatorFlagViolations(() => 'sandbox', () => true)).toEqual([]);
+  });
+
+  it('refuses to boot, naming the port and the flag', () => {
+    expect(() => assertNoLiveFlagOnSimulator([{ port: 'payout', flag: 'payouts.nium' }])).toThrow(/payout.*payouts\.nium/);
+    expect(() => assertNoLiveFlagOnSimulator([])).not.toThrow();
+  });
+
+  it('every gated flag is in config/flags.json and every port is a simulator capability', async () => {
+    const flags = (JSON.parse(readFileSync(new URL('../../../config/flags.json', import.meta.url), 'utf8')) as { key: string }[]).map((f) => f.key);
+    const caps = Object.keys(new SimulatorHost().simulators);
+    for (const [port, gated] of Object.entries(PORT_FLAGS)) {
+      expect(caps).toContain(port);
+      for (const f of gated) expect(flags).toContain(f);
+    }
   });
 });

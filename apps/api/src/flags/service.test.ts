@@ -57,3 +57,13 @@ describe('FlagService (REQ-ADM-002)', () => {
     await expect(db.query(`insert into ops.flag_state (key, value, changed_at, approval_id, audit_id) values ('p2p.enabled', true, now(), $1, $2)`, [uuidv7(), uuidv7()])).rejects.toMatchObject({ code: '23503' });
   });
 });
+
+describe('a flag on a simulator port (T-0043)', () => {
+  it('cannot be turned on while the guard names a simulator, and can when it does not', async () => {
+    const guarded = new FlagService(db, new ApprovalService(db), audit, (key) => (key === 'fx.enabled' ? 'Flag fx.enabled cannot go on: port fx is still a simulator' : undefined));
+    await expect(guarded.propose('fx.enabled', true, admin1, 'go', now)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(await guarded.isOn('fx.enabled')).toBe(false);
+    const req = await guarded.propose('p2p.enabled', true, admin1, 'go', now);
+    expect(req.status).toBe('awaiting_second_approval');
+  });
+});

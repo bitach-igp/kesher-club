@@ -250,3 +250,11 @@ describe('the entry point under plain Node (T-0022)', () => {
     expect(p.output()).not.toContain(env['PII_DATA_KEY']);
   }, 30_000);
 });
+
+// T-0043: the worker applies the same prod guard as the API.
+describe('simulators in production (T-0043)', () => {
+  it('refuses to start in prod while a simulator port has a flag on', async () => {
+    const err = await main({ ...env, APP_ENV: 'prod' }, { log: () => undefined }).catch((e: unknown) => e);
+    expect(String(err)).toMatch(/port billing is a simulator but flag billing\.stripe is on/);
+  });
+});

@@ -252,3 +252,38 @@ describe('the entry point under plain Node (T-0021)', () => {
     expect(p.output()).not.toContain(env['PII_DATA_KEY']);
   }, 30_000);
 });
+
+// T-0043: prod boots on simulators only for ports whose flags are off.
+describe('simulators in production (T-0043)', () => {
+  const GATED_ON_BY_DEFAULT = ['billing.stripe', 'billing.applePay', 'billing.googlePay'];
+  const setFlags = async (value: boolean, keys: readonly string[]) => {
+    await lite.exec(`set session_replication_role = replica;
+      ${keys.map((k) => `insert into ops.flag_state (key, value, changed_at, approval_id, audit_id) values ('${k}', ${value}, now(), gen_random_uuid(), gen_random_uuid()) on conflict (key) do update set value = ${value};`).join('\n')}
+      reset session_replication_role;`);
+  };
+  afterAll(async () => {
+    await lite.exec(`delete from ops.flag_state where key in ('billing.stripe','billing.applePay','billing.googlePay','card.virtual')`);
+  });
+
+  it('refuses to start while a simulator port has a flag on, naming both, and listens on nothing', async () => {
+    const port = String(await freePort());
+    const err = await main({ ...env, APP_ENV: 'prod', PORT: port }).catch((e: unknown) => e);
+    expect(String(err)).toMatch(/port billing is a simulator but flag billing\.stripe is on/);
+    await expect(fetch(`http://127.0.0.1:${port}/v1/status`)).rejects.toThrow();
+  });
+
+  it('boots with those flags off, and refuses a later flip of a card flag while the card port is a simulator', async () => {
+    await new Promise((r) => setTimeout(r, 250)); // the wire server serves one client at a time; let the closed one go
+    await setFlags(false, GATED_ON_BY_DEFAULT);
+    const api = await main({ ...env, APP_ENV: 'prod', PORT: String(await freePort()) });
+    try {
+      expect((await get(api.port, '/v1/status')).status).toBe(200);
+    } finally {
+      await api.shutdown();
+    }
+    await new Promise((r) => setTimeout(r, 250)); // the wire server serves one client at a time; let the closed one go
+    await setFlags(true, ['card.virtual']);
+    const err = await main({ ...env, APP_ENV: 'prod', PORT: String(await freePort()) }).catch((e: unknown) => e);
+    expect(String(err)).toMatch(/port card-issuing is a simulator but flag card\.virtual is on/);
+  });
+});

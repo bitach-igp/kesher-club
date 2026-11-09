@@ -7,7 +7,9 @@ import { DomainError } from '@kesher/domain';
 import type { Database } from '../db.ts';
 import type { ApprovalRequest, ApprovalService } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
+import type { Market, ProviderRegistry } from '@kesher/ports';
 import { loadRegistry, type FeatureFlags } from '../billing/capabilities.ts';
+import { assertNoLiveFlagOnSimulator, PORT_FLAGS, simulatorFlagViolations, type SimulatorFlagViolation } from '../config.ts';
 
 export const MONEY_FLAG = /^(wallet\.|card\.|p2p\.|fx\.|payouts\.|funding\.|institutions\.money|mcp\.money)/;
 export const isMoneyFlag = (key: string): boolean => MONEY_FLAG.test(key);
@@ -47,6 +49,19 @@ export interface FlagView {
   changedAt?: string;
 }
 
+/** T-0043: the (port, flag) pairs where a port is on its simulator and a flag it gates is on, in the registry defaults and the store. */
+export async function simulatorViolations(registry: ProviderRegistry, market: Market, flags: FeatureFlags): Promise<SimulatorFlagViolation[]> {
+  const on = new Set<string>();
+  for (const key of new Set(Object.values(PORT_FLAGS).flat())) if (await flags.isOn(key)) on.add(key);
+  return simulatorFlagViolations((port) => registry.bindingFor(port, market)?.mode, (flag) => on.has(flag));
+}
+
+/** Production start-up check: refuses to boot while a simulator port has a live flag. */
+export async function assertProdSimulatorsSafe(appEnv: string, registry: ProviderRegistry, market: Market, flags: FeatureFlags): Promise<void> {
+  if (appEnv !== 'prod') return;
+  assertNoLiveFlagOnSimulator(await simulatorViolations(registry, market, flags));
+}
+
 export class FlagService implements FeatureFlags {
   private readonly registry = new Map(loadRegistry().map((r) => [r.key, r]));
 
@@ -57,10 +72,19 @@ export class FlagService implements FeatureFlags {
     db: Database,
     approvals: ApprovalService,
     audit: AuditService,
+    canTurnOn?: (key: string) => string | undefined,
   ) {
     this.db = db;
     this.approvals = approvals;
     this.audit = audit;
+    this.canTurnOn = canTurnOn;
+  }
+
+  /** In prod: the reason a flag may not go on (its port is a simulator), or undefined (T-0043). */
+  private readonly canTurnOn: ((key: string) => string | undefined) | undefined;
+  private assertCanTurnOn(key: string, value: boolean): void {
+    const why = value ? this.canTurnOn?.(key) : undefined;
+    if (why) throw new DomainError('VALIDATION_FAILED', why);
   }
 
   keys(): readonly string[] {
@@ -88,6 +112,7 @@ export class FlagService implements FeatureFlags {
     if (!this.registry.has(key)) throw new DomainError('NOT_FOUND', `Unknown flag ${key}; flags live only in config/flags.json`);
     if (by.role !== 'admin') throw new DomainError('FORBIDDEN', 'Only admins change flags');
     const incident = parseIncident(value, incidentInput);
+    this.assertCanTurnOn(key, value);
     const current = await this.isOn(key);
     if (current === value) throw new DomainError('IDEMPOTENCY_CONFLICT', `Flag ${key} is already ${value}`);
     const req = await this.approvals.request({ kind: 'flag_flip', subject: await this.subject(key, value, now), scope: 'platform', requestedBy: by, payload: { key, from: current, to: value, reason, ...(incident ? { incident } : {}) } }, now);
@@ -133,6 +158,7 @@ export class FlagService implements FeatureFlags {
   }
 
   private async flip(key: string, value: boolean, approvalId: string, by: { partyId: string; role: string }, reason: string, now: Date): Promise<void> {
+    this.assertCanTurnOn(key, value);
     if (!(await this.approvals.isApproved('flag_flip', (await this.approvals.get(approvalId))!.subject))) throw new DomainError('FORBIDDEN', 'Flip needs an approved request');
     await this.db.transaction(async (tx) => {
       const txDb = { query: tx.query, transaction: async <T>(fn: (c: typeof tx) => Promise<T>) => fn(tx) };
