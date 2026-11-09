@@ -894,6 +894,19 @@ output "ecs_service_names" {
   )
 }
 
+# ---- static web site (T-0048) -------------------------------------------------------------------------------------------
+# .github/workflows/deploy-web.yml syncs apps/web's `out/` to this bucket and invalidates this distribution. Set them as the
+# variables WEB_BUCKET and WEB_DISTRIBUTION_ID on the GitHub environment (apps/web/README.md).
+output "web_bucket_name" {
+  description = "The bucket behind app.<domain> that the web deploy workflow publishes the static site to."
+  value       = module.web.bucket_name
+}
+
+output "web_distribution_id" {
+  description = "The CloudFront distribution of app.<domain>, invalidated after each web deploy."
+  value       = module.web.distribution_id
+}
+
 # ---- marketplace and identity providers (T-0042) -------------------------------------------------
 # `sim` binds the simulator; a named adapter needs its credential containers filled first (docs/setup/secrets.md), or the
 # process refuses to boot naming the missing keys.
