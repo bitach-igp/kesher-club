@@ -98,6 +98,7 @@ import { InviteService, inviteHandlers } from './institutions/invites.ts';
 import { RosterService, importRosterHandler } from './institutions/roster.ts';
 import { ApprovalService } from './approvals/service.ts';
 import { AuditService } from './audit/service.ts';
+import { simulatorFlagViolations } from './config.ts';
 import { FlagService } from './flags/service.ts';
 import { CROWDED_PROVIDER, CrowdedWebhook, refuseAllVerifier, type CrowdedHandlers } from './webhooks/crowded.ts';
 import { INTENT_STATES, IntentService, type IntentStatus } from './intents/service.ts';
@@ -124,6 +125,8 @@ export interface AppOptions {
   flags?: FeatureFlags;
   /** The Crowded webhook secret and, during a rotation, the previous one (T-0649). None configured: every Crowded delivery is refused. */
   crowdedWebhookSecrets?: readonly string[];
+  /** Production: a flag may not be flipped on while a port it gates runs on its simulator (T-0043). */
+  refuseFlagsOnSimulators?: boolean;
   /** What the US-banking cards do with the provider's current state after a Crowded event (T-0650, T-0652, T-0653). */
   crowdedHandlers?: CrowdedHandlers;
   /** The platform company's provider entity for institutions that bank under it (T-0650), set up and approved by ops. */
@@ -172,7 +175,7 @@ function buildServices(o: AppOptions) {
   const transfers = new TransferService(o.db, o.market);
   const approvals = new ApprovalService(o.db);
   const audit = new AuditService(o.db);
-  const flags: FeatureFlags = o.flags ?? new FlagService(o.db, approvals, audit);
+  const flags: FeatureFlags = o.flags ?? new FlagService(o.db, approvals, audit, simulatorFlipGuard(o));
   const orders = new AddonOrderService(o.db, ledger, accounts, new CreditService(entitlements), o.market);
   const roster = new RosterService(o.db);
   const inbound = new InboundEventStore(o.db, o.market);
@@ -272,11 +275,20 @@ function buildServices(o: AppOptions) {
   return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
+/** T-0043: in prod, the reason a flag cannot be turned on (its port is a simulator), else undefined. */
+function simulatorFlipGuard(o: AppOptions): ((key: string) => string | undefined) | undefined {
+  if (!o.refuseFlagsOnSimulators) return undefined;
+  return (key) => {
+    const hit = simulatorFlagViolations((port) => o.registry.bindingFor(port, o.market)?.mode, (flag) => flag === key)[0];
+    return hit ? `Flag ${key} cannot go on: port ${hit.port} is still a simulator` : undefined;
+  };
+}
+
 export function createApp(o: AppOptions): App {
   const s = buildServices(o);
   // The console lists and flips the stored flags (two-person approved) even when a test or the demo
   // process injects in-memory evaluation flags; those decide what members see, not what the console shows.
-  const flagStore = s.flags instanceof FlagService ? s.flags : new FlagService(o.db, s.approvals, s.audit);
+  const flagStore = s.flags instanceof FlagService ? s.flags : new FlagService(o.db, s.approvals, s.audit, simulatorFlipGuard(o));
   const staffInstitution = async (partyId: string) => (await o.db.query<{ institution_id: string }>('select institution_id from org.staff where party_id = $1 and active', [partyId])).rows[0]?.institution_id;
   const staffOf: StaffOf = async (partyId) => (await o.db.query<{ institution_id: string; role: 'staff' | 'finance' | 'admin' }>('select institution_id, role from org.staff where party_id = $1 and active', [partyId])).rows.map((x) => ({ institutionId: x.institution_id, role: x.role }))[0];
   const handlers: HandlerTable = {

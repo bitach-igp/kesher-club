@@ -34,8 +34,8 @@ describe('config loader', () => {
     expect(() => loadConfig(baseConfigSchema, { ...valid, DATABASE_URL: '' })).toThrow(/DATABASE_URL/);
   });
 
-  it('refuses simulator mode in prod (fail secure)', () => {
-    expect(() => loadConfig(baseConfigSchema, { ...valid, APP_ENV: 'prod' })).toThrow(/PROVIDER_MODE_DEFAULT/);
+  it('takes the simulator label in prod: the per-port flag guard decides (T-0043)', () => {
+    expect(loadConfig(baseConfigSchema, { ...valid, APP_ENV: 'prod' }).PROVIDER_MODE_DEFAULT).toBe('sim');
     expect(loadConfig(baseConfigSchema, { ...valid, APP_ENV: 'prod', PROVIDER_MODE_DEFAULT: 'live' }).PROVIDER_MODE_DEFAULT).toBe('live');
   });
 
