@@ -170,8 +170,14 @@ interface Deps {
 
 export class LoadService implements LoadActivities {
   private readonly d: Deps;
+  private reads = 0;
   constructor(d: Deps) {
     this.d = d;
+  }
+
+  /** How many times this process has asked the vendor about a held load (the release step); a sweep reports the difference over its run (T-0681). */
+  get vendorReads(): number {
+    return this.reads;
   }
 
   /** POST /loads: the gate, the eligibility, then the workflow, synchronously, so the payment sheet's secret can go back. */
@@ -259,6 +265,7 @@ export class LoadService implements LoadActivities {
       // A load the vendor does not know is a case for people, opened once; it is not asked about again until they act (T-0547).
       if (await this.unknownLoadOpen(transfer.id)) return transfer;
       let vendor: VendorLoad;
+      this.reads += 1;
       try {
         vendor = await this.d.port.getLoad(loadId);
       } catch (e) {

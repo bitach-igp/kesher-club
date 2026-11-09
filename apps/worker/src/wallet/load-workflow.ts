@@ -19,6 +19,8 @@ export interface SweepReport {
   held: number;
   /** Still with the vendor after the run (processing or awaiting the member). */
   open: number;
+  /** How many times the sweep asked the vendor about a load (T-0681). */
+  vendorReads: number;
   errors: { transferId: string; error: string }[];
 }
 
@@ -44,11 +46,12 @@ export class LoadWorkflow {
   /** Loads left submitted past STALE_AFTER_MS: the vendor's view of each is applied; a repeat is a no-op. */
   async sweep(olderThanMs = STALE_AFTER_MS, limit = 100): Promise<SweepReport> {
     const now = this.clock();
-    const report: SweepReport = { ranAt: now.toISOString(), attempted: 0, settled: 0, failed: 0, held: 0, open: 0, errors: [] };
+    const report: SweepReport = { ranAt: now.toISOString(), attempted: 0, settled: 0, failed: 0, held: 0, open: 0, vendorReads: 0, errors: [] };
     for (const t of await this.loads.stale(now, olderThanMs, limit)) {
       report.attempted += 1;
       try {
-        const after = await this.resume(t, now);
+        const { after, asked } = await this.resume(t, now);
+        if (asked) report.vendorReads += 1;
         if (after.state === 'settled') report.settled += 1;
         else if (after.state === 'failed') report.failed += 1;
         else if (after.state === 'pending_hold') report.held += 1;
@@ -60,10 +63,10 @@ export class LoadWorkflow {
     return report;
   }
 
-  private async resume(t: Transfer, now: Date): Promise<Transfer> {
+  private async resume(t: Transfer, now: Date): Promise<{ after: Transfer; asked: boolean }> {
     const loadId = await this.loads.vendorLoadOf(t.id);
-    if (!loadId) return t; // submitted but the pull never returned: the member's rerun with the same key completes it
+    if (!loadId) return { after: t, asked: false }; // submitted but the pull never returned: the member's rerun with the same key completes it
     const load = await this.port.getLoad(loadId);
-    return (await applyVendorState(this.loads, t, load, t.idempotencyKey, now)).transfer;
+    return { after: (await applyVendorState(this.loads, t, load, t.idempotencyKey, now)).transfer, asked: true };
   }
 }

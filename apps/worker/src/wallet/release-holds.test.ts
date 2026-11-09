@@ -366,6 +366,35 @@ describe('TST-WAL-003', () => {
     expect(release).toMatchObject({ kind: 'deposit', metadata: { institutionId: institution, rail: 'ach' } });
   });
 
+  it('each sweep reports how many times it asked the vendor (T-0681): the release job for the held loads it reached, the load sweep for the loads it resumed', async () => {
+    const party = uuidv7(MONDAY);
+    now = MONDAY;
+    await runLoad(loads, ach(party, 6_000n), `ach-reads-${party}`, now);
+    const realGet = sim.getLoad.bind(sim);
+    let calls = 0;
+    sim.getLoad = async (id) => {
+      calls += 1;
+      return realGet(id);
+    };
+    try {
+      // Before the release date nothing is due: no read.
+      now = new Date('2026-11-04T23:59:00Z');
+      expect(await job.run()).toMatchObject({ attempted: 0, vendorReads: 0 });
+      expect(calls).toBe(0);
+      // On the date each due hold is asked about once, and the report says how many.
+      now = THURSDAY;
+      const report = await job.run();
+      expect(report.vendorReads).toBe(calls);
+      expect(report.vendorReads).toBeGreaterThanOrEqual(1);
+      // The load sweep counts what it asked too, equal to what the vendor saw.
+      calls = 0;
+      const swept = await new LoadWorkflow(loads, sim, () => now).sweep();
+      expect(swept.vendorReads).toBe(calls);
+    } finally {
+      sim.getLoad = realGet;
+    }
+  });
+
   it('a late hold shows as lag over the cycle, and one failing release does not stop the rest', async () => {
     const a = uuidv7(MONDAY);
     const b = uuidv7(MONDAY);

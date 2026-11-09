@@ -15,6 +15,8 @@ export interface ReleaseReport {
   attempted: number;
   released: number;
   errors: { transferId: string; error: string }[];
+  /** How many times the run asked the vendor about a held load (T-0681), so the cost of the sweep is visible. */
+  vendorReads: number;
   /** How far past its date the oldest hold still pending is, in ms; over the cycle pages (RUN-05). */
   lagMs: number;
   withinSla: boolean;
@@ -36,7 +38,8 @@ export class ReleaseHoldsJob {
 
   async run(): Promise<ReleaseReport> {
     const now = this.clock();
-    const report: ReleaseReport = { ranAt: now.toISOString(), attempted: 0, released: 0, errors: [], lagMs: 0, withinSla: true };
+    const report: ReleaseReport = { ranAt: now.toISOString(), attempted: 0, released: 0, errors: [], vendorReads: 0, lagMs: 0, withinSla: true };
+    const readsBefore = this.loads.vendorReads;
     const due = (await this.transfers.expiredHolds(now)).filter(releasable);
     for (const t of due) {
       report.attempted += 1;
@@ -48,6 +51,7 @@ export class ReleaseHoldsJob {
         report.errors.push({ transferId: t.id, error: (e as Error).message.slice(0, 200) });
       }
     }
+    report.vendorReads = this.loads.vendorReads - readsBefore;
     const left = (await this.transfers.expiredHolds(now)).filter(releasable);
     report.lagMs = left.reduce((max, t) => Math.max(max, now.getTime() - Date.parse(t.holdReleasesAt!)), 0);
     report.withinSla = report.lagMs <= RELEASE_CYCLE_MS;
