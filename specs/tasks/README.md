@@ -9,7 +9,7 @@
 | [T-0005](T-0005.md) | SETUP | Migration tooling (Atlas) + DB roles club_app, club_migrator | — | 1 |
 | [T-0006](T-0006.md) | SETUP | Tokens package + Style Dictionary outputs | — | 1 |
 | [T-0007](T-0007.md) | SETUP | OpenAPI skeleton + SDK generation + Schemathesis job | — | 1 |
-| [T-0008](T-0008.md) | SETUP | Port interfaces for all 18 ports + empty contract suites | — | 1 |
+| [T-0008](T-0008.md) | SETUP | Port interfaces for all 21 ports + empty contract suites | — | 1 |
 | [T-0009](T-0009.md) | SETUP | Simulator host + control panel; first simulator: Billing | — | 1 |
 | [T-0010](T-0010.md) | SETUP | Preview environments per PR | — | 1 |
 | [T-0011](T-0011.md) | SETUP | Atlas apply in dependency order with per-schema baseline | — | 2 |
