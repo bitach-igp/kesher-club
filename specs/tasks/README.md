@@ -308,4 +308,16 @@
 | [T-1016](T-1016.md) | AGT | Authorization server 3: token endpoint, PKCE, rotating refresh tokens | REQ-AGT-011 | 13 |
 | [T-1017](T-1017.md) | AGT | App consent screen and a demo assistant client | REQ-AGT-010 | 13 |
 | [T-1018](T-1018.md) | AGT | Fix: an approved agent purchase is single-use and bound to its merchant | REQ-AGT-006, REQ-CRD-008 | fix |
+| [T-0682](T-0682.md) | AUTH | Passkey ceremonies and step-up tokens live in Postgres, not process memory | REQ-AUTH-006, REQ-AUTH-007 | 16 deploy |
+| [T-0683](T-0683.md) | LED | A statement source for the partner reconciliation, read from the funding vendor | REQ-LED-004 | 16 deploy |
+| [T-0684](T-0684.md) | LED | The nightly job runs partner reconciliation and opens a case for each break before 06:00 IL | REQ-LED-004 | 16 deploy |
+| [T-0685](T-0685.md) | LED | A ledger correction is proposed through two-person approval and executes as a reversing journal | REQ-LED-001, REQ-ADM-002 | 16 deploy |
+| [T-0686](T-0686.md) | LED | A card-network dispute opens a case, holds the amount and resolves to a reversal or a release | REQ-CRD-008 | 16 deploy |
+| [T-0687](T-0687.md) | NOT | The outbox is drained on a schedule, safely across two workers | REQ-NOT-002 | 16 deploy |
+| [T-0688](T-0688.md) | NOT | Institutions manage webhook endpoints and ops replays a delivery, behind `webhooks.outbound` | REQ-NOT-002 | 16 deploy |
+| [T-0689](T-0689.md) | MON | `provider.error` is emitted for every port and rejected webhooks are counted | — | 16 deploy |
+| [T-0690](T-0690.md) | SETUP | A scheduled workflow runs every adapter's contract suite against the vendor sandboxes | — | 16 deploy |
+| [T-0691](T-0691.md) | AUTH | Sign in with Apple and Google are offered together, behind a flag | REQ-AUTH-004 | later |
+| [T-0692](T-0692.md) | AUTH | Deleting an Apple-linked account revokes the Apple token | REQ-AUTH-005 | later |
+| [T-0693](T-0693.md) | AUTH | Institution staff are deprovisioned within 15 minutes by a SCIM call | REQ-AUTH-008 | later |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
