@@ -19,7 +19,7 @@ export interface SweepReport {
   held: number;
   /** Still with the vendor after the run (processing or awaiting the member). */
   open: number;
-  /** How many times the sweep asked the vendor about a load (T-0681). */
+  /** How many times the sweep asked the vendor about a load, counting a failed read and the read inside `release` (T-0681). */
   vendorReads: number;
   errors: { transferId: string; error: string }[];
 }
@@ -47,11 +47,12 @@ export class LoadWorkflow {
   async sweep(olderThanMs = STALE_AFTER_MS, limit = 100): Promise<SweepReport> {
     const now = this.clock();
     const report: SweepReport = { ranAt: now.toISOString(), attempted: 0, settled: 0, failed: 0, held: 0, open: 0, vendorReads: 0, errors: [] };
+    // Reads made by this sweep's own call plus the release step's (a `pending` load resumed here is read again inside `release`).
+    const releaseReadsBefore = this.loads.vendorReads;
     for (const t of await this.loads.stale(now, olderThanMs, limit)) {
       report.attempted += 1;
       try {
-        const { after, asked } = await this.resume(t, now);
-        if (asked) report.vendorReads += 1;
+        const after = await this.resume(t, now, () => void (report.vendorReads += 1));
         if (after.state === 'settled') report.settled += 1;
         else if (after.state === 'failed') report.failed += 1;
         else if (after.state === 'pending_hold') report.held += 1;
@@ -60,13 +61,15 @@ export class LoadWorkflow {
         report.errors.push({ transferId: t.id, error: (e as Error).message.slice(0, 200) });
       }
     }
+    report.vendorReads += this.loads.vendorReads - releaseReadsBefore;
     return report;
   }
 
-  private async resume(t: Transfer, now: Date): Promise<{ after: Transfer; asked: boolean }> {
+  private async resume(t: Transfer, now: Date, asked: () => void): Promise<Transfer> {
     const loadId = await this.loads.vendorLoadOf(t.id);
-    if (!loadId) return { after: t, asked: false }; // submitted but the pull never returned: the member's rerun with the same key completes it
+    if (!loadId) return t; // submitted but the pull never returned: the member's rerun with the same key completes it
+    asked();
     const load = await this.port.getLoad(loadId);
-    return { after: (await applyVendorState(this.loads, t, load, t.idempotencyKey, now)).transfer, asked: true };
+    return (await applyVendorState(this.loads, t, load, t.idempotencyKey, now)).transfer;
   }
 }

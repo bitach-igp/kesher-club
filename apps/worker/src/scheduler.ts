@@ -181,4 +181,3 @@ function vendorReadsOf(value: unknown): { vendorReads?: number } {
   const n = typeof value === 'object' && value !== null ? (value as { vendorReads?: unknown }).vendorReads : undefined;
   return typeof n === 'number' ? { vendorReads: n } : {};
 }
-
