@@ -13,3 +13,7 @@ output "distribution_hosted_zone_id" {
 output "bucket_name" {
   value = aws_s3_bucket.site.bucket
 }
+
+output "distribution_arn" {
+  value = aws_cloudfront_distribution.this.arn
+}

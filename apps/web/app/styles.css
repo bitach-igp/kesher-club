@@ -1,0 +1,25 @@
+/* The static site (T-0048). Colour, spacing and type come from the token variables (@kesher/tokens/css); nothing here is a colour
+   literal and nothing is fetched: the system font stack, no web fonts. Logical properties keep the layout right in Hebrew. */
+:root { color-scheme: light dark; --gutter: var(--layout-gutter-web); --focus-ring: var(--border-width-focus) solid var(--color-border-focus); }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: var(--font-family-latin); font-size: var(--typography-body-font-size); line-height: 1.5; background: var(--color-bg-canvas); color: var(--color-text-primary); }
+[lang="he"] { font-family: var(--font-family-hebrew); }
+header, footer { display: flex; flex-wrap: wrap; gap: var(--space-4); justify-content: space-between; align-items: center; padding: var(--space-4) var(--gutter); }
+footer { display: block; border-block-start: var(--border-width-default) solid var(--color-border-default); color: var(--color-text-secondary); }
+main { padding: var(--space-6) var(--gutter); max-width: 48rem; margin-inline: auto; }
+nav { display: flex; gap: var(--space-4); }
+h1 { font-size: var(--typography-display-font-size); line-height: 1.2; margin: 0 0 var(--space-4); }
+a { color: var(--color-action-primary); }
+a:hover { color: var(--color-action-primary-hover); }
+a:focus-visible { outline: var(--focus-ring); outline-offset: var(--border-width-focus-offset); }
+.brand { font-weight: 700; text-decoration: none; }
+.skip { position: absolute; inset-inline-start: -999px; }
+.skip:focus { position: static; display: block; padding: var(--space-2) var(--gutter); }
+.lead { font-size: var(--typography-headline-font-size); }
+.button { display: inline-block; padding: var(--space-2) var(--space-4); border: var(--border-width-default) solid var(--color-action-primary); border-radius: var(--radius-md); text-decoration: none; }
+.muted { color: var(--color-text-secondary); }
+.block + .block { margin-block-start: var(--space-6); padding-block-start: var(--space-6); border-block-start: var(--border-width-default) solid var(--color-border-default); }
+.legal-body { white-space: pre-wrap; overflow-wrap: anywhere; }
+code { overflow-wrap: anywhere; }
+/* One language when the URL asks for it (public/lang.js sets data-lang on <html>); both otherwise. */
+html[data-lang="en"] .block[data-l="he"], html[data-lang="he"] .block[data-l="en"] { display: none; }

@@ -34,6 +34,26 @@ data "aws_iam_policy_document" "key" {
     }
   }
 
+  # A CloudFront distribution reading an SSE-KMS bucket through Origin Access Control needs decrypt on the key (the bucket policy alone
+  # is not enough). Scoped to the named distributions, so no other distribution can use the key.
+  dynamic "statement" {
+    for_each = length(var.cloudfront_distribution_arns) > 0 ? [1] : []
+    content {
+      sid       = "CloudFrontOriginAccessControl"
+      actions   = ["kms:Decrypt", "kms:GenerateDataKey*"]
+      resources = ["*"]
+      principals {
+        type        = "Service"
+        identifiers = ["cloudfront.amazonaws.com"]
+      }
+      condition {
+        test     = "StringEquals"
+        variable = "AWS:SourceArn"
+        values   = var.cloudfront_distribution_arns
+      }
+    }
+  }
+
   dynamic "statement" {
     for_each = length(var.cross_account_ids) > 0 ? [1] : []
     content {

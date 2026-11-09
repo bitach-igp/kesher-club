@@ -1,0 +1,215 @@
+# Deploy the static web site (T-0048): builds apps/web (`next export`, no server) and publishes `out/` to the web bucket behind
+# CloudFront at app.<domain> (module.web in infra/terraform/envs/<env>/main.tf). Run by hand from the Actions tab, from main, and nothing
+# else starts it. The build fetches the legal documents from the environment's API (T-0061) and FAILS if any kind has no published
+# version, or if a staging or prod build still holds a placeholder (app ids, support address, and for prod the Stripe Apple Pay file);
+# see apps/web/README.md. Credentials come from GitHub OIDC (the CI role), then the environment's deploy role, as in deploy.yml: no static keys.
+#
+# Why this uploads file by file: a static host cannot set headers, so the content type and cache lifetime of every object are set here.
+# `.well-known/apple-app-site-association` has no extension and MUST be application/json. Pages are also uploaded under their extensionless
+# key (legal/terms.html as legal/terms), because CloudFront has no rewrite and the apps link /legal/<docKey>?lang=<locale>. Hashed assets
+# under _next/static are immutable; HTML and .well-known are cached for five minutes. Nothing is deleted from the bucket (it is versioned,
+# and an older page may still reference an older hashed asset).
+name: deploy-web
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Where to deploy the site. prod waits for the reviewers of the GitHub environment.
+        type: choice
+        required: true
+        options:
+          - staging
+          - prod
+
+permissions:
+  contents: read
+  id-token: write
+
+# One site deploy per environment at a time; a second run queues rather than cancelling a half-finished upload.
+concurrency:
+  group: deploy-web-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: build and publish the site to ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The approval gate: for prod, GitHub holds this job until the environment's required reviewers approve.
+    environment: ${{ inputs.environment }}
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      WEB_ENV: ${{ inputs.environment == 'prod' && 'production' || 'staging' }}
+      # Environment variables (Settings, Environments), none of them secret: see apps/web/README.md.
+      LEGAL_API_URL: ${{ vars.LEGAL_API_URL }}
+      WEB_BUCKET: ${{ vars.WEB_BUCKET }}
+      WEB_DISTRIBUTION_ID: ${{ vars.WEB_DISTRIBUTION_ID }}
+      STRIPE_APPLE_PAY_DOMAIN_FILE_CONTENT: ${{ vars.STRIPE_APPLE_PAY_DOMAIN_FILE_CONTENT }}
+      CI_ROLE: ${{ vars.AWS_CI_ROLE_ARN }}
+      STAGING_ACCOUNT: ${{ vars.AWS_STAGING_ACCOUNT_ID }}
+      PROD_ACCOUNT: ${{ vars.AWS_PROD_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # The deploy job's OIDC subject is `environment:<name>`, which does not name a branch, so the main-only rule is checked here.
+      - name: Check the branch and the variables
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Run this workflow from main (Use workflow from: main)."
+            exit 1
+          fi
+          if [ "$ENVIRONMENT" != "staging" ] && [ "$ENVIRONMENT" != "prod" ]; then
+            echo "::error::environment must be staging or prod."
+            exit 1
+          fi
+          if [ -z "$CI_ROLE" ] || [ -z "$STAGING_ACCOUNT" ]; then
+            echo "::error::Set the repository variables AWS_CI_ROLE_ARN and AWS_STAGING_ACCOUNT_ID first; see docs/setup/release.md."
+            exit 1
+          fi
+          if [ "$ENVIRONMENT" = "prod" ] && [ -z "$PROD_ACCOUNT" ]; then
+            echo "::error::Set the repository variable AWS_PROD_ACCOUNT_ID; see docs/setup/deploy.md."
+            exit 1
+          fi
+          for name in LEGAL_API_URL WEB_BUCKET WEB_DISTRIBUTION_ID; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Set the variable ${name} on the GitHub environment ${ENVIRONMENT}; see apps/web/README.md."
+              exit 1
+            fi
+          done
+          if [[ "$LEGAL_API_URL" != https://* ]]; then
+            echo "::error::LEGAL_API_URL must be an https:// URL (the API base, with /v1)."
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # The design tokens' CSS is a build output of its own package, not committed.
+      - name: Build the design tokens
+        run: pnpm --filter @kesher/tokens build
+
+      # The file Stripe issued for this domain: a secret-free blob kept as an environment variable. The build publishes it at
+      # /.well-known/apple-developer-merchantid-domain-association, and fails a prod build that has none.
+      - name: Write the Stripe Apple Pay domain file
+        run: |
+          set -euo pipefail
+          if [ -n "$STRIPE_APPLE_PAY_DOMAIN_FILE_CONTENT" ]; then
+            printf '%s' "$STRIPE_APPLE_PAY_DOMAIN_FILE_CONTENT" > "$RUNNER_TEMP/stripe-apple-pay-domain-file"
+            echo "STRIPE_APPLE_PAY_DOMAIN_FILE=$RUNNER_TEMP/stripe-apple-pay-domain-file" >> "$GITHUB_ENV"
+          fi
+
+      # Fails here, naming the keys, when the legal API has a kind with no published version or a placeholder is still in place.
+      - name: Build the static site
+        run: pnpm --filter @kesher/web build
+
+      - name: The build has what the stores, passkeys and Stripe need
+        working-directory: apps/web/out
+        run: |
+          set -euo pipefail
+          required=(index.html support.html legal.html .well-known/apple-app-site-association .well-known/assetlinks.json)
+          for kind in terms privacy cardholder esim insurance p2p funder; do
+            required+=("legal/${kind}.html")
+          done
+          if [ "$ENVIRONMENT" = "prod" ]; then
+            required+=(.well-known/apple-developer-merchantid-domain-association)
+          fi
+          for f in "${required[@]}"; do
+            if [ ! -s "$f" ]; then
+              echo "::error::The build did not write ${f}."
+              exit 1
+            fi
+          done
+
+      # The CI role through OIDC, then (below) the environment's deploy role: one profile each, as deploy.yml does.
+      - name: Assume the CI role (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_ROLE_ARN }}
+          role-session-name: deploy-web-${{ inputs.environment }}-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure the deploy-role profiles
+        run: bash "$GITHUB_WORKSPACE/tools/release/deploy/configure-profiles.sh"
+
+      # A wrong bucket or distribution id in the environment variables would publish one environment's site to another.
+      - name: The distribution serves the bucket
+        run: |
+          set -euo pipefail
+          origin="$(aws cloudfront get-distribution --profile deploy --id "$WEB_DISTRIBUTION_ID" --query 'Distribution.DistributionConfig.Origins.Items[0].DomainName' --output text)"
+          if [[ "$origin" != "${WEB_BUCKET}.s3."* ]]; then
+            echo "::error::The distribution ${WEB_DISTRIBUTION_ID} does not serve the bucket ${WEB_BUCKET}. Check the variables WEB_BUCKET and WEB_DISTRIBUTION_ID (terraform output web_bucket_name / web_distribution_id)."
+            exit 1
+          fi
+
+      - name: Upload the site
+        working-directory: apps/web/out
+        run: |
+          set -euo pipefail
+          content_type() {
+            case "$1" in
+              .well-known/apple-app-site-association) echo "application/json" ;;
+              .well-known/apple-developer-merchantid-domain-association) echo "text/plain; charset=utf-8" ;;
+              *.html) echo "text/html; charset=utf-8" ;;
+              *.js) echo "text/javascript; charset=utf-8" ;;
+              *.css) echo "text/css; charset=utf-8" ;;
+              *.json | *.map) echo "application/json" ;;
+              *.txt) echo "text/plain; charset=utf-8" ;;
+              *.svg) echo "image/svg+xml" ;;
+              *.png) echo "image/png" ;;
+              *.ico) echo "image/x-icon" ;;
+              *.woff2) echo "font/woff2" ;;
+              *) return 1 ;;
+            esac
+          }
+          cache_control() {
+            case "$1" in
+              _next/static/*) echo "public, max-age=31536000, immutable" ;;
+              *) echo "public, max-age=300" ;;
+            esac
+          }
+          put() { # put <local file> <bucket key> <content type> <cache control>
+            aws s3 cp --profile deploy --only-show-errors "$1" "s3://${WEB_BUCKET}/$2" --content-type "$3" --cache-control "$4"
+          }
+          upload_all() { # upload_all <find expression...>: a type this script does not know fails the deploy
+            local f key type cache list
+            # The list goes to a file first, so a failing find (or sort) aborts the upload instead of being swallowed by a process substitution.
+            list="$(mktemp)"
+            find . -type f "$@" -print0 | sort -z > "$list"
+            while IFS= read -r -d '' f; do
+              key="${f#./}"
+              if ! type="$(content_type "$key")"; then
+                echo "::error::No content type is defined for ${key}; add it to this step."
+                exit 1
+              fi
+              cache="$(cache_control "$key")"
+              put "$f" "$key" "$type" "$cache"
+              # CloudFront has no rewrite: legal/terms.html is also served as legal/terms.
+              case "$key" in
+                index.html | 404.html | _not-found.html) ;;
+                *.html) put "$f" "${key%.html}" "$type" "$cache" ;;
+              esac
+            done < "$list"
+            rm -f "$list"
+          }
+          # Hashed assets first, so no page ever points at an object that is not there yet; pages last.
+          upload_all -path './_next/*'
+          upload_all -not -path './_next/*' -not -name '*.html' -not -name '*.txt'
+          upload_all -not -path './_next/*' \( -name '*.txt' -o -name '*.html' \)
+          echo "Uploaded the site to ${WEB_BUCKET}." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Invalidate CloudFront
+        run: |
+          set -euo pipefail
+          id="$(aws cloudfront create-invalidation --profile deploy --distribution-id "$WEB_DISTRIBUTION_ID" --paths '/*' --query 'Invalidation.Id' --output text)"
+          aws cloudfront wait invalidation-completed --profile deploy --distribution-id "$WEB_DISTRIBUTION_ID" --id "$id"
+          echo "Invalidated ${WEB_DISTRIBUTION_ID} (${id}); the site is live on ${ENVIRONMENT}." | tee -a "$GITHUB_STEP_SUMMARY"

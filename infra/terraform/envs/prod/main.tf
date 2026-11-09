@@ -175,6 +175,10 @@ module "kms_s3" {
   source      = "../../modules/kms"
   name        = "${local.name}-s3"
   description = "Application S3 buckets"
+  # The static web site's bucket is SSE-KMS with this key: CloudFront (Origin Access Control) must be allowed to decrypt it, or every
+  # GET is denied (T-0048). Scoped to that one distribution by ARN; no cycle, because the distribution depends on the bucket, not on
+  # the bucket's encryption configuration that names this key.
+  cloudfront_distribution_arns = [module.web.distribution_arn]
 }
 
 module "kms_logs" {
@@ -926,6 +930,19 @@ output "ecs_service_names" {
     { for k, m in module.worker : "worker-${k}" => m.service_name },
     { admin = module.admin.service_name, console = module.console.service_name },
   )
+}
+
+# ---- static web site (T-0048) -------------------------------------------------------------------------------------------
+# .github/workflows/deploy-web.yml syncs apps/web's `out/` to this bucket and invalidates this distribution. Set them as the
+# variables WEB_BUCKET and WEB_DISTRIBUTION_ID on the GitHub environment (apps/web/README.md).
+output "web_bucket_name" {
+  description = "The bucket behind app.<domain> that the web deploy workflow publishes the static site to."
+  value       = module.web.bucket_name
+}
+
+output "web_distribution_id" {
+  description = "The CloudFront distribution of app.<domain>, invalidated after each web deploy."
+  value       = module.web.distribution_id
 }
 
 # ---- marketplace and identity providers (T-0042) -------------------------------------------------
