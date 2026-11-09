@@ -40,7 +40,7 @@ The card pipeline (scout, code, review, merge gate, revert rule) is the `club-au
   `pnpm --filter @kesher/sdk generate`. Lint with
   `npx --yes @stoplight/spectral-cli@6.15.0 lint contracts/openapi.yaml --ruleset .spectral.yaml`.
 - The server always JSON-encodes the body: a binary export travels as a base64 envelope.
-- Error codes are a closed set (`QUOTE_EXPIRED` 409, `LIMIT_EXCEEDED` and `INSUFFICIENT_FUNDS` 422,
+- Error codes are a closed set, the list in `packages/domain/src/errors.ts` (`UNBALANCED` is internal and not in the OpenAPI enum); the common ones: (`QUOTE_EXPIRED` 409, `LIMIT_EXCEEDED` and `INSUFFICIENT_FUNDS` 422,
   `FEATURE_OFF` 404, `STEP_UP_REQUIRED` 401, `IDEMPOTENCY_CONFLICT` 409 for state conflicts,
   `PROVIDER_UNAVAILABLE` 503). `DomainError(code, message, extra)` spreads `extra` into the problem body.
 
