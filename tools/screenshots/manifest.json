@@ -1,0 +1,390 @@
+{
+  "description": "Every screenshot under handoff/done, and how to take it again (T-0073). record.mjs re-takes each entry with status \"recorded\"; the test fails when a png is missing here or an entry has no file.",
+  "entries": [
+    {
+      "file": "T-0033-web-home-dana.png",
+      "card": "T-0033",
+      "app": "mobile",
+      "persona": "dana",
+      "route": "/home",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 860
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Home after the passkey sign-in, before any other flow changes her purses ($500.00 USD, ₪0.00)",
+      "flow": "sign-in-home"
+    },
+    {
+      "file": "T-0033-web-sign-in.png",
+      "card": "T-0033",
+      "app": "mobile",
+      "persona": "dana (picked in the development persona bar)",
+      "route": "/sign-in",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 860
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Signed out: the development build's persona bar above \"Sign in with passkey\"",
+      "flow": "sign-in-home"
+    },
+    {
+      "file": "T-0524-add-money-form.png",
+      "card": "T-0524",
+      "app": "mobile",
+      "persona": "dana",
+      "route": "/fund/add-money",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 900
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Add money form: 50, paying in USD into the dollar purse by card",
+      "flow": "add-money"
+    },
+    {
+      "file": "T-0524-add-money-quote.png",
+      "card": "T-0524",
+      "app": "mobile",
+      "persona": "dana",
+      "route": "/fund/add-money",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 900
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Add money: 100 dollars into the shekel purse, the club-rate quote with its countdown",
+      "flow": "add-money"
+    },
+    {
+      "file": "T-0524-add-money-receipt-ils.png",
+      "card": "T-0524",
+      "app": "mobile",
+      "persona": "dana",
+      "route": "/fund/add-money",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 900
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Add money receipt: $100.00 paid, shekels credited at the club rate",
+      "flow": "add-money"
+    },
+    {
+      "file": "T-0525-auto-reload-on.png",
+      "card": "T-0525",
+      "app": "mobile",
+      "persona": "dana",
+      "route": "/fund/auto-reload",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 1000
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Auto-reload on for the dollar purse: threshold 50, target 200, the simulator's saved card",
+      "flow": "auto-reload"
+    },
+    {
+      "file": "T-0526-after.png",
+      "card": "T-0526",
+      "app": "mobile",
+      "persona": "ruth",
+      "route": "/settings/close",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 1000
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Close account after the refund arrived: the account is closed",
+      "flow": "close-account"
+    },
+    {
+      "file": "T-0526-plan.png",
+      "card": "T-0526",
+      "app": "mobile",
+      "persona": "ruth",
+      "route": "/settings/close",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 1000
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Close account before: $30.00 goes back to the card it was loaded from",
+      "flow": "close-account"
+    },
+    {
+      "file": "T-0608-dashboard.png",
+      "card": "T-0608",
+      "app": "console",
+      "persona": "rivka (finance, Yeshivat Kesher demo)",
+      "route": "/",
+      "locale": "en",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Institution console dashboard: role and market",
+      "flow": "institution-sign-in"
+    },
+    {
+      "file": "T-0608-sign-in.png",
+      "card": "T-0608",
+      "app": "console",
+      "persona": "none (signed out; local persona buttons for Rivka and Shimon)",
+      "route": "/sign-in",
+      "locale": "en",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Institution console sign-in with the local demo persona buttons",
+      "flow": "institution-sign-in"
+    },
+    {
+      "file": "T-0610-approve.png",
+      "card": "T-0610",
+      "app": "console",
+      "persona": "shimon (second finance member)",
+      "route": "/allowances",
+      "locale": "en",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Allowances: the monthly run waits for a second approver and Shimon sees Approve",
+      "flow": "allowances"
+    },
+    {
+      "file": "T-0610-hebrew.png",
+      "card": "T-0610",
+      "app": "console",
+      "persona": "shimon (second finance member)",
+      "route": "/allowances",
+      "locale": "he",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Allowances in Hebrew, right to left, both runs completed",
+      "flow": "allowances"
+    },
+    {
+      "file": "T-0610-history.png",
+      "card": "T-0610",
+      "app": "console",
+      "persona": "shimon (second finance member)",
+      "route": "/allowances",
+      "locale": "en",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Allowances after the second approval: both runs completed",
+      "flow": "allowances"
+    },
+    {
+      "file": "T-0610-preview.png",
+      "card": "T-0610",
+      "app": "console",
+      "persona": "rivka (finance, Yeshivat Kesher demo)",
+      "route": "/allowances/{scheduleId}",
+      "locale": "en",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Allowance schedule page with the preview of the weekly run: three members, the total, Run with passkey",
+      "flow": "allowances"
+    },
+    {
+      "file": "T-0611-collections.png",
+      "card": "T-0611",
+      "app": "console",
+      "persona": "rivka (finance, Yeshivat Kesher demo)",
+      "route": "/collections",
+      "locale": "en",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Collections for the month: who owes, who paid with a receipt, the CSV and Excel downloads",
+      "flow": "collections"
+    },
+    {
+      "file": "T-0612-approve.png",
+      "card": "T-0612",
+      "app": "console",
+      "persona": "shimon (second finance member)",
+      "route": "/payouts",
+      "locale": "en",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Payouts: two payouts over 5,000 shekels wait for a second approver, with Approve and Reject, above a paid one",
+      "flow": "payouts"
+    },
+    {
+      "file": "T-0612-bad-iban.png",
+      "card": "T-0612",
+      "app": "console",
+      "persona": "rivka (finance, Yeshivat Kesher demo)",
+      "route": "/payouts/new",
+      "locale": "en",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "not-retaken",
+      "state": "New payout refused for an IBAN that fails the checksum",
+      "flow": "payouts",
+      "reason": "The form no longer asks for a payee or an IBAN: since T-0625 every payout goes to the institution's own verified account, shown masked (apps/console/app/payouts/new/page.tsx), so the state this picture showed cannot be reached. The file is the pre-redesign image and is kept only so the T-0612 link resolves."
+    },
+    {
+      "file": "T-0612-cooling.png",
+      "card": "T-0612",
+      "app": "console",
+      "persona": "rivka (finance, Yeshivat Kesher demo)",
+      "route": "/payouts",
+      "locale": "en",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Payouts: the account's first payout over 2,000 shekels cooling off for 24 hours",
+      "flow": "payouts"
+    },
+    {
+      "file": "T-0612-decided.png",
+      "card": "T-0612",
+      "app": "console",
+      "persona": "shimon (second finance member)",
+      "route": "/payouts",
+      "locale": "en",
+      "viewport": {
+        "width": 1280,
+        "height": 720
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Payouts after Shimon decided: one rejected with a reason, one on its way to the bank, one paid",
+      "flow": "payouts"
+    },
+    {
+      "file": "T-0919-console-home.png",
+      "card": "T-0919",
+      "app": "admin",
+      "persona": "Abe Admin (staff-admin-2, signed in through the simulator identity provider)",
+      "route": "/",
+      "locale": "en",
+      "viewport": {
+        "width": 1200,
+        "height": 800
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Admin console Today page",
+      "flow": "admin-console"
+    },
+    {
+      "file": "T-0919-idp-picker.png",
+      "card": "T-0919",
+      "app": "simulator",
+      "persona": "none (the simulator identity provider's staff picker)",
+      "route": "/oidc/authorize",
+      "locale": "en",
+      "viewport": {
+        "width": 1200,
+        "height": 800
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "The simulator identity provider's list of staff to sign in as",
+      "flow": "admin-console"
+    },
+    {
+      "file": "T-1012-approved.png",
+      "card": "T-1012",
+      "app": "mobile",
+      "persona": "dana",
+      "route": "/settings/assistants/proposal",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 1000
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Assistant proposal approved: \"Done. $50.00 was sent to\"",
+      "flow": "assistant-proposal"
+    },
+    {
+      "file": "T-1012-home-alert.png",
+      "card": "T-1012",
+      "app": "mobile",
+      "persona": "dana",
+      "route": "/home",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 1000
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "Home with \"1 proposal waiting\" and Review",
+      "flow": "assistant-proposal"
+    },
+    {
+      "file": "T-1012-proposal.png",
+      "card": "T-1012",
+      "app": "mobile",
+      "persona": "dana",
+      "route": "/settings/assistants/proposal",
+      "locale": "en",
+      "viewport": {
+        "width": 420,
+        "height": 1000
+      },
+      "theme": "light",
+      "status": "recorded",
+      "state": "The proposal: sentence, purse, proposer, time left, the assistant's note shown as plain text",
+      "flow": "assistant-proposal"
+    }
+  ]
+}
