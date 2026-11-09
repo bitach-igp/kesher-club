@@ -48,8 +48,9 @@ else was. It takes about ten minutes, most of it `next dev` compiling. Options:
   approves a deposit, Rivka makes the allowance schedules and the fees, Noa pays one, Shimon decides payouts.
 - Next's development badge is hidden by an injected style; it is not part of the product. Page errors are printed.
 - The member app opens each screen with an in-app route change (no reload, so the session stays), the way the
-  T-0920 recordings do. After sign-in the app replaces the route with `/` and the layout's redirect to Home does not
-  run in the browser, so the script goes to `/home` itself. Nothing in the app was changed.
+  T-0920 recordings do. In this script's run the browser stayed blank at `/` after the passkey sign-in, so the script
+  goes to `/home` itself. This was observed in this script's run and not reproduced elsewhere (the T-0920 recorder
+  does not need the workaround on main). Nothing in the app was changed.
 - Before every shot the page text is checked for a token-shaped string or a 13 to 19 digit run; the shot is refused
   if either is there. Accounts show masked (`•••• 9999`).
 

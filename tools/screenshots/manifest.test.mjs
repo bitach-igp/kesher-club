@@ -30,7 +30,7 @@ test('an entry that names no persona, or a not-retaken one with no reason, is re
   assert.ok(problems(noReason, pngsOnDisk()).includes(`${first.file}: a not-retaken entry needs a reason`));
 });
 
-test('the manifest lists each card at most once per file name, in sorted order', () => {
+test('the manifest entries are in sorted file-name order', () => {
   const files = loadManifest().entries.map((e) => e.file);
   assert.deepEqual(files, [...files].sort());
 });

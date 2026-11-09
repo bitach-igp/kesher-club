@@ -522,6 +522,24 @@ if (unknown.length) throw new Error(`No scenario ${unknown.join(', ')}; they are
 
 let stack;
 let failed;
+/** staff.json (a stack.mjs run's throwaway key) is always removed; the stack's temp directory too on success, kept with its logs on failure. */
+const cleanUp = (ok) => {
+  if (attach) fs.rmSync(path.join(attach, 'staff.json'), { force: true });
+  if (stack) fs.rmSync(ok ? stack.logDir : path.join(stack.logDir, 'staff.json'), { recursive: true, force: true });
+};
+let stopping = false;
+const stopAndExit = (code) => {
+  if (stopping) return;
+  stopping = true;
+  void (async () => {
+    await browser?.close().catch(() => undefined);
+    await stack?.stop();
+    cleanUp(false);
+    process.exit(code);
+  })();
+};
+process.on('SIGINT', () => stopAndExit(130));
+process.on('SIGTERM', () => stopAndExit(143));
 try {
   if (attach) {
     staffKey = JSON.parse(fs.readFileSync(path.join(attach, 'staff.json'), 'utf8'));
@@ -542,6 +560,7 @@ try {
 } finally {
   await browser?.close();
   await stack?.stop();
+  cleanUp(!failed);
 }
 
 if (failed) {

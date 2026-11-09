@@ -104,7 +104,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // The run's own throwaway staff key, for `record.mjs --attach <logDir>` (mode 600, in the run's temp directory).
   fs.writeFileSync(path.join(stack.logDir, 'staff.json'), JSON.stringify(stack.staff), { mode: 0o600 });
   process.stdout.write(`stack up; logs in ${stack.logDir}\n`);
-  process.on('SIGINT', () => void stack.stop().then(() => process.exit(0)));
-  process.on('SIGTERM', () => void stack.stop().then(() => process.exit(0)));
+  const end = () => void stack.stop().then(() => {
+    fs.rmSync(path.join(stack.logDir, 'staff.json'), { force: true });
+    process.exit(0);
+  });
+  process.on('SIGINT', end);
+  process.on('SIGTERM', end);
   await new Promise(() => undefined);
 }
