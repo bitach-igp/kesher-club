@@ -12,7 +12,7 @@ export interface LegalDoc {
   title: Record<Lang, string>;
   body: Record<Lang, string>;
   hash: string;
-  /** ISO calendar date (UTC) the version came into force. */
+  /** Calendar date (YYYY-MM-DD) the version came into force, in Israel time (Asia/Jerusalem), the members' day. */
   effectiveDate: string;
 }
 
@@ -22,6 +22,10 @@ export class LegalBuildError extends Error {
     this.name = 'LegalBuildError';
   }
 }
+
+const ISRAEL_DATE = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit' });
+/** YYYY-MM-DD in Israel time: 2026-11-30T22:00Z is already 1 December there. */
+export const israelDate = (d: Date): string => ISRAEL_DATE.format(d);
 
 export const isDocKey = (s: string): s is DocKey => (DOC_KEYS as readonly string[]).includes(s);
 
@@ -53,7 +57,7 @@ export function parseLegalDocuments(payload: unknown): Record<DocKey, LegalDoc> 
       title: localised(raw.title, `${key} title`),
       body: localised(raw.body, `${key} body`),
       hash: raw.hash,
-      effectiveDate: effective.toISOString().slice(0, 10),
+      effectiveDate: israelDate(effective),
     });
   }
   const missing = DOC_KEYS.filter((k) => !found.has(k));

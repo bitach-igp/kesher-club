@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { fixtureItems } from './build-fixture.ts';
-import { DOC_KEYS, fetchLegalDocuments, LegalBuildError, parseLegalDocuments } from './legal.ts';
+import { DOC_KEYS, fetchLegalDocuments, israelDate, LegalBuildError, parseLegalDocuments } from './legal.ts';
 
 const answer = (items: unknown[], status = 200) => async () => ({ ok: status >= 200 && status < 300, status, json: async () => ({ items }) });
 
@@ -49,5 +49,13 @@ describe('legal documents at build time (T-0048)', () => {
   it('ignores a kind this site does not know, rather than publishing it unreviewed', () => {
     const docs = parseLegalDocuments({ items: [...fixtureItems(), { docKey: 'future', version: 1 }] });
     expect(Object.keys(docs)).toEqual([...DOC_KEYS]);
+  });
+
+  it('dates a version by the Israel calendar day, not UTC', () => {
+    expect(israelDate(new Date('2026-11-30T22:00:00Z'))).toBe('2026-12-01');
+    expect(israelDate(new Date('2026-07-01T20:59:00Z'))).toBe('2026-07-01');
+    expect(israelDate(new Date('2026-07-01T21:00:00Z'))).toBe('2026-07-02');
+    const items = fixtureItems().map((d, i) => (i === 0 ? { ...(d as object), effectiveAt: '2026-11-30T22:00:00.000Z' } : d));
+    expect(parseLegalDocuments({ items }).terms.effectiveDate).toBe('2026-12-01');
   });
 });

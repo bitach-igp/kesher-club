@@ -26,6 +26,12 @@ variable "cross_account_ids" {
   default     = []
 }
 
+variable "cloudfront_distribution_arns" {
+  description = "CloudFront distributions allowed to decrypt with this key (Origin Access Control reading an SSE-KMS bucket). Empty grants CloudFront nothing."
+  type        = list(string)
+  default     = []
+}
+
 variable "tags" {
   type    = map(string)
   default = {}

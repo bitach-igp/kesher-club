@@ -104,7 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "$STRIPE_APPLE_PAY_DOMAIN_FILE_CONTENT" ]; then
-            printf '%s\n' "$STRIPE_APPLE_PAY_DOMAIN_FILE_CONTENT" > "$RUNNER_TEMP/stripe-apple-pay-domain-file"
+            printf '%s' "$STRIPE_APPLE_PAY_DOMAIN_FILE_CONTENT" > "$RUNNER_TEMP/stripe-apple-pay-domain-file"
             echo "STRIPE_APPLE_PAY_DOMAIN_FILE=$RUNNER_TEMP/stripe-apple-pay-domain-file" >> "$GITHUB_ENV"
           fi
 
@@ -181,7 +181,10 @@ jobs:
             aws s3 cp --profile deploy --only-show-errors "$1" "s3://${WEB_BUCKET}/$2" --content-type "$3" --cache-control "$4"
           }
           upload_all() { # upload_all <find expression...>: a type this script does not know fails the deploy
-            local f key type cache
+            local f key type cache list
+            # The list goes to a file first, so a failing find (or sort) aborts the upload instead of being swallowed by a process substitution.
+            list="$(mktemp)"
+            find . -type f "$@" -print0 | sort -z > "$list"
             while IFS= read -r -d '' f; do
               key="${f#./}"
               if ! type="$(content_type "$key")"; then
@@ -195,7 +198,8 @@ jobs:
                 index.html | 404.html | _not-found.html) ;;
                 *.html) put "$f" "${key%.html}" "$type" "$cache" ;;
               esac
-            done < <(find . -type f "$@" -print0 | sort -z)
+            done < "$list"
+            rm -f "$list"
           }
           # Hashed assets first, so no page ever points at an object that is not there yet; pages last.
           upload_all -path './_next/*'

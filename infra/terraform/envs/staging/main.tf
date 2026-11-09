@@ -176,6 +176,10 @@ module "kms_s3" {
   source      = "../../modules/kms"
   name        = "${local.name}-s3"
   description = "Application S3 buckets"
+  # The static web site's bucket is SSE-KMS with this key: CloudFront (Origin Access Control) must be allowed to decrypt it, or every
+  # GET is denied (T-0048). Scoped to that one distribution by ARN; no cycle, because the distribution depends on the bucket, not on
+  # the bucket's encryption configuration that names this key.
+  cloudfront_distribution_arns = [module.web.distribution_arn]
 }
 
 module "kms_logs" {

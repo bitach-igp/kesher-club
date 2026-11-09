@@ -39,7 +39,7 @@ WEB_ENV=local LEGAL_API_URL=http://localhost:3000/v1 pnpm --filter @kesher/web b
 WEB_ENV=local LEGAL_API_URL=http://localhost:3000/v1 pnpm --filter @kesher/web dev
 ```
 
-`pnpm build` at the repository root also builds this app and so needs these variables.
+`pnpm build` at the repository root also builds this app and so needs these variables; `turbo.json` declares them (and `out/**`) for `@kesher/web#build`, because Turbo's strict env mode would otherwise strip them.
 
 ## Placeholders T-0058 must set
 
@@ -55,6 +55,12 @@ content types and cache control, invalidates CloudFront. GitHub environment vari
 `apple-app-site-association` has no extension and is uploaded as `application/json`.
 
 ## Known limits
+
+- The legal pages are frozen at build time, but the API serves the version in force *now* (a version may have a future `effectiveAt`). A new
+  version therefore shows on the site only after the next deploy. After a version is published, and again on the day a future-dated one
+  takes effect, run `deploy-web` for each environment. A scheduled run was not added: the workflow needs the `prod` reviewers' approval, so
+  a cron would only queue approval requests. Dates are shown in Israel time (Asia/Jerusalem).
+- The apple-app-site-association `applinks` claims every path except `/`, `/support` and `/legal*` for the app; narrow it when T-0058 defines the deep links.
 
 - `module.web`'s CSP is `script-src 'self'`; Next's small inline bootstrap scripts are blocked by it. The pages are complete static HTML and
   need no hydration, so nothing visible depends on them. Do not add interactive components without changing the CSP.

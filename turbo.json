@@ -2,6 +2,11 @@
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
     "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
+    "@kesher/web#build": {
+      "dependsOn": ["^build"],
+      "env": ["WEB_ENV", "LEGAL_API_URL", "STRIPE_APPLE_PAY_DOMAIN_FILE", "WEB_DIST_DIR"],
+      "outputs": ["out/**"]
+    },
     "typecheck": { "dependsOn": ["^typecheck"] },
     "test": { "dependsOn": ["^build"] },
     "lint": {}

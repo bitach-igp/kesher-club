@@ -13,6 +13,13 @@ export function generateStaticParams() {
   return DOC_KEYS.map((docKey) => ({ docKey }));
 }
 
+export async function generateMetadata({ params }: { params: Promise<{ docKey: string }> }) {
+  const { docKey } = await params;
+  if (!isDocKey(docKey)) return {};
+  const doc = (await legalDocuments(loadBuildConfig(process.env).legalApiUrl))[docKey];
+  return { title: `${doc.title.en} · ${doc.title.he}` };
+}
+
 export default async function LegalDocument({ params }: { params: Promise<{ docKey: string }> }) {
   const { docKey } = await params;
   if (!isDocKey(docKey)) notFound();
