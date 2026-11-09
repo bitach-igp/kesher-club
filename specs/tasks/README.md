@@ -72,6 +72,7 @@
 | [T-0071](T-0071.md) | SETUP | AuditService.record is refused under club_app on a real Postgres: serialise the hash chain with an advisory lock, not a table lock | — | 16 deploy |
 | [T-0072](T-0072.md) | SETUP | Needs owner decision: where the first Kesher admin lives, and whether legal documents get a draft state | — | 16 deploy |
 | [T-0062](T-0062.md) | BIL | The app shows the terms at sign-up and re-accept, and links them from settings | — | 16 deploy |
+| [T-0073](T-0073.md) | SETUP | Re-record the committed screenshots after the navy and sky redesign | — | 16 deploy |
 | [T-0110](T-0110.md) | AUTH | OTP start/verify + passkey register | REQ-AUTH-001 | 1 |
 | [T-0111](T-0111.md) | AUTH | Passkey authenticate + device binding | REQ-AUTH-002 | 2 |
 | [T-0112](T-0112.md) | AUTH | Token service: 10-min access, rotating refresh, family revocation | REQ-AUTH-007 | 2 |
