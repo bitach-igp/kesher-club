@@ -145,11 +145,14 @@ export class AddonOrderService {
         await enqueue(tx, 'addon_order', id, 'addon_order.created', { sku: item.sku, kind: item.kind, price: q.price, credit: q.credit });
       });
     } catch (e) {
-      // No order row exists for this attempt's id, so the credit it consumed (`addon:{id}`) is handed back whatever the failure was.
+      // An insert that committed but whose reply was lost leaves a real order under this attempt's id: its consumption is the order's, so keep it
+      // and carry on to the charge. Only with no row under `id` is the consumption orphaned and handed back, whatever the failure was.
       // Known window, left open (T-0557 As-built): a crash between credit.apply and the insert strands the consumption.
-      await this.restoreCredit(id, q.credit);
-      if (isPgError(e, PG.UNIQUE_VIOLATION)) return this.chargeIfCreated(this.sameRequest((await this.byKey(input.idempotencyKey))!, input.memberPartyId, input.sku, quantity), now);
-      throw e;
+      if (!(await this.get(id))) {
+        await this.restoreCredit(id);
+        if (isPgError(e, PG.UNIQUE_VIOLATION)) return this.chargeIfCreated(this.sameRequest((await this.byKey(input.idempotencyKey))!, input.memberPartyId, input.sku, quantity), now);
+        throw e;
+      }
     }
     return this.charge(id, now);
   }
@@ -227,7 +230,7 @@ export class AddonOrderService {
     if (o.state !== 'failed') throw new DomainError('IDEMPOTENCY_CONFLICT', 'Only a failed order can be refunded');
     let refundJournalId: string | undefined;
     if (o.chargeJournalId) refundJournalId = (await this.ledger.reverse(o.chargeJournalId, `addon:${o.id}:refund`)).id;
-    await this.restoreCredit(o.id, o.credit);
+    await this.restoreCredit(o.id);
     return this.transition(o.id, 'refunded', now, { ...(refundJournalId ? { refundJournalId } : {}), reason });
   }
 
@@ -248,8 +251,7 @@ export class AddonOrderService {
   }
 
   /** Credits are consumed with `addon:<orderId>`; a refund hands the units back with a negative consumption row (idempotent). */
-  private async restoreCredit(orderId: string, credit: Money): Promise<void> {
-    if (credit.minor <= 0n) return;
+  private async restoreCredit(orderId: string): Promise<void> {
     const units = await this.db.query<{ membership_id: string; amount: string; key: string; period_start: string }>(`select membership_id, amount::text as amount, key, period_start::text as period_start from billing.entitlement_consumption where idempotency_key = $1`, [`addon:${orderId}`]);
     const u = units.rows[0];
     if (!u) return;

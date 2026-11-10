@@ -356,6 +356,27 @@ describe('the loser of a same-key create gives its credit back (T-0557, TST-MKT-
     expect(await used(membership.id)).toBe('5');
   });
 
+  it('an insert that commits but whose reply is lost keeps the credit: the order exists, so nothing is refunded and it is charged once', async () => {
+    const { memberPartyId, membership } = await plusMember();
+    let calls = 0;
+    const real = db.transaction.bind(db);
+    // Call 1 is the credit consumption; call 2 is the order insert, which commits and then reports a lost connection.
+    const spy = vi.spyOn(db, 'transaction').mockImplementation((async (fn: Parameters<typeof real>[0]) => {
+      const out = await real(fn);
+      if (++calls === 2) throw new Error('connection lost on the commit reply');
+      return out;
+    }) as typeof real);
+    const o = await orders.create({ idempotencyKey: 'c-6-commit-lost', memberPartyId, membership, sku }, now).finally(() => spy.mockRestore());
+    expect(o).toMatchObject({ state: 'charged', credit: money(2500n, 'USD'), price: money(0n, 'USD') });
+    expect((await db.query(`select 1 from billing.entitlement_consumption where membership_id = $1 and idempotency_key like '%:refund'`, [membership.id])).rows).toHaveLength(0);
+    expect(await used(membership.id)).toBe('5');
+    const again = await orders.create({ idempotencyKey: 'c-6-commit-lost', memberPartyId, membership, sku }, now);
+    expect(again.id).toBe(o.id);
+    expect(await chargeJournals(o.id)).toBe(1);
+    expect(await used(membership.id)).toBe('5');
+    expect((await db.query(`select 1 from addons.addon_order where idempotency_key = 'c-6-commit-lost'`)).rows).toHaveLength(1);
+  });
+
   it('a sequential replay of a charged key consumes nothing more', async () => {
     const { memberPartyId, membership } = await plusMember();
     const o = await orders.create({ idempotencyKey: 'c-4-replay', memberPartyId, membership, sku }, now);
