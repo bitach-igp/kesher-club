@@ -131,6 +131,7 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/payouts/{id}/reject', operationId: 'rejectPayout' },
   { method: 'GET', path: '/institutions/{id}/allowance-runs', operationId: 'listAllowanceRuns' },
   { method: 'POST', path: '/institutions/{id}/allowance-runs', operationId: 'runAllowance' },
+  { method: 'POST', path: '/payouts/{id}/cancel', operationId: 'cancelPayout' },
   { method: 'POST', path: '/payouts', operationId: 'createPayout' },
   { method: 'GET', path: '/agent-grants', operationId: 'listAgentGrants' },
   { method: 'DELETE', path: '/agent-grants/{id}', operationId: 'revokeAgentGrant' },
