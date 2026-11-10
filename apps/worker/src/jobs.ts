@@ -10,7 +10,7 @@ import type { App } from '@kesher/api/app';
 import { cardIssuingProcessor } from '@kesher/api/cards/settlement';
 import type { Database } from '@kesher/api/db';
 import { US_BANKING_FLAG } from '@kesher/api/institutions/us-banking';
-import type { BankPort, EsimPort, FundingPort, FxPort, InstitutionBankingPort, InsurancePort, KybPort, Market, NotifyPort, ProviderRegistry } from '@kesher/ports';
+import { FundingError, type BankPort, type EsimPort, type FundingPort, type FundingStatementPort, type FxPort, type InstitutionBankingPort, type InsurancePort, type KybPort, type Market, type NotifyPort, type ProviderRegistry } from '@kesher/ports';
 import { guarded, minorToNumber, stdoutMetrics, type Metrics } from '@kesher/domain';
 import { z } from 'zod';
 import { EXPIRE_INTENTS_CYCLE_MS, ExpireIntentsJob } from './agent/expire-intents.ts';
@@ -24,12 +24,14 @@ import { DepositReconcileJob } from './institutions/deposit-reconcile.ts';
 import { KybRefresh, KybRescreen } from './institutions/kyb-sweeps.ts';
 import { BalanceProof } from './ledger/balance-proof.ts';
 import { MonitoringJob } from './monitoring/job.ts';
+import { ReconJob } from './recon/recon.ts';
+import { FundingStatementSource } from './recon/statement-source.ts';
 import { UsBankingRecon } from './recon/us-banking.ts';
 import { EXPIRE_CYCLE_MS, ExpireRequestsJob } from './p2p/expire-requests.ts';
 import { RELEASE_CYCLE_MS as P2P_RELEASE_CYCLE_MS, P2pReleaseHoldsJob } from './p2p/release-holds.ts';
 import { SWEEP_CYCLE_MS as SEND_SWEEP_CYCLE_MS, SendWorkflow } from './p2p/send-workflow.ts';
 import { SWEEP_CYCLE_MS as PAYOUT_SWEEP_CYCLE_MS, PayoutWorkflow } from './payouts/payout-workflow.ts';
-import { daily, type Job, type RunLog } from './scheduler.ts';
+import { daily, israelClock, type Job, type RunLog } from './scheduler.ts';
 import { AUTO_RELOAD_CYCLE_MS, AutoReloadJob } from './wallet/auto-reload-job.ts';
 import { SWEEP_CYCLE_MS as LOAD_SWEEP_CYCLE_MS, LoadWorkflow } from './wallet/load-workflow.ts';
 import { RELEASE_CYCLE_MS as ACH_RELEASE_CYCLE_MS, ReleaseHoldsJob } from './wallet/release-holds.ts';
@@ -41,11 +43,11 @@ export const MONITORING_CYCLE_MS = 60 * 60_000;
 /** eSIM usage: the 20% and 3-day thresholds move slowly; hourly is ahead of either. */
 export const ESIM_USAGE_CYCLE_MS = 60 * 60_000;
 
-/** Nightly jobs and their Israel wall-clock times (T-0023). The balance proof runs before reconciliation,
- *  which joins at 04:00 with the processor adapter, ahead of REQ-LED-004's 06:00 deadline. The KYB rescreen
+/** Nightly jobs and their Israel wall-clock times (T-0023). The balance proof runs before reconciliation. The partner
+ *  reconciliation (T-0684) reads the funding vendor's statement for yesterday at 05:30, half an hour ahead of REQ-LED-004's 06:00 deadline. The KYB rescreen
  *  and refresh (T-0624) run before the working day, so a payout that morning meets the day's answer. The
  *  deposit reconciliation (T-0618) reads yesterday's bank statement once the bank has closed the day. */
-export const NIGHTLY = { 'balance-proof': '02:30', 'catalogue-sync': '03:00', 'kyb-rescreen': '05:00', 'kyb-refresh': '05:15', 'deposit-reconcile': '06:30', 'us-banking-recon': '03:00' } as const;
+export const NIGHTLY = { 'balance-proof': '02:30', 'catalogue-sync': '03:00', 'kyb-rescreen': '05:00', 'kyb-refresh': '05:15', 'partner-recon': '05:30', 'deposit-reconcile': '06:30', 'us-banking-recon': '03:00' } as const;
 
 /** What the nightly catalogue sync asks the vendors for: `config/catalogue.json`, so nothing is hard-coded. */
 export const catalogueConfigSchema = z
@@ -157,6 +159,22 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue, m
   const depositRecon = new DepositReconcileJob(s.deposits, () => registry.resolve<BankPort>('bank', market), providerOf('bank'));
   // The US accounts' payments and transactions for yesterday against our records (T-0654); resolved when it runs.
   const usRecon = new UsBankingRecon(db, s.flags, s.usCollections, () => registry.resolve<InstitutionBankingPort>('institution-banking', market), market, clock);
+  // The funding vendor's statement for yesterday against our ledger (T-0684, REQ-LED-004). The port and its provider name are
+  // resolved when it runs (the provider is the key space of ops.external_ref, as in the load and closure services); a funding
+  // port with no statement listing fails the run, so it is logged and retried rather than reconciling nothing.
+  const fundingStatement = (): FundingStatementPort => {
+    const port = registry.resolve<FundingPort & Partial<FundingStatementPort>>('funding', market);
+    if (typeof port.listSettled !== 'function') throw new FundingError('VALIDATION_FAILED', 'The funding port lists no statement');
+    return { listSettled: (input) => port.listSettled!(input) };
+  };
+  const partnerRecon = async (now: Date): Promise<unknown> => {
+    const provider = providerOf('funding');
+    const today = israelClock(now).day;
+    const yesterday = new Date(Date.parse(`${today}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+    const report = await new ReconJob(db, new FundingStatementSource({ provider, port: fundingStatement() }), clock).run(provider, today, yesterday);
+    // Counts only: the breaks themselves are the cases (and their amounts), not the log line.
+    return { runDate: report.runDate, statementDate: report.statementDate, matched: report.matched, breaks: report.breaks.length, withinDeadline: report.withinDeadline };
+  };
   // A market job's nightly run is recorded per market, so the US sync is not skipped because IL ran.
   const marketRuns: RunLog = {
     ranOn: (job, day) => runs.ranOn(`${market}:${job}`, day),
@@ -199,6 +217,7 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue, m
     ),
     daily({ name: 'kyb-rescreen', scope: 'market', at: NIGHTLY['kyb-rescreen'], run: () => rescreen.run() }, marketRuns, clock),
     daily({ name: 'kyb-refresh', scope: 'club', at: NIGHTLY['kyb-refresh'], run: (now) => refresh.run(now) }, runs, clock),
+    daily({ name: 'partner-recon', scope: 'market', at: NIGHTLY['partner-recon'], run: partnerRecon }, marketRuns, clock),
     daily({ name: 'deposit-reconcile', scope: 'market', at: NIGHTLY['deposit-reconcile'], run: (now) => depositRecon.run(now) }, marketRuns, clock),
     daily({ name: 'us-banking-recon', scope: 'market', at: NIGHTLY['us-banking-recon'], run: (now) => usRecon.run(now) }, marketRuns, clock),
   ];
@@ -207,5 +226,4 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue, m
 /** Job-like modules the table leaves out, each with the reason. A path is relative to `apps/worker/src`. */
 export const JOB_EXCLUSIONS: Readonly<Record<string, string>> = {
   'cards/issue-workflow.ts': 'started by a KYC approval, not on a cycle',
-  'recon/recon.ts': 'nightly at 04:00 once the processor adapter (ADR-006) brings a partner statement source',
 };
