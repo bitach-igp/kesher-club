@@ -6,8 +6,8 @@
 // against the load this adapter created when it knows it. Refunds (REQ-WAL-005) are Stripe Refunds
 // against the PaymentIntent; a refund Stripe refuses comes back `failed` with its failure_reason.
 import { money, type Currency, type Money } from '@kesher/domain';
-import { addBusinessDays, type Clock, FundingError, type FundingMethod, type FundingPort, IdempotencyStore, type Load, type LoadStatus, type Refund, type RefundStatus } from '@kesher/ports';
-import { int, isRecord, str, StripeApiError, StripeClient, StripeTransportError } from './client.ts';
+import { addBusinessDays, type Clock, FundingError, type FundingMethod, type FundingPort, type FundingStatementPort, IdempotencyStore, type Load, type LoadStatus, type Refund, type RefundStatus, type SettledEntry, type SettledPage } from '@kesher/ports';
+import { int, isoToUnix, isRecord, str, StripeApiError, StripeClient, StripeTransportError, unixToIso } from './client.ts';
 import { DEFAULT_TOLERANCE_SECONDS, headerValue, STRIPE_SIGNATURE_HEADER, verifyStripeSignature } from './signature.ts';
 
 export interface StripeFundingOptions {
@@ -27,7 +27,7 @@ const ACH_HOLD_BUSINESS_DAYS = 3;
 const SUPPORTED_CURRENCIES: ReadonlySet<string> = new Set(['usd', 'ils']);
 const METHODS: ReadonlySet<string> = new Set(['card', 'apple_pay', 'google_pay', 'ach', 'rtp']);
 
-export class StripeFundingAdapter implements FundingPort {
+export class StripeFundingAdapter implements FundingPort, FundingStatementPort {
   private readonly client: StripeClient;
   private readonly clock: Clock;
   private readonly idem = new IdempotencyStore<Load>();
@@ -127,6 +127,48 @@ export class StripeFundingAdapter implements FundingPort {
     const out = { eventId, load };
     this.events.set(eventId, out);
     return out;
+  }
+
+  /**
+   * Settled charges and refunds from Stripe's balance transactions (the settlement record, so an ACH debit lands on the
+   * day it cleared, not the day it was created). Each row is a charge or a refund whose source carries our PaymentIntent
+   * id; any other balance transaction type (fees, payouts, adjustments) is not ours and is skipped. A row that is a charge
+   * or refund without a PaymentIntent, or in an unsupported currency, fails secure: PROVIDER_UNAVAILABLE.
+   */
+  async listSettled(input: { from: string; to: string; cursor?: string; limit?: number }): Promise<SettledPage> {
+    const from = new Date(input.from);
+    const to = new Date(input.to);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to) throw new FundingError('VALIDATION_FAILED', 'from and to must be ISO instants with from before to');
+    const limit = input.limit ?? 100;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new FundingError('VALIDATION_FAILED', 'limit must be 1 to 100');
+    const page = await this.call(() =>
+      this.client.get('/v1/balance_transactions', {
+        created: { gte: isoToUnix(from), lt: isoToUnix(to) },
+        limit: BigInt(limit),
+        expand: ['data.source'],
+        ...(input.cursor ? { starting_after: input.cursor } : {}),
+      }),
+    );
+    if (!Array.isArray(page['data']) || typeof page['has_more'] !== 'boolean') throw unexpected('balance transaction list shape');
+    const entries: SettledEntry[] = [];
+    let last: string | undefined;
+    for (const row of page['data'] as unknown[]) {
+      if (!isRecord(row)) throw unexpected('balance transaction row');
+      last = str(row['id']);
+      const type = str(row['type']);
+      const kind = type === 'charge' || type === 'payment' ? 'charge' : type === 'refund' || type === 'payment_refund' ? 'refund' : undefined;
+      if (!kind) continue;
+      const source = isRecord(row['source']) ? row['source'] : undefined;
+      const loadId = source ? str(source['payment_intent']) : undefined;
+      const gross = int(row['amount']);
+      const currency = toCurrency(row['currency']);
+      const created = int(row['created']);
+      const sourceId = source ? str(source['id']) : undefined;
+      if (!last || !sourceId || !loadId || gross === undefined || !currency || created === undefined) throw unexpected('settled row without source/payment_intent/amount/currency/created');
+      entries.push({ kind, id: kind === 'charge' ? loadId : sourceId, loadId, amount: money(gross < 0n ? -gross : gross, currency), settledAt: unixToIso(created) });
+    }
+    if (page['has_more'] === true && !last) throw unexpected('has_more without rows');
+    return { entries, ...(page['has_more'] === true && last ? { nextCursor: last } : {}) };
   }
 
   /** Runs one vendor call and maps vendor failures to FundingError. Never retries. */

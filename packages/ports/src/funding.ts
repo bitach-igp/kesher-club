@@ -40,6 +40,36 @@ export interface FundingPort {
   parseWebhook(headers: Record<string, string>, rawBody: string): Promise<{ eventId: string; load: Load }>;
 }
 
+export type SettledKind = 'charge' | 'refund';
+
+/**
+ * One settled money movement at the funding vendor (T-0683): a load that succeeded (`charge`, `id` is the loadId) or a
+ * refund that succeeded (`refund`, `id` is the refundId). `amount` is positive; the kind carries the direction.
+ */
+export interface SettledEntry {
+  kind: SettledKind;
+  id: string;
+  loadId: string;
+  amount: Money;
+  /** The instant it settled at the vendor, ISO 8601 UTC. */
+  settledAt: string;
+}
+
+export interface SettledPage {
+  entries: SettledEntry[];
+  /** Pass back as `cursor` for the next page; absent on the last page. */
+  nextCursor?: string;
+}
+
+/**
+ * The statement side of the funding vendor, for reconciliation (REQ-LED-004). Kept apart from FundingPort so a
+ * workflow that only moves money does not have to implement it; the simulator and the Stripe adapter do.
+ */
+export interface FundingStatementPort {
+  /** Settled charges and refunds with `from <= settledAt < to` (ISO instants), in no guaranteed order, `limit` per page (default 100). */
+  listSettled(input: { from: string; to: string; cursor?: string; limit?: number }): Promise<SettledPage>;
+}
+
 export type FundingErrorCode = 'UNSUPPORTED_METHOD' | 'UNKNOWN_LOAD' | 'UNKNOWN_REFUND' | 'DECLINED' | 'BAD_SIGNATURE' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class FundingError extends Error {

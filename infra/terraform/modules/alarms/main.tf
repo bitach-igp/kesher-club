@@ -40,6 +40,7 @@ locals {
     "kyb-refresh"          = { cycle_s = 86400, money = false }
     "deposit-reconcile"    = { cycle_s = 86400, money = true }
     "us-banking-recon"     = { cycle_s = 86400, money = true }
+    "partner-recon"        = { cycle_s = 86400, money = true }
   }
   money_jobs = { for k, j in local.jobs : k => j if j.money }
   other_jobs = { for k, j in local.jobs : k => j if !j.money }

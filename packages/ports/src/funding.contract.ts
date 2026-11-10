@@ -1,7 +1,8 @@
 // FundingPort contract (TST-WAL-002/003 at the port layer).
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
-import { FundingError, type FundingPort } from './funding.ts';
+import { FundingError, type FundingPort, type FundingStatementPort, type SettledEntry } from './funding.ts';
+import type { AdvanceableClock } from './base.ts';
 
 export interface FundingContractOptions {
   goodPaymentMethod: string;
@@ -95,5 +96,114 @@ export function fundingContract(name: string, make: () => FundingPort, opts: Fun
         expect(r.failureCode).toBeTruthy();
       });
     }
+  });
+}
+
+export interface FundingStatementContractOptions {
+  goodPaymentMethod: string;
+  achPaymentMethod: string;
+  /** A payment method whose refunds stay pending until the vendor settles them. */
+  slowRefundPaymentMethod: string;
+  /** The clock the port stamps settlement with, so the suite can place movements on different days. */
+  clockOf: (port: FundingPort & FundingStatementPort) => AdvanceableClock;
+  /** Makes every later listing request fail as the vendor being down (a 5xx), from the `after`-th request on (0 = the next). */
+  failListingFrom: (port: FundingPort & FundingStatementPort, after: number) => void;
+}
+
+/** FundingStatementPort contract (T-0683): the settled-movement listing reconciliation reads. */
+export function fundingStatementContract(name: string, make: () => FundingPort & FundingStatementPort, opts: FundingStatementContractOptions): void {
+  describe(`FundingStatementPort contract: ${name}`, () => {
+    const amount = (minor: bigint) => money(minor, 'USD');
+    const DAY = 86_400_000;
+    const key = (e: SettledEntry) => `${e.kind}:${e.id}`;
+    const all = async (port: FundingStatementPort, from: string, to: string, limit?: number): Promise<SettledEntry[]> => {
+      const out: SettledEntry[] = [];
+      let cursor: string | undefined;
+      do {
+        const page = await port.listSettled({ from, to, ...(cursor ? { cursor } : {}), ...(limit ? { limit } : {}) });
+        out.push(...page.entries);
+        cursor = page.nextCursor;
+      } while (cursor);
+      return out;
+    };
+
+    it('lists settled charges and refunds in the window with ids, bigint amounts and the settlement instant', async () => {
+      const port = make();
+      const clock = opts.clockOf(port);
+      const start = clock.now();
+      const a = await port.createLoad({ customerId: 'c', method: 'card', amount: amount(10_000n), paymentMethodId: opts.goodPaymentMethod }, 'S-load-a');
+      clock.advance(60_000);
+      const b = await port.createLoad({ customerId: 'c', method: 'card', amount: amount(2_500n), paymentMethodId: opts.goodPaymentMethod }, 'S-load-b');
+      clock.advance(60_000);
+      const r = await port.refund({ loadId: a.loadId, amount: amount(4_000n) }, 'S-refund-a');
+      const entries = await all(port, start.toISOString(), new Date(start.getTime() + DAY).toISOString());
+      expect(entries.map(key).sort()).toEqual([`charge:${a.loadId}`, `charge:${b.loadId}`, `refund:${r.refundId}`].sort());
+      const byKey = new Map(entries.map((e) => [key(e), e]));
+      expect(byKey.get(`charge:${a.loadId}`)).toMatchObject({ loadId: a.loadId, amount: amount(10_000n) });
+      expect(typeof byKey.get(`charge:${a.loadId}`)!.amount.minor).toBe('bigint');
+      expect(byKey.get(`refund:${r.refundId}`)).toMatchObject({ loadId: a.loadId, amount: amount(4_000n) });
+      for (const e of entries) expect(Number.isNaN(Date.parse(e.settledAt))).toBe(false);
+    });
+
+    it('takes from inclusive and to exclusive, and leaves out other days', async () => {
+      const port = make();
+      const clock = opts.clockOf(port);
+      const t0 = clock.now();
+      const early = await port.createLoad({ customerId: 'c', method: 'card', amount: amount(100n), paymentMethodId: opts.goodPaymentMethod }, 'S-early');
+      clock.advance(DAY);
+      const mid = await port.createLoad({ customerId: 'c', method: 'card', amount: amount(200n), paymentMethodId: opts.goodPaymentMethod }, 'S-mid');
+      clock.advance(DAY);
+      await port.createLoad({ customerId: 'c', method: 'card', amount: amount(300n), paymentMethodId: opts.goodPaymentMethod }, 'S-late');
+      const day = await all(port, new Date(t0.getTime() + DAY).toISOString(), new Date(t0.getTime() + 2 * DAY).toISOString());
+      expect(day.map((e) => e.id)).toEqual([mid.loadId]);
+      expect((await all(port, t0.toISOString(), new Date(t0.getTime() + DAY).toISOString())).map((e) => e.id)).toEqual([early.loadId]);
+    });
+
+    it('does not list what has not settled: an ACH load on hold, a pending or failed refund', async () => {
+      const port = make();
+      const clock = opts.clockOf(port);
+      const t0 = clock.now();
+      await port.createLoad({ customerId: 'c', method: 'ach', amount: amount(5_000n), paymentMethodId: opts.achPaymentMethod }, 'S-ach');
+      const slow = await port.createLoad({ customerId: 'c', method: 'card', amount: amount(5_000n), paymentMethodId: opts.slowRefundPaymentMethod }, 'S-slow');
+      await port.refund({ loadId: slow.loadId, amount: amount(1_000n) }, 'S-slow-refund');
+      const entries = await all(port, t0.toISOString(), new Date(t0.getTime() + DAY).toISOString());
+      expect(entries.map(key)).toEqual([`charge:${slow.loadId}`]);
+    });
+
+    it('pages: limit 2 over five rows returns each once, and a page past the end is empty', async () => {
+      const port = make();
+      const clock = opts.clockOf(port);
+      const t0 = clock.now();
+      const ids: string[] = [];
+      for (let i = 0; i < 5; i++) {
+        ids.push((await port.createLoad({ customerId: 'c', method: 'card', amount: amount(BigInt(100 + i)), paymentMethodId: opts.goodPaymentMethod }, `S-page-${i}`)).loadId);
+        clock.advance(1_000);
+      }
+      const from = t0.toISOString();
+      const to = new Date(t0.getTime() + DAY).toISOString();
+      const first = await port.listSettled({ from, to, limit: 2 });
+      expect(first.entries).toHaveLength(2);
+      expect(first.nextCursor).toBeTruthy();
+      const entries = await all(port, from, to, 2);
+      expect(entries.map((e) => e.id).sort()).toEqual([...ids].sort());
+    });
+
+    it('a vendor outage on a later page throws PROVIDER_UNAVAILABLE instead of returning what it had', async () => {
+      const port = make();
+      const clock = opts.clockOf(port);
+      const t0 = clock.now();
+      for (let i = 0; i < 3; i++) await port.createLoad({ customerId: 'c', method: 'card', amount: amount(100n), paymentMethodId: opts.goodPaymentMethod }, `S-out-${i}`);
+      const from = t0.toISOString();
+      const to = new Date(t0.getTime() + DAY).toISOString();
+      opts.failListingFrom(port, 1);
+      const first = await port.listSettled({ from, to, limit: 2 });
+      await expect(port.listSettled({ from, to, limit: 2, cursor: first.nextCursor! })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    });
+
+    it('rejects an empty or inverted window', async () => {
+      const port = make();
+      const t = opts.clockOf(port).now().toISOString();
+      await expect(port.listSettled({ from: t, to: t })).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    });
   });
 }

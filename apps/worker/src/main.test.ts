@@ -64,7 +64,7 @@ const until = async (done: () => boolean, ms: number, what: () => string): Promi
 };
 
 // T-0042: the start-up log names all five overridable ports; the new four stay on the simulator unless chosen.
-const ALL_SIM = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim' };
+const ALL_SIM = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim', funding: 'sim', 'notify-sms': 'sim', 'notify-email': 'sim', 'notify-push': 'sim' };
 
 describe('main (T-0022)', () => {
   it('boots on Postgres and the simulators, runs one cycle of every job, and stops cleanly', async () => {
@@ -73,7 +73,7 @@ describe('main (T-0022)', () => {
     const worker = await main(env, { log: (event, fields) => lines.push({ event, fields }), clock: () => new Date('2026-10-19T09:00:00Z') });
     const ran = () => new Set(lines.filter((l) => l.event === 'job_ran').map((l) => l.fields['job']));
     try {
-      expect(worker.jobs).toHaveLength(24);
+      expect(worker.jobs).toHaveLength(25);
       await until(() => ran().size === worker.jobs.length || lines.some((l) => l.event === 'job_failed'), 30_000, () => JSON.stringify(lines));
       expect(lines.filter((l) => l.event === 'job_failed' || l.event === 'job_skipped')).toEqual([]);
       expect([...ran()].sort()).toEqual([...worker.jobs].sort());

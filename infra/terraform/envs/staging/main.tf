@@ -59,6 +59,11 @@ locals {
     PROVIDER_INSURANCE     = var.provider_insurance
     PROVIDER_ORG_IDP       = var.provider_org_idp
     PROVIDER_FEDERATED_IDP = var.provider_federated_idp
+    # Stripe backs funding and billing together; each notification channel is chosen on its own (T-0041).
+    PROVIDER_FUNDING      = var.provider_funding
+    PROVIDER_NOTIFY_SMS   = var.provider_notify_sms
+    PROVIDER_NOTIFY_EMAIL = var.provider_notify_email
+    PROVIDER_NOTIFY_PUSH  = var.provider_notify_push
   }
 
   common_secrets = {
@@ -104,12 +109,38 @@ locals {
       GOOGLE_CLIENT_ID     = module.secrets.arns["google-client-id"]
       GOOGLE_CLIENT_SECRET = module.secrets.arns["google-client-secret"]
     })
+    # T-0041. Stripe's key and endpoint secret are mapped only here: a half-set credential refuses boot, so they are no longer
+    # mapped on their own. STRIPE_WEBHOOK_SECRET may hold two comma-separated values during a rotation.
+    stripe = tomap({
+      STRIPE_API_KEY        = module.secrets.arns["stripe-api-key"]
+      STRIPE_WEBHOOK_SECRET = module.secrets.arns["stripe-webhook-secret"]
+      STRIPE_PLAN_PRODUCTS  = module.secrets.arns["stripe-plan-products"]
+    })
+    twilio = tomap({
+      TWILIO_ACCOUNT_SID = module.secrets.arns["twilio-account-sid"]
+      TWILIO_AUTH_TOKEN  = module.secrets.arns["twilio-auth-token"]
+      TWILIO_FROM_SMS    = module.secrets.arns["twilio-from-sms"]
+      TWILIO_TEMPLATES   = module.secrets.arns["twilio-templates"]
+    })
+    postmark = tomap({
+      POSTMARK_SERVER_TOKEN = module.secrets.arns["postmark-server-token"]
+      POSTMARK_FROM         = module.secrets.arns["postmark-from"]
+      POSTMARK_TEMPLATES    = module.secrets.arns["postmark-templates"]
+    })
+    expo = tomap({
+      EXPO_ACCESS_TOKEN = module.secrets.arns["expo-access-token"]
+      EXPO_TEMPLATES    = module.secrets.arns["expo-templates"]
+    })
   }
   provider_secrets = merge(
     var.provider_esim == "airalo" ? local.adapter_secrets["airalo"] : tomap({}),
     var.provider_insurance == "cover-genius" ? local.adapter_secrets["cover-genius"] : tomap({}),
     var.provider_org_idp == "workos" ? local.adapter_secrets["workos"] : tomap({}),
     var.provider_federated_idp == "oidc" ? local.adapter_secrets["oidc"] : tomap({}),
+    var.provider_funding == "stripe" ? local.adapter_secrets["stripe"] : tomap({}),
+    var.provider_notify_sms == "twilio" ? local.adapter_secrets["twilio"] : tomap({}),
+    var.provider_notify_email == "postmark" ? local.adapter_secrets["postmark"] : tomap({}),
+    var.provider_notify_push == "expo" ? local.adapter_secrets["expo"] : tomap({}),
   )
 
 }
@@ -280,6 +311,16 @@ module "secrets" {
     "temporal-client-key",
     "stripe-api-key",
     "stripe-webhook-secret",
+    "stripe-plan-products",
+    "twilio-account-sid",
+    "twilio-auth-token",
+    "twilio-from-sms",
+    "twilio-templates",
+    "postmark-server-token",
+    "postmark-from",
+    "postmark-templates",
+    "expo-access-token",
+    "expo-templates",
     "provider-webhook-secrets",
     "airalo-base-url",
     "airalo-client-id",
@@ -407,7 +448,7 @@ module "api" {
   min_capacity               = 2
   max_capacity               = 8
   environment                = merge(local.common_env, { SERVICE_ROLE = "api", MARKET = each.value.code })
-  secrets                    = merge(local.common_secrets, { STRIPE_API_KEY = module.secrets.arns["stripe-api-key"], STRIPE_WEBHOOK_SECRET = module.secrets.arns["stripe-webhook-secret"], PROVIDER_WEBHOOK_SECRETS = module.secrets.arns["provider-webhook-secrets"] }, local.provider_secrets)
+  secrets                    = merge(local.common_secrets, { PROVIDER_WEBHOOK_SECRETS = module.secrets.arns["provider-webhook-secrets"] }, local.provider_secrets)
   secret_kms_key_arns        = [module.kms_secrets.key_arn]
   database_security_group_id = module.rds.security_group_id
   log_kms_key_arn            = module.kms_logs.key_arn
@@ -461,7 +502,7 @@ module "jit" {
   min_capacity  = 2
   max_capacity  = 6
   # The authorisation path never calls a marketplace or identity vendor: it runs those ports on `sim` and is mapped none of their secrets.
-  environment                = merge(local.common_env, { SERVICE_ROLE = "jit", MARKET = each.value.code, DATABASE_URL = local.jit_database_url, PROVIDER_ESIM = "sim", PROVIDER_INSURANCE = "sim", PROVIDER_ORG_IDP = "sim", PROVIDER_FEDERATED_IDP = "sim" })
+  environment                = merge(local.common_env, { SERVICE_ROLE = "jit", MARKET = each.value.code, DATABASE_URL = local.jit_database_url, PROVIDER_ESIM = "sim", PROVIDER_INSURANCE = "sim", PROVIDER_ORG_IDP = "sim", PROVIDER_FEDERATED_IDP = "sim", PROVIDER_FUNDING = "sim", PROVIDER_NOTIFY_SMS = "sim", PROVIDER_NOTIFY_EMAIL = "sim", PROVIDER_NOTIFY_PUSH = "sim" })
   secrets                    = local.jit_secrets
   secret_kms_key_arns        = [module.kms_secrets.key_arn]
   database_security_group_id = module.rds.security_group_id
@@ -490,7 +531,7 @@ module "worker" {
   min_capacity               = 2
   max_capacity               = 6
   environment                = merge(local.common_env, { SERVICE_ROLE = "worker", MARKET = each.value.code })
-  secrets                    = merge(local.common_secrets, { STRIPE_API_KEY = module.secrets.arns["stripe-api-key"] }, local.provider_secrets)
+  secrets                    = merge(local.common_secrets, local.provider_secrets)
   secret_kms_key_arns        = [module.kms_secrets.key_arn]
   database_security_group_id = module.rds.security_group_id
   log_kms_key_arn            = module.kms_logs.key_arn
@@ -951,5 +992,48 @@ variable "provider_federated_idp" {
   validation {
     condition     = contains(["sim", "oidc"], var.provider_federated_idp)
     error_message = "provider_federated_idp must be sim or oidc."
+  }
+}
+
+# ---- Stripe and notification channels (T-0041) ---------------------------------------------------
+# Same rule as above: `sim` until an operator opts in, and the named adapter's containers are filled first. Only sandbox
+# credentials are accepted (the config refuses a live Stripe key until the production guard, T-0043).
+variable "provider_funding" {
+  description = "Which provider backs funding and billing together: sim or stripe."
+  type        = string
+  default     = "sim"
+  validation {
+    condition     = contains(["sim", "stripe"], var.provider_funding)
+    error_message = "provider_funding must be sim or stripe."
+  }
+}
+
+variable "provider_notify_sms" {
+  description = "Which provider sends SMS: sim or twilio."
+  type        = string
+  default     = "sim"
+  validation {
+    condition     = contains(["sim", "twilio"], var.provider_notify_sms)
+    error_message = "provider_notify_sms must be sim or twilio."
+  }
+}
+
+variable "provider_notify_email" {
+  description = "Which provider sends email: sim or postmark."
+  type        = string
+  default     = "sim"
+  validation {
+    condition     = contains(["sim", "postmark"], var.provider_notify_email)
+    error_message = "provider_notify_email must be sim or postmark."
+  }
+}
+
+variable "provider_notify_push" {
+  description = "Which provider sends push notifications: sim or expo."
+  type        = string
+  default     = "sim"
+  validation {
+    condition     = contains(["sim", "expo"], var.provider_notify_push)
+    error_message = "provider_notify_push must be sim or expo."
   }
 }
