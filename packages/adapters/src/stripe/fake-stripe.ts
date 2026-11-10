@@ -9,6 +9,7 @@
 //   payment_method "pm_card_3ds"              -> PaymentIntent requires_action
 //   payment_method "pm_us_bank_ok"            -> PaymentIntent processing (ACH)
 //   any other "pm_card_*" / "pm_us_bank_*"    -> succeeded / processing; unknown pm -> 400 resource_missing
+//   GET /v1/balance_transactions             -> settled charges and refunds (created filter, starting_after, has_more)
 // Control hooks: failInvoice(), payInvoice(), settlePaymentIntent() return signed webhooks.
 import type { Clock } from '@kesher/ports';
 import { signStripePayload } from './signature.ts';
@@ -49,6 +50,16 @@ interface Rf {
   metadata: Record<string, string>;
 }
 
+/** A balance transaction: Stripe's settlement record. `source` is a charge (`ch_`) or a refund (`re_`). */
+interface Bt {
+  id: string;
+  type: 'charge' | 'refund';
+  source: { id: string; object: 'charge' | 'refund'; payment_intent: string };
+  amount: bigint;
+  currency: string;
+  created: bigint;
+}
+
 interface Pi {
   id: string;
   amount: bigint;
@@ -72,6 +83,7 @@ export class FakeStripe {
   private readonly subs = new Map<string, Sub>();
   private readonly pis = new Map<string, Pi>();
   private readonly refunds = new Map<string, Rf>();
+  private readonly balanceTransactions: Bt[] = [];
   private readonly idem = new Map<string, { fingerprint: string; reply: Reply }>();
   private readonly clock: Clock;
   private readonly secretKey: string;
@@ -125,6 +137,7 @@ export class FakeStripe {
     if (!pi) throw new Error(`fake stripe: no payment intent ${id}`);
     switch (outcome) {
       case 'succeeded':
+        if (pi.status !== 'succeeded') this.settleBt(pi);
         pi.status = 'succeeded';
         delete pi.last_error;
         return this.event('payment_intent.succeeded', this.piJson(pi));
@@ -193,7 +206,35 @@ export class FakeStripe {
       const r = this.refunds.get(id);
       return r ? ok(this.refundJson(r)) : missing('refund', id);
     }
+    if (resource === 'balance_transactions' && method === 'GET' && !id) return this.listBalanceTransactions(form);
     return err(404, 'invalid_request_error', `Unrecognized request URL (${method}: ${path})`);
+  }
+
+  private settleBt(pi: Pi): void {
+    this.balanceTransactions.push({ id: this.id('txn'), type: 'charge', source: { id: this.id('ch'), object: 'charge', payment_intent: pi.id }, amount: pi.amount, currency: pi.currency, created: this.now() });
+  }
+
+  private refundBt(r: Rf): void {
+    this.balanceTransactions.push({ id: this.id('txn'), type: 'refund', source: { id: r.id, object: 'refund', payment_intent: r.payment_intent }, amount: -r.amount, currency: r.currency, created: this.now() });
+  }
+
+  /** Newest first, like Stripe; `created[gte]`/`created[lt]`, `limit` (1-100, default 10), `starting_after`. */
+  private listBalanceTransactions(form: Form): Reply {
+    const created = typeof form['created'] === 'object' && !Array.isArray(form['created']) ? form['created'] : {};
+    const gte = s(created['gte']);
+    const lt = s(created['lt']);
+    const limit = s(form['limit']) === undefined ? 10 : Number(s(form['limit']));
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) return err(400, 'invalid_request_error', 'Invalid limit', 'parameter_invalid_integer', 'limit');
+    const matching = this.balanceTransactions.filter((b) => (gte === undefined || b.created >= BigInt(gte)) && (lt === undefined || b.created < BigInt(lt))).reverse();
+    const after = s(form['starting_after']);
+    let start = 0;
+    if (after !== undefined) {
+      const i = matching.findIndex((b) => b.id === after);
+      if (i < 0) return missing('balance_transaction', after, 'starting_after');
+      start = i + 1;
+    }
+    const page = matching.slice(start, start + limit);
+    return ok({ object: 'list', has_more: start + limit < matching.length, data: page.map((b) => ({ id: b.id, object: 'balance_transaction', type: b.type, amount: b.amount, currency: b.currency, created: b.created, source: b.source })) });
   }
 
   private createCustomer(form: Form): Reply {
@@ -310,6 +351,7 @@ export class FakeStripe {
       client_secret: `${id}_secret_${this.id('x')}`,
     };
     this.pis.set(id, pi);
+    if (pi.status === 'succeeded') this.settleBt(pi);
     return ok(this.piJson(pi));
   }
 
@@ -328,6 +370,7 @@ export class FakeStripe {
     const refused = pi.payment_method === 'pm_card_norefund';
     const r: Rf = { id: this.id('re'), payment_intent: piId, amount, currency: pi.currency, status: refused ? 'failed' : pi.payment_method === 'pm_card_slowrefund' ? 'pending' : 'succeeded', ...(refused ? { failure_reason: 'expired_or_canceled_card' } : {}), metadata: stringMap(form['metadata']) };
     this.refunds.set(r.id, r);
+    if (r.status === 'succeeded') this.refundBt(r);
     return ok(this.refundJson(r));
   }
 
@@ -335,6 +378,7 @@ export class FakeStripe {
   settleRefund(refundId: string, outcome: 'succeeded' | 'failed' = 'succeeded'): void {
     const r = this.refunds.get(refundId);
     if (!r) throw new Error(`fake stripe: no refund ${refundId}`);
+    if (outcome === 'succeeded' && r.status !== 'succeeded') this.refundBt(r);
     r.status = outcome;
     if (outcome === 'failed') r.failure_reason = 'expired_or_canceled_card';
   }

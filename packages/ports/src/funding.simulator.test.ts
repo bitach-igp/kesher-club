@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
-import { fixedClock } from './base.ts';
-import { fundingContract } from './funding.contract.ts';
+import { type AdvanceableClock, fixedClock } from './base.ts';
+import { fundingContract, fundingStatementContract } from './funding.contract.ts';
 import { addBusinessDays, FundingSimulator } from './funding.simulator.ts';
 
 fundingContract('simulator', () => new FundingSimulator(), {
@@ -11,6 +11,16 @@ fundingContract('simulator', () => new FundingSimulator(), {
   achPaymentMethod: 'pm_bank_ok',
   succeededWebhook: async (port, id) => (port as FundingSimulator).webhookFor(id, 'succeeded'),
   norefundPaymentMethod: 'pm_norefund',
+});
+
+fundingStatementContract('simulator', () => new FundingSimulator(fixedClock()), {
+  goodPaymentMethod: 'pm_card_ok',
+  achPaymentMethod: 'pm_bank_ok',
+  slowRefundPaymentMethod: 'pm_slowrefund',
+  clockOf: (port) => (port as FundingSimulator).clock as AdvanceableClock,
+  failListingFrom: (port, after) => {
+    (port as FundingSimulator).outageAfterPages = after;
+  },
 });
 
 describe('FundingSimulator specifics', () => {

@@ -6,7 +6,7 @@
 import { toWire, fromWire } from '@kesher/domain';
 import type { Money } from '@kesher/domain';
 import { type Clock, fixedClock, IdempotencyStore, Sequence } from './base.ts';
-import { FundingError, type FundingMethod, type FundingPort, type Load, type Refund } from './funding.ts';
+import { FundingError, type FundingMethod, type FundingPort, type FundingStatementPort, type Load, type Refund, type SettledEntry, type SettledPage } from './funding.ts';
 
 const ACH_HOLD_BUSINESS_DAYS = 3;
 
@@ -22,7 +22,7 @@ export function addBusinessDays(from: Date, days: number): Date {
   return d;
 }
 
-export class FundingSimulator implements FundingPort {
+export class FundingSimulator implements FundingPort, FundingStatementPort {
   private readonly loads = new Map<string, Load>();
   private readonly idem = new IdempotencyStore<Load>();
   private readonly events = new Map<string, { eventId: string; load: Load }>();
@@ -33,6 +33,11 @@ export class FundingSimulator implements FundingPort {
   private readonly refundIds = new Sequence('re');
   /** The payment method behind each load, for the refund fixtures. */
   private readonly sources = new Map<string, string>();
+  /** When each load / refund settled, from the simulator clock, for the statement listing. */
+  private readonly loadSettledAt = new Map<string, string>();
+  private readonly refundSettledAt = new Map<string, string>();
+  /** Fixture: the next `listSettled` fails with PROVIDER_UNAVAILABLE after this many pages (0 = at once). */
+  outageAfterPages: number | undefined;
 
   readonly clock: Clock;
   constructor(clock: Clock = fixedClock()) {
@@ -52,6 +57,7 @@ export class FundingSimulator implements FundingPort {
           : { loadId, method: input.method, amount: input.amount, status: 'succeeded' };
       this.loads.set(loadId, load);
       this.sources.set(loadId, input.paymentMethodId ?? '');
+      if (load.status === 'succeeded') this.loadSettledAt.set(loadId, this.clock.now().toISOString());
       return { ...load };
     });
   }
@@ -76,6 +82,7 @@ export class FundingSimulator implements FundingPort {
         ...(source === 'pm_norefund' ? { failureCode: 'REFUND_REFUSED' } : {}),
       };
       this.refunds.set(refund.refundId, refund);
+      if (refund.status === 'succeeded') this.refundSettledAt.set(refund.refundId, this.clock.now().toISOString());
       return { ...refund };
     });
   }
@@ -92,6 +99,7 @@ export class FundingSimulator implements FundingPort {
     if (!r) throw new FundingError('UNKNOWN_REFUND', refundId);
     const next: Refund = { ...r, status, ...(status === 'failed' ? { failureCode: 'REFUND_REFUSED' } : {}) };
     this.refunds.set(refundId, next);
+    if (status === 'succeeded') this.refundSettledAt.set(refundId, this.clock.now().toISOString());
     return { ...next };
   }
 
@@ -112,6 +120,7 @@ export class FundingSimulator implements FundingPort {
     const { holdUntil: _hold, ...rest } = load;
     const next: Load = b.status === 'succeeded' ? { ...rest, status: b.status } : { ...load, status: b.status };
     this.loads.set(load.loadId, next);
+    if (next.status === 'succeeded' && !this.loadSettledAt.has(load.loadId)) this.loadSettledAt.set(load.loadId, this.clock.now().toISOString());
     const out = { eventId: b.eventId, load: { ...next } };
     this.events.set(b.eventId, out);
     return out;
@@ -121,6 +130,26 @@ export class FundingSimulator implements FundingPort {
   webhookFor(loadId: string, status: 'succeeded' | 'failed'): { headers: Record<string, string>; rawBody: string } {
     const l = this.must(loadId);
     return { headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: this.evIds.next(), loadId, status, amount: toWire(l.amount) }) };
+  }
+
+  async listSettled(input: { from: string; to: string; cursor?: string; limit?: number }): Promise<SettledPage> {
+    if (this.outageAfterPages !== undefined && (input.cursor ? Number(input.cursor) / (input.limit ?? 100) : 0) >= this.outageAfterPages) throw new FundingError('PROVIDER_UNAVAILABLE', 'Simulated funding outage');
+    const from = Date.parse(input.from);
+    const to = Date.parse(input.to);
+    if (Number.isNaN(from) || Number.isNaN(to) || from >= to) throw new FundingError('VALIDATION_FAILED', 'from and to must be ISO instants with from before to');
+    const limit = input.limit ?? 100;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new FundingError('VALIDATION_FAILED', 'limit must be 1 to 100');
+    const offset = input.cursor === undefined ? 0 : Number(input.cursor);
+    if (!Number.isInteger(offset) || offset < 0) throw new FundingError('VALIDATION_FAILED', 'Bad cursor');
+    const all: SettledEntry[] = [];
+    for (const [id, at] of this.loadSettledAt) all.push({ kind: 'charge', id, loadId: id, amount: this.must(id).amount, settledAt: at });
+    for (const [id, at] of this.refundSettledAt) {
+      const r = this.refunds.get(id)!;
+      if (r.status === 'succeeded') all.push({ kind: 'refund', id, loadId: r.loadId, amount: r.amount, settledAt: at });
+    }
+    const inRange = all.filter((e) => Date.parse(e.settledAt) >= from && Date.parse(e.settledAt) < to).sort((a, b) => a.settledAt.localeCompare(b.settledAt) || a.id.localeCompare(b.id));
+    const entries = inRange.slice(offset, offset + limit);
+    return { entries, ...(offset + limit < inRange.length ? { nextCursor: String(offset + limit) } : {}) };
   }
 
   private must(id: string): Load {
