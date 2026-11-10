@@ -12,3 +12,14 @@ Steps (from repo root, PowerShell on Windows unless stated):
 9. docker rm -f kesher-pg
 Expected: step 4 prints `ok   ledger` with 0030 applied (Atlas accepts atlas.sum, which was recomputed by hand because the atlas CLI was not available in the cloud session) and step 5 reports no pending migrations. Step 6 returns one row, a partial btree index `WHERE (transfer_id IS NOT NULL)`. Step 7's plan names `journal_transfer_id_idx`. Step 8 shows club_app with only INSERT and SELECT.
 Report back: the console output of steps 4, 6, 7 and 8.
+
+## Result
+PASS, 2026-11-10 03:08 Asia/Jerusalem, runner worktree at 0b50b58, Docker 29.9.2, postgres:16.
+- First attempt failed at step 4 (`role "club_app" does not exist`): the PowerShell 5.1 pipe in step 3 prepended a BOM to roles.sql. Reran on a fresh container with a BOM-less `$OutputEncoding`; everything below is from that run.
+- Step 3: `ALTER ROLE` lines, no errors.
+- Step 4: `Migrating to version 0030 (30 migrations in total)`, `-- migrating version 0030`; `ok` for all nine schemas (ledger, identity, org, billing, legal, addons, notify, audit, agent). Atlas accepted the hand-computed atlas.sum.
+- Step 5: `No migration files to execute` for every schema, `ok` for all nine.
+- Step 6: one row: `journal_transfer_id_idx | CREATE INDEX journal_transfer_id_idx ON ledger.journal USING btree (transfer_id) WHERE (transfer_id IS NOT NULL)`.
+- Step 7: `Bitmap Heap Scan on journal` / `->  Bitmap Index Scan on journal_transfer_id_idx` / `Index Cond: (transfer_id = '00000000-0000-7000-8000-000000000000'::uuid)`.
+- Step 8: `club_app | INSERT`, `club_app | SELECT` (2 rows).
+- Step 9: container removed.
