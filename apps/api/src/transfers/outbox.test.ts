@@ -74,4 +74,38 @@ describe('OutboxPublisher (T-0687)', () => {
     expect(claimedInTx).toBe(true);
     expect(statements.some((s) => /update ops\.outbox/i.test(s))).toBe(true);
   });
+
+  it('a sink whose SQL fails on the claim transaction leaves its siblings published and the bad row counted (savepoint per message)', async () => {
+    await drain();
+    await queue(3, 'sql');
+    const seen: string[] = [];
+    const publisher = new OutboxPublisher(db, {
+      publish: async (m, tx) => {
+        if (m.type === 'sql.1') {
+          // Without the savepoint this aborts the transaction (25P02) and every later statement in it fails.
+          await tx!.query(`insert into ops.outbox (aggregate, aggregate_id, type, payload) values (null, '${AGG}', 'sql.bad', '{}')`);
+        }
+        seen.push(m.type);
+      },
+    });
+    expect(await publisher.publishBatch()).toEqual({ published: 2, failed: 1 });
+    expect(seen).toEqual(['sql.0', 'sql.2']);
+    const rows = await db.query<{ type: string; attempts: number; last_error_class: string | null; published_at: string | null }>(`select type, attempts, last_error_class, published_at from ops.outbox where type like 'sql.%' order by id`);
+    expect(rows.rows.map((r) => [r.type, r.attempts, r.published_at === null])).toEqual([['sql.0', 0, false], ['sql.1', 1, true], ['sql.2', 0, false]]);
+    expect(rows.rows[1]!.last_error_class).toBeTruthy();
+  });
+
+  it('a sink that writes through the transaction and then throws leaves nothing of that write behind', async () => {
+    await drain();
+    await queue(1, 'wt');
+    const publisher = new OutboxPublisher(db, {
+      publish: async (_m, tx) => {
+        await tx!.query(`insert into ops.outbox (aggregate, aggregate_id, type, payload) values ('test', '${AGG}', 'wt.ghost', '{}')`);
+        throw new RangeError('after write');
+      },
+    });
+    expect(await publisher.publishBatch()).toEqual({ published: 0, failed: 1 });
+    const rows = await db.query<{ type: string; attempts: number; last_error_class: string | null; published_at: string | null }>(`select type, attempts, last_error_class, published_at from ops.outbox where type like 'wt.%'`);
+    expect(rows.rows).toEqual([{ type: 'wt.0', attempts: 1, last_error_class: 'RangeError', published_at: null }]);
+  });
 });

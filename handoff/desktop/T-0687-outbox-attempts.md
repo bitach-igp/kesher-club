@@ -9,6 +9,17 @@ Steps (from repo root, PowerShell on Windows unless stated; a throwaway Postgres
 6. docker exec -d t0687-pg psql -U postgres -c "begin; select id from ops.outbox where published_at is null order by id limit 2 for update skip locked; select pg_sleep(8); commit;"
 7. docker exec t0687-pg psql -U postgres -c "begin; select id from ops.outbox where published_at is null order by id limit 2 for update skip locked; commit;"
 8. docker exec t0687-pg psql -U postgres -c "select count(*) as unpublished from ops.outbox where published_at is null"
-9. docker rm -f t0687-pg
-Expected: step 3 applies 0031 cleanly; step 4 lists `attempts integer NO 0` and `last_error_class text YES`; step 7 (run within 8 s of step 6, which holds ids 1 and 2) returns the other two ids (3 and 4), never 1 or 2; step 8 prints 4.
-Report back: the output of steps 3, 4, 7 and 8.
+9. A failing statement inside a savepoint, then a following update in the same transaction (the publisher's per-message savepoint). One `-c` aborts at the first error, so this step pipes statements to one psql session on stdin, where each statement is its own command:
+   @'
+   begin;
+   savepoint outbox_msg;
+   insert into ops.outbox (aggregate, aggregate_id, type, payload) values (null, '00000000-0000-7000-8000-000000000687', 'bad', '{}');
+   update ops.outbox set attempts = attempts + 1 where id = 1;
+   rollback to savepoint outbox_msg;
+   update ops.outbox set attempts = attempts + 1, last_error_class = 'ConstraintError' where id = 1;
+   commit;
+   select id, attempts, last_error_class from ops.outbox where id = 1;
+   '@ | docker exec -i t0687-pg psql -U postgres
+10. docker rm -f t0687-pg
+Expected: step 3 applies 0031 cleanly; step 4 lists `attempts integer NO 0` and `last_error_class text YES`; step 7 (run within 8 s of step 6, which holds ids 1 and 2) returns the other two ids (3 and 4), never 1 or 2; step 8 prints 4; in step 9 the insert fails with a not-null violation, the first update fails with `current transaction is aborted` (25P02), and after the rollback to the savepoint the second update succeeds and the commit completes: the final select shows id 1 with attempts 1 and last_error_class ConstraintError.
+Report back: the output of steps 3, 4, 7, 8 and 9.

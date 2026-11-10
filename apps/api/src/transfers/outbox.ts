@@ -35,7 +35,7 @@ export class OutboxPublisher {
   /**
    * Publishes up to `limit` unpublished rows in id order (at-least-once). The rows are claimed with `for update skip locked` in one
    * transaction, so a second publisher (another worker) skips them and takes the next ones: no message reaches the sink twice from two
-   * workers at once. A sink failure leaves the row unpublished, counts the attempt and records the error's class (never its message),
+   * workers at once. Each message runs inside its own savepoint, so a failing message undoes only its own writes. A sink failure leaves the row unpublished, counts the attempt and records the error's class (never its message),
    * and the row is claimed again on the next run.
    */
   async publishBatch(limit = 100): Promise<{ published: number; failed: number }> {
@@ -47,11 +47,16 @@ export class OutboxPublisher {
       let published = 0;
       let failed = 0;
       for (const r of rows.rows) {
+        // One savepoint per message: a SQL error inside the sink aborts the transaction (25P02) until it is rolled back to here, and the
+        // sink's own writes through `tx` for a message that then fails must not stay.
+        await tx.query('savepoint outbox_msg');
         try {
           await this.sink.publish({ id: r.id, aggregate: r.aggregate, aggregateId: r.aggregate_id, type: r.type, payload: r.payload, createdAt: new Date(r.created_at).toISOString() }, tx);
           await tx.query('update ops.outbox set published_at = now() where id = $1', [r.id]);
+          await tx.query('release savepoint outbox_msg');
           published += 1;
         } catch (e) {
+          await tx.query('rollback to savepoint outbox_msg');
           await tx.query('update ops.outbox set attempts = attempts + 1, last_error_class = $2 where id = $1', [r.id, e instanceof Error ? e.name : typeof e]);
           failed += 1;
         }
