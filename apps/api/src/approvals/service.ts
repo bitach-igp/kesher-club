@@ -126,6 +126,9 @@ export class ApprovalService {
       if (r.kind === 'staff_grant' && by.role !== 'admin' && by.role !== 'org_admin') throw new DomainError('FORBIDDEN', 'Only admins approve institution staff grants');
       if (r.kind === 'credit_limit' && by.role !== 'admin') throw new DomainError('FORBIDDEN', 'Only admins approve institution credit limits');
       if (r.kind === 'kyb_decision' && by.role !== 'compliance') throw new DomainError('FORBIDDEN', 'Only compliance approves an institution\'s KYB');
+      if (r.kind === 'ledger_correction' && by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only finance approves ledger corrections');
+      // The proposer may withdraw a correction (reject) but never approve their own: the two approvals are two other people's (T-0685).
+      if (r.kind === 'ledger_correction' && decision === 'approve' && by.partyId === r.requested_by) throw new DomainError('FORBIDDEN', 'The proposer cannot approve their own ledger correction');
       if (r.kind === 'fx_rate' && by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only finance approves club rates');
       if (r.kind === 'price_rule' && by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only finance approves add-on price rules');
       if (r.kind === 'plan_version' && by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only finance approves plan versions');

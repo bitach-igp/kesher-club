@@ -2588,6 +2588,74 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FxRate" }
         default: { $ref: "#/components/responses/Problem" }
+  /admin/ledger-corrections:
+    post:
+      operationId: proposeAdminLedgerCorrection
+      tags: [admin]
+      summary: Propose reversing one journal; two other finance users must approve it
+      description: >-
+        REQ-LED-001, REQ-ADM-002 (T-0685). Creates a ledger_correction approval carrying the journal id and a reason.
+        The proposer cannot approve it; two distinct other finance users do (approveAdminLedgerCorrection), and the second
+        approval posts one reversing journal under the key `{approvalId}:reverse`. A journal that is already reversed
+        answers IDEMPOTENCY_CONFLICT. Staff token with the finance role. Replaying the Idempotency-Key returns the same request.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/IdempotencyKey" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [journalId, reason]
+              properties:
+                journalId: { type: string, format: uuid }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "201":
+          description: The correction request, waiting for two approvers
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LedgerCorrection" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/ledger-corrections/{id}/approve:
+    post:
+      operationId: approveAdminLedgerCorrection
+      tags: [admin]
+      summary: Approve a ledger correction; the second distinct approval posts the reversing journal
+      description: REQ-LED-001, REQ-ADM-002 (T-0685). Must come from a finance user other than the proposer, once each. The second approval posts the reversal and writes an audit entry; repeating it on an approved request returns the same reversal. Staff token with the finance role.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: The correction after the decision, with its reversal once executed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LedgerCorrection" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/ledger-corrections/{id}/reject:
+    post:
+      operationId: rejectAdminLedgerCorrection
+      tags: [admin]
+      summary: Refuse or withdraw a ledger correction; nothing is posted
+      description: REQ-ADM-002 (T-0685). The proposer may withdraw it. Staff token with the finance role.
+      security: [{ staff: [] }]
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: The rejected correction
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/LedgerCorrection" }
+        default: { $ref: "#/components/responses/Problem" }
   /admin/price-rules:
     get:
       operationId: listAdminPriceRules
@@ -3954,6 +4022,34 @@ components:
         requestedBy: { type: string }
         expiresAt: { type: string, format: date-time }
         payload: { type: object, additionalProperties: true }
+    LedgerCorrection:
+      type: object
+      required: [id, journalId, reason, status, approvals, required, requestedBy, expiresAt]
+      properties:
+        id: { type: string, format: uuid, description: "The approval request id; the reversal journal's idempotency key is this id plus :reverse" }
+        journalId: { type: string, format: uuid }
+        reason: { type: string }
+        status: { type: string, enum: [pending, awaiting_second_approval, approved, rejected, expired] }
+        approvals: { type: integer, minimum: 0 }
+        required: { type: integer, minimum: 1 }
+        requestedBy: { type: string }
+        expiresAt: { type: string, format: date-time }
+        reversal:
+          type: object
+          description: The reversing journal, present once the correction has executed
+          required: [journalId, effectiveAt, totals]
+          properties:
+            journalId: { type: string, format: uuid }
+            effectiveAt: { type: string, format: date-time }
+            totals:
+              type: array
+              description: Sum of the reversal's postings per currency; always zero
+              items:
+                type: object
+                required: [currency, minor]
+                properties:
+                  currency: { type: string, enum: [USD, ILS] }
+                  minor: { type: string, pattern: "^-?\\d+$" }
     PayoutAccount:
       type: object
       required: [id, currency, ibanMasked, holderName, evidenceRef, status, recordedBy, recordedAt]

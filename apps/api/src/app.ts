@@ -96,6 +96,7 @@ import { PayoutAccounts, payoutAccountHandlers } from './institutions/payout-acc
 import { exportHandler } from './institutions/export.ts';
 import { InviteService, inviteHandlers } from './institutions/invites.ts';
 import { RosterService, importRosterHandler } from './institutions/roster.ts';
+import { LedgerCorrections, ledgerCorrectionHandlers } from './approvals/ledger-correction.ts';
 import { ApprovalService } from './approvals/service.ts';
 import { AuditService } from './audit/service.ts';
 import { simulatorFlagViolations } from './config.ts';
@@ -365,6 +366,7 @@ export function createApp(o: AppOptions): App {
     ...payoutAccountHandlers(s.payoutAccounts),
     ...kybHandlers(s.institutionKyb, new KybChecks({ db: o.db, kyb: s.institutionKyb, flags: s.flags, port: (m) => o.registry.resolve<KybPort>('kyb', m), provider: (m) => o.registry.bindingFor('kyb', m)?.provider ?? 'simulator' })),
     ...fxAdminHandlers(s.rates),
+    ...ledgerCorrectionHandlers(new LedgerCorrections(o.db, s.approvals, s.ledger, s.audit)),
     ...priceRuleHandlers(new PriceRules(o.db, s.approvals, s.audit)),
     ...planCatalogueHandlers(s.planCatalogue),
     ...funderInviteHandlers(s.funderInvites),
