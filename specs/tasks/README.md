@@ -172,6 +172,9 @@
 | [T-0553](T-0553.md) | PO | Fix: stranded payouts, test independence and the provider-change case | REQ-PO-002 | fix |
 | [T-0554](T-0554.md) | PO | Fix: institution payout approvals expire | REQ-PO-001, REQ-INS-020 | fix |
 | [T-0555](T-0555.md) | LED | Fix: institution payout-reserve account, counted as the institution's own money | REQ-PO-001, REQ-INS-006, REQ-INS-017, REQ-INS-021 | fix |
+| [T-0556](T-0556.md) | PO | Fix: a member cancels a payout that is still cooling off | REQ-PO-001, REQ-WAL-001 | fix |
+| [T-0557](T-0557.md) | ESIM | Fix: the loser of a same-key add-on create gives its credit back | REQ-ESIM-001, REQ-WAL-001 | fix |
+| [T-0558](T-0558.md) | WAL | Fix: the load sweep asks the vendor about a held load once per interval | REQ-WAL-003, REQ-LED-004 | fix |
 | [T-0661](T-0661.md) | INS | Fix: an allowance payment cannot overdraw the institution's account | REQ-INS-003, REQ-INS-008 | fix |
 | [T-0601](T-0601.md) | INS | Roster import all-or-nothing | REQ-INS-001 | 2 |
 | [T-0602](T-0602.md) | INS | Invite fan-out + funnel | REQ-INS-002 | 2 |
