@@ -141,7 +141,7 @@ run "internal_with_allowed_security_groups" {
   }
 
   assert {
-    condition     = toset([for r in values(aws_vpc_security_group_ingress_rule.https_from_security_group) : r.referenced_security_group_id]) == toset(["sg-0000000000000000a", "sg-0000000000000000b"])
+    condition     = [for r in aws_vpc_security_group_ingress_rule.https_from_security_group : r.referenced_security_group_id] == ["sg-0000000000000000a", "sg-0000000000000000b"]
     error_message = "T-0069: each rule admits exactly one named security group"
   }
 }

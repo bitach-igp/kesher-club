@@ -327,7 +327,8 @@ describe('the console calls the API over the internal ALB (T-0069)', () => {
     const vars = read('infra/terraform/modules/alb/variables.tf');
     expect(vars).toMatch(/variable "allowed_security_group_ids"[\s\S]*?default\s*=\s*\[\]/);
     expect(alb).toMatch(/"https_internal"[\s\S]*?count\s*=\s*var\.internal && length\(var\.allowed_security_group_ids\) == 0 \? 1 : 0/);
-    expect(alb).toMatch(/"https_from_security_group"[\s\S]*?for_each\s*=\s*var\.internal \? toset\(var\.allowed_security_group_ids\) : toset\(\[\]\)[\s\S]*?referenced_security_group_id\s*=\s*each\.key/);
+    expect(alb).toMatch(/"https_from_security_group"[\s\S]*?count\s*=\s*var\.internal \? length\(var\.allowed_security_group_ids\) : 0[\s\S]*?referenced_security_group_id\s*=\s*var\.allowed_security_group_ids\[count\.index\]/);
+    expect(alb).not.toMatch(/for_each\s*=\s*var\.internal \? toset\(var\.allowed/); // an unknown id (a service in the same apply) would fail a for_each at plan
     expect(alb).not.toMatch(/description\s*=\s*"[^"]*Client VPN/);
   });
 

@@ -37,11 +37,12 @@ resource "aws_vpc_security_group_ingress_rule" "https_internal" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "https_from_security_group" {
-  for_each = var.internal ? toset(var.allowed_security_group_ids) : toset([])
+  # count, not for_each: the list's length is known at plan time even when an id (a service created in the same apply) is not.
+  count = var.internal ? length(var.allowed_security_group_ids) : 0
 
   security_group_id            = aws_security_group.this.id
   description                  = "HTTPS from an allowed sender"
-  referenced_security_group_id = each.key
+  referenced_security_group_id = var.allowed_security_group_ids[count.index]
   from_port                    = 443
   to_port                      = 443
   ip_protocol                  = "tcp"

@@ -180,6 +180,13 @@ run "staging_runs_one_service_per_market" {
     error_message = "T-0069: the internal API host has its own listener rule and DNS record, apart from the public API hosts"
   }
 
+  # T-0069: the internal ALB admits exactly one security group (the console's, an id unknown at plan time here: module.console is not
+  # overridden) and no VPC-wide rule.
+  assert {
+    condition     = module.internal_alb.security_group_ingress_rule_count == 1 && !module.internal_alb.vpc_cidr_ingress
+    error_message = "T-0069: the internal ALB admits the console's security group and not the whole VPC"
+  }
+
   assert {
     condition     = aws_vpc_security_group_ingress_rule.api_il_from_internal_alb.from_port == 3000 && aws_vpc_security_group_ingress_rule.api_il_from_internal_alb.to_port == 3000
     error_message = "T-0069: the IL API tasks admit the internal ALB on the container port"
@@ -231,6 +238,13 @@ run "prod_runs_one_service_per_market" {
   assert {
     condition     = flatten([for c in aws_lb_listener_rule.api_internal.condition : [for h in c.host_header : tolist(h.values)]]) == ["api-il-internal.kesher.example"] && !contains(keys(aws_route53_record.alb), "api-il-internal.kesher.example") && aws_route53_record.api_internal.name == "api-il-internal.kesher.example"
     error_message = "T-0069: the internal API host has its own listener rule and DNS record, apart from the public API hosts"
+  }
+
+  # T-0069: the internal ALB admits exactly one security group (the console's, an id unknown at plan time here: module.console is not
+  # overridden) and no VPC-wide rule.
+  assert {
+    condition     = module.internal_alb.security_group_ingress_rule_count == 1 && !module.internal_alb.vpc_cidr_ingress
+    error_message = "T-0069: the internal ALB admits the console's security group and not the whole VPC"
   }
 
   assert {

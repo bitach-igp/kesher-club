@@ -21,7 +21,7 @@ variable "internal" {
 }
 
 variable "allowed_security_group_ids" {
-  description = "Internal ALB only. When non-empty, replaces the VPC-CIDR ingress: only these security groups may connect (T-0069)."
+  description = "Internal ALB only. When non-empty, replaces the VPC-CIDR ingress: only these security groups may connect (T-0069). An empty list on an internal ALB reverts to the VPC-wide rule, which admits Client VPN users too."
   type        = list(string)
   default     = []
 }
