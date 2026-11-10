@@ -106,7 +106,7 @@ import { INTENT_STATES, IntentService, type IntentStatus } from './intents/servi
 import { WebhookRouter } from './webhooks/handler.ts';
 import { InboundEventStore } from './webhooks/store.ts';
 import { simulatorVerifier } from './webhooks/verify.ts';
-import { OutboundEventsService } from './events/outbound.ts';
+import { OutboundEventsService, webhookHandlers } from './events/outbound.ts';
 import { ROUTES, type HandlerTable } from './routes.ts';
 import { randomBytes } from 'node:crypto';
 import { toWire, DomainError, Secret } from '@kesher/domain';
@@ -380,6 +380,7 @@ export function createApp(o: AppOptions): App {
     ...studentHandlers(new StudentDetail(o.db, new RosterList(o.db)), staffOf),
     ...statementHandlers(o.db, s.accounts, staffOf),
     ...teamHandlers(s.team, s.stepUp, staffOf),
+    ...webhookHandlers({ svc: s.outbound, flags: s.flags, audit: s.audit, staffOf }),
     ...usBankingHandlers(s.usBanking, s.stepUp, staffOf),
     ...usFundingHandlers(s.usFunding, s.stepUp, staffOf),
     ...usCollectionsHandlers(s.usCollections, staffOf),
