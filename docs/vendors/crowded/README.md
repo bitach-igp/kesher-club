@@ -154,11 +154,11 @@ mobile deposit or lockbox).
 23. **Shekel payout partner:** exact name and licence of the conversion and local payout partner (transcribed as "Tunes", Wise also named).
 
 ### New questions (docs comparison and the program proposal, 2026-11-10)
-24. **Which docs are current?** (Our sandbox answers every one of these calls, see "Sandbox check, 2026-11-10"; what is open is production and our tier.) The link Crowded sent (`2sBXwnuYMb`, 68 requests) has no Counterparties, no ACH or wire origination, no payment quotes, no get, list or cancel payment, and no sandbox payment simulate; the other published view (`2sBYArTsS6`, 85 requests, the one api-inventory.md was written from) has all of them. The adapter uses counterparties, `achCounterparty` payments, the quote, get and cancel payment. Are those endpoints still available to partners, or withdrawn or restricted?
-25. **Related Entities dashboard:** is it in the API? Neither published view mentions it. Can one partner token create, read and act for several entities' chapters (the proposal runs every entity "from one Zuz LLC login"), or is a per-entity token or the dashboard needed? Are entities created through `POST /organizations` or only opened in the dashboard?
+24. **Production enablement, one line:** the sandbox has counterparties, ACH and wire origination, quotes and the rest (see "Sandbox check"). Are counterparties and ACH or wire origination (`COUNTERPARTIES_NOT_ENABLED` in their docs) and **sub-accounts** switched on for our partner in production? In the sandbox, `POST /chapters/{id}/subaccounts` answers 401 `UnauthorizedUser` "Forbidden resource" on our Active, Approved chapter (with a valid body).
+25. ~~**Related Entities dashboard**~~ *Answered by our own sandbox test, 2026-11-10 (below): one partner token creates and reads several organizations and chapters; the dashboard is not needed for the API. Dropped.*
 26. **Who is invoiced the platform fee, and where is revenue paid?** The proposal pays Zuz LLC "monthly into a revenue share account with a statement per entity", and nets the $15,000 platform fee against Zuz LLC's share in one table and "Israel Global Pay" in another. Which entity pays the fee? Our 2026-11-04 notes had float and interchange credited nightly to the holder's account: which is right?
-27. **Reused key, different body:** what does Crowded answer when the same `idempotencyKey` arrives with another body (payments, sub-account creates)? And is the book-payment `DUPLICATE_PAYMENT` item error the only signal?
-28. **Application idempotency:** their reply says the application create may have no key, but the published docs list `idempotencyKey` (UUID, required) on `POST /chapters/{id}/applications`. We use the hosted form (`POST .../applications/form`, `contactIp` only) and read the application back by chapter, so we do not depend on either.
+27. ~~**Reused key, different body**~~ *Answered by our sandbox, 2026-11-10 (below) for ACH; the other calls are not worth a question. Dropped.*
+28. ~~**Application idempotency**~~ *We do not depend on it (hosted form, read back by chapter). Dropped.*
 
 ## Crowded's replies, 2026-11-10
 - **Applications (their reply):** they do not recall an idempotency key on the application create, it is unrelated to how an application is fetched, and applications have no external id and no metadata field. Nothing we do depends on either: we start the hosted form (`POST /chapters/{id}/applications/form`, which takes `contactIp`) and read the application with `GET /chapters/{id}/applications`, by chapter id, one application per chapter. Their published docs do list `idempotencyKey` as required on the direct submit (question 28).
@@ -177,7 +177,17 @@ To see which published view is right, we called the live sandbox with calls that
 - **`userPaysFees`, which only `2sBXwnuYMb` documents, exists too**: a collection create with `userPaysFees: "x"` answers `"data.userPaysFees" must be a boolean`. It makes the payer pay the processing fee on top of the amount (default: the chapter absorbs it), which is what REQ-INS-023 (fees billed to US funders) needs; the adapter does not send it yet.
 - **There is no Related Entities, FX, exchange-rate, ILS quote or wallet route** (`GET /related-entities`, `/fx`, `/exchange-rates`, `/chapters/{id}/payments/quotes/ils`, `/chapters/{id}/wallets`, `/me`, `/partners/me` all answer `Cannot GET`).
 - So the sandbox is a superset of both published views; each view is accurate for what it lists and incomplete. A sandbox is not production: whether a partner on our tier may use counterparties and ACH or wire origination in production (the docs name a 403 `COUNTERPARTIES_NOT_ENABLED`) is still question 24.
-- The 409 behaviour cannot be provoked on demand (it needs two overlapping requests), so section 5.5 of api-inventory.md stays documented behaviour, not observed.
+- The 409 behaviour was provoked later the same day with writes (next section), so it is observed for ACH payment creates.
+
+## Sandbox writes, 2026-11-10 (our key, Active and Approved chapter `f3ff4984`)
+Each of these created sandbox data (left behind: counterparty 2405860, ACH payments 17067126 and 17067127, $1.00 each, $2.49 fee each).
+- **Same key, same body:** the second call returns the first payment (201, same id). One payment.
+- **Same key, different body** (amount 250 after 100): 201 with the **original** payment (amount 100). No error, no second payment. Crowded replays the stored result whatever the new body says, so a caller must compare the amount it gets back with the amount it sent. Our adapter derives the key from the transfer key, so a changed body under one key cannot happen on our side.
+- **Concurrent, same key** (6 simultaneous requests): one created the payment, five answered `409 ConflictException`, message `DUPLICATE_REQUEST: A payment with this idempotency key is already being processed`. Exactly one payment exists afterwards. This is the case T-0695 retries.
+- **Fee:** `applyFee` is required on ACH; an originated ACH of $1.00 charges a $2.49 fee, `totalDebit` 349 (matches the doc example).
+- **Counterparty create** needs `nickname`, `type` `Business` or `Person`, `accountType` `Checking` or `Savings` (capitalised) and an `idempotencyKey`.
+- **Sub-accounts:** `POST /chapters/{id}/subaccounts` answers `401 UnauthorizedUser` on this chapter (question 24). Not tested: book payments and the sub-account fund call.
+- **One token, several organizations:** the same key lists and creates several organizations (the probes of 2026-11-09 and Israel Global Pay), so the API does not need the Related Entities dashboard.
 
 ## Reading their API docs
 Crowded's docs are a Postman collection. `node tools/crowded-docs.mjs` fetches every published view and renders it to markdown, so a question about their API is answered by grep and cited by line, not from memory:
