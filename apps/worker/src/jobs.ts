@@ -7,6 +7,7 @@
 // names every job-like module that is not here and why; jobs.test.ts fails on one that is in neither.
 import fs from 'node:fs';
 import type { App } from '@kesher/api/app';
+import { OutboxPublisher } from '@kesher/api/transfers/outbox';
 import { cardIssuingProcessor } from '@kesher/api/cards/settlement';
 import type { Database } from '@kesher/api/db';
 import { US_BANKING_FLAG } from '@kesher/api/institutions/us-banking';
@@ -38,6 +39,8 @@ import { RELEASE_CYCLE_MS as ACH_RELEASE_CYCLE_MS, ReleaseHoldsJob } from './wal
 
 /** Webhook replay (RUN-05): re-drives stored events whose processing failed. */
 export const WEBHOOK_REPLAY_CYCLE_MS = 60_000;
+/** The outbox drain (T-0687): messages reach the event sink within seconds; the claim is `skip locked`, so two workers never share a row. */
+export const OUTBOX_PUBLISH_CYCLE_MS = 10_000;
 /** Transaction monitoring looks back over its rule windows each run; hourly keeps alerts same-hour. */
 export const MONITORING_CYCLE_MS = 60 * 60_000;
 /** eSIM usage: the 20% and 3-day thresholds move slowly; hourly is ahead of either. */
@@ -150,6 +153,9 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue, m
     const devices = await s.identity.listDevices(partyId);
     return devices.filter((d) => d.pushToken).sort((a, b) => Date.parse(b.lastSeenAt) - Date.parse(a.lastSeenAt))[0]?.pushToken;
   }, market);
+  // The only sink today is the outbound-events service (T-0803); it ignores messages that are not institution events and
+  // sends the rest through the events port (the simulator in tests), so the drain is harmless where no endpoint exists.
+  const outbox = new OutboxPublisher(db, s.outbound);
   const proof = new BalanceProof(db);
   const sync = new CatalogueSync(db, clock);
   const providerOf = (capability: string): string => registry.bindingFor(capability, market)?.provider ?? 'simulator';
@@ -186,6 +192,7 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue, m
     { name: 'metrics-market', scope: 'market', everyMs: METRICS_SWEEP_CYCLE_MS, run: async () => ({ lagMs: await s.inbound.reportLag(clock()), stuck: (await s.transfers.reportStuck(clock())).length }) },
     { name: 'metrics-recon', scope: 'club', everyMs: METRICS_SWEEP_CYCLE_MS, run: () => reportReconBreaks(db, metrics, clock()) },
     { name: 'card-token-events', scope: 'market', everyMs: TOKEN_EVENTS_CYCLE_MS, run: () => tokenEvents.run() },
+    { name: 'outbox-publish', scope: 'club', everyMs: OUTBOX_PUBLISH_CYCLE_MS, run: () => outbox.publishBatch() },
     { name: 'load-sweep', scope: 'market', everyMs: LOAD_SWEEP_CYCLE_MS, run: () => loads.sweep() },
     { name: 'send-sweep', scope: 'club', everyMs: SEND_SWEEP_CYCLE_MS, run: () => sends.sweep() },
     { name: 'payout-sweep', scope: 'market', everyMs: PAYOUT_SWEEP_CYCLE_MS, run: () => payouts.sweep() },

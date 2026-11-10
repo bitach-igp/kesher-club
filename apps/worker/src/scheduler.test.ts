@@ -149,6 +149,16 @@ describe('Scheduler', () => {
     expect(lines.find((l) => l.fields['job'] === 'quiet')).toEqual({ event: 'job_ran', fields: { job: 'quiet', ms: 0 } });
   });
 
+  it('a run that reports published and failed counts (the outbox drain, T-0687) logs them on job_ran', async () => {
+    const drain: Job = { name: 'outbox-publish', scope: 'club', everyMs: 10_000, run: async () => ({ published: 3, failed: 1, payload: 'never logged' }) };
+    const { log, lines } = recorder();
+    const s = new Scheduler([drain], noLock, log);
+    s.start();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await s.stop();
+    expect(lines[0]).toEqual({ event: 'job_ran', fields: { job: 'outbox-publish', ms: 0, published: 3, failed: 1 } });
+  });
+
   it('stop() lets an in-flight run finish and schedules nothing more', async () => {
     const job = countingJob('drain', 10_000, 5_000);
     const { log, lines } = recorder();

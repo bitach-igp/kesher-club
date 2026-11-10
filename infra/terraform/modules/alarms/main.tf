@@ -16,6 +16,7 @@ locals {
   # Every job of apps/worker/src/jobs.ts with its cycle in seconds (a daily job is 86400). `money` jobs page when they fail
   # or go stale; the rest open a ticket. alarms-contract.test.ts fails when this table and the worker's job names differ.
   jobs = {
+    "outbox-publish"       = { cycle_s = 10, money = false }
     "metrics-market"       = { cycle_s = 60, money = false }
     "metrics-recon"        = { cycle_s = 60, money = false }
     "card-token-events"    = { cycle_s = 30, money = true }
