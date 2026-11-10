@@ -120,7 +120,7 @@ run "dead_worker_pages" {
   }
 
   assert {
-    condition     = length(aws_cloudwatch_metric_alarm.job_stale) == 24 && alltrue([for a in values(aws_cloudwatch_metric_alarm.job_stale) : a.treat_missing_data == "breaching" && a.metric_name == "job.age_s" && a.namespace == "Kesher"])
+    condition     = length(aws_cloudwatch_metric_alarm.job_stale) == 25 && alltrue([for a in values(aws_cloudwatch_metric_alarm.job_stale) : a.treat_missing_data == "breaching" && a.metric_name == "job.age_s" && a.namespace == "Kesher"])
     error_message = "job.age_s is emitted only when a run finishes, so every job's alarm must treat missing data as breaching"
   }
 
