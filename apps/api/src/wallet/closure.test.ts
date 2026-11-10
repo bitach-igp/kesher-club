@@ -3,10 +3,12 @@
 // after the refund journal posts; a zero balance closes at once. Also: holds and an overdrawn purse
 // block; a refused refund blocks with the reason; a pending refund closes on the next read once the
 // vendor confirms; money with no load behind it waits on a payout; a closed account no longer signs in.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { money, uuidv7 } from '@kesher/domain';
-import { fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock } from '@kesher/ports';
+import { randomBytes } from 'node:crypto';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { money, Secret, uuidv7 } from '@kesher/domain';
+import { FederatedIdPError, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
+import { createPiiCipher } from '../crypto/pii.ts';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
@@ -52,7 +54,7 @@ const journals = async (key: string) => (await db.query<{ n: number }>(`select c
 beforeAll(async () => {
   db = await createTestDatabase();
   host = new SimulatorHost(fixedClock(NOW.toISOString()) as AdvanceableClock);
-  app = createApp({ db, registry: host.registry, market: 'US', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags: new StaticFlags(undefined, { 'wallet.enabled': true }) });
+  app = createApp({ db, registry: host.registry, market: 'US', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags: new StaticFlags(undefined, { 'wallet.enabled': true }), pii: createPiiCipher({ dataKey: new Secret(randomBytes(32).toString('base64')), indexKey: new Secret(randomBytes(32).toString('base64')) }) });
 }, 60_000);
 afterAll(async () => db.close());
 
@@ -230,5 +232,108 @@ describe('TST-WAL-005: a load that converted into the other purse (T-0521)', () 
       { type: 'partner_settlement', currency: 'USD', amount_minor: '-4962' },
       { type: 'fx_position', currency: 'ILS', amount_minor: '-18361' },
     ]);
+  });
+});
+
+// T-0692 (REQ-AUTH-005): closing an Apple-linked account revokes the Apple refresh token.
+describe('T-0692: closing revokes the Apple token', () => {
+  const TOKEN = 'r.apple-refresh-token-secret-0123456789';
+  const revokeCalls = () => host.simulators['federated-idp'].revoked;
+  const tokenRows = async (partyId: string) => ((await app.services.socialLinks.takeForRevoke(partyId, 'apple')) === undefined ? 0 : 1);
+  const cases = async (partyId: string) => (await db.query<{ kind: string; payload: unknown; severity: string }>(`select kind, payload, severity from ops.case where dedupe_key = $1`, [`apple-revoke:${partyId}`])).rows;
+  const linkApple = (partyId: string, withToken = true) => app.services.socialLinks.link(partyId, 'apple', { subject: `apple-${partyId}`, ...(withToken ? { refreshToken: TOKEN } : {}) });
+
+  it('revokes once with the unsealed token under closure:{partyId}:apple-revoke, then erases the row; closing twice revokes once', async () => {
+    const m = await register('+12125550401');
+    await linkApple(m.partyId);
+    expect(await tokenRows(m.partyId)).toBe(1);
+    const before = revokeCalls().length;
+    const spy = vi.spyOn(host.simulators['federated-idp'], 'revoke');
+    expect((await close(m)).body).toMatchObject({ state: 'closed' });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy).toHaveBeenCalledWith('apple', TOKEN, `closure:${m.partyId}:apple-revoke`);
+    expect(revokeCalls().slice(before)).toEqual([{ provider: 'apple', refreshToken: TOKEN }]);
+    expect(await tokenRows(m.partyId)).toBe(0);
+    expect(await cases(m.partyId)).toEqual([]);
+    expect((await close(m)).body).toMatchObject({ state: 'closed' });
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it('a Google link, a passkey only, and an Apple link without a stored token trigger no revoke', async () => {
+    const g = await register('+12125550402');
+    await app.services.socialLinks.link(g.partyId, 'google', { subject: `google-${g.partyId}`, refreshToken: TOKEN });
+    const p = await register('+12125550403');
+    const a = await register('+12125550404');
+    await linkApple(a.partyId, false);
+    const spy = vi.spyOn(host.simulators['federated-idp'], 'revoke');
+    for (const m of [g, p, a]) expect((await close(m, `closure-${m.partyId}`)).body).toMatchObject({ state: 'closed' });
+    expect(spy).not.toHaveBeenCalled();
+    expect(await cases(a.partyId)).toEqual([]);
+    spy.mockRestore();
+  });
+
+  it('a revoke failure does not block the closure: one case, no token in it, and the token is erased', async () => {
+    const m = await register('+12125550405');
+    await linkApple(m.partyId);
+    const logs = [vi.spyOn(console, 'log'), vi.spyOn(console, 'error'), vi.spyOn(console, 'warn'), vi.spyOn(console, 'info')];
+    const spy = vi.spyOn(host.simulators['federated-idp'], 'revoke').mockRejectedValue(new FederatedIdPError('PROVIDER_UNAVAILABLE', `down, token ${TOKEN}`));
+    const r = await close(m);
+    expect(r.body).toMatchObject({ state: 'closed' });
+    expect(JSON.stringify(r.body)).not.toContain(TOKEN);
+    expect(await tokenRows(m.partyId)).toBe(0);
+    const rows = await cases(m.partyId);
+    expect(rows).toEqual([{ kind: 'apple_revoke_failed', severity: 'high', payload: { partyId: m.partyId, provider: 'apple', failure: 'PROVIDER_UNAVAILABLE' } }]);
+    expect(JSON.stringify(rows)).not.toContain(TOKEN);
+    // A second close finds no token and opens no second case.
+    await close(m);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(await cases(m.partyId)).toHaveLength(1);
+    for (const l of logs) {
+      expect(JSON.stringify(l.mock.calls)).not.toContain(TOKEN);
+      l.mockRestore();
+    }
+    spy.mockRestore();
+  });
+
+  it('a refund that fails leaves the account open and the Apple token untouched', async () => {
+    const m = await register('+12125550406');
+    await linkApple(m.partyId);
+    await load(m, 1_500n, 'pm_norefund');
+    const spy = vi.spyOn(host.simulators['federated-idp'], 'revoke');
+    expect((await close(m, 'closure-norefund')).body).not.toMatchObject({ state: 'closed' });
+    expect(spy).not.toHaveBeenCalled();
+    expect(await tokenRows(m.partyId)).toBe(1);
+    spy.mockRestore();
+  });
+
+  it('a crash after the account closed but before the revoke is mended by closing again', async () => {
+    const m = await register('+12125550407');
+    await linkApple(m.partyId);
+    await app.services.identity.setUserStatus(m.partyId, 'closed'); // the state a crash leaves behind
+    const spy = vi.spyOn(host.simulators['federated-idp'], 'revoke');
+    await app.services.closure.close(m.partyId, NOW);
+    expect(spy).toHaveBeenCalledWith('apple', TOKEN, `closure:${m.partyId}:apple-revoke`);
+    expect(await tokenRows(m.partyId)).toBe(0);
+    spy.mockRestore();
+  });
+
+  it('a crash between the revoke and the erase ends with no token after a retry, the revoke replayed under the same key', async () => {
+    const m = await register('+12125550408');
+    const before = revokeCalls().filter((c) => c.refreshToken === TOKEN).length;
+    await linkApple(m.partyId);
+    const erase = vi.spyOn(app.services.socialLinks, 'eraseToken').mockRejectedValueOnce(new Error('connection lost'));
+    const spy = vi.spyOn(host.simulators['federated-idp'], 'revoke');
+    await expect(app.services.closure.close(m.partyId, NOW)).rejects.toThrow('connection lost');
+    expect(await tokenRows(m.partyId)).toBe(1);
+    expect((await app.services.identity.findUser(m.partyId))!.status).toBe('closed');
+    await app.services.closure.close(m.partyId, NOW);
+    expect(await tokenRows(m.partyId)).toBe(0);
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(new Set(spy.mock.calls.map((c) => c[2]))).toEqual(new Set([`closure:${m.partyId}:apple-revoke`]));
+    // The adapter's idempotency store answered the second call from the first: one revoke reached the IdP.
+    expect(revokeCalls().filter((c) => c.refreshToken === TOKEN && c.provider === 'apple').length).toBe(before + 1);
+    erase.mockRestore();
+    spy.mockRestore();
   });
 });

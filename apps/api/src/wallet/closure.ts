@@ -13,6 +13,7 @@
 import { DomainError, money, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
 import { FundingError, RATE_SCALE, type FundingPort, type Refund } from '@kesher/ports';
 import type { IdentityRepository } from '../auth/repository.ts';
+import type { SocialTokenRevoker } from '../auth/social.ts';
 import type { AuditService } from '../audit/service.ts';
 import type { Database } from '../db.ts';
 import type { AccountService } from '../ledger/accounts.ts';
@@ -40,6 +41,8 @@ interface Deps {
   identity: IdentityRepository;
   audit: AuditService;
   provider: string;
+  /** Revokes the member's Apple token once the account is closed (T-0692). */
+  revoker: SocialTokenRevoker;
 }
 
 export const refundKey = (partyId: string, loadTransferId: string): string => `closure:${partyId}:${loadTransferId}`;
@@ -55,7 +58,11 @@ export class ClosureService {
   async close(partyId: string, now: Date): Promise<ClosureView> {
     const user = await this.d.identity.findUser(partyId);
     if (!user) throw new DomainError('NOT_FOUND', 'Account not found');
-    if (user.status === 'closed') return this.status(partyId, now);
+    if (user.status === 'closed') {
+      // A retry mends a closure that stopped between the status and the revoke or the erase (T-0692); with no token left it is a no-op.
+      await this.d.revoker.revokeForClosure(partyId, now);
+      return this.status(partyId, now);
+    }
     const purses = await this.d.accounts.purses(partyId);
     if (purses.some((p) => p.holds.minor !== 0n)) return this.blocked(partyId, 'HOLDS_OUTSTANDING', now);
     if (purses.some((p) => p.available.minor < 0n)) return this.blocked(partyId, 'OVERDRAWN', now);
@@ -171,6 +178,8 @@ export class ClosureService {
     if (purses.every((p) => p.available.minor === 0n && p.holds.minor === 0n)) {
       await this.d.identity.setUserStatus(partyId, 'closed');
       await this.d.audit.record({ actorId: partyId, actorRole: 'member', action: 'account.closed', subject: partyId, reason: 'member closed the account (REQ-WAL-005)', payload: { refunds: refunds.filter((t) => t.state === 'settled').map((t) => t.id) } }, now);
+      // Only now that the account is closed: a refund that failed above never reaches here, so it never revokes Apple access.
+      await this.d.revoker.revokeForClosure(partyId, now);
       return this.view(partyId, 'closed', now);
     }
     const lastFailed = refunds.filter((t) => t.state === 'failed').sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))[0];
