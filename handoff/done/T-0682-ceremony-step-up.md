@@ -20,3 +20,19 @@ Steps (from repo root, PowerShell on Windows unless stated):
 17. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with identity at 5 migrations. Step 5 reports no pending migrations. Step 6 lists passkey_ceremony and step_up_token among the identity tables. Step 7 prints `INSERT 0 1`. Step 8 fails with a unique violation on (kind, session_id): one live ceremony per kind and key. Step 9 fails with a check violation on kind. Step 10 prints `INSERT 0 1` (the upsert replaces the ceremony and clears consumed_at). Step 11 prints one row and `UPDATE 1`. Step 12 prints no rows and `UPDATE 0` (single-use). Step 13 prints `INSERT 0 1`. Step 14 fails with a unique violation on the primary key (one token per session; the app upserts). Steps 15 and 16 each print one row and a `DELETE 1` (club_app may delete expired rows).
 Report back: the console output of steps 4, 5, 6, 8, 9, 12 and 14.
+
+## Result
+PASS, 2026-11-10 03:11 Asia/Jerusalem, runner worktree at d17d04e, Docker 29.9.2, postgres:16. Step 3 piped with a BOM-less `$OutputEncoding` (PowerShell 5.1 otherwise prepends a BOM); steps 7 to 16 run through `cmd /c` so the `\"` quoting reaches psql unchanged. Every step matched the expected outcome.
+- Step 4: `Migrating to version 0005 (5 migrations in total)` for identity; `ok` for all nine schemas.
+- Step 5: `No migration files to execute` for every schema, `ok` for all nine.
+- Step 6: 13 identity tables, including `passkey_ceremony` and `step_up_token`.
+- Step 7: `INSERT 0 1`.
+- Step 8: `ERROR:  duplicate key value violates unique constraint "passkey_ceremony_kind_session_id_key"` / `DETAIL:  Key (kind, session_id)=(step_up, sess-682) already exists.`
+- Step 9: `ERROR:  new row for relation "passkey_ceremony" violates check constraint "passkey_ceremony_kind_check"`.
+- Step 10: `INSERT 0 1` (upsert).
+- Step 11: one row `00000000-0000-7000-8000-000000068201`, `UPDATE 1`.
+- Step 12: `(0 rows)`, `UPDATE 0` (single-use).
+- Step 13: `INSERT 0 1`.
+- Step 14: `ERROR:  duplicate key value violates unique constraint "step_up_token_pkey"` / `DETAIL:  Key (session_id)=(sess-682) already exists.`
+- Step 15: one row `sess-682`, `DELETE 1`. Step 16: one row `00000000-0000-7000-8000-000000068201`, `DELETE 1`.
+- Step 17: container removed.
