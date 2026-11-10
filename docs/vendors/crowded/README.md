@@ -150,11 +150,11 @@ mobile deposit or lockbox).
 20. **Per diem visibility and cards:** can an admin see per diem transactions, which ID do non-US cardholders use, can digital-only cards be
     issued to cardholders outside the US?
 21. **Pass-through costs:** are they debited from the account, as a transaction, and how are they named?
-22. **Sub-account quota:** how many sub-accounts does our subscription tier allow (the API answers 429 over it)?
+22. **Sub-account quota:** how many sub-accounts does our subscription tier allow (the API answers 429 over it)? *Observed 2026-11-10: our sandbox allows two sub-accounts (the third create answered 429 `SubscriptionQuotaExceededError`, "Limit has already been reached"); ask for the production tier's number and for the sandbox limit to be raised.*
 23. **Shekel payout partner:** exact name and licence of the conversion and local payout partner (transcribed as "Tunes", Wise also named).
 
 ### New questions (docs comparison and the program proposal, 2026-11-10)
-24. ~~**Production enablement**~~ *Answered by Crowded, 2026-11-10: counterparties, ACH and wire origination "will be turned on for production and ready to launch"; it is a staging thing in the testing environment that they configure when it is time for production. Sub-accounts: they will switch them on in the sandbox for us "now for testing". **To do:** re-run the `POST /chapters/{id}/subaccounts` sandbox probe (owner mode, fake owner, no email) once they confirm; it answered 401 "Forbidden resource" on 2026-11-10.*
+24. ~~**Production enablement**~~ *Answered by Crowded, 2026-11-10: counterparties, ACH and wire origination "will be turned on for production and ready to launch"; it is a staging thing in the testing environment that they configure when it is time for production. Sub-accounts: they will switch them on in the sandbox for us "now for testing". **Sub-accounts confirmed in the sandbox the same day** (see "Sub-accounts, 2026-11-10" below).*
 25. ~~**Related Entities dashboard**~~ *Answered by our own sandbox test, 2026-11-10 (below): one partner token creates and reads several organizations and chapters; the dashboard is not needed for the API. Dropped.*
 26. **Who is invoiced the platform fee** *(revenue timing answered; the fee payer is still open)*: Crowded (2026-11-10): revenue is paid **monthly or quarterly, "leaning more to for sure the monthly and not nightly"**; they will double-confirm. Still open: which entity is invoiced the $15,000 platform fee (the proposal nets it against Zuz LLC's share in one table and "Israel Global Pay" in another), and whether each entity gets its own statement.
 27. ~~**Reused key, different body**~~ *Answered by our sandbox, 2026-11-10 (below) for ACH; the other calls are not worth a question. Dropped.*
@@ -188,6 +188,13 @@ Each of these created sandbox data (left behind: counterparty 2405860, ACH payme
 - **Counterparty create** needs `nickname`, `type` `Business` or `Person`, `accountType` `Checking` or `Savings` (capitalised) and an `idempotencyKey`.
 - **Sub-accounts:** `POST /chapters/{id}/subaccounts` answers `401 UnauthorizedUser` on this chapter (question 24). Not tested: book payments and the sub-account fund call.
 - **One token, several organizations:** the same key lists and creates several organizations (the probes of 2026-11-09 and Israel Global Pay), so the API does not need the Related Entities dashboard.
+
+## Sub-accounts, 2026-11-10 (after Crowded switched them on)
+- `POST /chapters/{id}/subaccounts` in owner mode (fake owner, `example.com` email) answers **201** with the sub-account (`parentChapterId`, `status: Active`, the owner as an Active user). It appears in `GET /chapters` as its own chapter and has its own open account (`GET /chapters/{subId}/accounts`: own account number, same routing number, balance 0). There is no `GET .../subaccounts` list route (404).
+- **Quota:** our sandbox allows two sub-accounts. The third create answered `429 SubscriptionQuotaExceededError` "Limit has already been reached" (question 22).
+- **A replay is not safe once the quota is full:** the same key and same body, sent after the quota was reached, answered 429, not the first sub-account. The quota is checked before the idempotency lookup. So a sub-account create that timed out must be looked up (by name in `GET /chapters`), not retried, once a tenant is at its limit.
+- **Same key, different body** answered `500 InternalServerErrorException` (not a replay, unlike ACH payments, which replay the original). Our adapter derives the key from the transfer key, so the body never changes under a key.
+- Left in the sandbox: sub-accounts 870fbf10 and cda34a3b (with owners `probe-sub@example.com` and `probe-sub2@example.com`); there is no delete route we know of.
 
 ## Reading their API docs
 Crowded's docs are a Postman collection. `node tools/crowded-docs.mjs` fetches every published view and renders it to markdown, so a question about their API is answered by grep and cited by line, not from memory:
