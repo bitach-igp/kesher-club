@@ -33,7 +33,7 @@ run "no_exemption_by_default" {
   }
 
   assert {
-    condition     = !contains([for r in aws_wafv2_web_acl.this.rule : r.name], "body-size-outside-exempt-route")
+    condition     = length([for r in aws_wafv2_web_acl.this.rule : r if startswith(r.name, "body-size-outside-exempt-")]) == 0
     error_message = "T-0068: no exemption, no companion rule"
   }
 }
@@ -48,7 +48,7 @@ run "one_route_exempted" {
   variables {
     large_body_route = {
       host       = "api-il.test.example"
-      path_regex = "^/v1/institutions/[^/]+/rosters$"
+      path_regex = "^/v1/institutions/[0-9a-f-]+/rosters$"
     }
   }
 
@@ -73,21 +73,34 @@ run "one_route_exempted" {
     error_message = "T-0068: no other managed rule group is overridden"
   }
 
-  # What the override relaxes is blocked again, everywhere but the one route.
+  # What the override relaxes is blocked again, everywhere but the one route: one rule per condition, after the managed groups.
+  # Each assertion filters by name before it indexes, so nothing indexes a rule that lacks the block.
   assert {
-    condition     = length([for r in aws_wafv2_web_acl.this.rule : r if r.name == "body-size-outside-exempt-route" && length(r.action[0].block) == 1 && r.priority > 12]) == 1
-    error_message = "T-0068: a blocking rule evaluated after the managed groups catches the labelled request outside the exempt route"
+    condition = alltrue([
+      for n in ["host", "path", "method"] :
+      length([for r in aws_wafv2_web_acl.this.rule : r.priority if r.name == "body-size-outside-exempt-${n}"]) == 1
+    ])
+    error_message = "T-0068: one blocking rule each for host, path and method"
   }
 
   assert {
-    condition     = one([for r in aws_wafv2_web_acl.this.rule : r if r.name == "body-size-outside-exempt-route"]).statement[0].and_statement[0].statement[0].label_match_statement[0].key == "awswaf:managed:aws:core-rule-set:SizeRestrictions_Body"
-    error_message = "T-0068: the companion rule matches the SizeRestrictions_BODY label"
+    condition = alltrue([
+      for r in [for r in aws_wafv2_web_acl.this.rule : r if startswith(r.name, "body-size-outside-exempt-")] :
+      r.priority > 12 && length(r.action[0].block) == 1 && length(r.statement[0].and_statement[0].statement) == 2 && length(r.statement[0].and_statement[0].statement[0].label_match_statement) == 1 && length(r.statement[0].and_statement[0].statement[1].not_statement) == 1
+    ])
+    error_message = "T-0068: each companion rule blocks after the managed groups: the label and not one exemption condition"
   }
 
   assert {
-    condition = (
-      length(one([for r in aws_wafv2_web_acl.this.rule : r if r.name == "body-size-outside-exempt-route"]).statement[0].and_statement[0].statement[1].not_statement[0].statement[0].and_statement[0].statement) == 3
-    )
-    error_message = "T-0068: the exemption is host, path and method together"
+    condition = alltrue([
+      for r in [for r in aws_wafv2_web_acl.this.rule : r if startswith(r.name, "body-size-outside-exempt-")] :
+      r.statement[0].and_statement[0].statement[0].label_match_statement[0].key == "awswaf:managed:aws:core-rule-set:SizeRestrictions_Body"
+    ])
+    error_message = "T-0068: the companion rules match the SizeRestrictions_BODY label"
+  }
+
+  assert {
+    condition     = length([for r in aws_wafv2_web_acl.this.rule : r if startswith(r.name, "body-size-outside-exempt-")]) == 3
+    error_message = "T-0068: exactly host, path and method, nothing else"
   }
 }

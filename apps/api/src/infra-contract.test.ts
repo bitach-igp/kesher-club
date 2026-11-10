@@ -240,19 +240,27 @@ describe('the WAF lets one route past the body-size rule and no other (T-0068)',
     expect(alb).toMatch(/override_action\s*\{\s*none\s*\{\}/);
   });
 
-  it('blocks the labelled request everywhere except POST on the exempt host and path, after the managed groups', () => {
-    const r = rule('body-size-outside-exempt-route');
-    expect(r).toMatch(/block\s*\{\}/);
-    expect(r).toMatch(/key\s*=\s*"awswaf:managed:aws:core-rule-set:SizeRestrictions_Body"/);
-    expect(r).toMatch(/not_statement/);
-    expect(r).toMatch(/search_string\s*=\s*rule\.value\.host/);
-    expect(r).toMatch(/single_header\s*\{\s*name\s*=\s*"host"/);
-    expect(r).toMatch(/regex_string\s*=\s*rule\.value\.path_regex/);
-    expect(r).toMatch(/search_string\s*=\s*rule\.value\.method/);
-    expect(r).toMatch(/method\s*\{\}/);
-    // The managed groups take priorities 10 + index (three by default): the block rule comes after all of them.
-    expect(Number(/priority\s*=\s*(\d+)/.exec(r)?.[1])).toBeGreaterThan(10 + 3);
-    expect(r).toMatch(/for_each\s*=\s*var\.large_body_route == null \? \[\] : \[var\.large_body_route\]/);
+  it('blocks the labelled request when the host, the path or the method is not the exempt one, after the managed groups', () => {
+    const parts = {
+      host: { leaf: /byte_match_statement[\s\S]*search_string\s*=\s*lower\(rule\.value\.host\)[\s\S]*single_header\s*\{\s*name\s*=\s*"host"[\s\S]*type\s*=\s*"LOWERCASE"/, priority: 50 },
+      path: { leaf: /regex_match_statement[\s\S]*regex_string\s*=\s*rule\.value\.path_regex[\s\S]*uri_path\s*\{\}/, priority: 51 },
+      method: { leaf: /byte_match_statement[\s\S]*search_string\s*=\s*rule\.value\.method[\s\S]*method\s*\{\}/, priority: 52 },
+    };
+    for (const [n, { leaf, priority }] of Object.entries(parts)) {
+      const r = rule(`body-size-outside-exempt-${n}`);
+      expect(r, n).toMatch(/block\s*\{\}/);
+      expect(r, n).toMatch(/key\s*=\s*"awswaf:managed:aws:core-rule-set:SizeRestrictions_Body"/);
+      // The provider allows three statement levels: and -> not -> one leaf, never deeper.
+      expect(r, n).toMatch(/and_statement[\s\S]*label_match_statement[\s\S]*not_statement/);
+      expect([...r.matchAll(/and_statement\s*\{/g)], n).toHaveLength(1);
+      expect([...r.matchAll(/not_statement\s*\{/g)], n).toHaveLength(1);
+      expect([...r.matchAll(/or_statement\s*\{/g)], n).toHaveLength(0);
+      expect(r, n).toMatch(leaf);
+      expect(Number(/priority\s*=\s*(\d+)/.exec(r)?.[1]), n).toBe(priority);
+      expect(priority).toBeGreaterThan(10 + 3); // the managed groups take 10 + index (three by default)
+      expect(r, n).toMatch(/for_each\s*=\s*var\.large_body_route == null \? \[\] : \[var\.large_body_route\]/);
+    }
+    expect([...alb.matchAll(/^\s*name\s*=\s*"body-size-outside-exempt-/gm)]).toHaveLength(3);
   });
 
   it('is a module variable that defaults to no exemption, and the method defaults to POST', () => {
@@ -268,7 +276,7 @@ describe('the WAF lets one route past the body-size rule and no other (T-0068)',
       const admin = hcl.slice(hcl.indexOf('module "admin_alb" {'), hcl.indexOf('module "api" {'));
       const route = /large_body_route\s*=\s*\{([^}]*)\}/.exec(alb)?.[1] ?? '';
       expect(route).toMatch(/host\s*=\s*local\.market_hosts\["il"\]\.api/);
-      expect(route).toMatch(/path_regex\s*=\s*"\^\/v1\/institutions\/\[\^\/\]\+\/rosters\$"/);
+      expect(route).toMatch(/path_regex\s*=\s*"\^\/v1\/institutions\/\[0-9a-f-\]\+\/rosters\$"/);
       expect(route).not.toMatch(/method/);
       expect(admin).not.toMatch(/large_body_route/);
       expect(hcl.match(/large_body_route/g)).toHaveLength(1);
