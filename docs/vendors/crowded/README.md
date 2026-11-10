@@ -167,7 +167,13 @@ mobile deposit or lockbox).
 
 ## Sandbox check, 2026-11-10 (our key, read-only)
 To see which published view is right, we called the live sandbox with calls that create nothing (reads, the documented side-effect-free quotes, and bodies the server rejects):
-- **All 17 calls that only `2sBYArTsS6` lists exist and answer**: `GET` counterparties (list and one), `GET` payments (list and one), `POST` payment cancel, `POST` ACH and wire quotes (both ask for `data.amount`), `POST /sandbox/payments/{id}/simulate`, and `POST /chapters/{id}/payments` accepts the types `book`, `ach`, `wire`, `achCounterparty` and `wireCounterparty` (the server lists them itself). A route that does not exist answers `NotFoundException: Cannot GET ...`; these answer `NotExistError` (the id is unknown) or `ValidationError` (the body is wrong).
+- **All 17 requests that only `2sBYArTsS6` lists exist in the sandbox**, each exercised without creating anything. A route that does not exist answers `NotFoundException: Cannot GET ...`; these answer `NotExistError` (the id is unknown) or `ValidationError` (the body is wrong):
+  - counterparties: list (200), get (404 `NotExistError`), create (400, wants `routingNumber`, `accountNumber`, `accountType`, `type`), update address (400, "address is required ... enables wire payments"), delete (404 `NotExistError`);
+  - payments: list (200), get (404), cancel (404);
+  - quotes: ACH and wire (400, both want `data.amount`);
+  - sandbox simulate (400, `"data" is required`);
+  - the five payment types on `POST /chapters/{id}/payments`: `ach`, `achCounterparty`, `wire` and `wireCounterparty` each answer 400 "At least one payment is required" for an empty list, and the server's own message names all five (`book`, `ach`, `wire`, `achCounterparty`, `wireCounterparty`); the two ACH and two wire requests in the Postman list are these types of one route;
+  - the two webhook event-type examples are the one `GET /webhooks/event-types` (200).
 - **`userPaysFees`, which only `2sBXwnuYMb` documents, exists too**: a collection create with `userPaysFees: "x"` answers `"data.userPaysFees" must be a boolean`. It makes the payer pay the processing fee on top of the amount (default: the chapter absorbs it), which is what REQ-INS-023 (fees billed to US funders) needs; the adapter does not send it yet.
 - **There is no Related Entities, FX, exchange-rate, ILS quote or wallet route** (`GET /related-entities`, `/fx`, `/exchange-rates`, `/chapters/{id}/payments/quotes/ils`, `/chapters/{id}/wallets`, `/me`, `/partners/me` all answer `Cannot GET`).
 - So the sandbox is a superset of both published views; each view is accurate for what it lists and incomplete. A sandbox is not production: whether a partner on our tier may use counterparties and ACH or wire origination in production (the docs name a 403 `COUNTERPARTIES_NOT_ENABLED`) is still question 24.
