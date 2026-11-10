@@ -856,6 +856,66 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/ledger-corrections": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Propose reversing one journal; two other finance users must approve it
+         * @description REQ-LED-001, REQ-ADM-002 (T-0685). Creates a ledger_correction approval carrying the journal id and a reason. The proposer cannot approve it; two distinct other finance users do (approveAdminLedgerCorrection), and the second approval posts one reversing journal under the key `{approvalId}:reverse`. A journal that is already reversed answers IDEMPOTENCY_CONFLICT. Staff token with the finance role. Replaying the Idempotency-Key returns the same request.
+         */
+        readonly post: operations["proposeAdminLedgerCorrection"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/ledger-corrections/{id}/approve": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Approve a ledger correction; the second distinct approval posts the reversing journal
+         * @description REQ-LED-001, REQ-ADM-002 (T-0685). Must come from a finance user other than the proposer, once each. The second approval posts the reversal and writes an audit entry; repeating it on an approved request returns the same reversal. Staff token with the finance role.
+         */
+        readonly post: operations["approveAdminLedgerCorrection"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/admin/ledger-corrections/{id}/reject": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Refuse or withdraw a ledger correction; nothing is posted
+         * @description REQ-ADM-002 (T-0685). The proposer may withdraw it. Staff token with the finance role.
+         */
+        readonly post: operations["rejectAdminLedgerCorrection"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/admin/legal/documents": {
         readonly parameters: {
             readonly query?: never;
@@ -4356,6 +4416,36 @@ export interface components {
             /** @enum {string} */
             readonly status: "none" | "pending" | "approved" | "rejected" | "review";
         };
+        readonly LedgerCorrection: {
+            readonly approvals: number;
+            /** Format: date-time */
+            readonly expiresAt: string;
+            /**
+             * Format: uuid
+             * @description The approval request id; the reversal journal's idempotency key is this id plus :reverse
+             */
+            readonly id: string;
+            /** Format: uuid */
+            readonly journalId: string;
+            readonly reason: string;
+            readonly requestedBy: string;
+            readonly required: number;
+            /** @description The reversing journal, present once the correction has executed */
+            readonly reversal?: {
+                /** Format: date-time */
+                readonly effectiveAt: string;
+                /** Format: uuid */
+                readonly journalId: string;
+                /** @description Sum of the reversal's postings per currency; always zero */
+                readonly totals: readonly {
+                    /** @enum {string} */
+                    readonly currency: "USD" | "ILS";
+                    readonly minor: string;
+                }[];
+            };
+            /** @enum {string} */
+            readonly status: "pending" | "awaiting_second_approval" | "approved" | "rejected" | "expired";
+        };
         /** @description Plain text, never markup. Line breaks and tabs only; no other control characters or bidirectional overrides. Limits count code points. */
         readonly LegalBody: {
             readonly en: string;
@@ -6529,6 +6619,90 @@ export interface operations {
                         readonly approval: components["schemas"]["ApprovalRequest"];
                         readonly decision?: components["schemas"]["KybDecision"];
                     };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly proposeAdminLedgerCorrection: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** Format: uuid */
+                    readonly journalId: string;
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The correction request, waiting for two approvers */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["LedgerCorrection"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly approveAdminLedgerCorrection: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The correction after the decision, with its reversal once executed */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["LedgerCorrection"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly rejectAdminLedgerCorrection: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly reason: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The rejected correction */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["LedgerCorrection"];
                 };
             };
             readonly default: components["responses"]["Problem"];
