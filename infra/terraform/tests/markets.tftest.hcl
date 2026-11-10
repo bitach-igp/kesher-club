@@ -169,8 +169,27 @@ run "staging_runs_one_service_per_market" {
   # T-0047: the console runs as a service from its own image. The ALB attachment (host, priority, health path) lives in
   # the ecs-service module's listener rule, which a root test cannot read; only the image and settings are asserted here.
   assert {
-    condition     = module.console.image == "222222222222.dkr.ecr.il-central-1.amazonaws.com/kesher/console:abc1234" && module.console.environment["CONSOLE_ENVIRONMENT"] == "staging" && module.console.environment["CONSOLE_API_URL"] == "https://api-il.staging.kesher.example/v1"
-    error_message = "T-0047: staging runs the console from kesher/console:<tag> with CONSOLE_ENVIRONMENT=staging and CONSOLE_API_URL on the IL API host"
+    condition     = module.console.image == "222222222222.dkr.ecr.il-central-1.amazonaws.com/kesher/console:abc1234" && module.console.environment["CONSOLE_ENVIRONMENT"] == "staging" && module.console.environment["CONSOLE_API_URL"] == "https://api-il-internal.staging.kesher.example/v1" && module.console.environment["CONSOLE_API_URL"] != "https://api-il.staging.kesher.example/v1"
+    error_message = "T-0047: staging runs the console from kesher/console:<tag> with CONSOLE_ENVIRONMENT=staging and CONSOLE_API_URL on the internal API host, not the public one (T-0069)"
+  }
+
+  # T-0069: the host the console calls is served by the internal ALB's own rule, to the IL API service only, and the record is not one of the
+  # public API hosts (which resolve to the internet-facing ALB).
+  assert {
+    condition     = flatten([for c in aws_lb_listener_rule.api_internal.condition : [for h in c.host_header : tolist(h.values)]]) == ["api-il-internal.staging.kesher.example"] && !contains(keys(aws_route53_record.alb), "api-il-internal.staging.kesher.example") && aws_route53_record.api_internal.name == "api-il-internal.staging.kesher.example"
+    error_message = "T-0069: the internal API host has its own listener rule and DNS record, apart from the public API hosts"
+  }
+
+  # T-0069: the internal ALB admits exactly one security group (the console's, an id unknown at plan time here: module.console is not
+  # overridden) and no VPC-wide rule.
+  assert {
+    condition     = module.internal_alb.security_group_ingress_rule_count == 1 && !module.internal_alb.vpc_cidr_ingress
+    error_message = "T-0069: the internal ALB admits the console's security group and not the whole VPC"
+  }
+
+  assert {
+    condition     = aws_vpc_security_group_ingress_rule.api_il_from_internal_alb.from_port == 3000 && aws_vpc_security_group_ingress_rule.api_il_from_internal_alb.to_port == 3000
+    error_message = "T-0069: the IL API tasks admit the internal ALB on the container port"
   }
 }
 
@@ -210,7 +229,26 @@ run "prod_runs_one_service_per_market" {
 
   # T-0047: as staging.
   assert {
-    condition     = module.console.environment["CONSOLE_ENVIRONMENT"] == "production" && module.console.image == "222222222222.dkr.ecr.il-central-1.amazonaws.com/kesher/console:abc1234" && module.console.environment["CONSOLE_API_URL"] == "https://api-il.kesher.example/v1"
-    error_message = "T-0047: prod runs the console from kesher/console:<tag> with CONSOLE_ENVIRONMENT=production and CONSOLE_API_URL on the IL API host"
+    condition     = module.console.environment["CONSOLE_ENVIRONMENT"] == "production" && module.console.image == "222222222222.dkr.ecr.il-central-1.amazonaws.com/kesher/console:abc1234" && module.console.environment["CONSOLE_API_URL"] == "https://api-il-internal.kesher.example/v1" && module.console.environment["CONSOLE_API_URL"] != "https://api-il.kesher.example/v1"
+    error_message = "T-0047: prod runs the console from kesher/console:<tag> with CONSOLE_ENVIRONMENT=production and CONSOLE_API_URL on the internal API host, not the public one (T-0069)"
+  }
+
+  # T-0069: the host the console calls is served by the internal ALB's own rule, to the IL API service only, and the record is not one of the
+  # public API hosts (which resolve to the internet-facing ALB).
+  assert {
+    condition     = flatten([for c in aws_lb_listener_rule.api_internal.condition : [for h in c.host_header : tolist(h.values)]]) == ["api-il-internal.kesher.example"] && !contains(keys(aws_route53_record.alb), "api-il-internal.kesher.example") && aws_route53_record.api_internal.name == "api-il-internal.kesher.example"
+    error_message = "T-0069: the internal API host has its own listener rule and DNS record, apart from the public API hosts"
+  }
+
+  # T-0069: the internal ALB admits exactly one security group (the console's, an id unknown at plan time here: module.console is not
+  # overridden) and no VPC-wide rule.
+  assert {
+    condition     = module.internal_alb.security_group_ingress_rule_count == 1 && !module.internal_alb.vpc_cidr_ingress
+    error_message = "T-0069: the internal ALB admits the console's security group and not the whole VPC"
+  }
+
+  assert {
+    condition     = aws_vpc_security_group_ingress_rule.api_il_from_internal_alb.from_port == 3000 && aws_vpc_security_group_ingress_rule.api_il_from_internal_alb.to_port == 3000
+    error_message = "T-0069: the IL API tasks admit the internal ALB on the container port"
   }
 }

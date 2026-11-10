@@ -292,13 +292,30 @@ function parseLink(raw: unknown): { holder: UsBankingHolder; usEntity?: { legalN
 
 type StaffOfFn = (partyId: string) => Promise<{ institutionId: string; role: 'staff' | 'finance' | 'admin' } | undefined>;
 
+/** Loopback, link-local, RFC 1918, carrier-grade NAT and IPv6 unique-local: an address only a host inside our network can send from. */
+function isPrivateIp(ip: string): boolean {
+  const v4 = /^(?:::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/i.exec(ip);
+  if (v4) {
+    const a = Number(v4[1]);
+    const b = Number(v4[2]);
+    return a === 10 || a === 127 || a === 0 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127);
+  }
+  return /^(?:::1?|f[cd][0-9a-f]{2}:|fe[89ab][0-9a-f]:)/i.test(ip);
+}
+
 /**
- * The requester's address: the last entry the load balancer appended to X-Forwarded-For (an earlier one is the client's to forge). The API sits
- * behind exactly one internet-facing ALB; if a CDN is ever put in front of it, the client is the entry before the last.
+ * The requester's address (T-0069): the last public entry the load balancer appended to X-Forwarded-For (an earlier one is the client's to
+ * forge). Behind the internet-facing ALB the last entry is the peer the ALB saw, so it is the client. The console's calls arrive on the
+ * internal ALB, which appends the console task's own private address after the staff member's: one trailing private entry is that hop and
+ * is skipped, so the entry before it (the one the console forwarded from its own ALB's last entry) is the client. Only a host inside our
+ * network can connect from a private address (the internet-facing ALB never sees one, and its NAT gateway is a public address), so a
+ * client cannot make the API skip a real client entry, and an address in a private range is never returned as a client's.
  */
-function clientIp(req: HttpRequest): string | undefined {
-  const last = (req.headers['x-forwarded-for'] ?? '').split(',').pop()?.trim();
-  return last && IP.test(last) ? last : undefined;
+export function clientIp(req: HttpRequest): string | undefined {
+  const hops = (req.headers['x-forwarded-for'] ?? '').split(',').map((h) => h.trim());
+  let last = hops.pop();
+  if (last !== undefined && IP.test(last) && isPrivateIp(last)) last = hops.pop();
+  return last && IP.test(last) && !isPrivateIp(last) ? last : undefined;
 }
 
 export function usBankingHandlers(svc: InstitutionUsBanking, stepUp: StepUpService, staffOf: StaffOfFn): Record<string, Handler> {
