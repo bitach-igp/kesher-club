@@ -18,7 +18,7 @@ export const WEBHOOKS_FLAG = 'webhooks.outbound';
  * (`localhost`, `*.local`, `*.internal`, `*.localhost`, `*.lan`, `*.home.arpa`). The delivery host resolves the name
  * itself, so a public name that resolves to a private address (DNS rebinding) is the delivery provider's to refuse.
  */
-export function assertPublicHttpsUrl(raw: string): void {
+export function assertPublicHttpsUrl(raw: string): string {
   let u: URL;
   try {
     u = new URL(raw);
@@ -33,6 +33,7 @@ export function assertPublicHttpsUrl(raw: string): void {
   const last = labels[labels.length - 1] ?? '';
   if (host.includes(':') || host.startsWith('[') || /^\d+$/.test(last) || /^0x/.test(last)) throw new DomainError('VALIDATION_FAILED', 'Endpoint must be a host name, not an IP address');
   if (labels.length < 2 || /(^|\.)(localhost|local|internal|lan|home|corp|intranet|home\.arpa)$/.test(host)) throw new DomainError('VALIDATION_FAILED', 'Endpoint must be a public host name');
+  return u.href;
 }
 
 export interface EndpointView {
@@ -66,11 +67,13 @@ export class OutboundEventsService implements OutboxSink {
 
   /** Console: register an endpoint. Returns the secret ONCE; it is never stored on our side. */
   async createEndpoint(input: { institutionId: string; url: string; eventTypes: readonly OutboundEventType[]; createdBy: string; idempotencyKey?: string }, now: Date): Promise<Endpoint> {
-    assertPublicHttpsUrl(input.url);
+    const url = assertPublicHttpsUrl(input.url);
     const unknown = input.eventTypes.filter((t) => !Object.values(INSTITUTION_EVENTS).includes(t));
     if (unknown.length) throw new DomainError('VALIDATION_FAILED', `Unknown event types: ${unknown.join(', ')}`);
-    const ep = await this.port.createEndpoint({ institutionId: input.institutionId, url: input.url, eventTypes: input.eventTypes }, `ep:${input.institutionId}:${input.idempotencyKey ?? input.url}`);
-    await this.db.query('insert into notify.outbound_endpoint (endpoint_id, institution_id, url, event_types, created_by, created_at) values ($1, $2, $3, $4, $5, $6) on conflict (endpoint_id) do nothing', [ep.endpointId, input.institutionId, input.url, [...input.eventTypes], input.createdBy, now]);
+    const ep = await this.port.createEndpoint({ institutionId: input.institutionId, url, eventTypes: input.eventTypes }, `ep:${input.institutionId}:${input.idempotencyKey ?? url}`);
+    // A reused key answers its first endpoint only for the same request.
+    if (ep.url !== url || [...ep.eventTypes].sort().join() !== [...input.eventTypes].sort().join()) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key created a different endpoint');
+    await this.db.query('insert into notify.outbound_endpoint (endpoint_id, institution_id, url, event_types, created_by, created_at) values ($1, $2, $3, $4, $5, $6) on conflict (endpoint_id) do nothing', [ep.endpointId, input.institutionId, url, [...input.eventTypes], input.createdBy, now]);
     return ep;
   }
 
@@ -86,9 +89,6 @@ export class OutboundEventsService implements OutboxSink {
     if (!type) return;
     const institutionId = typeof m.payload['institutionId'] === 'string' ? m.payload['institutionId'] : undefined;
     if (!institutionId) return;
-    // No live endpoint of ours (none registered, or all deleted): nothing to deliver.
-    const live = await (tx ?? this.db).query('select 1 from notify.outbound_endpoint where institution_id = $1 and active limit 1', [institutionId]);
-    if (live.rowCount === 0) return;
     const thin: Record<string, string> = {};
     for (const [k, v] of Object.entries(m.payload)) if (typeof v === 'string' && /id$|Id$|^type$|^status$|^count$|^paid$|^failures$/.test(k)) thin[k] = v;
     const sent = await this.port.send({ type, institutionId, payload: { ...thin, aggregateId: m.aggregateId } }, `outbox:${m.id}`);
@@ -121,8 +121,10 @@ export class OutboundEventsService implements OutboxSink {
     return ((await this.db.query('select 1 from notify.outbound_endpoint where endpoint_id = $1 and institution_id = $2 and active', [endpointId, institutionId])).rowCount ?? 0) > 0;
   }
 
-  /** Soft delete: the table grants no delete, so `active` goes false. */
+  /** Deactivates at the provider, then here (the table grants no delete, so `active` goes false). */
   async deleteEndpoint(institutionId: string, endpointId: string): Promise<boolean> {
+    if (!(await this.owns(institutionId, endpointId))) return false;
+    await this.port.deleteEndpoint(endpointId, `delete:${endpointId}`); // the provider first: a failure leaves the endpoint live and the call retriable
     const r = await this.db.query('update notify.outbound_endpoint set active = false where endpoint_id = $1 and institution_id = $2 and active', [endpointId, institutionId]);
     return (r.rowCount ?? 0) > 0;
   }

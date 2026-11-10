@@ -2443,7 +2443,7 @@ export interface paths {
         readonly put?: never;
         /**
          * Register a webhook endpoint; the signing secret is returned once
-         * @description REQ-NOT-002 (T-0688), behind the flag webhooks.outbound (404 FEATURE_OFF when off). Institution admins only (403 for other staff; another institution's staff get 404). The URL must be a public https host name on port 443: IP literals, `localhost` and internal names are refused with 422 VALIDATION_FAILED. The Standard Webhooks secret (`whsec_...`) is in this response only: it is not stored on our side, not logged, and not listed later. The same Idempotency-Key answers the same endpoint (and secret) and creates nothing twice.
+         * @description REQ-NOT-002 (T-0688), behind the flag webhooks.outbound (404 FEATURE_OFF when off). Institution admins only (403 for other staff; another institution's staff get 404). The URL must be a public https host name on port 443: IP literals, `localhost` and internal names are refused with 422 VALIDATION_FAILED. The Standard Webhooks secret (`whsec_...`) is in this response only: it is not stored on our side, not logged, and not listed later. The same Idempotency-Key and request answer the same endpoint (and secret) and create nothing twice; the same key with a different URL or event types is 409 IDEMPOTENCY_CONFLICT.
          */
         readonly post: operations["createWebhookEndpoint"];
         readonly delete?: never;
@@ -2464,7 +2464,7 @@ export interface paths {
         readonly post?: never;
         /**
          * Delete a webhook endpoint
-         * @description REQ-NOT-002 (T-0688). Institution admins only. The endpoint leaves the list and no longer counts as live. Another institution's endpoint, or one already deleted, is 404.
+         * @description REQ-NOT-002 (T-0688). Institution admins only. The endpoint is deactivated at the delivery provider first, so no later event, replay or rotation reaches it, and it leaves the list. Another institution's endpoint, or one already deleted, is 404.
          */
         readonly delete: operations["deleteWebhookEndpoint"];
         readonly options?: never;

@@ -246,9 +246,40 @@ describe('webhook endpoint routes (T-0688, REQ-NOT-002)', () => {
     expect((await call(on, 'POST', `/admin/webhook-deliveries/${m!.message_id}/replay`, adminToken, { endpointId: ep.endpointId }, 'replay-del-0001')).status).toBe(404);
     // With no live endpoint left nothing is sent for a new event.
     const before = host.simulators.events.delivered.length;
+    const publish = async () => {
+      const ci = uuidv7(NOW);
+      await hdb.transaction((tx) => enqueue(tx, 'collection', ci, 'collection.paid', { institutionId: ohr, collectionItemId: ci }));
+      await new OutboxPublisher(hdb, on.services.outbound).publishBatch();
+    };
+    await publish();
+    expect(host.simulators.events.delivered.length).toBe(before);
+    // A new endpoint later does not bring the deleted one back.
+    const fresh = (await call(on, 'POST', `/institutions/${ohr}/webhook-endpoints`, tok['rivka']!, { url: 'https://hooks.ohr.example/new', eventTypes: ['collection.paid'] }, 'create-new-0001')).body as Created;
+    await publish();
+    expect(host.simulators.events.delivered.slice(before).map((r) => r.url)).toEqual([fresh.url]);
+  });
+
+  it('deleting one of two endpoints stops deliveries to it only; the other keeps receiving', async () => {
+    const e = `/institutions/${ohr}/webhook-endpoints`;
+    const a = (await call(on, 'POST', e, tok['rivka']!, { url: 'https://a.ohr.example/h', eventTypes: ['collection.paid'] }, 'create-two-a001')).body as Created;
+    await call(on, 'POST', e, tok['rivka']!, { url: 'https://b.ohr.example/h', eventTypes: ['collection.paid'] }, 'create-two-b001');
+    expect((await call(on, 'DELETE', `${e}/${a.endpointId}`, tok['rivka']!)).status).toBe(204);
+    const before = host.simulators.events.delivered.length;
     const ci = uuidv7(NOW);
     await hdb.transaction((tx) => enqueue(tx, 'collection', ci, 'collection.paid', { institutionId: ohr, collectionItemId: ci }));
     await new OutboxPublisher(hdb, on.services.outbound).publishBatch();
-    expect(host.simulators.events.delivered.length).toBe(before);
+    const urls = host.simulators.events.delivered.slice(before).map((r) => r.url);
+    expect(urls).toContain('https://b.ohr.example/h');
+    expect(urls).not.toContain('https://a.ohr.example/h');
+    expect(urls).not.toContain('https://hooks.ohr.example/kesher');
+  });
+
+  it('a reused Idempotency-Key with a different URL is 409; the URL is stored normalised', async () => {
+    const e = `/institutions/${ohr}/webhook-endpoints`;
+    const one = await call(on, 'POST', e, tok['rivka']!, { url: 'https://HOOKS.ohr.example/Norm', eventTypes: ['collection.paid'] }, 'create-reuse-001');
+    expect((one.body as Created).url).toBe('https://hooks.ohr.example/Norm');
+    expect((await hdb.query<{ url: string }>('select url from notify.outbound_endpoint where endpoint_id = $1', [(one.body as Created).endpointId])).rows[0]!.url).toBe('https://hooks.ohr.example/Norm');
+    const other = await call(on, 'POST', e, tok['rivka']!, { url: 'https://other.ohr.example/x', eventTypes: ['collection.paid'] }, 'create-reuse-001');
+    expect(other).toMatchObject({ status: 409, body: { code: 'IDEMPOTENCY_CONFLICT' } });
   });
 });
