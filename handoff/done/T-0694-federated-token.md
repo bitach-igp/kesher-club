@@ -20,3 +20,21 @@ Steps (from repo root, PowerShell on Windows unless stated):
 17. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with identity at 6 migrations. Step 5 reports no pending migrations. Step 6 shows columns party_id uuid, provider text, refresh_token_sealed bytea, created_at timestamptz (all not null) and the primary key (party_id, provider) plus the provider check. Step 7 lists exactly DELETE, INSERT, SELECT. Step 8 prints `INSERT 0 1`. Step 9 fails with a unique violation on `federated_token_pkey` (one token per member and provider). Step 10 fails with a check violation on provider. Step 11 fails with a not-null violation on refresh_token_sealed. Step 12 prints the one row from step 8. Step 13 fails with `permission denied for table federated_token` (no UPDATE grant). Step 14 prints one row and `DELETE 1`. Step 15 prints `INSERT 0 1` (club_app may insert the link row that `link` writes). Step 16 fails with `permission denied for table external_ref` (club_app has no DELETE on ops; this is why unlink is not in this card).
 Report back: the console output of steps 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15 and 16.
+
+## Result
+PASS, 2026-11-10 08:15 Asia/Jerusalem, runner worktree @ 41115ec, Docker 29.9.2, postgres:16.
+- Note: a first attempt ran steps 1-4 inside one shell call and its output was lost to the bridge timeout; the second attempt (killed mid-ledger by the same timeout) was discarded too. Final run on a fresh container: roles.sql piped BOM-less, migrate.mjs run detached via cmd.
+- Step 4: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent; identity "Migrating to version 0006 (6 migrations in total)"; atlas_identity revisions 0001..0006. Exit 0.
+- Step 5: "No migration files to execute" for every schema; exit 0.
+- Step 6: party_id uuid, provider text, refresh_token_sealed bytea, created_at timestamptz, all not null; `federated_token_pkey` PRIMARY KEY (party_id, provider); `federated_token_provider_check` CHECK (provider = ANY (ARRAY['apple','google'])).
+- Step 7: club_app DELETE, INSERT, SELECT (3 rows).
+- Step 8: INSERT 0 1.
+- Step 9: ERROR duplicate key value violates unique constraint "federated_token_pkey".
+- Step 10: ERROR new row violates check constraint "federated_token_provider_check".
+- Step 11: ERROR null value in column "refresh_token_sealed" violates not-null constraint.
+- Step 12: one row, ...069401 | apple.
+- Step 13: ERROR permission denied for table federated_token.
+- Step 14: returns ...069401, DELETE 1.
+- Step 15: INSERT 0 1.
+- Step 16: ERROR permission denied for table external_ref.
+- Step 17: container removed.
