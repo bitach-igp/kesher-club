@@ -18,6 +18,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/auth/passkeys/register', operationId: 'registerPasskey', public: true },
   { method: 'POST', path: '/auth/passkeys/authenticate', operationId: 'authenticatePasskey', public: true },
   { method: 'POST', path: '/auth/token/refresh', operationId: 'refreshToken', public: true },
+  { method: 'GET', path: '/auth/social/providers', operationId: 'listSocialProviders', public: true },
+  { method: 'POST', path: '/auth/social/sign-in', operationId: 'signInWithSocial', public: true },
   { method: 'POST', path: '/auth/step-up', operationId: 'stepUp' },
   { method: 'GET', path: '/legal/documents', operationId: 'getLegalDocuments', public: true },
   { method: 'GET', path: '/me/consents', operationId: 'getMyConsents' },

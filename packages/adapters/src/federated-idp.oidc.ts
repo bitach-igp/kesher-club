@@ -92,6 +92,15 @@ export abstract class OidcFederatedIdPAdapter implements FederatedIdPPort {
     return this.identityFrom({ payload, refreshToken });
   }
 
+  async verifyIdentityToken(provider: FederatedProvider, input: { idToken: string; nonce: string }): Promise<FederatedIdentity> {
+    this.assertProvider(provider);
+    if (!input.idToken) throw new FederatedIdPError('INVALID_CODE', 'Identity token required');
+    // Same checks as the code exchange: signature, issuer, audience (our client id), expiry, nonce.
+    const payload = await this.verifyIdToken(input.idToken);
+    if (typeof payload.nonce !== 'string' || payload.nonce !== input.nonce) throw new FederatedIdPError('NONCE_MISMATCH', 'id_token nonce does not match');
+    return this.identityFrom({ payload, refreshToken: undefined });
+  }
+
   async revoke(provider: FederatedProvider, refreshToken: string, idempotencyKey: string): Promise<{ revoked: true; auditRef: string }> {
     this.assertProvider(provider);
     if (!refreshToken) throw new FederatedIdPError('INVALID_CODE', 'Refresh token required');
@@ -200,6 +209,9 @@ export class FederatedIdPRouter implements FederatedIdPPort {
   }
   async exchangeCode(provider: FederatedProvider, input: { code: string; nonce: string; redirectUri: string }): Promise<FederatedIdentity> {
     return this.pick(provider).exchangeCode(provider, input);
+  }
+  async verifyIdentityToken(provider: FederatedProvider, input: { idToken: string; nonce: string }): Promise<FederatedIdentity> {
+    return this.pick(provider).verifyIdentityToken(provider, input);
   }
   async revoke(provider: FederatedProvider, refreshToken: string, idempotencyKey: string): Promise<{ revoked: true; auditRef: string }> {
     return this.pick(provider).revoke(provider, refreshToken, idempotencyKey);

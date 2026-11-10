@@ -77,3 +77,8 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-10 | T-0683 | #290 | Sonnet APPROVE (first round; the funding port had no listing, added as a separate interface) | green |
 | 2026-11-10 | T-0684 | #291 | Sonnet REQUEST_CHANGES twice (unindexed ledger.journal.transfer_id join; payouts could show as false breaks; alarms test count) then fixed and confirmed APPROVE, desktop PASS | green |
 | 2026-11-10 | T-0682 | #289 | Sonnet APPROVE (every requireStepUp and isFresh call site awaited), desktop PASS, main merged in and the delta confirmed | green |
+| 2026-11-10 | T-0685 | #293 | Sonnet APPROVE (ApprovalService.decide change only touches ledger_correction), main merged in and the delta confirmed | green |
+| 2026-11-10 | T-0690 | #294 | Sonnet APPROVE (security review of the workflow: no PR trigger, per-job secrets, no injection) | green |
+| 2026-11-10 | T-0689 | #295 | Sonnet APPROVE then fixed (forged deliveries with no event id were not counted) and re-reviewed APPROVE | green |
+| 2026-11-10 | T-0687 | #296 | Sonnet REQUEST_CHANGES (a sink SQL error would abort the whole batch: per-message savepoint) then fixed and APPROVE, desktop PASS | green |
+| 2026-11-10 | T-0691 | #298 | Sonnet APPROVE (security review of the sign-in path) | green |

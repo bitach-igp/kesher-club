@@ -1264,6 +1264,46 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/auth/social/providers": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The social sign-in providers on offer (Apple and Google together, or none)
+         * @description REQ-AUTH-004 (T-0691). Public. Lists `apple` and `google` together while the flag `auth.social.enabled` is on, and an empty list while it is off, so a client never shows one without the other. Passkeys remain the primary sign-in.
+         */
+        readonly get: operations["listSocialProviders"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/auth/social/sign-in": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Sign in with an Apple or Google identity token for a member already linked to it
+         * @description REQ-AUTH-004 (T-0691). Public; no Idempotency-Key because it moves no money and changes no state beyond the device record and a fresh session, like the passkey sign-in. The identity token is verified against the provider (signature, issuer, audience, expiry, and `nonce` as the app sent it); a token that fails answers 401 UNAUTHENTICATED. Answers 404 FEATURE_OFF while `auth.social.enabled` is off. An identity no member is linked to answers 404 NOT_FOUND and creates no member: the person signs in with a passkey (linking from settings is a later card). A success returns the same token pair as a passkey sign-in and records a new device the same way.
+         */
+        readonly post: operations["signInWithSocial"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/auth/step-up": {
         readonly parameters: {
             readonly query?: never;
@@ -5136,6 +5176,23 @@ export interface components {
             /** @description Required for US */
             readonly region?: string;
         };
+        /** @enum {string} */
+        readonly SocialProvider: "apple" | "google";
+        readonly SocialProviders: {
+            /** @description Both providers, or empty */
+            readonly providers: readonly components["schemas"]["SocialProvider"][];
+        };
+        readonly SocialSignInRequest: {
+            readonly deviceId: components["schemas"]["DeviceId"];
+            /** @description The identity token the provider issued to the app */
+            readonly idToken: string;
+            /** @description The nonce the app sent when it asked the provider for the token */
+            readonly nonce: string;
+            readonly provider: components["schemas"]["SocialProvider"];
+        };
+        readonly SocialSignInResult: {
+            readonly tokens: components["schemas"]["TokenPair"];
+        };
         readonly Split: {
             /** Format: uuid */
             readonly id: string;
@@ -7337,6 +7394,52 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["PasskeyRegisterResult"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listSocialProviders: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The providers offered */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["SocialProviders"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly signInWithSocial: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["SocialSignInRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description A token pair */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["SocialSignInResult"];
                 };
             };
             readonly default: components["responses"]["Problem"];

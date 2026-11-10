@@ -67,6 +67,26 @@ export class FakeIdP {
     return json(404, { error: 'not_found' });
   }
 
+  /** Signs an id_token as this IdP would; `audience` and `ttlMs` let a test mint the wrong-audience and expired cases. */
+  async mintIdToken(subject: string, o: { relay?: boolean; nonce?: string; audience?: string; ttlMs?: number } = {}): Promise<string> {
+    const relay = o.relay ?? false;
+    const nonce = o.nonce ?? this.nonce;
+    const email = relay ? `${subject}@privaterelay.appleid.com` : `${subject}@example.com`;
+    const apple = this.opts.flavour === 'apple';
+    const claims: Record<string, unknown> = apple
+      ? { email, email_verified: 'true', nonce, ...(relay ? { is_private_email: 'true' } : {}) }
+      : { email, email_verified: true, nonce };
+    const now = this.opts.clock.now().getTime();
+    return new SignJWT(claims)
+      .setProtectedHeader({ alg: this.keys.jwk.alg as string, kid: this.keys.kid })
+      .setIssuer(this.opts.issuer)
+      .setAudience(o.audience ?? this.opts.audience)
+      .setSubject(`${this.opts.flavour}-sub-${subject}`)
+      .setIssuedAt(Math.floor(now / 1000))
+      .setExpirationTime(Math.floor((now + (o.ttlMs ?? this.idTokenTtlMs)) / 1000))
+      .sign(this.keys.privateKey);
+  }
+
   private async token(body: Record<string, string>): Promise<Response> {
     this.tokenRequests.push(body);
     if (body['grant_type'] !== 'authorization_code' || !body['client_id'] || !body['client_secret']) return json(400, { error: 'invalid_request' });
@@ -74,23 +94,8 @@ export class FakeIdP {
     if (code === 'outage') return json(503, { error: 'temporarily_unavailable' });
     const m = /^ok:([a-z0-9_-]+)(:relay)?(?::nonce=(\S+))?$/i.exec(code);
     if (!m) return json(400, { error: 'invalid_grant' });
+    const idToken = await this.mintIdToken(m[1]!, { relay: Boolean(m[2]), nonce: m[3] ?? this.nonce });
     const subject = m[1]!;
-    const relay = Boolean(m[2]);
-    const nonce = m[3] ?? this.nonce;
-    const email = relay ? `${subject}@privaterelay.appleid.com` : `${subject}@example.com`;
-    const apple = this.opts.flavour === 'apple';
-    const claims: Record<string, unknown> = apple
-      ? { email, email_verified: 'true', nonce, ...(relay ? { is_private_email: 'true' } : {}) }
-      : { email, email_verified: true, nonce };
-    const now = this.opts.clock.now().getTime();
-    const idToken = await new SignJWT(claims)
-      .setProtectedHeader({ alg: this.keys.jwk.alg as string, kid: this.keys.kid })
-      .setIssuer(this.opts.issuer)
-      .setAudience(this.opts.audience)
-      .setSubject(`${this.opts.flavour}-sub-${subject}`)
-      .setIssuedAt(Math.floor(now / 1000))
-      .setExpirationTime(Math.floor((now + this.idTokenTtlMs) / 1000))
-      .sign(this.keys.privateKey);
     return json(200, { access_token: `at_${subject}`, token_type: 'Bearer', expires_in: 3600, refresh_token: `rt_${subject}`, id_token: idToken });
   }
 }

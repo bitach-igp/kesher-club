@@ -211,3 +211,78 @@ describe('the authorisation service connects as club_jit with its own password (
     });
   }
 });
+
+// T-0068: the console's roster import (900 KB) crosses the public ALB, whose WAF blocks bodies over 8 KB (SizeRestrictions_BODY).
+// Without a terraform binary this is the proof; infra/terraform/tests/alb.tftest.hcl asserts the planned rules where one exists.
+describe('the WAF lets one route past the body-size rule and no other (T-0068)', () => {
+  const alb = read('infra/terraform/modules/alb/main.tf');
+  const vars = read('infra/terraform/modules/alb/variables.tf');
+  const rule = (name: string) => {
+    const at = alb.indexOf(`name     = "${name}"`);
+    expect(at, name).toBeGreaterThan(-1);
+    const start = alb.lastIndexOf('dynamic "rule"', at);
+    const next = alb.indexOf('\n  dynamic "rule"', at);
+    return alb.slice(start, next < 0 ? undefined : next);
+  };
+
+  it('keeps the managed rule group, and the rule is relaxed by an override of that one rule, never by removing the group', () => {
+    expect(vars).toMatch(/default\s*=\s*\[\s*"AWSManagedRulesCommonRuleSet"/);
+    expect(alb).toMatch(/managed_rule_group_statement\s*\{/);
+    expect(alb).not.toMatch(/excluded_rule|scope_down_statement/);
+    expect([...alb.matchAll(/rule_action_override\s*"?\s*\{/g)]).toHaveLength(1);
+    expect([...alb.matchAll(/\bname\s*=\s*"SizeRestrictions_BODY"/g)]).toHaveLength(1);
+    const override = alb.slice(alb.indexOf('dynamic "rule_action_override"'), alb.indexOf('dynamic "rule_action_override"') + 400);
+    expect(override).toMatch(/action_to_use\s*\{\s*count\s*\{\}/);
+    expect(override).not.toMatch(/allow\s*\{/);
+    // Only the common rule set, and only when a route is named.
+    expect(override).toMatch(/rule\.key == "AWSManagedRulesCommonRuleSet" && var\.large_body_route != null/);
+    // The override never turns the group's own action off.
+    expect(alb).toMatch(/override_action\s*\{\s*none\s*\{\}/);
+  });
+
+  it('blocks the labelled request when the host, the path or the method is not the exempt one, after the managed groups', () => {
+    const parts = {
+      host: { leaf: /byte_match_statement[\s\S]*search_string\s*=\s*lower\(rule\.value\.host\)[\s\S]*single_header\s*\{\s*name\s*=\s*"host"[\s\S]*type\s*=\s*"LOWERCASE"/, priority: 50 },
+      path: { leaf: /regex_match_statement[\s\S]*regex_string\s*=\s*rule\.value\.path_regex[\s\S]*uri_path\s*\{\}/, priority: 51 },
+      method: { leaf: /byte_match_statement[\s\S]*search_string\s*=\s*rule\.value\.method[\s\S]*method\s*\{\}/, priority: 52 },
+    };
+    for (const [n, { leaf, priority }] of Object.entries(parts)) {
+      const r = rule(`body-size-outside-exempt-${n}`);
+      expect(r, n).toMatch(/block\s*\{\}/);
+      expect(r, n).toMatch(/key\s*=\s*"awswaf:managed:aws:core-rule-set:SizeRestrictions_Body"/);
+      // The provider allows three statement levels: and -> not -> one leaf, never deeper.
+      expect(r, n).toMatch(/and_statement[\s\S]*label_match_statement[\s\S]*not_statement/);
+      expect([...r.matchAll(/and_statement\s*\{/g)], n).toHaveLength(1);
+      expect([...r.matchAll(/not_statement\s*\{/g)], n).toHaveLength(1);
+      expect([...r.matchAll(/or_statement\s*\{/g)], n).toHaveLength(0);
+      expect(r, n).toMatch(leaf);
+      expect(Number(/priority\s*=\s*(\d+)/.exec(r)?.[1]), n).toBe(priority);
+      expect(priority).toBeGreaterThan(10 + 3); // the managed groups take 10 + index (three by default)
+      expect(r, n).toMatch(/for_each\s*=\s*var\.large_body_route == null \? \[\] : \[var\.large_body_route\]/);
+    }
+    expect([...alb.matchAll(/^\s*name\s*=\s*"body-size-outside-exempt-/gm)]).toHaveLength(3);
+  });
+
+  it('is a module variable that defaults to no exemption, and the method defaults to POST', () => {
+    const v = vars.slice(vars.indexOf('variable "large_body_route"'), vars.indexOf('variable "rate_limit_per_5_minutes"'));
+    expect(v).toMatch(/default\s*=\s*null/);
+    expect(v).toMatch(/method\s*=\s*optional\(string,\s*"POST"\)/);
+  });
+
+  for (const file of ['infra/terraform/envs/staging/main.tf', 'infra/terraform/envs/prod/main.tf']) {
+    it(`${file}: only the public ALB exempts the roster import, on the IL API host the console calls`, () => {
+      const hcl = read(file);
+      const alb = hcl.slice(hcl.indexOf('module "alb" {'), hcl.indexOf('module "admin_alb" {'));
+      const admin = hcl.slice(hcl.indexOf('module "admin_alb" {'), hcl.indexOf('module "api" {'));
+      const route = /large_body_route\s*=\s*\{([^}]*)\}/.exec(alb)?.[1] ?? '';
+      expect(route).toMatch(/host\s*=\s*local\.market_hosts\["il"\]\.api/);
+      expect(route).toMatch(/path_regex\s*=\s*"\^\/v1\/institutions\/\[0-9a-f-\]\+\/rosters\$"/);
+      expect(route).not.toMatch(/method/);
+      expect(admin).not.toMatch(/large_body_route/);
+      expect(hcl.match(/large_body_route/g)).toHaveLength(1);
+      // The path is the one the console posts to: the OpenAPI operation importRoster.
+      expect(read('contracts/openapi.yaml')).toMatch(/\/institutions\/\{id\}\/rosters:\s+post:\s+operationId: importRoster/);
+      expect(read('apps/console/src/api.ts')).toMatch(/c\.post\('\/institutions\/\{id\}\/rosters'/);
+    });
+  }
+});

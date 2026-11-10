@@ -116,6 +116,43 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/TokenPair" }
         default: { $ref: "#/components/responses/Problem" }
+  /auth/social/providers:
+    get:
+      operationId: listSocialProviders
+      summary: The social sign-in providers on offer (Apple and Google together, or none)
+      description: REQ-AUTH-004 (T-0691). Public. Lists `apple` and `google` together while the flag `auth.social.enabled` is on, and an empty list while it is off, so a client never shows one without the other. Passkeys remain the primary sign-in.
+      security: []
+      responses:
+        "200":
+          description: The providers offered
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SocialProviders" }
+        default: { $ref: "#/components/responses/Problem" }
+  /auth/social/sign-in:
+    post:
+      operationId: signInWithSocial
+      summary: Sign in with an Apple or Google identity token for a member already linked to it
+      description: >-
+        REQ-AUTH-004 (T-0691). Public; no Idempotency-Key because it moves no money and changes no state beyond the device
+        record and a fresh session, like the passkey sign-in. The identity token is verified against the provider (signature,
+        issuer, audience, expiry, and `nonce` as the app sent it); a token that fails answers 401 UNAUTHENTICATED. Answers 404
+        FEATURE_OFF while `auth.social.enabled` is off. An identity no member is linked to answers 404 NOT_FOUND and creates
+        no member: the person signs in with a passkey (linking from settings is a later card). A success returns the same
+        token pair as a passkey sign-in and records a new device the same way.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SocialSignInRequest" }
+      responses:
+        "200":
+          description: A token pair
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SocialSignInResult" }
+        default: { $ref: "#/components/responses/Problem" }
   /auth/step-up:
     post:
       operationId: stepUp
@@ -4576,6 +4613,30 @@ components:
         options: { type: object }
         stepUpToken: { type: string }
         expiresAt: { type: string, format: date-time }
+    SocialProvider:
+      type: string
+      enum: [apple, google]
+    SocialProviders:
+      type: object
+      required: [providers]
+      properties:
+        providers:
+          type: array
+          description: Both providers, or empty
+          items: { $ref: "#/components/schemas/SocialProvider" }
+    SocialSignInRequest:
+      type: object
+      required: [provider, idToken, nonce, deviceId]
+      properties:
+        provider: { $ref: "#/components/schemas/SocialProvider" }
+        idToken: { type: string, minLength: 1, maxLength: 8192, description: The identity token the provider issued to the app }
+        nonce: { type: string, minLength: 1, maxLength: 256, description: The nonce the app sent when it asked the provider for the token }
+        deviceId: { $ref: "#/components/schemas/DeviceId" }
+    SocialSignInResult:
+      type: object
+      required: [tokens]
+      properties:
+        tokens: { $ref: "#/components/schemas/TokenPair" }
     TokenPair:
       type: object
       required: [accessToken, refreshToken, accessExpiresAt]
