@@ -264,7 +264,7 @@ export function teamHandlers(team: InstitutionTeam, stepUp: StepUpService, staff
     }),
     approveStaffGrant: route(async (req) => {
       const { institutionId, partyId } = await own(req, true);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       const r = await team.approve(institutionId, partyId, req.params['grantId'] ?? '', req.now);
       return ok({ grant: approvalBody(r.grant), ...(r.staff ? { staff: r.staff } : {}) });
     }),

@@ -37,7 +37,7 @@ export function p2pHandlers(send: P2pSendService, stepUp: StepUpService, flags: 
     }),
     payPaymentRequest: route(async (req) => {
       const p = requirePrincipal(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       assertNotRestricted(p, 'p2p_send', req.now);
       await gate();
       requireIdempotencyKey(req);
@@ -57,7 +57,7 @@ export function p2pHandlers(send: P2pSendService, stepUp: StepUpService, flags: 
     }),
     createTransfer: route(async (req) => {
       const p = requirePrincipal(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       assertNotRestricted(p, 'p2p_send', req.now);
       if (!(await flags.isOn(P2P_FLAG))) throw new DomainError('FEATURE_OFF', 'Member transfers are not enabled yet');
       const key = requireIdempotencyKey(req);

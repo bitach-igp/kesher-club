@@ -318,7 +318,7 @@ export function createApp(o: AppOptions): App {
     createMembership: route(async (req) => {
       const p = requirePrincipal(req);
       // Starting a recurring charge takes a fresh step-up and the flag, as the funder invite does (T-0312).
-      requireStepUp(s.stepUp, req);
+      await requireStepUp(s.stepUp, req);
       if (!(await s.flags.isOn('billing.stripe'))) throw new DomainError('FEATURE_OFF', 'Memberships are not on sale yet');
       const b = req.body as { memberPartyId: string; planCode: string; termMonths?: number; funderEmail?: string };
       const m = await s.memberships.createForCaller({ idempotencyKey: requireIdempotencyKey(req), callerPartyId: p.partyId, memberPartyId: b.memberPartyId, funderEmail: b.funderEmail ?? `party:${p.partyId}@members.kesher.example`, planCode: b.planCode, ...(b.termMonths !== undefined ? { termMonths: b.termMonths } : {}) }, req.now);
@@ -349,7 +349,7 @@ export function createApp(o: AppOptions): App {
     }),
     createAddonOrder: route(async (req) => {
       const p = requirePrincipal(req);
-      requireStepUp(s.stepUp, req);
+      await requireStepUp(s.stepUp, req);
       const b = req.body as { sku: string; quantity?: number; disclosuresAcknowledged?: boolean };
       const membership = await s.memberships.forMember(p.partyId);
       const order = await s.orders.create({ idempotencyKey: requireIdempotencyKey(req), memberPartyId: p.partyId, membership, sku: b.sku, ...(b.quantity !== undefined ? { quantity: b.quantity } : {}), ...(b.disclosuresAcknowledged !== undefined ? { disclosuresAcknowledged: b.disclosuresAcknowledged } : {}) }, req.now);

@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import type { PiiCipher } from '../crypto/pii.ts';
 import type { Database } from '../db.ts';
-import type { Device, IdentityRepository, OtpRecord, OtpSession, Restriction, SessionFamily, StoredPasskey, UserAccount, UserStatus } from './repository.ts';
+import type { Ceremony, CeremonyKind, Device, IdentityRepository, OtpRecord, OtpSession, Restriction, SessionFamily, StepUpRecord, StoredPasskey, UserAccount, UserStatus } from './repository.ts';
 
 /** Column names double as the cipher's context, so a sealed value only opens where it was written. */
 const COL = {
@@ -212,6 +212,46 @@ export class PostgresIdentityRepository implements IdentityRepository {
     const r = await this.db.query<{ party_id: string; until: Date; reason: Restriction['reason']; created_at: Date }>(`select * from identity.restriction where party_id = $1`, [partyId]);
     const row = r.rows[0];
     return row && { partyId: row.party_id, until: iso(row.until), reason: row.reason, createdAt: iso(row.created_at) };
+  }
+
+  // ---- passkey ceremonies and step-up tokens (T-0682) ----
+
+  async saveCeremony(c: Ceremony, staleBefore: string): Promise<void> {
+    await this.db.query(`delete from identity.passkey_ceremony where issued_at < $1`, [staleBefore]);
+    await this.db.query(
+      `insert into identity.passkey_ceremony (ceremony_id, kind, session_id, party_id, options, issued_at) values ($1, $2, $3, $4, $5::jsonb, $6)
+       on conflict (kind, session_id) do update set ceremony_id = excluded.ceremony_id, party_id = excluded.party_id, options = excluded.options, issued_at = excluded.issued_at, consumed_at = null`,
+      [c.ceremonyId, c.kind, c.key, c.partyId, JSON.stringify(c.options), c.issuedAt],
+    );
+  }
+
+  async takeCeremony(kind: CeremonyKind, key: string, at: string): Promise<Ceremony | undefined> {
+    // One statement: of two instances taking the same ceremony, exactly one gets the row back.
+    const r = await this.db.query<{ ceremony_id: string; party_id: string; options: unknown; issued_at: Date }>(
+      `update identity.passkey_ceremony set consumed_at = $3 where kind = $1 and session_id = $2 and consumed_at is null returning ceremony_id, party_id, options, issued_at`,
+      [kind, key, at],
+    );
+    const row = r.rows[0];
+    return row && { ceremonyId: row.ceremony_id, kind, key, partyId: row.party_id, options: row.options, issuedAt: iso(row.issued_at) };
+  }
+
+  async putStepUp(r: StepUpRecord, now: string): Promise<void> {
+    await this.db.query(`delete from identity.step_up_token where expires_at < $1`, [now]);
+    await this.db.query(
+      `insert into identity.step_up_token (session_id, token_hash, expires_at) values ($1, $2, $3)
+       on conflict (session_id) do update set token_hash = excluded.token_hash, expires_at = excluded.expires_at`,
+      [r.sessionId, r.tokenHash, r.expiresAt],
+    );
+  }
+
+  async findStepUp(sessionId: string): Promise<StepUpRecord | undefined> {
+    const r = await this.db.query<{ session_id: string; token_hash: string; expires_at: Date }>(`select session_id, token_hash, expires_at from identity.step_up_token where session_id = $1`, [sessionId]);
+    const row = r.rows[0];
+    return row && { sessionId: row.session_id, tokenHash: row.token_hash, expiresAt: iso(row.expires_at) };
+  }
+
+  async deleteStepUp(sessionId: string): Promise<void> {
+    await this.db.query(`delete from identity.step_up_token where session_id = $1`, [sessionId]);
   }
 
   // ---- rows to the contract's shapes ----

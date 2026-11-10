@@ -254,7 +254,7 @@ export function allowanceRunHandlers(d: AllowanceRunDeps): Record<'runAllowance'
       const schedule = await d.activities.loadSchedule(b.scheduleId);
       if (schedule.institutionId !== institutionId) throw new DomainError('NOT_FOUND', 'Schedule not found');
 
-      if (!b.dryRun) requireStepUp(d.stepUp, req);
+      if (!b.dryRun) await requireStepUp(d.stepUp, req);
 
       const planned = await preview(d.activities, b.scheduleId, b.date);
       // A preview, or a first request, the account cannot cover is refused before any approval is asked for (REQ-INS-008).
