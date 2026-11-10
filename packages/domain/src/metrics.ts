@@ -3,7 +3,7 @@
 // authorisation path waits on anything. These are the series the runbooks alert on (docs/runbooks/README.md, "Alerts that page").
 //
 // Three rules hold by construction, like the logger's redaction (log.ts):
-//  - Dimensions are a CLOSED set (market, port, job, state). A metric names the dimensions it may carry; anything else is dropped
+//  - Dimensions are a CLOSED set (market, port, job, state, provider, reason). A metric names the dimensions it may carry; anything else is dropped
 //    with the whole line, and `validateDimensions` throws for it so a test fails. A dimension value is a short identifier or a
 //    member of a fixed list, never an id: a member, account or transfer id cannot become a dimension, because the value that
 //    would carry it is refused. High-cardinality dimensions are a bill and a leak.
@@ -13,12 +13,20 @@
 //    minor units with `minorToNumber`; it is read by an alarm and never added to a ledger, converted or paid out.
 
 /** The closed set of metric dimensions. */
-export const METRIC_DIMENSIONS = ['market', 'port', 'job', 'state'] as const;
+export const METRIC_DIMENSIONS = ['market', 'port', 'job', 'state', 'provider', 'reason'] as const;
 export type MetricDimension = (typeof METRIC_DIMENSIONS)[number];
 /** CloudWatch StandardUnit values only: an unknown unit makes CloudWatch drop the metric. `recon.break_oldest_h` is hours but declared `None` (CloudWatch has no hour unit); the name carries the unit. */
 export type MetricUnit = 'Count' | 'Milliseconds' | 'Seconds' | 'None';
 
 export const METRICS_NAMESPACE = 'Kesher';
+
+export interface MetricDef {
+  unit: MetricUnit;
+  /** The dimension set an alarm matches exactly (T-0054). */
+  dimensions: readonly MetricDimension[];
+  /** Added to the same line as a second dimension set when given, so the alarmed series (`dimensions` alone) is unchanged. */
+  optional?: readonly MetricDimension[];
+}
 
 /** Every metric, its unit and the dimensions it carries. The runbook alarms (T-0054) match these exactly. */
 export const METRIC_DEFS = {
@@ -30,9 +38,26 @@ export const METRIC_DEFS = {
   'recon.break_open_usd': { unit: 'None', dimensions: [] },
   'recon.break_oldest_h': { unit: 'None', dimensions: [] },
   'transfer.stuck': { unit: 'Seconds', dimensions: ['state', 'market'] },
-  'provider.error': { unit: 'Count', dimensions: ['port'] },
-} as const satisfies Record<string, { unit: MetricUnit; dimensions: readonly MetricDimension[] }>;
+  // {port} is what the port alarms read; {port, provider} is the same count split by the bound vendor (T-0689). One line carries both.
+  'provider.error': { unit: 'Count', dimensions: ['port'], optional: ['provider'] },
+  // A webhook whose signature (or freshness) failed verification. Not alarmed: a burst is a forged-traffic signal read on the dashboard.
+  'webhook.rejected': { unit: 'Count', dimensions: ['provider', 'reason'] },
+} as const satisfies Record<string, MetricDef>;
 export type MetricName = keyof typeof METRIC_DEFS;
+
+/** The closed set of reasons a webhook is rejected for; a verifier's free text is mapped to one of these, never used as a label. */
+export const WEBHOOK_REJECT_REASONS = ['missing_signature', 'bad_signature', 'stale', 'other'] as const;
+export type WebhookRejectReason = (typeof WEBHOOK_REJECT_REASONS)[number];
+
+/** Maps a verifier's reason text (or its absence) to the closed set. */
+export function webhookRejectReason(text: string | undefined): WebhookRejectReason {
+  const t = (text ?? '').toLowerCase();
+  if (t.includes('no_signature') || (t.includes('missing') && t.includes('signature'))) return 'missing_signature';
+  if (t.includes('stale') || t.includes('timestamp') || t.includes('tolerance')) return 'stale';
+  // Crowded's own words (MISMATCH, MALFORMED) are a signature that does not hold.
+  if (t.includes('signature') || t === 'mismatch' || t === 'malformed') return 'bad_signature';
+  return 'other';
+}
 
 export type Dimensions = Partial<Record<MetricDimension, string>>;
 
@@ -78,7 +103,9 @@ export interface Metrics {
   reconBreakOpenUsd(dollars: number): void;
   reconBreakOldestHours(hours: number): void;
   transferStuck(state: string, market: string, seconds: number): void;
-  providerError(port: string): void;
+  /** `provider` is the bound vendor's short name (a registry binding name), never an id. */
+  providerError(port: string, provider?: string): void;
+  webhookRejected(provider: string, reason: WebhookRejectReason): void;
 }
 
 function build(put: Metrics['put']): Metrics {
@@ -91,7 +118,8 @@ function build(put: Metrics['put']): Metrics {
     reconBreakOpenUsd: (dollars) => put({ 'recon.break_open_usd': dollars }),
     reconBreakOldestHours: (hours) => put({ 'recon.break_oldest_h': hours }),
     transferStuck: (state, market, seconds) => put({ 'transfer.stuck': seconds }, { state, market }),
-    providerError: (port) => put({ 'provider.error': 1 }, { port }),
+    providerError: (port, provider) => put({ 'provider.error': 1 }, { port, ...(provider ? { provider } : {}) }),
+    webhookRejected: (provider, reason) => put({ 'webhook.rejected': 1 }, { provider, reason }),
   };
 }
 
@@ -105,11 +133,17 @@ export function createMetrics(options: MetricsOptions = {}): Metrics {
       const entries = Object.entries(values).filter((e): e is [MetricName, number] => e[0] in METRIC_DEFS && typeof e[1] === 'number' && Number.isFinite(e[1]));
       if (entries.length === 0) return;
       const keys = Object.keys(dimensions);
-      // A metric carries only the dimensions it names; a line that mixes in another is dropped, not trimmed.
-      if (entries.some(([name]) => !(METRIC_DEFS[name].dimensions as readonly string[]).every((d) => keys.includes(d)) || keys.some((k) => !(METRIC_DEFS[name].dimensions as readonly string[]).includes(k)))) return;
+      // A metric carries only the dimensions it names (required, plus the optional ones it lists); a line that mixes in another is
+      // dropped, not trimmed. Optional dimensions make a second dimension set on the same line.
+      const defOf = (name: MetricName): MetricDef => METRIC_DEFS[name];
+      const required = (d: MetricDef): readonly string[] => d.dimensions;
+      const allowed = (d: MetricDef): readonly string[] => [...d.dimensions, ...(d.optional ?? [])];
+      if (entries.some(([name]) => !required(defOf(name)).every((d) => keys.includes(d)) || keys.some((k) => !allowed(defOf(name)).includes(k)))) return;
+      const base = keys.filter((k) => entries.every(([name]) => required(defOf(name)).includes(k)));
+      const sets = base.length === keys.length ? [keys] : [base, keys];
       write(
         JSON.stringify({
-          _aws: { Timestamp: now().getTime(), CloudWatchMetrics: [{ Namespace: namespace, Dimensions: [keys], Metrics: entries.map(([name]) => ({ Name: name, Unit: METRIC_DEFS[name].unit })) }] },
+          _aws: { Timestamp: now().getTime(), CloudWatchMetrics: [{ Namespace: namespace, Dimensions: sets, Metrics: entries.map(([name]) => ({ Name: name, Unit: METRIC_DEFS[name].unit })) }] },
           ...dimensions,
           ...Object.fromEntries(entries),
         }),

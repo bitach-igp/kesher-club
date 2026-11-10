@@ -125,4 +125,11 @@ describe('runbook alert table and alarms (T-0054)', () => {
       expect([...METRIC_DEFS[metric].dimensions].sort(), `${resource} matches METRIC_DEFS`).toEqual([...dims].sort());
     }
   });
+
+  it('provider.error splits by provider only as a second dimension set, and webhook.rejected has no alarm (T-0689)', () => {
+    expect(METRIC_DEFS['provider.error'].dimensions).toEqual(['port']);
+    expect(METRIC_DEFS['provider.error'].optional).toEqual(['provider']);
+    expect(METRIC_DEFS['webhook.rejected'].dimensions).toEqual(['provider', 'reason']);
+    expect(moduleSource()).not.toContain('webhook.rejected');
+  });
 });

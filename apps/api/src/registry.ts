@@ -29,7 +29,7 @@ import {
   type ExpoPushOptions,
   type KeyLedger,
 } from '@kesher/adapters';
-import type { Secret } from '@kesher/domain';
+import { guarded, type Metrics, type Secret } from '@kesher/domain';
 import {
   type AdvanceableClock,
   type BillingPort,
@@ -43,6 +43,7 @@ import {
   type Notification,
   type NotifyPort,
   type OrgIdPPort,
+  type Market,
   type ProviderRegistry,
 } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
@@ -265,10 +266,70 @@ function acceptPreviousSecrets<R>(adapter: { parseWebhook: (headers: Record<stri
   };
 }
 
+/** Port methods whose failures their caller already counts as `provider.error`, so the wrapper stays out (no double count). */
+const COUNTED_BY_CALLER: Readonly<Record<string, readonly string[]>> = {
+  // JitService.handle emits provider.error{port: card-issuing} when parseAuthorization cannot read a request (T-0053).
+  'card-issuing': ['parseAuthorization'],
+};
+
+/**
+ * Whether a thrown value is a provider failure rather than an answer. A port error with a code other than PROVIDER_UNAVAILABLE
+ * (BAD_SIGNATURE, DECLINED, UNKNOWN_*, VALIDATION_FAILED, ...) is the vendor working and saying no; PROVIDER_UNAVAILABLE, and anything
+ * that is not a coded port error at all (a transport failure, a TypeError from an adapter), is the provider not working.
+ */
+export function isProviderFailure(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  return typeof code !== 'string' || code === 'PROVIDER_UNAVAILABLE';
+}
+
+/**
+ * Makes `registry.resolve` hand out ports whose methods count a provider failure once as `provider.error{port,provider}` and rethrow
+ * the very same error. The one place this happens: no adapter has metrics code. The labels are the capability name and the bound
+ * provider's registry name, never an id, a payload or a message. Emitting is guarded and cannot change what the caller sees.
+ */
+function meterResolve(registry: ProviderRegistry, metrics: Metrics): void {
+  const sink = guarded(metrics);
+  const resolve = registry.resolve.bind(registry);
+  registry.resolve = <P>(capability: string, market: Market): P => {
+    const port = resolve<P>(capability, market);
+    if (port === null || typeof port !== 'object') return port;
+    const provider = registry.bindingFor(capability, market)?.provider;
+    const skip = COUNTED_BY_CALLER[capability] ?? [];
+    const count = (error: unknown): void => {
+      if (isProviderFailure(error)) sink.providerError(capability, provider);
+    };
+    return new Proxy(port, {
+      get(target, key, receiver) {
+        const value: unknown = Reflect.get(target, key, receiver);
+        if (typeof value !== 'function' || typeof key !== 'string' || skip.includes(key)) return value;
+        return (...args: unknown[]): unknown => {
+          let result: unknown;
+          try {
+            result = Reflect.apply(value, target, args);
+          } catch (e) {
+            count(e);
+            throw e;
+          }
+          if (typeof (result as { then?: unknown } | null)?.then !== 'function') return result;
+          return (result as Promise<unknown>).then(undefined, (e: unknown) => {
+            count(e);
+            throw e;
+          });
+        };
+      },
+    });
+  };
+}
+
+/**
+ * `metrics` turns on provider-failure counting for every resolved port (T-0689). Left out, `resolve` returns the bare port, as tests
+ * that compare it to a simulator expect.
+ */
 export function createRegistry(
   mode: string,
   clock: AdvanceableClock = systemClock(),
   overrides: RegistryOverrides = {},
+  metrics?: Metrics,
 ): { registry: ProviderRegistry; simulators: SimulatorHost; providers: ProviderSummary } {
   // The config already refuses anything but `sim` and `sandbox` (T-0040); this guards a caller that skipped it. The mode only
   // labels the environment: a port runs a vendor adapter only through an override below.
@@ -403,6 +464,7 @@ export function createRegistry(
     providers['notify-push'] = 'expo';
   }
   if (Object.keys(routes).length > 0) bindBoth('notify', 'notify-router', new NotifyChannelRouter(routes, simulators.simulators.notify));
+  if (metrics) meterResolve(simulators.registry, metrics);
   return { registry: simulators.registry, simulators, providers };
 }
 

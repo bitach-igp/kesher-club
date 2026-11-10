@@ -4,7 +4,9 @@
 // so the provider's genuine delivery of the same event id is still verified and processed once.
 import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { uuidv7 } from '@kesher/domain';
+import { createMetrics, uuidv7 } from '@kesher/domain';
+import { BankError, type BankPort } from '@kesher/ports';
+import { bankCreditVerifier } from '../institutions/deposits.ts';
 import { isPgError } from '../db.ts';
 import { makeRequest } from '../http.ts';
 import { AccountService } from '../ledger/accounts.ts';
@@ -153,4 +155,52 @@ describe('providerWebhook', () => {
     expect(await store.lagMs(now)).toBe(0);
   });
 
+});
+
+describe('webhook.rejected (T-0689)', () => {
+  const rejected = async (provider: string, headers: Record<string, string>, body: unknown) => {
+    const lines: string[] = [];
+    const metered = new WebhookRouter(new InboundEventStore(db, 'IL', createMetrics({ write: (l) => lines.push(l) })));
+    metered.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
+    metered.bind('stripe', { verifier: stripeVerifier([STRIPE_SECRET]), process: async () => undefined });
+    metered.bind('institution-svix', { verifier: standardWebhooksVerifier(['whsec_' + Buffer.from('secret-bytes').toString('base64')]), process: async () => undefined });
+    const res = await metered.handler()(makeRequest({ method: 'POST', path: `/hooks/${provider}`, params: { provider }, headers, rawBody: JSON.stringify(body), body, now }));
+    return { res, lines: lines.map((l) => JSON.parse(l) as Record<string, unknown>) };
+  };
+
+  it('a bad signature counts once with the provider and a closed reason, and nothing of the payload', async () => {
+    const { res, lines } = await rejected('simulator', { 'x-sim-signature': 'forged' }, { eventId: 'evt-secret-id-1', amountMinor: '5' });
+    expect(res.status).toBe(401);
+    expect(lines).toEqual([expect.objectContaining({ provider: 'simulator', reason: 'bad_signature', 'webhook.rejected': 1 })]);
+    expect(JSON.stringify(lines)).not.toMatch(/evt-secret-id-1|5"/);
+  });
+
+  it('a missing signature and a stale timestamp are told apart from a bad one', async () => {
+    const missing = await rejected('stripe', {}, { id: 'evt_m', amountMinor: '5' });
+    expect(missing.lines).toEqual([expect.objectContaining({ provider: 'stripe', reason: 'missing_signature' })]);
+    const stale = await rejected('institution-svix', { 'webhook-id': 'msg_1', 'webhook-timestamp': '1', 'webhook-signature': 'v1,AAAA' }, { a: 1 });
+    expect(stale.lines).toEqual([expect.objectContaining({ provider: 'institution-svix', reason: 'stale' })]);
+  });
+
+  it('a forged delivery with no event id still counts once and the refusal is unchanged', async () => {
+    const lines: string[] = [];
+    const metered = new WebhookRouter(new InboundEventStore(db, 'IL', createMetrics({ write: (l) => lines.push(l) })));
+    const forged = { parseWebhook: async () => { throw new BankError('BAD_SIGNATURE', 'forged'); } } as unknown as BankPort;
+    metered.bind('bank', { verifier: bankCreditVerifier(forged), process: async () => undefined });
+    metered.bind('institution-svix', { verifier: standardWebhooksVerifier(['whsec_' + Buffer.from('secret-bytes').toString('base64')]), process: async () => undefined });
+    const post2 = (provider: string, rawBody: string) => metered.handler()(makeRequest({ method: 'POST', path: `/hooks/${provider}`, params: { provider }, headers: {}, rawBody, body: rawBody, now }));
+    const bank = await post2('bank', '{"amount":"1"}');
+    expect(bank.status).toBe(422);
+    expect(lines.map((l) => JSON.parse(l) as Record<string, unknown>)).toEqual([expect.objectContaining({ provider: 'bank', reason: 'bad_signature', 'webhook.rejected': 1 })]);
+    lines.length = 0;
+    const svix = await post2('institution-svix', '{ not json');
+    expect(svix.status).toBe(422);
+    expect(lines.map((l) => JSON.parse(l) as Record<string, unknown>)).toEqual([expect.objectContaining({ provider: 'institution-svix', reason: 'other', 'webhook.rejected': 1 })]);
+  });
+
+  it('an accepted webhook counts nothing', async () => {
+    const { res, lines } = await rejected('simulator', { 'x-sim-signature': 'sim' }, { eventId: 'evt-ok-metric', amountMinor: '5' });
+    expect(res.status).toBe(200);
+    expect(lines).toEqual([]);
+  });
 });
