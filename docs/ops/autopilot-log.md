@@ -86,3 +86,5 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-10 | T-0688 | #300 | Sonnet REQUEST_CHANGES (DELETE left the endpoint live at the provider, so it could keep receiving events or resume) then fixed with EventsPort.deleteEndpoint and APPROVE | green |
 | 2026-11-10 | T-0694 | #301 | Sonnet REQUEST_CHANGES (unlink would fail in production: club_app has no DELETE on ops.external_ref) then unlink dropped and APPROVE, desktop PASS | green |
 | 2026-11-10 | T-0692 | #302 | Sonnet APPROVE (revoke runs only after the account is closed; a retry mends a half-finished closure) | green |
+| 2026-11-10 | T-0695 | #307 | Sonnet APPROVE (retry is ACH-only, same wire key, injected sleep, no retry on network/5xx/book; two nits carried) | green |
+| 2026-11-10 | T-0069 | #306 | Sonnet REQUEST_CHANGES twice (the internal ALB admitted the whole VPC so a Client VPN user could forge the client address; then a for_each over an unknown security-group id would fail at plan) then restricted to the console security group with count and APPROVE, terraform job green | green |
