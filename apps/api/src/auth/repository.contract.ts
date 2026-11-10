@@ -102,7 +102,7 @@ export function identityRepositoryContract(name: string, make: () => Promise<Ide
       expect(await repo.getRestriction(partyId)).toMatchObject({ partyId, until: at(60 * 48), reason: 'otp_recovery', createdAt: expect.any(String) });
     });
 
-    it('links a member to an IdP subject, keeps one link per member and subject, and unlinks (T-0694)', async () => {
+    it('links a member to an IdP subject, keeps one link per member and subject (T-0694)', async () => {
       const repo = await make();
       const [a, b] = [randomUUID(), randomUUID()];
       const sub = `sub-${a}`;
@@ -123,11 +123,6 @@ export function identityRepositoryContract(name: string, make: () => Promise<Ide
       expect(await repo.deleteFederatedToken(a, 'apple')).toBe(true);
       expect(await repo.deleteFederatedToken(a, 'apple')).toBe(false);
       expect(await repo.findFederatedSubject(a, 'apple')).toBe(sub);
-      expect(await repo.unlinkFederated(a, 'apple')).toBe(true);
-      expect(await repo.unlinkFederated(a, 'apple')).toBe(false);
-      expect(await repo.findFederatedSubject(a, 'apple')).toBeUndefined();
-      // The subject is free again.
-      expect(await repo.linkFederated({ partyId: b, provider: 'apple', subject: sub, createdAt: T0 })).toBe('linked');
     });
   });
 }

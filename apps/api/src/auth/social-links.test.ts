@@ -92,17 +92,6 @@ for (const [name, make] of [
       expect(await identity.findFederatedSubject(m, 'apple')).toBeUndefined();
     });
 
-    it('unlink deletes the link and the token, and frees the subject', async () => {
-      const { identity, links } = setup();
-      const [a, b] = [await newMember(identity), await newMember(identity)];
-      await links.link(a, 'apple', { subject: `s-${a}`, refreshToken: TOKEN });
-      expect(await links.unlink(a, 'apple')).toBe(true);
-      expect(await links.unlink(a, 'apple')).toBe(false);
-      expect(await identity.findFederatedSubject(a, 'apple')).toBeUndefined();
-      expect(await identity.findFederatedToken(a, 'apple')).toBeUndefined();
-      await links.link(b, 'apple', { subject: `s-${a}` });
-    });
-
     it('never logs the token and never puts it or the subject in an error', async () => {
       const spies = (['log', 'info', 'warn', 'error', 'debug'] as const).map((k) => vi.spyOn(console, k).mockImplementation(() => undefined));
       const { identity, links } = setup();

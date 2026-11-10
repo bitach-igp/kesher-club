@@ -47,11 +47,6 @@ export class SocialLinks {
     if (result === 'subject_taken') throw new DomainError('IDEMPOTENCY_CONFLICT', `This ${provider} identity is already linked to another member`);
   }
 
-  /** Removes the link and the token row. False when there was no link. */
-  async unlink(partyId: string, provider: FederatedLinkProvider): Promise<boolean> {
-    return this.d.identity.unlinkFederated(partyId, provider);
-  }
-
   /**
    * The unsealed refresh token, for the revoker only (T-0692); undefined when none is stored. It reads and does not
    * delete: the revoker calls `eraseToken` once it has tried the revoke, whatever the outcome.

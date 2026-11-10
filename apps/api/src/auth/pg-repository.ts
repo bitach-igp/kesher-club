@@ -275,14 +275,6 @@ export class PostgresIdentityRepository implements IdentityRepository {
     });
   }
 
-  async unlinkFederated(partyId: string, provider: FederatedLinkProvider): Promise<boolean> {
-    return this.db.transaction(async (tx) => {
-      await tx.query(`delete from identity.federated_token where party_id = $1 and provider = $2`, [partyId, provider]);
-      const r = await tx.query(`delete from ops.external_ref where entity_type = 'member' and entity_id = $1 and provider = $2`, [partyId, provider]);
-      return r.rowCount > 0;
-    });
-  }
-
   async findFederatedSubject(partyId: string, provider: FederatedLinkProvider): Promise<string | undefined> {
     const r = await this.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'member' and entity_id = $1 and provider = $2`, [partyId, provider]);
     return r.rows[0]?.external_id;

@@ -152,8 +152,6 @@ export interface IdentityRepository {
    * already belongs to a member, without writing anything.
    */
   linkFederated(l: FederatedLinkInput): Promise<FederatedLinkResult>;
-  /** Deletes the link and the token row; true when a link existed. */
-  unlinkFederated(partyId: string, provider: FederatedLinkProvider): Promise<boolean>;
   /** The IdP subject the member is linked to, if any. */
   findFederatedSubject(partyId: string, provider: FederatedLinkProvider): Promise<string | undefined>;
   /** The sealed token, if one is stored. */
@@ -300,11 +298,6 @@ export class InMemoryIdentityRepository implements IdentityRepository {
     this.federatedLinks.set(key, l.subject);
     if (l.refreshTokenSealed) this.federatedTokens.set(key, Uint8Array.from(l.refreshTokenSealed));
     return 'linked';
-  }
-  async unlinkFederated(partyId: string, provider: FederatedLinkProvider) {
-    const key = `${partyId}|${provider}`;
-    this.federatedTokens.delete(key);
-    return this.federatedLinks.delete(key);
   }
   async findFederatedSubject(partyId: string, provider: FederatedLinkProvider) {
     return this.federatedLinks.get(`${partyId}|${provider}`);
