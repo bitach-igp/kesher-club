@@ -8,7 +8,7 @@
 import { createHash } from 'node:crypto';
 import type { PiiCipher } from '../crypto/pii.ts';
 import type { Database } from '../db.ts';
-import type { Ceremony, CeremonyKind, Device, IdentityRepository, OtpRecord, OtpSession, Restriction, SessionFamily, StepUpRecord, StoredPasskey, UserAccount, UserStatus } from './repository.ts';
+import type { Ceremony, CeremonyKind, Device, FederatedLinkInput, FederatedLinkProvider, FederatedLinkResult, IdentityRepository, OtpRecord, OtpSession, Restriction, SessionFamily, StepUpRecord, StoredPasskey, UserAccount, UserStatus } from './repository.ts';
 
 /** Column names double as the cipher's context, so a sealed value only opens where it was written. */
 const COL = {
@@ -252,6 +252,41 @@ export class PostgresIdentityRepository implements IdentityRepository {
 
   async deleteStepUp(sessionId: string): Promise<void> {
     await this.db.query(`delete from identity.step_up_token where session_id = $1`, [sessionId]);
+  }
+
+  // ---- Apple and Google links (T-0694) ----
+
+  async linkFederated(l: FederatedLinkInput): Promise<FederatedLinkResult> {
+    // The link row and the token row are one transaction, so a failed token insert leaves no link behind.
+    return this.db.transaction(async (tx) => {
+      // No conflict target: both ops.external_ref keys (one subject per provider, one link per member and provider) skip the insert.
+      const inserted = await tx.query(
+        `insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('member', $1, $2, $3) on conflict do nothing`,
+        [l.partyId, l.provider, l.subject],
+      );
+      if (inserted.rowCount === 0) {
+        const mine = await tx.query(`select 1 from ops.external_ref where entity_type = 'member' and entity_id = $1 and provider = $2`, [l.partyId, l.provider]);
+        return mine.rowCount > 0 ? 'member_already_linked' : 'subject_taken';
+      }
+      if (l.refreshTokenSealed) {
+        await tx.query(`insert into identity.federated_token (party_id, provider, refresh_token_sealed, created_at) values ($1, $2, $3, $4)`, [l.partyId, l.provider, Buffer.from(l.refreshTokenSealed), l.createdAt]);
+      }
+      return 'linked';
+    });
+  }
+
+  async findFederatedSubject(partyId: string, provider: FederatedLinkProvider): Promise<string | undefined> {
+    const r = await this.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'member' and entity_id = $1 and provider = $2`, [partyId, provider]);
+    return r.rows[0]?.external_id;
+  }
+
+  async findFederatedToken(partyId: string, provider: FederatedLinkProvider): Promise<Uint8Array | undefined> {
+    const r = await this.db.query<{ refresh_token_sealed: Uint8Array }>(`select refresh_token_sealed from identity.federated_token where party_id = $1 and provider = $2`, [partyId, provider]);
+    return r.rows[0]?.refresh_token_sealed;
+  }
+
+  async deleteFederatedToken(partyId: string, provider: FederatedLinkProvider): Promise<boolean> {
+    return (await this.db.query(`delete from identity.federated_token where party_id = $1 and provider = $2`, [partyId, provider])).rowCount > 0;
   }
 
   // ---- rows to the contract's shapes ----

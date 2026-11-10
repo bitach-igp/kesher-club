@@ -89,6 +89,21 @@ export interface StepUpRecord {
   expiresAt: string;
 }
 
+export type FederatedLinkProvider = 'apple' | 'google';
+
+/** What `linkFederated` writes: the link, and for Apple the sealed refresh token, as one unit (T-0694). */
+export interface FederatedLinkInput {
+  partyId: string;
+  provider: FederatedLinkProvider;
+  /** The IdP's subject for the member. */
+  subject: string;
+  /** Already sealed by the caller; the repository never sees plaintext. */
+  refreshTokenSealed?: Uint8Array;
+  createdAt: string;
+}
+
+export type FederatedLinkResult = 'linked' | 'member_already_linked' | 'subject_taken';
+
 export interface IdentityRepository {
   findUserByPhone(phone: string): Promise<UserAccount | undefined>;
   findUser(partyId: string): Promise<UserAccount | undefined>;
@@ -130,6 +145,19 @@ export interface IdentityRepository {
   putStepUp(r: StepUpRecord, now: string): Promise<void>;
   findStepUp(sessionId: string): Promise<StepUpRecord | undefined>;
   deleteStepUp(sessionId: string): Promise<void>;
+
+  /**
+   * Links a member to an IdP subject (the ops.external_ref row, entity_type 'member') and stores the sealed token, if any,
+   * in one transaction: both or neither (T-0694). Refuses a second link for the member and provider, and a subject that
+   * already belongs to a member, without writing anything.
+   */
+  linkFederated(l: FederatedLinkInput): Promise<FederatedLinkResult>;
+  /** The IdP subject the member is linked to, if any. */
+  findFederatedSubject(partyId: string, provider: FederatedLinkProvider): Promise<string | undefined>;
+  /** The sealed token, if one is stored. */
+  findFederatedToken(partyId: string, provider: FederatedLinkProvider): Promise<Uint8Array | undefined>;
+  /** Deletes only the token row; the link stays. True when a row was deleted. */
+  deleteFederatedToken(partyId: string, provider: FederatedLinkProvider): Promise<boolean>;
 }
 
 export class InMemoryIdentityRepository implements IdentityRepository {
@@ -142,6 +170,8 @@ export class InMemoryIdentityRepository implements IdentityRepository {
   private readonly restrictions = new Map<string, Restriction>();
   private readonly ceremonies = new Map<string, Ceremony & { consumed?: true }>();
   private readonly stepUps = new Map<string, StepUpRecord>();
+  private readonly federatedLinks = new Map<string, string>(); // `${partyId}|${provider}` -> subject
+  private readonly federatedTokens = new Map<string, Uint8Array>();
 
   async findUserByPhone(phone: string) {
     return [...this.users.values()].find((u) => u.phone === phone);
@@ -259,5 +289,23 @@ export class InMemoryIdentityRepository implements IdentityRepository {
   }
   async deleteStepUp(sessionId: string) {
     this.stepUps.delete(sessionId);
+  }
+
+  async linkFederated(l: FederatedLinkInput): Promise<FederatedLinkResult> {
+    const key = `${l.partyId}|${l.provider}`;
+    if (this.federatedLinks.has(key)) return 'member_already_linked';
+    for (const [k, subject] of this.federatedLinks) if (k.endsWith(`|${l.provider}`) && subject === l.subject) return 'subject_taken';
+    this.federatedLinks.set(key, l.subject);
+    if (l.refreshTokenSealed) this.federatedTokens.set(key, Uint8Array.from(l.refreshTokenSealed));
+    return 'linked';
+  }
+  async findFederatedSubject(partyId: string, provider: FederatedLinkProvider) {
+    return this.federatedLinks.get(`${partyId}|${provider}`);
+  }
+  async findFederatedToken(partyId: string, provider: FederatedLinkProvider) {
+    return this.federatedTokens.get(`${partyId}|${provider}`);
+  }
+  async deleteFederatedToken(partyId: string, provider: FederatedLinkProvider) {
+    return this.federatedTokens.delete(`${partyId}|${provider}`);
   }
 }
