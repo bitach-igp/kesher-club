@@ -1,0 +1,301 @@
+# Sandbox contract suites (T-0690): nightly, and on demand, runs the adapter suites that can run against a vendor sandbox
+# (packages/adapters/src/sandbox.contract.test.ts and crowded/sandbox.test.ts). One job per port, so a job sees only its own vendor's
+# secrets. A job runs only when every required secret for its port is set; otherwise it prints a notice and succeeds, so a port with no
+# sandbox key yet is a skip, never a red run. A failing job opens an issue titled "Sandbox contract failing: <port>", or comments on the
+# open one. Never on pull_request and never from a fork: a schedule and a manual run only, and the jobs refuse a forked repository.
+# Names, what each key must be and how to add it: docs/setup/sandbox-contracts.md. tools/release/sandbox-contract-workflow.test.mjs pins this file.
+name: sandbox-contract
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: sandbox-contract
+  cancel-in-progress: false
+
+jobs:
+  stripe:
+    name: Stripe smoke sandbox
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    env:
+      SANDBOX_CONTRACTS: "1"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      STRIPE_SANDBOX_SECRET_KEY: ${{ secrets.STRIPE_SANDBOX_SECRET_KEY }}
+      STRIPE_SANDBOX_BILLING_WEBHOOK_SECRET: ${{ secrets.STRIPE_SANDBOX_BILLING_WEBHOOK_SECRET }}
+    steps:
+      - id: gate
+        name: Check the secrets
+        run: |
+          missing=""
+          test -n "$STRIPE_SANDBOX_SECRET_KEY" || missing="$missing STRIPE_SANDBOX_SECRET_KEY"
+          test -n "$STRIPE_SANDBOX_BILLING_WEBHOOK_SECRET" || missing="$missing STRIPE_SANDBOX_BILLING_WEBHOOK_SECRET"
+          if [ -n "$missing" ]; then
+            echo "::notice title=stripe sandbox skipped::no sandbox key yet (missing:$missing)"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - if: steps.gate.outputs.run == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.gate.outputs.run == 'true'
+        name: Run the stripe sandbox suite
+        run: pnpm --filter @kesher/adapters exec vitest run src/sandbox.contract.test.ts -t "Stripe sandbox smoke"
+      - if: failure()
+        name: Open or update the issue
+        env:
+          PORT: stripe
+        run: |
+          title="Sandbox contract failing: $PORT"
+          body="The nightly sandbox contract run for $PORT failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+  twilio:
+    name: Twilio SMS sandbox
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    env:
+      SANDBOX_CONTRACTS: "1"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SANDBOX_TWILIO_ACCOUNT_SID: ${{ secrets.SANDBOX_TWILIO_ACCOUNT_SID }}
+      SANDBOX_TWILIO_AUTH_TOKEN: ${{ secrets.SANDBOX_TWILIO_AUTH_TOKEN }}
+      SANDBOX_TWILIO_FROM: ${{ secrets.SANDBOX_TWILIO_FROM }}
+      SANDBOX_TWILIO_TO: ${{ secrets.SANDBOX_TWILIO_TO }}
+    steps:
+      - id: gate
+        name: Check the secrets
+        run: |
+          missing=""
+          test -n "$SANDBOX_TWILIO_ACCOUNT_SID" || missing="$missing SANDBOX_TWILIO_ACCOUNT_SID"
+          test -n "$SANDBOX_TWILIO_AUTH_TOKEN" || missing="$missing SANDBOX_TWILIO_AUTH_TOKEN"
+          test -n "$SANDBOX_TWILIO_FROM" || missing="$missing SANDBOX_TWILIO_FROM"
+          test -n "$SANDBOX_TWILIO_TO" || missing="$missing SANDBOX_TWILIO_TO"
+          if [ -n "$missing" ]; then
+            echo "::notice title=twilio sandbox skipped::no sandbox key yet (missing:$missing)"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - if: steps.gate.outputs.run == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.gate.outputs.run == 'true'
+        name: Run the twilio sandbox suite
+        run: pnpm --filter @kesher/adapters exec vitest run src/sandbox.contract.test.ts -t "twilio sandbox"
+      - if: failure()
+        name: Open or update the issue
+        env:
+          PORT: twilio
+        run: |
+          title="Sandbox contract failing: $PORT"
+          body="The nightly sandbox contract run for $PORT failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+  postmark:
+    name: Postmark email sandbox
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    env:
+      SANDBOX_CONTRACTS: "1"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SANDBOX_POSTMARK_SERVER_TOKEN: ${{ secrets.SANDBOX_POSTMARK_SERVER_TOKEN }}
+      SANDBOX_POSTMARK_FROM: ${{ secrets.SANDBOX_POSTMARK_FROM }}
+      SANDBOX_POSTMARK_ALIAS: ${{ secrets.SANDBOX_POSTMARK_ALIAS }}
+      SANDBOX_POSTMARK_TO: ${{ secrets.SANDBOX_POSTMARK_TO }}
+    steps:
+      - id: gate
+        name: Check the secrets
+        run: |
+          missing=""
+          test -n "$SANDBOX_POSTMARK_SERVER_TOKEN" || missing="$missing SANDBOX_POSTMARK_SERVER_TOKEN"
+          test -n "$SANDBOX_POSTMARK_FROM" || missing="$missing SANDBOX_POSTMARK_FROM"
+          test -n "$SANDBOX_POSTMARK_ALIAS" || missing="$missing SANDBOX_POSTMARK_ALIAS"
+          test -n "$SANDBOX_POSTMARK_TO" || missing="$missing SANDBOX_POSTMARK_TO"
+          if [ -n "$missing" ]; then
+            echo "::notice title=postmark sandbox skipped::no sandbox key yet (missing:$missing)"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - if: steps.gate.outputs.run == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.gate.outputs.run == 'true'
+        name: Run the postmark sandbox suite
+        run: pnpm --filter @kesher/adapters exec vitest run src/sandbox.contract.test.ts -t "postmark sandbox"
+      - if: failure()
+        name: Open or update the issue
+        env:
+          PORT: postmark
+        run: |
+          title="Sandbox contract failing: $PORT"
+          body="The nightly sandbox contract run for $PORT failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+  expo:
+    name: Expo push sandbox
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    env:
+      SANDBOX_CONTRACTS: "1"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SANDBOX_EXPO_PUSH_TOKEN: ${{ secrets.SANDBOX_EXPO_PUSH_TOKEN }}
+      SANDBOX_EXPO_ACCESS_TOKEN: ${{ secrets.SANDBOX_EXPO_ACCESS_TOKEN }}
+    steps:
+      - id: gate
+        name: Check the secrets
+        run: |
+          missing=""
+          test -n "$SANDBOX_EXPO_PUSH_TOKEN" || missing="$missing SANDBOX_EXPO_PUSH_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::notice title=expo sandbox skipped::no sandbox key yet (missing:$missing)"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - if: steps.gate.outputs.run == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.gate.outputs.run == 'true'
+        name: Run the expo sandbox suite
+        run: pnpm --filter @kesher/adapters exec vitest run src/sandbox.contract.test.ts -t "expo sandbox"
+      - if: failure()
+        name: Open or update the issue
+        env:
+          PORT: expo
+        run: |
+          title="Sandbox contract failing: $PORT"
+          body="The nightly sandbox contract run for $PORT failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+  crowded:
+    name: Crowded banking sandbox
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    env:
+      SANDBOX_CONTRACTS: "1"
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CROWDED_SANDBOX_TOKEN: ${{ secrets.CROWDED_SANDBOX_TOKEN }}
+      CROWDED_BASE_URL: ${{ secrets.CROWDED_BASE_URL }}
+    steps:
+      - id: gate
+        name: Check the secrets
+        run: |
+          missing=""
+          test -n "$CROWDED_SANDBOX_TOKEN" || missing="$missing CROWDED_SANDBOX_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::notice title=crowded sandbox skipped::no sandbox key yet (missing:$missing)"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: pnpm/action-setup@v4
+      - if: steps.gate.outputs.run == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - if: steps.gate.outputs.run == 'true'
+        run: pnpm install --frozen-lockfile
+      - if: steps.gate.outputs.run == 'true'
+        name: Run the crowded sandbox suite
+        run: pnpm --filter @kesher/adapters exec vitest run src/crowded/sandbox.test.ts 
+      - if: failure()
+        name: Open or update the issue
+        env:
+          PORT: crowded
+        run: |
+          title="Sandbox contract failing: $PORT"
+          body="The nightly sandbox contract run for $PORT failed: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number,title --jq "map(select(.title == \"$title\"))[0].number // empty")"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+  uncovered:
+    name: Ports with no sandbox suite
+    if: ${{ !github.event.repository.fork }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - run: echo "::notice title=No sandbox suite::airalo, cover-genius, workos, apple and google have contract suites against their fakes only; see docs/setup/sandbox-contracts.md"
