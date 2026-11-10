@@ -278,13 +278,13 @@ export class LoadService implements LoadActivities {
         vendor = await this.d.port.getLoad(loadId);
       } catch (e) {
         if (e instanceof FundingError && e.code === 'UNKNOWN_LOAD') {
-          await this.recordAsked(transfer.id, now); // an answer too: the sweep does not ask again inside the interval
-          await this.openUnknownLoadCase(transfer, loadId, now);
+          await this.holdUnknown(transfer, loadId, now);
           return transfer;
         }
         throw e;
       }
-      if (transfer.state === 'pending_hold') await this.recordAsked(transfer.id, now);
+      // Not for a `failed` answer: if failing the load then throws, the load must not be hidden for the interval (T-0558).
+      if (transfer.state === 'pending_hold' && vendor.status !== 'failed') await this.recordAsked(transfer.id, now);
       if (vendor.status === 'failed') return this.fail(transfer, vendor.failureCode ?? 'VENDOR_FAILED', now);
     }
     // Read the row again and refuse if the hold was reversed: a return that failed the load since the caller's read must
@@ -393,9 +393,15 @@ export class LoadService implements LoadActivities {
     return r.rows[0]?.external_id;
   }
 
-  /** Notes that the vendor was just asked about a held load (upsert), so `stale()` leaves it alone until HELD_RECHECK_MS passes (T-0558). */
+  /** Notes that the vendor was just asked about a held load (upsert, never moving the time backwards), so `stale()` leaves it alone until HELD_RECHECK_MS passes (T-0558). */
   async recordAsked(transferId: string, now: Date): Promise<void> {
-    await this.d.db.query(`insert into ops.load_check (transfer_id, last_asked_at) values ($1, $2) on conflict (transfer_id) do update set last_asked_at = excluded.last_asked_at`, [transferId, now]);
+    await this.d.db.query(`insert into ops.load_check (transfer_id, last_asked_at) values ($1, $2) on conflict (transfer_id) do update set last_asked_at = excluded.last_asked_at where ops.load_check.last_asked_at < excluded.last_asked_at`, [transferId, now]);
+  }
+
+  /** The vendor does not know a held load: notes that it was asked (an answer too) and opens the one case for people (T-0547, T-0558). */
+  async holdUnknown(transfer: Transfer, loadId: string, now: Date): Promise<void> {
+    await this.recordAsked(transfer.id, now);
+    await this.openUnknownLoadCase(transfer, loadId, now);
   }
 
   /** True while a case people have not decided exists for a held load the vendor does not know; a resolved or dismissed one lets it be asked again. */

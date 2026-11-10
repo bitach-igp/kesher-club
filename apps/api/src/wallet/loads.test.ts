@@ -473,6 +473,19 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
       expect(await staleIds(NOW)).toContain(id);
     });
 
+    it('the marker never moves backwards, and release() itself writes it for an ordinary read (N1, N2)', async () => {
+      expect((await achLoad('load-asked-release-1')).status).toBe(201);
+      const t = (await app.services.transfers.byKey('load-asked-release-1'))!;
+      const at = new Date(NOW.getTime() + HOUR);
+      expect((await app.services.loads.release(t, at)).state).toBe('settled');
+      const marker = async () => (await db.query<{ last_asked_at: Date }>(`select last_asked_at from ops.load_check where transfer_id = $1`, [t.id])).rows[0]!.last_asked_at.getTime();
+      expect(await marker()).toBe(at.getTime());
+      await app.services.loads.recordAsked(t.id, new Date(at.getTime() - HOUR)); // an older clock reading
+      expect(await marker()).toBe(at.getTime());
+      await app.services.loads.recordAsked(t.id, new Date(at.getTime() + HOUR));
+      expect(await marker()).toBe(at.getTime() + HOUR);
+    });
+
     it('an UNKNOWN_LOAD hold records its marker, opens one case, and is not swept again inside the interval', async () => {
       expect((await achLoad('load-asked-unknown-1')).status).toBe(201);
       const t = (await app.services.transfers.byKey('load-asked-unknown-1'))!;

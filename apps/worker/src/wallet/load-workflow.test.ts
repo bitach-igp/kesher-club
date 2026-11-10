@@ -2,7 +2,7 @@
 // carries it, one journal partner_settlement → wallet lands on success and never a second one however
 // often the run repeats; a decline fails once; an outage leaves the run resumable; the sweep finishes
 // loads whose webhook never came. Over the API's LoadService, the funding simulator and PGlite.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { BillingSimulator, FundingError, FundingSimulator, fixedClock, type FundingPort, type Load } from '@kesher/ports';
 import { StaticFlags } from '@kesher/api/billing/capabilities';
@@ -236,11 +236,12 @@ describe('a held load is asked about once per interval (T-0558, TST-WAL-003)', (
   const heldRun = async (provider: string) => {
     const v = counting();
     now = NOW;
-    const wf = new LoadWorkflow(service(v.port, provider), v.port, clock);
+    const svc = service(v.port, provider);
+    const wf = new LoadWorkflow(svc, v.port, clock);
     const party = uuidv7(NOW);
     const r = await wf.run(input(party, 7_000n, { method: 'ach' }), `held-${provider}-${party}`);
     expect(r.transfer).toMatchObject({ state: 'pending_hold', holdReleasesAt: '2026-11-04T09:00:00.000Z' });
-    return { ...v, wf, party, transfer: r.transfer };
+    return { ...v, wf, svc, party, transfer: r.transfer };
   };
   const sweepAt = (wf: LoadWorkflow, at: Date) => {
     now = at;
@@ -284,5 +285,36 @@ describe('a held load is asked about once per interval (T-0558, TST-WAL-003)', (
     await sweepAt(h.wf, new Date(due.getTime() + 60_000));
     await sweepAt(h.wf, new Date(due.getTime() + 120_000));
     expect(h.state.reads).toBe(4);
+  });
+
+  it('a return whose fail() throws once is not hidden: the load is asked again on the next sweep and then failed (S1)', async () => {
+    const h = await heldRun('held-failthrow');
+    h.state.returned = true;
+    const spy = vi.spyOn(h.svc, 'fail').mockRejectedValueOnce(new Error('transient'));
+    const first = await sweepAt(h.wf, new Date(NOW.getTime() + 11 * 60_000));
+    expect(first.errors).toHaveLength(1);
+    expect((await db.query(`select 1 from ops.load_check where transfer_id = $1`, [h.transfer.id])).rows).toHaveLength(0);
+    const second = await sweepAt(h.wf, new Date(NOW.getTime() + 12 * 60_000));
+    spy.mockRestore();
+    expect(h.state.reads).toBe(2);
+    expect(second).toMatchObject({ failed: 1, errors: [] });
+    expect(await transfers.get(h.transfer.id)).toMatchObject({ state: 'failed' });
+  });
+
+  it('a held load the vendor does not know opens one case, records its marker and is not read again inside the interval (G1)', async () => {
+    const h = await heldRun('held-unknown');
+    const real = h.port.getLoad;
+    let reads = 0;
+    h.port.getLoad = async (id) => {
+      reads += 1;
+      throw new FundingError('UNKNOWN_LOAD', id);
+    };
+    const first = await sweepAt(h.wf, new Date(NOW.getTime() + 11 * 60_000));
+    expect(first).toMatchObject({ errors: [], held: expect.any(Number) });
+    await sweepAt(h.wf, new Date(NOW.getTime() + 30 * 60_000));
+    expect(reads).toBe(1);
+    expect((await db.query(`select 1 from ops.case where kind = 'load_unknown' and dedupe_key = $1`, [`load-unknown:${h.transfer.id}`])).rows).toHaveLength(1);
+    expect((await db.query(`select 1 from ops.load_check where transfer_id = $1`, [h.transfer.id])).rows).toHaveLength(1);
+    h.port.getLoad = real;
   });
 });
