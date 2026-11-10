@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
 import { fixedClock, type AdvanceableClock } from '@kesher/ports';
-import { fundingContract } from '@kesher/ports/contracts';
+import { fundingContract, fundingStatementContract } from '@kesher/ports/contracts';
 import { FakeStripe } from './fake-stripe.ts';
 import { StripeFundingAdapter } from './funding.ts';
 
@@ -29,6 +29,71 @@ fundingContract('stripe', make, {
   achPaymentMethod: 'pm_us_bank_ok',
   succeededWebhook: async (port, loadId) => fakes.get(port)!.settlePaymentIntent(loadId),
   norefundPaymentMethod: 'pm_card_norefund',
+});
+
+/** Stripe serialises amounts as JSON integers; built from bigint so no number literal is money. */
+const wire = (minor: bigint): number => Number(minor);
+
+/** Fails every balance_transactions request from the n-th on with a 503, like Stripe going down mid-listing. */
+const listingFailFrom = new WeakMap<object, { after: number }>();
+function listingHarness() {
+  const clock = fixedClock() as AdvanceableClock;
+  const fake = new FakeStripe({ secretKey, webhookSecret, clock });
+  const plan = { after: Number.POSITIVE_INFINITY };
+  let seen = 0;
+  const fetchImpl = ((input: string | URL | Request, init?: RequestInit) => {
+    if (String(input).includes('/v1/balance_transactions') && seen++ >= plan.after) return Promise.resolve(new Response(JSON.stringify({ error: { type: 'api_error', message: 'down' } }), { status: 503, headers: { 'content-type': 'application/json' } }));
+    return fake.fetch(input, init);
+  }) as typeof fetch;
+  const port = new StripeFundingAdapter({ secretKey, webhookSecret, fetch: fetchImpl, clock });
+  listingFailFrom.set(port, plan);
+  fakes.set(port, fake);
+  return { port, clock, fake };
+}
+
+const clocks = new WeakMap<object, AdvanceableClock>();
+fundingStatementContract('stripe', () => {
+  const h = listingHarness();
+  clocks.set(h.port, h.clock);
+  return h.port;
+}, {
+  goodPaymentMethod: 'pm_card_ok',
+  achPaymentMethod: 'pm_us_bank_ok',
+  slowRefundPaymentMethod: 'pm_card_slowrefund',
+  clockOf: (port) => clocks.get(port)!,
+  failListingFrom: (port, after) => {
+    listingFailFrom.get(port)!.after = after;
+  },
+});
+
+describe('StripeFundingAdapter statement listing', () => {
+  it('reads balance_transactions with the created window and expands the source; an ACH debit lands when it clears', async () => {
+    const { fake, port, clock } = listingHarness();
+    const t0 = clock.now();
+    const l = await port.createLoad({ customerId: 'c', method: 'ach', amount: money(5_000n, 'USD'), paymentMethodId: 'pm_us_bank_ok' }, 'k');
+    const window = { from: t0.toISOString(), to: new Date(t0.getTime() + 2 * 86_400_000).toISOString() };
+    expect((await port.listSettled(window)).entries).toEqual([]);
+    clock.advance(86_400_000);
+    const hook = fake.settlePaymentIntent(l.loadId);
+    await port.parseWebhook(hook.headers, hook.rawBody);
+    const page = await port.listSettled(window);
+    expect(page.entries).toEqual([{ kind: 'charge', id: l.loadId, loadId: l.loadId, amount: money(5_000n, 'USD'), settledAt: new Date(t0.getTime() + 86_400_000).toISOString() }]);
+    const call = fake.calls.filter((x) => x.path === '/v1/balance_transactions').at(-1)!;
+    expect(call.form['created']).toEqual({ gte: String(Math.floor(t0.getTime() / 1000)), lt: String(Math.floor((t0.getTime() + 2 * 86_400_000) / 1000)) });
+    expect(call.form['expand']).toEqual(['data.source']);
+  });
+
+  it('a settled charge with no PaymentIntent fails secure rather than being dropped from the statement', async () => {
+    const odd = JSON.stringify({ object: 'list', has_more: false, data: [{ id: 'txn_1', type: 'charge', amount: wire(100n), currency: 'usd', created: 1_000, source: { id: 'ch_1', object: 'charge', payment_intent: null } }] });
+    const port = new StripeFundingAdapter({ secretKey, webhookSecret, fetch: (async () => new Response(odd, { status: 200 })) as typeof fetch });
+    await expect(port.listSettled({ from: '1970-01-01T00:00:00Z', to: '1970-01-02T00:00:00Z' })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+  });
+
+  it('skips balance transactions that are not charges or refunds (payouts, fees)', async () => {
+    const body = JSON.stringify({ object: 'list', has_more: false, data: [{ id: 'txn_p', type: 'payout', amount: wire(-900n), currency: 'usd', created: 1_000, source: 'po_1' }] });
+    const port = new StripeFundingAdapter({ secretKey, webhookSecret, fetch: (async () => new Response(body, { status: 200 })) as typeof fetch });
+    expect((await port.listSettled({ from: '1970-01-01T00:00:00Z', to: '1970-01-02T00:00:00Z' })).entries).toEqual([]);
+  });
 });
 
 describe('StripeFundingAdapter specifics', () => {
