@@ -325,4 +325,5 @@
 | [T-0693](T-0693.md) | AUTH | Institution staff are deprovisioned within 15 minutes by a SCIM call | REQ-AUTH-008 | later |
 | [T-0694](T-0694.md) | AUTH | A member's Apple or Google link is stored, with the Apple refresh token sealed | REQ-AUTH-004, REQ-AUTH-005 | later |
 | [T-0695](T-0695.md) | INS | A Crowded 409 DUPLICATE_REQUEST on an ACH means in flight: retry the same key before calling the outcome unknown | REQ-INS-024 | later |
+| [T-0696](T-0696.md) | INS | A sub-account create whose outcome is unknown is looked up by name, not retried | REQ-INS-024 | later |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
