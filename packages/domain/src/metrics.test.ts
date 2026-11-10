@@ -1,7 +1,7 @@
 // T-0053: metrics as CloudWatch Embedded Metric Format lines. The dimension set is closed, a line never carries an id, and a
 // broken emitter or sink raises nothing.
 import { describe, expect, it } from 'vitest';
-import { createMetrics, guarded, METRIC_DEFS, METRIC_DIMENSIONS, minorToNumber, validateDimensions, type Metrics } from './metrics.ts';
+import { createMetrics, guarded, METRIC_DEFS, METRIC_DIMENSIONS, minorToNumber, validateDimensions, webhookRejectReason, type Metrics } from './metrics.ts';
 
 const capture = () => {
   const lines: string[] = [];
@@ -39,6 +39,7 @@ describe('the EMF line', () => {
     metrics.reconBreakOldestHours(25);
     metrics.transferStuck('pending', 'US', 600);
     metrics.providerError('card-issuing');
+    metrics.webhookRejected('stripe', 'bad_signature');
     const emitted = lines.flatMap((l) => (JSON.parse(l) as { _aws: { CloudWatchMetrics: { Metrics: { Name: string }[] }[] } })._aws.CloudWatchMetrics[0]!.Metrics.map((m) => m.Name));
     expect(emitted.sort()).toEqual(Object.keys(METRIC_DEFS).sort());
     expect(JSON.parse(lines[6]!)).toMatchObject({ state: 'pending', market: 'US', 'transfer.stuck': 600 });
@@ -53,9 +54,9 @@ describe('units', () => {
 });
 
 describe('the dimension set is closed', () => {
-  it('is exactly market, port, job and state, and every metric draws from it', () => {
-    expect([...METRIC_DIMENSIONS]).toEqual(['market', 'port', 'job', 'state']);
-    for (const def of Object.values(METRIC_DEFS)) for (const d of def.dimensions) expect(METRIC_DIMENSIONS).toContain(d);
+  it('is exactly market, port, job, state, provider and reason, and every metric draws from it', () => {
+    expect([...METRIC_DIMENSIONS]).toEqual(['market', 'port', 'job', 'state', 'provider', 'reason']);
+    for (const def of Object.values(METRIC_DEFS)) for (const d of [...def.dimensions, ...(('optional' in def ? def.optional : []) as readonly string[])]) expect(METRIC_DIMENSIONS).toContain(d);
   });
 
   it('fails on an unknown dimension, whatever it is called', () => {
@@ -102,7 +103,7 @@ describe('a broken emitter changes nothing', () => {
     const boom = new Proxy({}, { get: () => () => { throw new Error('boom'); } }) as unknown as Metrics;
     const m = guarded(createMetrics({ write: () => undefined }));
     expect(() => m.put({ 'jit.error': 1 })).not.toThrow();
-    const g = guarded({ ...(Object.fromEntries(['put', 'jitDecision', 'webhookLag', 'jobFailure', 'jobAge', 'reconBreakOpenUsd', 'reconBreakOldestHours', 'transferStuck', 'providerError'].map((k) => [k, () => { throw new Error(k); }])) as unknown as Metrics) });
+    const g = guarded({ ...(Object.fromEntries(['put', 'jitDecision', 'webhookLag', 'jobFailure', 'jobAge', 'reconBreakOpenUsd', 'reconBreakOldestHours', 'transferStuck', 'providerError', 'webhookRejected'].map((k) => [k, () => { throw new Error(k); }])) as unknown as Metrics) });
     expect(() => { g.jitDecision(1, false); g.jobFailure('x'); g.providerError('p'); }).not.toThrow();
     expect(boom).toBeDefined();
   });
@@ -115,5 +116,31 @@ describe('minorToNumber', () => {
     expect(minorToNumber(5_000n)).toBe(50);
     expect(minorToNumber(-250n)).toBe(-2.5);
     expect(minorToNumber(9_007_199_254_740_993_00n)).toBeGreaterThan(9e15);
+  });
+});
+
+describe('provider.error and webhook.rejected (T-0689)', () => {
+  it('provider.error carries {port} for the alarms and {port, provider} as a second set on the same line', () => {
+    const { metrics, lines } = capture();
+    metrics.providerError('fx', 'simulator');
+    metrics.providerError('fx');
+    const [split, bare] = lines.map((l) => JSON.parse(l) as { _aws: { CloudWatchMetrics: { Dimensions: string[][] }[] } } & Record<string, unknown>);
+    expect(split!._aws.CloudWatchMetrics[0]!.Dimensions).toEqual([['port'], ['port', 'provider']]);
+    expect(split).toMatchObject({ port: 'fx', provider: 'simulator', 'provider.error': 1 });
+    expect(bare!._aws.CloudWatchMetrics[0]!.Dimensions).toEqual([['port']]);
+  });
+
+  it('webhook.rejected carries provider and a reason from a closed set; free text and ids are refused', () => {
+    const { metrics, lines } = capture();
+    metrics.webhookRejected('stripe', 'bad_signature');
+    expect(JSON.parse(lines[0]!)).toMatchObject({ provider: 'stripe', reason: 'bad_signature', 'webhook.rejected': 1 });
+    metrics.webhookRejected('0191a7c2-6b1e-7c3a-9d0e-2f4b5a6c7d8e', 'bad_signature');
+    expect(lines).toHaveLength(1);
+    expect(webhookRejectReason('bad signature')).toBe('bad_signature');
+    expect(webhookRejectReason('missing signature')).toBe('missing_signature');
+    expect(webhookRejectReason('NO_SIGNATURE')).toBe('missing_signature');
+    expect(webhookRejectReason('MISMATCH')).toBe('bad_signature');
+    expect(webhookRejectReason('timestamp outside tolerance')).toBe('stale');
+    expect(webhookRejectReason(undefined)).toBe('other');
   });
 });

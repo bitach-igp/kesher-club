@@ -35,7 +35,7 @@ export class WebhookRouter {
       const rawBody = req.rawBody ?? (typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? null));
       const v = await binding.verifier.verify(req.headers, rawBody, req.now);
       if (!v.eventId) throw new DomainError('VALIDATION_FAILED', v.reason ?? 'Event id missing');
-      const { duplicate, event } = await this.store.record({ provider, eventId: v.eventId, signatureOk: v.ok, payload: v.payload, receivedAt: req.now });
+      const { duplicate, event } = await this.store.record({ provider, eventId: v.eventId, signatureOk: v.ok, payload: v.payload, receivedAt: req.now, ...(v.reason ? { reason: v.reason } : {}) });
       if (!event.signatureOk) throw new HttpError(401, 'invalid_signature', 'Webhook signature could not be verified');
       if (!duplicate || !event.processedAt) await this.process(binding, event, req.now);
       return ok({ eventId: v.eventId, duplicate });

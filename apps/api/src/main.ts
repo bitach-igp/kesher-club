@@ -8,7 +8,7 @@ import { AuditService } from './audit/service.ts';
 import { assertProdSimulatorsSafe, FlagService } from './flags/service.ts';
 import type http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { createLogger } from '@kesher/domain';
+import { createLogger, stdoutMetrics } from '@kesher/domain';
 import type { JWK } from 'jose';
 import { createApp } from './app.ts';
 import { PostgresIdentityRepository } from './auth/pg-repository.ts';
@@ -40,7 +40,7 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
     const pii = createPiiCipher({ dataKey: config.PII_DATA_KEY, indexKey: config.PII_INDEX_KEY });
     const signingKey = await importSigningKey(JSON.parse(config.JWT_SIGNING_KEY.reveal()) as JWK, config.JWT_SIGNING_KID);
     // The banking port's provider is chosen by config (T-0659); its idempotency keys live in Postgres so a restart loses none.
-    const { registry, providers } = createRegistry(config.PROVIDER_MODE_DEFAULT, undefined, overridesFromConfig(config, db, (message) => logger('warning', { message })));
+    const { registry, providers } = createRegistry(config.PROVIDER_MODE_DEFAULT, undefined, overridesFromConfig(config, db, (message) => logger('warning', { message })), stdoutMetrics);
     // T-0043: prod may leave a port on its simulator only while every flag it gates is off (registry default and store).
     await assertProdSimulatorsSafe(config.APP_ENV, registry, config.MARKET, new FlagService(db, new ApprovalService(db), new AuditService(db)));
     const app = createApp({

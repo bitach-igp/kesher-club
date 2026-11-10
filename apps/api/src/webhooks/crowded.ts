@@ -67,7 +67,7 @@ export class CrowdedWebhook {
       const failure = verifyCrowdedSignature({ header: crowdedHeaderValue(req.headers, CROWDED_SIGNATURE_HEADER), rawBody: bytes, secrets: this.d.secrets() });
       if (failure) {
         const sha256 = createHash('sha256').update(bytes).digest('hex');
-        await this.d.store.record({ provider: CROWDED_PROVIDER, eventId: `rejected-${sha256.slice(0, 32)}`, signatureOk: false, payload: { reason: failure, bytes: bytes.byteLength, sha256 }, receivedAt: req.now });
+        await this.d.store.record({ provider: CROWDED_PROVIDER, eventId: `rejected-${sha256.slice(0, 32)}`, signatureOk: false, payload: { reason: failure, bytes: bytes.byteLength, sha256 }, receivedAt: req.now, reason: failure });
         throw new HttpError(401, 'invalid_signature', 'Webhook signature could not be verified');
       }
       const events = parseBatch(Buffer.from(bytes).toString('utf8'));

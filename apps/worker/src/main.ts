@@ -10,7 +10,7 @@ import { createApp } from '@kesher/api/app';
 import { PostgresIdentityRepository } from '@kesher/api/auth/pg-repository';
 import { importSigningKey } from '@kesher/api/auth/tokens';
 import { loadWorkerConfig } from '@kesher/api/config';
-import { createLogger, type LogFields } from '@kesher/domain';
+import { createLogger, stdoutMetrics, type LogFields } from '@kesher/domain';
 import { createPiiCipher } from '@kesher/api/crypto/pii';
 import { createPgDatabase } from '@kesher/api/pg';
 import { createRegistry, crowdedWebhookSecrets, overridesFromConfig } from '@kesher/api/registry';
@@ -60,7 +60,7 @@ export async function main(env: Record<string, string | undefined>, opts: Worker
     // createApp wires the token service too; the worker never mints a token, but builds the same graph.
     const signingKey = await importSigningKey(JSON.parse(config.JWT_SIGNING_KEY.reveal()) as Parameters<typeof importSigningKey>[0], config.JWT_SIGNING_KID);
     // Same provider choice as the API (T-0659): the worker replays webhook events and reads provider state through the same adapter.
-    const { registry, providers } = createRegistry(config.PROVIDER_MODE_DEFAULT, undefined, overridesFromConfig(config, db, (message) => emit('warning', { message })));
+    const { registry, providers } = createRegistry(config.PROVIDER_MODE_DEFAULT, undefined, overridesFromConfig(config, db, (message) => emit('warning', { message })), stdoutMetrics);
     const clock = opts.clock ?? (() => new Date());
     // T-0043: prod may leave a port on its simulator only while every flag it gates is off (registry default and store).
     await assertProdSimulatorsSafe(config.APP_ENV, registry, config.MARKET, new FlagService(db, new ApprovalService(db), new AuditService(db)));

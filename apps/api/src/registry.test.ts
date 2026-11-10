@@ -2,7 +2,7 @@
 // simulators; a per-port override binds `institution-banking` to the Crowded adapter and nothing else.
 import { AiraloEsimAdapter, FakeStripe, StripeBillingAdapter, StripeFundingAdapter, FederatedIdPRouter, AppleFederatedIdPAdapter, CoverGeniusInsuranceAdapter, GoogleFederatedIdPAdapter, WorkOsOrgIdPAdapter, computeCrowdedSignature, CrowdedInstitutionBankingAdapter, FakeCrowded, InMemoryKeyLedger, SANDBOX_BASE_URL, type KeyLedger } from '@kesher/adapters';
 import { generateKeyPairSync } from 'node:crypto';
-import { Secret } from '@kesher/domain';
+import { createMetrics, Secret } from '@kesher/domain';
 import { fixedClock, NotifyError, type AdvanceableClock, type BillingPort, type EsimPort, type FederatedIdPPort, type FundingPort, type InstitutionBankingPort, type InsurancePort, type NotifyPort, type OrgIdPPort } from '@kesher/ports';
 import { PORTS } from '@kesher/ports';
 import { describe, expect, it } from 'vitest';
@@ -577,5 +577,64 @@ describe('Stripe and notification bindings (T-0041)', () => {
     const err = thrownBy(() => createRegistry('sandbox', systemClock(), { funding: { provider: 'stripe', secretKey: new Secret(STRIPE_KEY), webhookSecrets: [], planProducts: {} } }));
     expect(err.message).toMatch(/webhook secret/);
     for (const v of NOTIFY_SECRETS) expect(err.message).not.toContain(v);
+  });
+});
+
+describe('provider.error for every resolved port (T-0689)', () => {
+  const metered = () => {
+    const lines: Record<string, unknown>[] = [];
+    const made = createRegistry('sim', systemClock(), {}, createMetrics({ write: (l) => lines.push(JSON.parse(l) as Record<string, unknown>) }));
+    return { ...made, lines };
+  };
+
+  it('without a metrics sink resolve hands back the bare port', () => {
+    const { registry, simulators } = createRegistry('sim');
+    expect(registry.resolve('fx', 'IL')).toBe(simulators.simulators.fx);
+  });
+
+  it('a thrown PROVIDER_UNAVAILABLE counts once as provider.error{port,provider} and is rethrown unchanged', async () => {
+    const boom = new NotifyError('PROVIDER_UNAVAILABLE', 'vendor 0191a7c2 payload {"a":1} down');
+    const { registry: r2, simulators, lines: l2 } = metered();
+    simulators.registry.register('scratch', 'acme', () => ({ call: () => Promise.reject(boom), sync: () => { throw boom; }, ok: () => Promise.resolve(1) }));
+    simulators.registry.bind({ capability: 'scratch', market: 'IL', provider: 'acme', mode: 'sim' });
+    const port = r2.resolve<{ call: () => Promise<never>; sync: () => never; ok: () => Promise<number> }>('scratch', 'IL');
+    await expect(port.call()).rejects.toBe(boom);
+    expect(() => port.sync()).toThrow(boom);
+    await expect(port.ok()).resolves.toBe(1);
+    expect(l2).toHaveLength(2);
+    expect(l2[0]).toMatchObject({ port: 'scratch', provider: 'acme', 'provider.error': 1 });
+    expect(JSON.stringify(l2)).not.toMatch(/0191a7c2|payload/);
+  });
+
+  it("counts a failure on any port the registry resolves: the bank simulator outage fixture", async () => {
+    const { registry, lines } = metered();
+    const bank = registry.resolve<{ statement: (input: { valueDate: string }) => Promise<unknown> }>('bank', 'IL');
+    const before = lines.length;
+    await expect(bank.statement({ valueDate: '2000-01-01' })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(lines.slice(before)).toEqual([expect.objectContaining({ port: 'bank', provider: 'simulator', 'provider.error': 1 })]);
+  });
+
+  it('an answer that is not an outage (a coded rejection) is not counted', async () => {
+    const { registry, simulators, lines } = metered();
+    simulators.registry.register('scratch', 'acme', () => ({ call: () => Promise.reject(new NotifyError('UNKNOWN_MESSAGE', 'no')) }));
+    simulators.registry.bind({ capability: 'scratch', market: 'US', provider: 'acme', mode: 'sim' });
+    await expect(registry.resolve<{ call: () => Promise<never> }>('scratch', 'US').call()).rejects.toMatchObject({ code: 'UNKNOWN_MESSAGE' });
+    expect(lines).toEqual([]);
+  });
+
+  it('card-issuing parseAuthorization is left to its caller, so JIT does not double count', async () => {
+    const { registry, lines } = metered();
+    const port = registry.resolve<{ parseAuthorization: (h: Record<string, string>, b: string) => Promise<unknown> }>('card-issuing', 'IL');
+    await expect(port.parseAuthorization({ 'x-sim-signature': 'sim' }, '{ not json')).rejects.toBeDefined();
+    expect(lines).toEqual([]);
+  });
+
+  it('a broken metrics sink never changes what the caller sees', async () => {
+    const throwing = { providerError: () => { throw new Error('sink'); } } as unknown as Parameters<typeof createRegistry>[3];
+    const { simulators, registry } = createRegistry('sim', systemClock(), {}, throwing);
+    const boom = new NotifyError('PROVIDER_UNAVAILABLE', 'x');
+    simulators.registry.register('scratch', 'acme', () => ({ call: () => Promise.reject(boom) }));
+    simulators.registry.bind({ capability: 'scratch', market: 'IL', provider: 'acme', mode: 'sim' });
+    await expect(registry.resolve<{ call: () => Promise<never> }>('scratch', 'IL').call()).rejects.toBe(boom);
   });
 });
