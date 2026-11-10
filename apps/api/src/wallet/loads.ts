@@ -147,6 +147,14 @@ export async function applyVendorState(a: LoadActivities, t: Transfer, load: Ven
   }
 }
 
+/**
+ * How long the sweep leaves a held load alone after the vendor was last asked about it (T-0558). A load held for the bank's hold
+ * days used to be read every cycle, hundreds of times for one load (vendor cost). Trade-off: a return no webhook announced is found
+ * within this interval instead of within STALE_AFTER_MS (10 minutes); a webhook still fails the load at once, and a hold that is due
+ * is asked every cycle until it releases, so the interval never delays a release.
+ */
+export const HELD_RECHECK_MS = 6 * 3_600_000;
+
 export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
 export const holdKey = (workflowId: string): string => `${workflowId}:hold`;
 const unknownLoadKey = (transferId: string): string => `load-unknown:${transferId}`;
@@ -270,11 +278,13 @@ export class LoadService implements LoadActivities {
         vendor = await this.d.port.getLoad(loadId);
       } catch (e) {
         if (e instanceof FundingError && e.code === 'UNKNOWN_LOAD') {
+          await this.recordAsked(transfer.id, now); // an answer too: the sweep does not ask again inside the interval
           await this.openUnknownLoadCase(transfer, loadId, now);
           return transfer;
         }
         throw e;
       }
+      if (transfer.state === 'pending_hold') await this.recordAsked(transfer.id, now);
       if (vendor.status === 'failed') return this.fail(transfer, vendor.failureCode ?? 'VENDOR_FAILED', now);
     }
     // Read the row again and refuse if the hold was reversed: a return that failed the load since the caller's read must
@@ -383,7 +393,11 @@ export class LoadService implements LoadActivities {
     return r.rows[0]?.external_id;
   }
 
-  /** Loads the vendor has not finished: submitted, or held for the bank's hold days (a return can come during it), longer than `olderThanMs` ago. The worker asks the vendor about them. */
+  /** Notes that the vendor was just asked about a held load (upsert), so `stale()` leaves it alone until HELD_RECHECK_MS passes (T-0558). */
+  async recordAsked(transferId: string, now: Date): Promise<void> {
+    await this.d.db.query(`insert into ops.load_check (transfer_id, last_asked_at) values ($1, $2) on conflict (transfer_id) do update set last_asked_at = excluded.last_asked_at`, [transferId, now]);
+  }
+
   /** True while a case people have not decided exists for a held load the vendor does not know; a resolved or dismissed one lets it be asked again. */
   async unknownLoadOpen(transferId: string): Promise<boolean> {
     return Boolean((await this.d.db.query(`select 1 from ops.case where dedupe_key = $1 and status in ('open', 'investigating')`, [unknownLoadKey(transferId)])).rows[0]);
@@ -402,13 +416,21 @@ export class LoadService implements LoadActivities {
     );
   }
 
+  /**
+   * Loads the vendor has not finished, idle longer than `olderThanMs`: submitted, pending, or held for the bank's hold days (a return can
+   * come during it). The worker asks the vendor about them. A held load is returned only when it was never asked, was last asked
+   * HELD_RECHECK_MS ago or more, or its hold is due; `submitted` and `pending` loads are always returned.
+   */
   async stale(now: Date, olderThanMs: number, limit = 100): Promise<Transfer[]> {
     // This market's loads only: another market's worker asks its own provider about its own (T-0028). An
     // institution's ACH pull is one too (T-0617); a deposit recorded off a statement (T-0614) never met the vendor.
     const r = await this.d.db.query<{ id: string }>(`select t.id from ops.transfer t
         where (t.kind = 'load' or (t.kind = 'deposit' and exists (select 1 from ops.external_ref r where r.entity_type = 'transfer' and r.entity_id = t.id and r.provider = $4)))
-          and t.state in ('submitted', 'pending_hold', 'pending') and t.updated_at <= $1 and t.market = $3 order by (t.state = 'pending_hold'), t.updated_at limit $2`,
-      [new Date(now.getTime() - olderThanMs), limit, this.d.transfers.market, this.d.provider]);
+          and t.state in ('submitted', 'pending_hold', 'pending') and t.updated_at <= $1 and t.market = $3
+          and (t.state <> 'pending_hold' or t.hold_releases_at is null or t.hold_releases_at <= $5
+            or not exists (select 1 from ops.load_check c where c.transfer_id = t.id and c.last_asked_at > $6))
+        order by (t.state = 'pending_hold'), t.updated_at limit $2`,
+      [new Date(now.getTime() - olderThanMs), limit, this.d.transfers.market, this.d.provider, now, new Date(now.getTime() - HELD_RECHECK_MS)]);
     const out: Transfer[] = [];
     for (const row of r.rows) {
       const t = await this.d.transfers.get(row.id);

@@ -11,7 +11,7 @@ import { PlanService } from '@kesher/api/billing/plans';
 import { AccountService } from '@kesher/api/ledger/accounts';
 import { PostgresLedger } from '@kesher/api/ledger/post';
 import { TransferService } from '@kesher/api/transfers/service';
-import { LoadService, settleKey, type LoadInput } from '@kesher/api/wallet/loads';
+import { HELD_RECHECK_MS, LoadService, settleKey, type LoadInput } from '@kesher/api/wallet/loads';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
 import { LoadWorkflow, STALE_AFTER_MS } from './load-workflow.ts';
 
@@ -212,5 +212,77 @@ describe('the sweep', () => {
     expect(report).toMatchObject({ attempted: 3 + baseHeld, settled: 1, failed: 0, open: 1, errors: [{ transferId: ra.transfer.id, error: 'flaky' }] });
     expect(await transfers.get(rb.transfer.id)).toMatchObject({ state: 'settled' });
     expect(await transfers.get(ra.transfer.id)).toMatchObject({ state: 'submitted' });
+  });
+});
+
+describe('a held load is asked about once per interval (T-0558, TST-WAL-003)', () => {
+  /** The funding simulator with every read of a load counted, and a return that can be switched on. */
+  const counting = () => {
+    const sim = new FundingSimulator(fixedClock(NOW.toISOString()));
+    const state = { reads: 0, returned: false };
+    const port: FundingPort = {
+      createLoad: (i, k) => sim.createLoad(i, k),
+      getLoad: async (id) => {
+        state.reads += 1;
+        const l = await sim.getLoad(id);
+        return state.returned ? { ...l, status: 'failed', failureCode: 'R01' } : l;
+      },
+      parseWebhook: (h, b) => sim.parseWebhook(h, b),
+      refund: (i, k) => sim.refund(i, k),
+      getRefund: (id) => sim.getRefund(id),
+    };
+    return { port, state };
+  };
+  const heldRun = async (provider: string) => {
+    const v = counting();
+    now = NOW;
+    const wf = new LoadWorkflow(service(v.port, provider), v.port, clock);
+    const party = uuidv7(NOW);
+    const r = await wf.run(input(party, 7_000n, { method: 'ach' }), `held-${provider}-${party}`);
+    expect(r.transfer).toMatchObject({ state: 'pending_hold', holdReleasesAt: '2026-11-04T09:00:00.000Z' });
+    return { ...v, wf, party, transfer: r.transfer };
+  };
+  const sweepAt = (wf: LoadWorkflow, at: Date) => {
+    now = at;
+    return wf.sweep();
+  };
+
+  it('a hold whose release is days away is swept three times in an hour and the vendor is read once', async () => {
+    const h = await heldRun('held-once');
+    const first = await sweepAt(h.wf, new Date(NOW.getTime() + 11 * 60_000));
+    expect(first).toMatchObject({ settled: 0, failed: 0, errors: [] });
+    expect(first.vendorReads).toBe(1);
+    const second = await sweepAt(h.wf, new Date(NOW.getTime() + 30 * 60_000));
+    const third = await sweepAt(h.wf, new Date(NOW.getTime() + 50 * 60_000));
+    expect(h.state.reads).toBe(1);
+    expect(second.vendorReads).toBe(0);
+    expect(third.vendorReads).toBe(0);
+    expect(await available(h.party)).toBe(0n);
+  });
+
+  it('after the interval it is read again; a return found then fails the load with the hold reversed once', async () => {
+    const h = await heldRun('held-return');
+    await sweepAt(h.wf, new Date(NOW.getTime() + 11 * 60_000));
+    expect(h.state.reads).toBe(1);
+    h.state.returned = true; // the bank returned the debit; no webhook announced it
+    expect((await sweepAt(h.wf, new Date(NOW.getTime() + 11 * 60_000 + HELD_RECHECK_MS - 1))).failed).toBe(0);
+    expect(h.state.reads).toBe(1);
+    const found = await sweepAt(h.wf, new Date(NOW.getTime() + 11 * 60_000 + HELD_RECHECK_MS));
+    expect(found).toMatchObject({ failed: 1, errors: [] });
+    expect(h.state.reads).toBe(2);
+    expect(await transfers.get(h.transfer.id)).toMatchObject({ state: 'failed', failureCode: 'R01' });
+    expect((await accounts.purses(h.party)).find((p) => p.currency === 'USD')!.holds.minor).toBe(0n);
+    await sweepAt(h.wf, new Date(NOW.getTime() + 2 * HELD_RECHECK_MS));
+    expect(h.state.reads).toBe(2); // a failed load is out of the sweep
+  });
+
+  it('a due hold is read every cycle', async () => {
+    const h = await heldRun('held-due');
+    await sweepAt(h.wf, new Date(NOW.getTime() + 11 * 60_000));
+    const due = new Date('2026-11-04T09:01:00Z');
+    await sweepAt(h.wf, due);
+    await sweepAt(h.wf, new Date(due.getTime() + 60_000));
+    await sweepAt(h.wf, new Date(due.getTime() + 120_000));
+    expect(h.state.reads).toBe(4);
   });
 });

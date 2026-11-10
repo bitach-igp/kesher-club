@@ -70,6 +70,8 @@ export class LoadWorkflow {
     if (!loadId) return t; // submitted but the pull never returned: the member's rerun with the same key completes it
     asked();
     const load = await this.port.getLoad(loadId);
+    // A held load is asked about once per HELD_RECHECK_MS (T-0558): note this read so the next sweeps leave it alone.
+    if (t.state === 'pending_hold') await this.loads.recordAsked(t.id, now);
     return (await applyVendorState(this.loads, t, load, t.idempotencyKey, now)).transfer;
   }
 }
