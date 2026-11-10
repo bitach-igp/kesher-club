@@ -19,6 +19,10 @@ Rules that apply to every adapter here:
 - Webhooks are signature-verified and deduped by vendor event id inside `parseWebhook`; the HTTP
   handler stores the raw event in `ops.inbound_event` and a worker calls the adapter.
 
+Sandbox runs: `.github/workflows/sandbox-contract.yml` runs the suites that can run against a vendor sandbox (Stripe smoke, Twilio,
+Postmark, Expo, Crowded) nightly and on demand, each only when its Actions secrets are set. Secret names and the ports that have no
+sandbox suite yet: `docs/setup/sandbox-contracts.md`.
+
 Commands: `pnpm --filter @kesher/adapters typecheck`, `pnpm --filter @kesher/adapters test`, root `pnpm lint`.
 
 ## stripe — `StripeBillingAdapter` (BillingPort) and `StripeFundingAdapter` (FundingPort) · T-0301
