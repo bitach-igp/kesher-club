@@ -100,7 +100,7 @@ export class Scheduler {
     try {
       const outcome = await this.lock.withLock(job, () => job.run());
       // A daily job's tick before its time, or after today's run, is not news.
-      if (!(outcome.ran && outcome.value === IDLE)) this.log(outcome.ran ? 'job_ran' : 'job_skipped', { job: job.name, ms: Date.now() - started, ...(outcome.ran ? vendorReadsOf(outcome.value) : {}) });
+      if (!(outcome.ran && outcome.value === IDLE)) this.log(outcome.ran ? 'job_ran' : 'job_skipped', { job: job.name, ms: Date.now() - started, ...(outcome.ran ? countsOf(outcome.value) : {}) });
       // Metrics (T-0053): a run that did its work resets the job's age; a skipped tick (another task holds the lock) and a daily
       // job's idle tick say nothing about this task's work, so they emit nothing.
       if (outcome.ran && outcome.value !== IDLE) {
@@ -176,8 +176,15 @@ export function daily(job: DailyJob, runs: RunLog, clock: () => Date): Job {
 /** A lock that always grants: for a single worker and for tests. */
 export const noLock: JobLock = { withLock: async (_job, fn) => ({ ran: true, value: await fn() }) };
 
-/** A sweep that reports `vendorReads` (how often it asked a vendor) has it on its log line, so what a sweep costs shows in the logs (T-0681). */
-function vendorReadsOf(value: unknown): { vendorReads?: number } {
-  const n = typeof value === 'object' && value !== null ? (value as { vendorReads?: unknown }).vendorReads : undefined;
-  return typeof n === 'number' ? { vendorReads: n } : {};
+/**
+ * A sweep that reports `vendorReads` (how often it asked a vendor) has it on its log line, so what a sweep costs shows in the logs (T-0681);
+ * the outbox drain's `published` and `failed` (T-0687) ride the same way. Only numbers are copied, never anything else a result carries.
+ */
+function countsOf(value: unknown): { vendorReads?: number; published?: number; failed?: number } {
+  const v = typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};
+  return {
+    ...(typeof v['vendorReads'] === 'number' ? { vendorReads: v['vendorReads'] } : {}),
+    ...(typeof v['published'] === 'number' ? { published: v['published'] } : {}),
+    ...(typeof v['failed'] === 'number' ? { failed: v['failed'] } : {}),
+  };
 }

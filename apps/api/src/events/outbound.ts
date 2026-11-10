@@ -3,7 +3,7 @@
 // (5 s … 24 h, 72 h) and a replay tool for ops. Payloads are thin: ids and a type.
 import { DomainError, uuidv7 } from '@kesher/domain';
 import type { DeliveryAttempt, Endpoint, EventsPort, OutboundEventType } from '@kesher/ports';
-import type { Database } from '../db.ts';
+import type { Database, SqlClient } from '../db.ts';
 import type { OutboxMessage, OutboxSink } from '../transfers/outbox.ts';
 
 /** Outbox types that institutions may subscribe to, mapped to the public event names (Tab 3 §5). */
@@ -44,7 +44,7 @@ export class OutboundEventsService implements OutboxSink {
   }
 
   /** OutboxSink: called by the OutboxPublisher for every message; non-institution messages are ignored. */
-  async publish(m: OutboxMessage): Promise<void> {
+  async publish(m: OutboxMessage, tx?: SqlClient): Promise<void> {
     const type = INSTITUTION_EVENTS[m.type];
     if (!type) return;
     const institutionId = typeof m.payload['institutionId'] === 'string' ? m.payload['institutionId'] : undefined;
@@ -52,7 +52,7 @@ export class OutboundEventsService implements OutboxSink {
     const thin: Record<string, string> = {};
     for (const [k, v] of Object.entries(m.payload)) if (typeof v === 'string' && /id$|Id$|^type$|^status$|^count$|^paid$|^failures$/.test(k)) thin[k] = v;
     const sent = await this.port.send({ type, institutionId, payload: { ...thin, aggregateId: m.aggregateId } }, `outbox:${m.id}`);
-    await this.db.query('insert into notify.outbound_message (message_id, outbox_id, institution_id, event_type, sent_at) values ($1, $2, $3, $4, $5) on conflict do nothing', [sent.messageId, m.id, institutionId, type, new Date(m.createdAt)]);
+    await (tx ?? this.db).query('insert into notify.outbound_message (message_id, outbox_id, institution_id, event_type, sent_at) values ($1, $2, $3, $4, $5) on conflict do nothing', [sent.messageId, m.id, institutionId, type, new Date(m.createdAt)]);
   }
 
   /** Replay UI: messages for an institution with their attempts. */
