@@ -88,3 +88,6 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-10 | T-0692 | #302 | Sonnet APPROVE (revoke runs only after the account is closed; a retry mends a half-finished closure) | green |
 | 2026-11-10 | T-0695 | #307 | Sonnet APPROVE (retry is ACH-only, same wire key, injected sleep, no retry on network/5xx/book; two nits carried) | green |
 | 2026-11-10 | T-0069 | #306 | Sonnet REQUEST_CHANGES twice (the internal ALB admitted the whole VPC so a Client VPN user could forge the client address; then a for_each over an unknown security-group id would fail at plan) then restricted to the console security group with count and APPROVE, terraform job green | green |
+| 2026-11-10 | T-0695 nits | #309 | Sonnet APPROVE (the reviewer's own suggested fix would have broken the retry on the live 409, which has no `code` field: matched on the message prefix instead) | green |
+| 2026-11-10 | T-0556 | #313 | Sonnet APPROVE (cancel-first order has no double-spend path); CI's oasdiff flagged the new `cancelled` state, accepted in oasdiff-ignore.txt and the delta re-reviewed APPROVE | green |
+| 2026-11-10 | T-0557 | #314 | Sonnet REQUEST_CHANGES (the catch refunded the credit of an order whose insert had committed but whose reply was lost: free data on retry) then fixed with a get-first check and APPROVE | green |
