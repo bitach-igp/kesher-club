@@ -40,6 +40,11 @@ export class InboundEventStore {
     this.metrics = guarded(metrics);
   }
 
+  /** Counts one `webhook.rejected{provider,reason}`; also for a forged delivery refused before it has an event id to record. */
+  countRejected(provider: string, reason?: string): void {
+    this.metrics.webhookRejected(provider, webhookRejectReason(reason));
+  }
+
   /**
    * Returns `duplicate: true` when the verified (provider, eventId) pair was already stored; the stored row wins.
    * A refused delivery is counted, set aside and answered as refused; it never stands in a genuine one's way.
@@ -48,7 +53,7 @@ export class InboundEventStore {
     if (!e.signatureOk) {
       // webhook.rejected{provider,reason} (T-0689): counted before the insert so a failing write does not lose it. The reason is mapped to a
       // closed set; the verifier's text, the event id and the payload never become a label.
-      this.metrics.webhookRejected(e.provider, webhookRejectReason(e.reason));
+      this.countRejected(e.provider, e.reason);
       await this.db.query('insert into ops.inbound_rejected (id, provider, event_id, received_at, payload, market) values ($1, $2, $3, $4, $5, $6)', [uuidv7(e.receivedAt), e.provider, e.eventId, e.receivedAt, JSON.stringify(e.payload), this.market]);
       return { duplicate: false, event: { provider: e.provider, eventId: e.eventId, receivedAt: e.receivedAt.toISOString(), signatureOk: false, payload: e.payload } };
     }

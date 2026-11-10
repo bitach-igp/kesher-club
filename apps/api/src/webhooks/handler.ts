@@ -34,7 +34,11 @@ export class WebhookRouter {
       if (!binding) throw new DomainError('NOT_FOUND', 'Unknown provider');
       const rawBody = req.rawBody ?? (typeof req.body === 'string' ? req.body : JSON.stringify(req.body ?? null));
       const v = await binding.verifier.verify(req.headers, rawBody, req.now);
-      if (!v.eventId) throw new DomainError('VALIDATION_FAILED', v.reason ?? 'Event id missing');
+      if (!v.eventId) {
+        // A forged delivery with no event id is refused before it can be recorded; it still counts, once (T-0689).
+        if (!v.ok) this.store.countRejected(provider, v.reason);
+        throw new DomainError('VALIDATION_FAILED', v.reason ?? 'Event id missing');
+      }
       const { duplicate, event } = await this.store.record({ provider, eventId: v.eventId, signatureOk: v.ok, payload: v.payload, receivedAt: req.now, ...(v.reason ? { reason: v.reason } : {}) });
       if (!event.signatureOk) throw new HttpError(401, 'invalid_signature', 'Webhook signature could not be verified');
       if (!duplicate || !event.processedAt) await this.process(binding, event, req.now);

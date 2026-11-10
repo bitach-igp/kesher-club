@@ -5,6 +5,8 @@
 import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createMetrics, uuidv7 } from '@kesher/domain';
+import { BankError, type BankPort } from '@kesher/ports';
+import { bankCreditVerifier } from '../institutions/deposits.ts';
 import { isPgError } from '../db.ts';
 import { makeRequest } from '../http.ts';
 import { AccountService } from '../ledger/accounts.ts';
@@ -178,6 +180,22 @@ describe('webhook.rejected (T-0689)', () => {
     expect(missing.lines).toEqual([expect.objectContaining({ provider: 'stripe', reason: 'missing_signature' })]);
     const stale = await rejected('institution-svix', { 'webhook-id': 'msg_1', 'webhook-timestamp': '1', 'webhook-signature': 'v1,AAAA' }, { a: 1 });
     expect(stale.lines).toEqual([expect.objectContaining({ provider: 'institution-svix', reason: 'stale' })]);
+  });
+
+  it('a forged delivery with no event id still counts once and the refusal is unchanged', async () => {
+    const lines: string[] = [];
+    const metered = new WebhookRouter(new InboundEventStore(db, 'IL', createMetrics({ write: (l) => lines.push(l) })));
+    const forged = { parseWebhook: async () => { throw new BankError('BAD_SIGNATURE', 'forged'); } } as unknown as BankPort;
+    metered.bind('bank', { verifier: bankCreditVerifier(forged), process: async () => undefined });
+    metered.bind('institution-svix', { verifier: standardWebhooksVerifier(['whsec_' + Buffer.from('secret-bytes').toString('base64')]), process: async () => undefined });
+    const post2 = (provider: string, rawBody: string) => metered.handler()(makeRequest({ method: 'POST', path: `/hooks/${provider}`, params: { provider }, headers: {}, rawBody, body: rawBody, now }));
+    const bank = await post2('bank', '{"amount":"1"}');
+    expect(bank.status).toBe(422);
+    expect(lines.map((l) => JSON.parse(l) as Record<string, unknown>)).toEqual([expect.objectContaining({ provider: 'bank', reason: 'bad_signature', 'webhook.rejected': 1 })]);
+    lines.length = 0;
+    const svix = await post2('institution-svix', '{ not json');
+    expect(svix.status).toBe(422);
+    expect(lines.map((l) => JSON.parse(l) as Record<string, unknown>)).toEqual([expect.objectContaining({ provider: 'institution-svix', reason: 'other', 'webhook.rejected': 1 })]);
   });
 
   it('an accepted webhook counts nothing', async () => {

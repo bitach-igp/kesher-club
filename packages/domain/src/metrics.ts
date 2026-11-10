@@ -55,7 +55,7 @@ export function webhookRejectReason(text: string | undefined): WebhookRejectReas
   if (t.includes('no_signature') || (t.includes('missing') && t.includes('signature'))) return 'missing_signature';
   if (t.includes('stale') || t.includes('timestamp') || t.includes('tolerance')) return 'stale';
   // Crowded's own words (MISMATCH, MALFORMED) are a signature that does not hold.
-  if (t.includes('signature') || t.includes('mismatch') || t.includes('malformed')) return 'bad_signature';
+  if (t.includes('signature') || t === 'mismatch' || t === 'malformed') return 'bad_signature';
   return 'other';
 }
 
