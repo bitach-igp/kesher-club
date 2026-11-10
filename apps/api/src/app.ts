@@ -2,7 +2,7 @@
 // in sim mode) and returns the handler table. The HTTP server (server.ts) and tests call this;
 // nothing here knows about sockets. Secrets arrive through the config loader (T-0004).
 import type { Database } from './db.ts';
-import type { AuthPort, BankPort, BillingPort, CardIssuingPort, EventsPort, FundingPort, FxPort, InstitutionBankingPort, PayoutPort, KycPort, KybPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
+import type { AuthPort, BankPort, BillingPort, CardIssuingPort, EventsPort, FederatedIdPPort, FundingPort, FxPort, InstitutionBankingPort, PayoutPort, KycPort, KybPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
 import { ok, requireIdempotencyKey, requirePrincipal, requireRole, route, type Handler, type HttpRequest } from './http.ts';
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
@@ -62,6 +62,7 @@ import { OtpService } from './auth/otp.ts';
 import { PasskeyService } from './auth/passkeys.ts';
 import { RecoveryService } from './auth/recovery.ts';
 import { InMemoryIdentityRepository, type IdentityRepository } from './auth/repository.ts';
+import { SocialSignIn, socialHandlers } from './auth/social.ts';
 import { requireStepUp, StepUpService } from './auth/step-up.ts';
 import { TokenService, type SigningKey } from './auth/tokens.ts';
 import { AccountService } from './ledger/accounts.ts';
@@ -177,6 +178,7 @@ function buildServices(o: AppOptions) {
   const approvals = new ApprovalService(o.db);
   const audit = new AuditService(o.db);
   const flags: FeatureFlags = o.flags ?? new FlagService(o.db, approvals, audit, simulatorFlipGuard(o));
+  const social = new SocialSignIn({ db: o.db, flags, port: () => o.registry.resolve<FederatedIdPPort>('federated-idp', o.market), identity, tokens, clock, events: passkeys.events });
   const orders = new AddonOrderService(o.db, ledger, accounts, new CreditService(entitlements), o.market);
   const roster = new RosterService(o.db);
   const inbound = new InboundEventStore(o.db, o.market);
@@ -273,7 +275,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
+  return { clock, identity, tokens, otp, passkeys, social, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
 /** T-0043: in prod, the reason a flag cannot be turned on (its port is a simulator), else undefined. */
@@ -294,6 +296,7 @@ export function createApp(o: AppOptions): App {
   const staffOf: StaffOf = async (partyId) => (await o.db.query<{ institution_id: string; role: 'staff' | 'finance' | 'admin' }>('select institution_id, role from org.staff where party_id = $1 and active', [partyId])).rows.map((x) => ({ institutionId: x.institution_id, role: x.role }))[0];
   const handlers: HandlerTable = {
     ...authHandlers({ otp: s.otp, passkeys: s.passkeys, recovery: s.recovery, tokens: s.tokens, stepUp: s.stepUp }),
+    ...socialHandlers(s.social),
     getCapabilities: capabilitiesHandler({ flags: s.flags, memberships: s.memberships, entitlements: s.entitlements }),
     getStatus: statusHandler({ flags: s.flags, registry: o.registry, market: o.market }),
     ...kycHandlers(s.kyc),

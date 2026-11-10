@@ -14,7 +14,24 @@ beforeAll(async () => {
   env = await fakedProviders(clock);
 });
 
-federatedIdPContract('google', () => env.router, { goodCode: 'ok:noa', relayCode: 'ok:noa:relay', badCode: 'nope', outageCode: 'outage' });
+federatedIdPContract('google', () => env.router, {
+  goodCode: 'ok:noa',
+  relayCode: 'ok:noa:relay',
+  badCode: 'nope',
+  outageCode: 'outage',
+  identity: {
+    // The router sends each provider's token to its own adapter, so a token is minted by that provider's fake IdP.
+    good: (provider) => (provider === 'apple' ? env.appleFake : env.googleFake).mintIdToken('noa'),
+    rejected: async () => {
+      const out: string[] = [];
+      for (const fake of [env.appleFake, env.googleFake]) {
+        const good = await fake.mintIdToken('noa');
+        out.push(await fake.mintIdToken('noa', { audience: 'someone.else.example' }), await fake.mintIdToken('noa', { ttlMs: -3_600_000 }), `${good.slice(0, -4)}AAAA`);
+      }
+      return [...out, 'garbage'];
+    },
+  },
+});
 
 describe('GoogleFederatedIdPAdapter', () => {
   it('serves only Google (UNSUPPORTED_PROVIDER for Apple)', async () => {
