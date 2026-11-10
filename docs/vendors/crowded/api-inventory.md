@@ -2,7 +2,7 @@
 
 Source: Postman public collection "Crowded API Docs" (collection id `a054ce79-ab11-487e-a7dc-b17246f47b1a`, published id `2sBYArTsS6`, published 2026-08-20), read from its JSON export on 2026-11-03: https://documenter.getpostman.com/view/20019814/2sBYArTsS6 . Public documentation, data only; re-check against the live docs before building.
 
-Second published view (2026-11-10): Crowded sent `https://documenter.getpostman.com/view/20019814/2sBXwnuYMb` (68 requests, 14 folders). It lacks 17 of the requests below: Counterparties (all five), ACH and wire origination (`ach`, `achCounterparty`, `wire`, `wireCounterparty`), the ACH and wire quotes, get, list and cancel payment, the sandbox payment simulate and two webhook event-type examples. Both views are rendered to markdown by `node tools/crowded-docs.mjs` ([postman-2sBXwnuYMb.md](postman-2sBXwnuYMb.md), [postman-2sBYArTsS6.md](postman-2sBYArTsS6.md)); which one is current for our partner account is question 24 in README.md.
+Second published view (2026-11-10): Crowded sent `https://documenter.getpostman.com/view/20019814/2sBXwnuYMb` (68 requests, 14 folders). It lacks 17 of the requests below (and has text the other view lacks, for example `userPaysFees` on collections and the rejection rule on book payments, so neither view is a superset of the other): Counterparties (all five), ACH and wire origination (`ach`, `achCounterparty`, `wire`, `wireCounterparty`), the ACH and wire quotes, get, list and cancel payment, the sandbox payment simulate and two webhook event-type examples. Both views are rendered to markdown by `node tools/crowded-docs.mjs` ([postman-2sBXwnuYMb.md](postman-2sBXwnuYMb.md), [postman-2sBYArTsS6.md](postman-2sBYArTsS6.md)); which one is current for our partner account is question 24 in README.md.
 
 Coverage: 85 requests in 15 top-level folders, which collapse to 79 distinct method + path operations. Five payment-origination requests share `POST /api/v1/chapters/{chapterId}/payments` (type `book`, `ach`, `achCounterparty`, `wire`, `wireCounterparty`). Three doc pages share `GET /api/v1/webhooks/event-types`. Every request's description, parameters, body and example responses were read. Anything the docs do not state is marked UNCONFIRMED.
 
@@ -336,11 +336,11 @@ Registrations created before these types existed do not get them until updated o
 
 ---
 
-### 5.5 Idempotency and 409, as published (view `2sBYArTsS6`, rendered in postman-2sBYArTsS6.md; added 2026-11-10)
+### 5.5 Idempotency and 409, as published (mainly view `2sBYArTsS6`, rendered in postman-2sBYArTsS6.md; added 2026-11-10)
 | Call | Answer | Meaning |
 |---|---|---|
 | `POST /chapters/{id}/payments` (`ach`, `achCounterparty`, `wire`, `wireCounterparty`) | 409 `DUPLICATE_REQUEST` | Another request with the same `idempotencyKey` is being processed now. "Retry shortly": the retry returns the payment the first request produced. After the first completes, a repeat returns that payment. Keys are scoped to the chapter; `ach` and `achCounterparty` share one scope |
-| `POST /chapters/{id}/payments` (`book`) | per-item `DUPLICATE_PAYMENT`, "Idempotency key already used" | Not an HTTP 409: a bulk, continue-on-error call returns the item error. Rejections are a 201 with `paymentStatus: Rejected` and `reasonCode`; `error` and `errorCode` mean the payment could not be submitted at all |
+| `POST /chapters/{id}/payments` (`book`) | per-item `DUPLICATE_PAYMENT`, "Idempotency key already used" | Not an HTTP 409: a bulk, continue-on-error call returns the item error (view `2sBYArTsS6`, book error codes). The adapter never sends `type: book` (it funds sub-accounts through `/subaccounts/fund`). Only view `2sBXwnuYMb`'s Book Payment section adds the rejection rule: a payment created but rejected comes back as `status: success` with `paymentStatus: Rejected` plus `reason` and `reasonCode`, and `error` and `errorCode` mean it could not be submitted at all; `2sBYArTsS6` says the same only for release funds, move fees and platform charges (a 201 with `status: Rejected`) |
 | `POST /chapters/{id}/counterparties` | 409 `DUPLICATE_REQUEST` | Another create with the same key is in flight: retry shortly |
 | `DELETE /chapters/{id}/counterparties/{id}` | 409 `DUPLICATE_REQUEST` | Another delete of this counterparty is in flight |
 | `POST /chapters/{id}/applications` | 409 `ResourceConflictError` | A hosted application form is in progress for the chapter (started by any contact; forms do not expire) |

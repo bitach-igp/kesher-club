@@ -37,9 +37,11 @@ test('render keeps folders, the method and URL, the description, the body and ea
 
 test('download contacts only the Postman documenter host over https', async () => {
   const seen = [];
-  const ok = async (u) => (seen.push(String(u)), new globalThis.Response(JSON.stringify(collection)));
+  const options = [];
+  const ok = async (u, o) => (seen.push(String(u)), options.push(o), new globalThis.Response(JSON.stringify(collection)));
   assert.deepEqual(await download(COLLECTION_URL, ok), collection);
   assert.deepEqual(seen, [COLLECTION_URL]);
+  assert.equal(options[0].redirect, 'error', 'a redirect would leave the one host we contact');
   await assert.rejects(download('http://documenter.gw.postman.com/api/collections/1/2', ok), /Only https/);
   await assert.rejects(download('https://evil.example/api/collections/1/2', ok), /Only https/);
   await assert.rejects(download(COLLECTION_URL, async () => new globalThis.Response('no', { status: 503 })), /503/);

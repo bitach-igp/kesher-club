@@ -73,7 +73,7 @@ export function render(collection) {
 export async function download(url = COLLECTION_URL, fetchImpl = fetch) {
   const u = new URL(url);
   if (u.protocol !== 'https:' || u.hostname !== 'documenter.gw.postman.com') throw new Error('Only https://documenter.gw.postman.com is contacted');
-  const res = await fetchImpl(u, { signal: globalThis.AbortSignal.timeout(60_000), headers: { accept: 'application/json' } });
+  const res = await fetchImpl(u, { signal: globalThis.AbortSignal.timeout(60_000), redirect: 'error', headers: { accept: 'application/json' } });
   if (!res.ok) throw new Error(`Postman answered ${res.status}`);
   const text = await res.text();
   if (text.length > MAX_BYTES) throw new Error('The collection is larger than expected; refusing to render it');
