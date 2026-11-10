@@ -1,9 +1,9 @@
 // T-0659 (REQ-INS-022, REQ-INS-025): the provider registry a process runs on. `sim` binds every port to the
 // simulators; a per-port override binds `institution-banking` to the Crowded adapter and nothing else.
-import { AiraloEsimAdapter, FederatedIdPRouter, AppleFederatedIdPAdapter, CoverGeniusInsuranceAdapter, GoogleFederatedIdPAdapter, WorkOsOrgIdPAdapter, computeCrowdedSignature, CrowdedInstitutionBankingAdapter, FakeCrowded, InMemoryKeyLedger, SANDBOX_BASE_URL, type KeyLedger } from '@kesher/adapters';
+import { AiraloEsimAdapter, FakeStripe, StripeBillingAdapter, StripeFundingAdapter, FederatedIdPRouter, AppleFederatedIdPAdapter, CoverGeniusInsuranceAdapter, GoogleFederatedIdPAdapter, WorkOsOrgIdPAdapter, computeCrowdedSignature, CrowdedInstitutionBankingAdapter, FakeCrowded, InMemoryKeyLedger, SANDBOX_BASE_URL, type KeyLedger } from '@kesher/adapters';
 import { generateKeyPairSync } from 'node:crypto';
 import { Secret } from '@kesher/domain';
-import type { EsimPort, FederatedIdPPort, InstitutionBankingPort, InsurancePort, OrgIdPPort } from '@kesher/ports';
+import { fixedClock, NotifyError, type AdvanceableClock, type BillingPort, type EsimPort, type FederatedIdPPort, type FundingPort, type InstitutionBankingPort, type InsurancePort, type NotifyPort, type OrgIdPPort } from '@kesher/ports';
 import { PORTS } from '@kesher/ports';
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from './db.ts';
@@ -14,7 +14,7 @@ const TOKEN = 'crowded-token-do-not-print';
 const CURRENT = 'whsec-current-0123456789';
 const PREVIOUS = 'whsec-previous-0123456789';
 const MARKETS = ['IL', 'US'] as const;
-const ALL_SIM = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim' };
+const ALL_SIM = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim', funding: 'sim', 'notify-sms': 'sim', 'notify-email': 'sim', 'notify-push': 'sim' };
 
 const override = (extra: Partial<CrowdedBankingOverride> = {}): CrowdedBankingOverride => ({
   provider: 'crowded',
@@ -388,5 +388,184 @@ describe('marketplace and identity bindings (T-0042)', () => {
     const err = thrownBy(() => bind({ PROVIDER_INSTITUTION_BANKING: 'sim', ...chosen, COVER_GENIUS_COMMISSION_DISCLOSURE: 'no mention' }));
     expect(err.message).toMatch(/commission/);
     for (const v of Object.values(CREDS)) expect(err.message).not.toContain(v);
+  });
+});
+
+// T-0041: Stripe (funding and billing) and the notification channels (Twilio sms, Postmark email, Expo push).
+const STRIPE_KEY = 'sk_test_do_not_print';
+const STRIPE_CURRENT = 'whsec_current_do_not_print';
+const STRIPE_PREVIOUS = 'whsec_previous_do_not_print';
+const TWILIO_TOKEN = 'twilio-token-do-not-print';
+const POSTMARK_TOKEN = 'postmark-token-do-not-print';
+const EXPO_TOKEN = 'expo-token-do-not-print';
+const NOTIFY_SECRETS = [STRIPE_KEY, STRIPE_CURRENT, STRIPE_PREVIOUS, TWILIO_TOKEN, POSTMARK_TOKEN, EXPO_TOKEN];
+const copy = { 'money.received': { en: '{{from}} sent you {{amount}}', he: '{{from}} שלח/ה לך {{amount}}' } };
+const stripeSet = {
+  PROVIDER_FUNDING: 'stripe' as const,
+  STRIPE_API_KEY: new Secret(STRIPE_KEY),
+  STRIPE_WEBHOOK_SECRET: [new Secret(STRIPE_CURRENT)],
+  STRIPE_PLAN_PRODUCTS: { club: 'prod_club' },
+};
+const smsSet = { PROVIDER_NOTIFY_SMS: 'twilio' as const, TWILIO_ACCOUNT_SID: new Secret('ACxxx'), TWILIO_AUTH_TOKEN: new Secret(TWILIO_TOKEN), TWILIO_FROM_SMS: '+12025550100', TWILIO_TEMPLATES: copy };
+const emailSet = { PROVIDER_NOTIFY_EMAIL: 'postmark' as const, POSTMARK_SERVER_TOKEN: new Secret(POSTMARK_TOKEN), POSTMARK_FROM: 'club@kesher.example', POSTMARK_TEMPLATES: { 'money.received': { en: 'money-received-en', he: 'money-received-he' } } };
+const pushSet = {
+  PROVIDER_NOTIFY_PUSH: 'expo' as const,
+  EXPO_ACCESS_TOKEN: new Secret(EXPO_TOKEN),
+  EXPO_TEMPLATES: { 'money.received': { title: { en: 'Money', he: 'כסף' }, body: { en: '{{from}} sent {{amount}}', he: '{{from}} שלח {{amount}}' } } },
+};
+const sim = { PROVIDER_INSTITUTION_BANKING: 'sim' as const };
+
+describe('Stripe and notification bindings (T-0041)', () => {
+  it('PROVIDER_FUNDING=stripe binds the Stripe adapters to funding and billing in both markets, and every other port stays on its simulator', () => {
+    const { registry, simulators, providers } = bind({ ...sim, ...stripeSet });
+    for (const market of MARKETS) {
+      expect(registry.resolve<FundingPort>('funding', market)).toBeInstanceOf(StripeFundingAdapter);
+      expect(registry.resolve<BillingPort>('billing', market)).toBeInstanceOf(StripeBillingAdapter);
+      expect(registry.bindingFor('funding', market)).toMatchObject({ provider: 'stripe', mode: 'sandbox' });
+      expect(registry.bindingFor('billing', market)).toMatchObject({ provider: 'stripe', mode: 'sandbox' });
+    }
+    expect(providers).toEqual({ ...ALL_SIM, funding: 'stripe' });
+    for (const other of ['esim', 'insurance', 'org-idp', 'federated-idp', 'notify', 'kyc', 'payout', 'fx'] as const) expect(registry.resolve(other, 'US')).toBe(simulators.simulators[other]);
+  });
+
+  it('the notification choices bind a router for their channel only, each in both markets, and the others stay on the simulator', () => {
+    const cases = [
+      ['notify-sms', 'twilio', smsSet],
+      ['notify-email', 'postmark', emailSet],
+      ['notify-push', 'expo', pushSet],
+    ] as const;
+    for (const [key, vendor, set] of cases) {
+      const { registry, simulators, providers } = bind({ ...sim, ...set });
+      expect(providers).toEqual({ ...ALL_SIM, [key]: vendor });
+      for (const market of MARKETS) expect(registry.bindingFor('notify', market)).toMatchObject({ mode: 'sandbox' });
+      expect(registry.resolve('notify', 'US')).toBe(registry.resolve('notify', 'IL'));
+      expect(registry.resolve('notify', 'US')).not.toBe(simulators.simulators.notify);
+      expect(registry.resolve('funding', 'US')).toBe(simulators.simulators.funding);
+    }
+    // Nothing chosen: the simulator itself, not a router.
+    const none = bind({ ...sim });
+    expect(none.registry.resolve('notify', 'US')).toBe(none.simulators.simulators.notify);
+  });
+
+  it('routes each channel to its vendor and the rest, whatsapp included, to the simulator', async () => {
+    const urls: string[] = [];
+    const fetch: typeof globalThis.fetch = async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      urls.push(url);
+      if (url.includes('twilio')) return Response.json({ sid: 'SM1', status: 'queued' }, { status: 201 });
+      if (url.includes('postmark')) return Response.json({ MessageID: 'pm_1', ErrorCode: 0 });
+      return Response.json({ data: [{ status: 'ok', id: 'ticket_1' }] });
+    };
+    const { registry, simulators } = createRegistry('sandbox', systemClock(), overridesFromConfig({ ...sim, ...smsSet, ...emailSet, ...pushSet }, nodb, undefined, fetch));
+    const port = registry.resolve<NotifyPort>('notify', 'IL');
+    const base = { template: 'money.received', locale: 'en' as const, data: { amount: '$5', from: 'Dani' }, category: 'money' as const };
+    const sms = await port.send({ ...base, channel: 'sms', to: '+12025550111' }, 'route-sms-1');
+    const mail = await port.send({ ...base, channel: 'email', to: 'dani@example.com' }, 'route-mail-1');
+    const push = await port.send({ ...base, channel: 'push', to: 'ExponentPushToken[abc]' }, 'route-push-1');
+    expect([sms.messageId, mail.messageId, push.messageId]).toEqual(['SM1', 'pm_1', 'ticket_1']);
+    expect(urls.some((u) => u.startsWith('https://api.twilio.com/'))).toBe(true);
+    expect(urls.some((u) => u.startsWith('https://api.postmarkapp.com/'))).toBe(true);
+    expect(urls.some((u) => u.startsWith('https://exp.host/'))).toBe(true);
+    // WhatsApp has no vendor: it lands on the simulator and never on the wire.
+    const before = urls.length;
+    const wa = await port.send({ ...base, channel: 'whatsapp', to: '+12025550111' }, 'route-wa-1');
+    expect(urls.length).toBe(before);
+    expect(simulators.simulators.notify.sent.map((s) => s.messageId)).toEqual([wa.messageId]);
+    // A lookup finds the message in whichever adapter sent it, and a stranger is a typed error.
+    expect((await port.getDelivery(wa.messageId)).channel).toBe('whatsapp');
+    expect((await port.getDelivery('SM1')).messageId).toBe('SM1');
+    await expect(port.getDelivery('nobody')).rejects.toBeInstanceOf(NotifyError);
+  });
+
+  it('a channel left on sim keeps the simulator while the others are routed', async () => {
+    const { registry, simulators } = bind({ ...sim, ...smsSet });
+    const port = registry.resolve<NotifyPort>('notify', 'US');
+    const d = await port.send({ channel: 'email', to: 'dani@example.com', template: 'money.received', locale: 'en', data: {}, category: 'money' }, 'sim-mail-1');
+    expect(simulators.simulators.notify.sent.map((s) => s.messageId)).toEqual([d.messageId]);
+  });
+
+  it('Stripe reaches the wire with the configured key through the injected transport, and the plan map reaches billing', async () => {
+    const clock = fixedClock() as AdvanceableClock;
+    const fake = new FakeStripe({ secretKey: STRIPE_KEY, webhookSecret: STRIPE_CURRENT, clock });
+    const { registry } = createRegistry('sandbox', clock, overridesFromConfig({ ...sim, ...stripeSet }, nodb, undefined, fake.fetch));
+    const load = await registry.resolve<FundingPort>('funding', 'US').createLoad({ customerId: 'cus_1', method: 'card', amount: { minor: 5_000n, currency: 'USD' }, paymentMethodId: 'pm_card_ok' }, 'load-key-0001');
+    expect(load.status).not.toBe('failed');
+    const billing = registry.resolve<BillingPort>('billing', 'US');
+    const customer = await billing.createCustomer({ partyId: 'p1', email: 'f@example.com' }, 'cust-key-0001');
+    const sub = await billing.createSubscription({ customerId: customer.customerId, planCode: 'club', price: { minor: 4_900n, currency: 'USD' }, termMonths: 10 }, 'sub-key-0001');
+    expect(sub.planCode).toBe('club');
+    await expect(billing.createSubscription({ customerId: customer.customerId, planCode: 'nope', price: { minor: 4_900n, currency: 'USD' }, termMonths: 10 }, 'sub-key-0002')).rejects.toMatchObject({ code: 'UNKNOWN_PLAN' });
+  });
+
+  it('during a rotation a Stripe webhook signed with the previous secret verifies, with the current one too, and a third secret does not', async () => {
+    const clock = fixedClock() as AdvanceableClock;
+    const config = { ...sim, ...stripeSet, STRIPE_WEBHOOK_SECRET: [new Secret(STRIPE_CURRENT), new Secret(STRIPE_PREVIOUS)] };
+    const signer = (secret: string) => new FakeStripe({ secretKey: STRIPE_KEY, webhookSecret: secret, clock });
+    const old = signer(STRIPE_PREVIOUS);
+    const { registry } = createRegistry('sandbox', clock, overridesFromConfig(config, nodb, undefined, old.fetch));
+    const funding = registry.resolve<FundingPort>('funding', 'US');
+    const l = await funding.createLoad({ customerId: 'cus_1', method: 'card', amount: { minor: 5_000n, currency: 'USD' }, paymentMethodId: 'pm_card_ok' }, 'load-key-0002');
+    const hook = old.settlePaymentIntent(l.loadId);
+    expect((await funding.parseWebhook(hook.headers, hook.rawBody)).load.loadId).toBe(l.loadId);
+    const current = signer(STRIPE_CURRENT);
+    expect((await funding.parseWebhook(current.sign(hook.rawBody), hook.rawBody)).load.loadId).toBe(l.loadId);
+    const third = signer('whsec_third_do_not_print');
+    await expect(funding.parseWebhook(third.sign(hook.rawBody), hook.rawBody)).rejects.toMatchObject({ code: 'BAD_SIGNATURE' });
+    // Billing takes the same pair.
+    const billing = registry.resolve<BillingPort>('billing', 'US');
+    const c = await billing.createCustomer({ partyId: 'p1', email: 'f@example.com' }, 'cust-key-0002');
+    const s = await billing.createSubscription({ customerId: c.customerId, planCode: 'club', price: { minor: 4_900n, currency: 'USD' }, termMonths: 10 }, 'sub-key-0003');
+    const invoice = old.failInvoice(s.subscriptionId);
+    expect((await billing.parseWebhook(invoice.headers, invoice.rawBody)).type).toBe('invoice.payment_failed');
+    const forged = { headers: third.sign(invoice.rawBody), rawBody: invoice.rawBody };
+    await expect(billing.parseWebhook(forged.headers, forged.rawBody)).rejects.toMatchObject({ code: 'BAD_SIGNATURE' });
+  });
+
+  it('with a single webhook secret the previous one is not accepted', async () => {
+    const clock = fixedClock() as AdvanceableClock;
+    const old = new FakeStripe({ secretKey: STRIPE_KEY, webhookSecret: STRIPE_PREVIOUS, clock });
+    const { registry } = createRegistry('sandbox', clock, overridesFromConfig({ ...sim, ...stripeSet }, nodb, undefined, old.fetch));
+    const funding = registry.resolve<FundingPort>('funding', 'US');
+    const l = await funding.createLoad({ customerId: 'cus_1', method: 'card', amount: { minor: 5_000n, currency: 'USD' }, paymentMethodId: 'pm_card_ok' }, 'load-key-0003');
+    const hook = old.settlePaymentIntent(l.loadId);
+    await expect(funding.parseWebhook(hook.headers, hook.rawBody)).rejects.toMatchObject({ code: 'BAD_SIGNATURE' });
+  });
+
+  it('a chosen adapter without its full set fails closed, naming keys and never a value', () => {
+    const base = { ...sim, ...stripeSet, ...smsSet, ...emailSet, ...pushSet };
+    const drops: [string, string][] = [
+      ['STRIPE_API_KEY', 'PROVIDER_FUNDING=stripe'],
+      ['STRIPE_WEBHOOK_SECRET', 'PROVIDER_FUNDING=stripe'],
+      ['STRIPE_PLAN_PRODUCTS', 'PROVIDER_FUNDING=stripe'],
+      ['TWILIO_ACCOUNT_SID', 'PROVIDER_NOTIFY_SMS=twilio'],
+      ['TWILIO_AUTH_TOKEN', 'PROVIDER_NOTIFY_SMS=twilio'],
+      ['TWILIO_FROM_SMS', 'PROVIDER_NOTIFY_SMS=twilio'],
+      ['TWILIO_TEMPLATES', 'PROVIDER_NOTIFY_SMS=twilio'],
+      ['POSTMARK_SERVER_TOKEN', 'PROVIDER_NOTIFY_EMAIL=postmark'],
+      ['POSTMARK_FROM', 'PROVIDER_NOTIFY_EMAIL=postmark'],
+      ['POSTMARK_TEMPLATES', 'PROVIDER_NOTIFY_EMAIL=postmark'],
+      ['EXPO_ACCESS_TOKEN', 'PROVIDER_NOTIFY_PUSH=expo'],
+      ['EXPO_TEMPLATES', 'PROVIDER_NOTIFY_PUSH=expo'],
+    ];
+    for (const [key, choice] of drops) {
+      const err = thrownBy(() => overridesFromConfig({ ...base, [key]: undefined }, nodb));
+      expect(err.message).toContain(key);
+      expect(err.message).toContain(choice);
+      for (const v of NOTIFY_SECRETS) expect(err.message).not.toContain(v);
+    }
+  });
+
+  it('credentials present while the choice stays sim bind nothing', () => {
+    const { providers, registry, simulators } = bind({ ...sim, ...stripeSet, ...smsSet, ...emailSet, ...pushSet, PROVIDER_FUNDING: 'sim', PROVIDER_NOTIFY_SMS: 'sim', PROVIDER_NOTIFY_EMAIL: 'sim', PROVIDER_NOTIFY_PUSH: 'sim' });
+    expect(providers).toEqual(ALL_SIM);
+    expect(registry.resolve('funding', 'US')).toBe(simulators.simulators.funding);
+    expect(registry.resolve('billing', 'US')).toBe(simulators.simulators.billing);
+    expect(registry.resolve('notify', 'US')).toBe(simulators.simulators.notify);
+  });
+
+  it('adapter constructors that refuse do not echo a credential', () => {
+    const err = thrownBy(() => createRegistry('sandbox', systemClock(), { funding: { provider: 'stripe', secretKey: new Secret(STRIPE_KEY), webhookSecrets: [], planProducts: {} } }));
+    expect(err.message).toMatch(/webhook secret/);
+    for (const v of NOTIFY_SECRETS) expect(err.message).not.toContain(v);
   });
 });

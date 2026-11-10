@@ -18,13 +18,30 @@ import {
   CrowdedInstitutionBankingAdapter,
   crowdedHeaderValue,
   verifyCrowdedSignature,
+  ExpoPushNotifyAdapter,
+  PostmarkNotifyAdapter,
+  STRIPE_SIGNATURE_HEADER,
+  signStripePayload,
+  StripeBillingAdapter,
+  StripeFundingAdapter,
+  TwilioNotifyAdapter,
+  verifyStripeSignature,
+  type ExpoPushOptions,
   type KeyLedger,
 } from '@kesher/adapters';
 import type { Secret } from '@kesher/domain';
 import {
   type AdvanceableClock,
+  type BillingPort,
+  type Channel,
+  type Clock,
+  type Delivery,
   type EsimPort,
+  type FundingPort,
   type InsurancePort,
+  NotifyError,
+  type Notification,
+  type NotifyPort,
   type OrgIdPPort,
   type ProviderRegistry,
 } from '@kesher/ports';
@@ -127,7 +144,52 @@ export interface OidcFederatedIdpOverride {
   fetch?: typeof globalThis.fetch;
 }
 
+/** Binds `funding` and `billing` together to the Stripe adapters (T-0041). Every value is the config's; nothing has a default. */
+export interface StripeOverride {
+  provider: 'stripe';
+  /** A restricted or secret key; the config accepts only a test-mode one. */
+  secretKey: Secret;
+  /** The endpoint signing secret and, during a rotation, the previous one: a webhook verifies against either. */
+  webhookSecrets: readonly Secret[];
+  /** Our plan codes to Stripe product ids. */
+  planProducts: Readonly<Record<string, string>>;
+  /** The HTTP transport; tests inject a fake Stripe. */
+  fetch?: typeof globalThis.fetch;
+}
+
+/** Binds the `sms` channel of `notify` to Twilio; the other channels stay on the simulator. */
+export interface TwilioSmsOverride {
+  provider: 'twilio';
+  accountSid: Secret;
+  authToken: Secret;
+  /** The sending number, E.164. */
+  from: string;
+  templates: Readonly<Record<string, Record<'en' | 'he', string>>>;
+  fetch?: typeof globalThis.fetch;
+}
+
+/** Binds the `email` channel of `notify` to Postmark. */
+export interface PostmarkEmailOverride {
+  provider: 'postmark';
+  serverToken: Secret;
+  from: string;
+  templates: Readonly<Record<string, Record<'en' | 'he', string>>>;
+  fetch?: typeof globalThis.fetch;
+}
+
+/** Binds the `push` channel of `notify` to the Expo push service. */
+export interface ExpoPushOverride {
+  provider: 'expo';
+  accessToken: Secret;
+  templates: ExpoPushOptions['templates'];
+  fetch?: typeof globalThis.fetch;
+}
+
 export interface RegistryOverrides {
+  funding?: StripeOverride;
+  notifySms?: TwilioSmsOverride;
+  notifyEmail?: PostmarkEmailOverride;
+  notifyPush?: ExpoPushOverride;
   institutionBanking?: CrowdedBankingOverride;
   esim?: AiraloEsimOverride;
   insurance?: CoverGeniusInsuranceOverride;
@@ -142,12 +204,66 @@ export type ProviderSummary = {
   insurance: 'sim' | 'cover-genius';
   'org-idp': 'sim' | 'workos';
   'federated-idp': 'sim' | 'oidc';
+  /** `stripe` backs both `funding` and `billing`. */
+  funding: 'sim' | 'stripe';
+  'notify-sms': 'sim' | 'twilio';
+  'notify-email': 'sim' | 'postmark';
+  'notify-push': 'sim' | 'expo';
 };
 
 const requireHttps = (what: string, url: string): string => {
   if (!/^https:\/\/[^/\s?#]+/.test(url) || !URL.canParse(url)) throw new Error(`${what} needs an https baseUrl`);
   return url;
 };
+
+/**
+ * The notify port when a channel has its own vendor (T-0041): each notification goes to the adapter its channel is routed to, and a
+ * channel with none (WhatsApp, or any channel left on `sim`) goes to the simulator. A message id is only known to the adapter that
+ * sent it, so a delivery lookup asks them in turn and takes the first that knows it; it keeps no state of its own.
+ */
+export class NotifyChannelRouter implements NotifyPort {
+  private readonly routes: Partial<Record<Channel, NotifyPort>>;
+  private readonly fallback: NotifyPort;
+
+  constructor(routes: Partial<Record<Channel, NotifyPort>>, fallback: NotifyPort) {
+    this.routes = routes;
+    this.fallback = fallback;
+  }
+
+  send(notification: Notification, idempotencyKey: string): Promise<Delivery> {
+    return (this.routes[notification.channel] ?? this.fallback).send(notification, idempotencyKey);
+  }
+
+  async getDelivery(messageId: string): Promise<Delivery> {
+    for (const port of new Set([...Object.values(this.routes), this.fallback])) {
+      try {
+        return await port.getDelivery(messageId);
+      } catch (e) {
+        if (!(e instanceof NotifyError) || e.code !== 'UNKNOWN_MESSAGE') throw e;
+      }
+    }
+    throw new NotifyError('UNKNOWN_MESSAGE', 'Unknown message id');
+  }
+}
+
+/**
+ * Lets a Stripe adapter, which takes one signing secret, verify a webhook signed with the previous one too during a rotation. A
+ * delivery that verifies against an older secret is re-signed with the current one and handed on, so the adapter keeps its own
+ * checks (freshness, event de-duplication, the amount cross-check) and its own state. Nothing else about the adapter changes.
+ */
+function acceptPreviousSecrets<R>(adapter: { parseWebhook: (headers: Record<string, string>, rawBody: string) => Promise<R> }, secrets: readonly string[], clock: Clock): void {
+  const [current, ...previous] = secrets;
+  if (current === undefined || previous.length === 0) return;
+  const parse = adapter.parseWebhook.bind(adapter);
+  adapter.parseWebhook = (headers, rawBody) => {
+    const now = Math.floor(clock.now().getTime() / 1000);
+    const name = Object.keys(headers).find((k) => k.toLowerCase() === STRIPE_SIGNATURE_HEADER);
+    const header = name === undefined ? undefined : headers[name];
+    if (name === undefined || verifyStripeSignature({ header, rawBody, secret: current, nowSeconds: now }) === undefined) return parse(headers, rawBody);
+    if (!previous.some((secret) => verifyStripeSignature({ header, rawBody, secret, nowSeconds: now }) === undefined)) return parse(headers, rawBody);
+    return parse({ ...headers, [name]: signStripePayload(current, rawBody, now) }, rawBody);
+  };
+}
 
 export function createRegistry(
   mode: string,
@@ -158,7 +274,7 @@ export function createRegistry(
   // labels the environment: a port runs a vendor adapter only through an override below.
   if (mode !== 'sim' && mode !== 'sandbox') throw new Error(`Provider mode "${mode}" is not accepted: use sim or sandbox, and choose vendors per port`);
   const simulators = new SimulatorHost(clock);
-  const providers: ProviderSummary = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim' };
+  const providers: ProviderSummary = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim', funding: 'sim', 'notify-sms': 'sim', 'notify-email': 'sim', 'notify-push': 'sim' };
   const banking = overrides.institutionBanking;
   if (banking) {
     const secrets = banking.webhookSecrets.map((s) => s.reveal());
@@ -242,6 +358,51 @@ export function createRegistry(
     bindBoth('federated-idp', 'oidc', new FederatedIdPRouter({ apple, google }));
     providers['federated-idp'] = 'oidc';
   }
+  // Stripe backs funding and billing together (T-0041), in sandbox mode like the rest.
+  const stripe = overrides.funding;
+  if (stripe) {
+    const secrets = stripe.webhookSecrets.map((s) => s.reveal());
+    const [webhookSecret] = secrets;
+    if (webhookSecret === undefined) throw new Error('Stripe needs a webhook secret');
+    const transport = stripe.fetch ? { fetch: stripe.fetch } : {};
+    const shared = { secretKey: stripe.secretKey.reveal(), webhookSecret, clock, ...transport };
+    const funding: FundingPort = new StripeFundingAdapter(shared);
+    const billing: BillingPort = new StripeBillingAdapter({ ...shared, planProducts: { ...stripe.planProducts } });
+    acceptPreviousSecrets(funding, secrets, clock);
+    acceptPreviousSecrets(billing, secrets, clock);
+    bindBoth('funding', 'stripe', funding);
+    bindBoth('billing', 'stripe', billing);
+    providers.funding = 'stripe';
+  }
+  // Notification channels (T-0041): one router over the vendors chosen, the simulator for every other channel.
+  const routes: Partial<Record<Channel, NotifyPort>> = {};
+  const sms = overrides.notifySms;
+  if (sms) {
+    routes.sms = new TwilioNotifyAdapter({
+      accountSid: sms.accountSid.reveal(),
+      authToken: sms.authToken.reveal(),
+      from: { sms: sms.from },
+      templates: { ...sms.templates },
+      ...(sms.fetch ? { fetch: sms.fetch } : {}),
+    });
+    providers['notify-sms'] = 'twilio';
+  }
+  const email = overrides.notifyEmail;
+  if (email) {
+    routes.email = new PostmarkNotifyAdapter({
+      serverToken: email.serverToken.reveal(),
+      from: email.from,
+      templates: { ...email.templates },
+      ...(email.fetch ? { fetch: email.fetch } : {}),
+    });
+    providers['notify-email'] = 'postmark';
+  }
+  const push = overrides.notifyPush;
+  if (push) {
+    routes.push = new ExpoPushNotifyAdapter({ accessToken: push.accessToken.reveal(), templates: { ...push.templates }, ...(push.fetch ? { fetch: push.fetch } : {}) });
+    providers['notify-push'] = 'expo';
+  }
+  if (Object.keys(routes).length > 0) bindBoth('notify', 'notify-router', new NotifyChannelRouter(routes, simulators.simulators.notify));
   return { registry: simulators.registry, simulators, providers };
 }
 
@@ -271,6 +432,23 @@ export interface ProviderConfig {
   WORKOS_API_KEY?: Secret | undefined;
   WORKOS_WEBHOOK_SECRET?: Secret | undefined;
   PROVIDER_FEDERATED_IDP?: 'sim' | 'oidc' | undefined;
+  /** T-0041: each defaults to `sim`; the config has refused a named adapter without its whole credential set. */
+  PROVIDER_FUNDING?: 'sim' | 'stripe' | undefined;
+  STRIPE_API_KEY?: Secret | undefined;
+  STRIPE_WEBHOOK_SECRET?: readonly Secret[] | undefined;
+  STRIPE_PLAN_PRODUCTS?: Record<string, string> | undefined;
+  PROVIDER_NOTIFY_SMS?: 'sim' | 'twilio' | undefined;
+  TWILIO_ACCOUNT_SID?: Secret | undefined;
+  TWILIO_AUTH_TOKEN?: Secret | undefined;
+  TWILIO_FROM_SMS?: string | undefined;
+  TWILIO_TEMPLATES?: Record<string, Record<'en' | 'he', string>> | undefined;
+  PROVIDER_NOTIFY_EMAIL?: 'sim' | 'postmark' | undefined;
+  POSTMARK_SERVER_TOKEN?: Secret | undefined;
+  POSTMARK_FROM?: string | undefined;
+  POSTMARK_TEMPLATES?: Record<string, Record<'en' | 'he', string>> | undefined;
+  PROVIDER_NOTIFY_PUSH?: 'sim' | 'expo' | undefined;
+  EXPO_ACCESS_TOKEN?: Secret | undefined;
+  EXPO_TEMPLATES?: ExpoPushOptions['templates'] | undefined;
   APPLE_CLIENT_ID?: Secret | undefined;
   APPLE_TEAM_ID?: Secret | undefined;
   APPLE_KEY_ID?: Secret | undefined;
@@ -332,6 +510,26 @@ function marketplaceOverrides(config: ProviderConfig, fetch?: typeof globalThis.
       );
     }
     out.federatedIdp = { provider: 'oidc', apple: { clientId: appleClient, teamId, keyId, privateKey }, google: { clientId: googleClient, clientSecret: googleSecret }, ...transport };
+  }
+  if (config.PROVIDER_FUNDING === 'stripe') {
+    const { STRIPE_API_KEY: secretKey, STRIPE_WEBHOOK_SECRET: webhookSecrets, STRIPE_PLAN_PRODUCTS: planProducts } = config;
+    if (!secretKey || !webhookSecrets || !planProducts) throw new Error(needs('PROVIDER_FUNDING=stripe', { STRIPE_API_KEY: secretKey, STRIPE_WEBHOOK_SECRET: webhookSecrets, STRIPE_PLAN_PRODUCTS: planProducts }));
+    out.funding = { provider: 'stripe', secretKey, webhookSecrets, planProducts, ...transport };
+  }
+  if (config.PROVIDER_NOTIFY_SMS === 'twilio') {
+    const { TWILIO_ACCOUNT_SID: accountSid, TWILIO_AUTH_TOKEN: authToken, TWILIO_FROM_SMS: from, TWILIO_TEMPLATES: templates } = config;
+    if (!accountSid || !authToken || !from || !templates) throw new Error(needs('PROVIDER_NOTIFY_SMS=twilio', { TWILIO_ACCOUNT_SID: accountSid, TWILIO_AUTH_TOKEN: authToken, TWILIO_FROM_SMS: from, TWILIO_TEMPLATES: templates }));
+    out.notifySms = { provider: 'twilio', accountSid, authToken, from, templates, ...transport };
+  }
+  if (config.PROVIDER_NOTIFY_EMAIL === 'postmark') {
+    const { POSTMARK_SERVER_TOKEN: serverToken, POSTMARK_FROM: from, POSTMARK_TEMPLATES: templates } = config;
+    if (!serverToken || !from || !templates) throw new Error(needs('PROVIDER_NOTIFY_EMAIL=postmark', { POSTMARK_SERVER_TOKEN: serverToken, POSTMARK_FROM: from, POSTMARK_TEMPLATES: templates }));
+    out.notifyEmail = { provider: 'postmark', serverToken, from, templates, ...transport };
+  }
+  if (config.PROVIDER_NOTIFY_PUSH === 'expo') {
+    const { EXPO_ACCESS_TOKEN: accessToken, EXPO_TEMPLATES: templates } = config;
+    if (!accessToken || !templates) throw new Error(needs('PROVIDER_NOTIFY_PUSH=expo', { EXPO_ACCESS_TOKEN: accessToken, EXPO_TEMPLATES: templates }));
+    out.notifyPush = { provider: 'expo', accessToken, templates, ...transport };
   }
   return out;
 }

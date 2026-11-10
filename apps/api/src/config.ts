@@ -76,6 +76,12 @@ export const PROVIDER_PORTS = {
     env: 'PROVIDER_FEDERATED_IDP',
     adapters: { oidc: ['APPLE_CLIENT_ID', 'APPLE_TEAM_ID', 'APPLE_KEY_ID', 'APPLE_PRIVATE_KEY', 'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'] },
   },
+  // T-0041: Stripe backs funding and billing together (one key, one credential set); each notification channel is chosen on its own,
+  // and a channel left on `sim` stays on the notify simulator (WhatsApp has no choice yet: notify.whatsapp is off).
+  funding: { env: 'PROVIDER_FUNDING', adapters: { stripe: ['STRIPE_API_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PLAN_PRODUCTS'] } },
+  'notify-sms': { env: 'PROVIDER_NOTIFY_SMS', adapters: { twilio: ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_FROM_SMS', 'TWILIO_TEMPLATES'] } },
+  'notify-email': { env: 'PROVIDER_NOTIFY_EMAIL', adapters: { postmark: ['POSTMARK_SERVER_TOKEN', 'POSTMARK_FROM', 'POSTMARK_TEMPLATES'] } },
+  'notify-push': { env: 'PROVIDER_NOTIFY_PUSH', adapters: { expo: ['EXPO_ACCESS_TOKEN', 'EXPO_TEMPLATES'] } },
 } as const satisfies Record<string, { env: string; adapters: Record<string, readonly string[]> }>;
 
 /** A JSON object of our insurance product codes to XCover policy types. The message never quotes the value. */
@@ -125,6 +131,60 @@ const applePrivateKey = () =>
     }
   });
 
+const FORBIDDEN_NAMES = new Set(['__proto__', 'constructor', 'prototype']);
+const TEMPLATE_NAME = /^[a-z][a-z0-9_.]{1,63}$/;
+const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
+/** A string per locale, both present: `{ "en": "…", "he": "…" }` and nothing else. */
+const localised = (v: unknown): { en: string; he: string } | undefined => {
+  if (!isPlain(v) || Object.keys(v).length !== 2) return undefined;
+  const { en, he } = v;
+  return typeof en === 'string' && en !== '' && typeof he === 'string' && he !== '' ? { en, he } : undefined;
+};
+
+/**
+ * A JSON object of notification template name to `shape(value)`, with names that are plain own keys. The messages say which rule
+ * failed and never quote the value (templates are copy, but the same parser guards every key).
+ */
+const templateMap = <T>(what: string, shape: (v: unknown) => T | undefined) =>
+  z.string().transform((raw, ctx): Record<string, T> => {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (isPlain(parsed) && Object.keys(parsed).length > 0) {
+        const out = Object.create(null) as Record<string, T>;
+        for (const [name, v] of Object.entries(parsed)) {
+          const t = shape(v);
+          if (!TEMPLATE_NAME.test(name) || FORBIDDEN_NAMES.has(name) || t === undefined) throw new Error('shape');
+          out[name] = t;
+        }
+        return out;
+      }
+    } catch {
+      // reported below
+    }
+    ctx.addIssue({ code: 'custom', message: `must be a JSON object (names like "auth.otp", never __proto__, constructor or prototype) of template name to ${what}` });
+    return z.NEVER;
+  });
+
+/** Our plan codes to Stripe product ids, as JSON. */
+const stripePlanProducts = () =>
+  z.string().transform((raw, ctx): Record<string, string> => {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (isPlain(parsed) && Object.keys(parsed).length > 0) {
+        const out = Object.create(null) as Record<string, string>;
+        for (const [code, id] of Object.entries(parsed)) {
+          if (!/^[a-z][a-z0-9-]{1,39}$/.test(code) || typeof id !== 'string' || !/^prod_[A-Za-z0-9]+$/.test(id)) throw new Error('shape');
+          out[code] = id;
+        }
+        return out;
+      }
+    } catch {
+      // reported below
+    }
+    ctx.addIssue({ code: 'custom', message: 'must be a JSON object of plan code (lower-case, hyphens) to Stripe product id (prod_…)' });
+    return z.NEVER;
+  });
+
 const shared = {
   /**
    * Which provider backs the US banking port (T-0659). A per-port override: PROVIDER_MODE_DEFAULT stays `sim` (ADR-006 names no
@@ -163,6 +223,37 @@ const shared = {
   APPLE_PRIVATE_KEY: applePrivateKey().optional(),
   GOOGLE_CLIENT_ID: secret().optional(),
   GOOGLE_CLIENT_SECRET: secret().optional(),
+  /**
+   * Which provider backs funding and billing (T-0041): `sim` by default; `stripe` binds both ports to the Stripe adapters and needs
+   * the whole set. Only a test-mode key is accepted: going live is a provider_binding approval (T-0043), not an env switch.
+   */
+  PROVIDER_FUNDING: z.enum(['sim', 'stripe']).default('sim'),
+  STRIPE_API_KEY: secret().refine((k) => /^(sk|rk)_test_\S+$/.test(k.reveal()), 'must be a Stripe test-mode key (sk_test_ or rk_test_); live keys wait for the production guard (T-0043)').optional(),
+  /** The endpoint signing secret and, during a rotation, the previous one, comma-separated. Both Stripe ports verify with it. */
+  STRIPE_WEBHOOK_SECRET: secretPair().optional(),
+  STRIPE_PLAN_PRODUCTS: stripePlanProducts().optional(),
+  /** Each notification channel is chosen on its own (T-0041); a channel left on `sim` stays on the notify simulator. */
+  PROVIDER_NOTIFY_SMS: z.enum(['sim', 'twilio']).default('sim'),
+  TWILIO_ACCOUNT_SID: secret().optional(),
+  TWILIO_AUTH_TOKEN: secret().optional(),
+  /** The sending number, E.164. */
+  TWILIO_FROM_SMS: z.string().regex(/^\+[1-9]\d{6,14}$/, 'must be an E.164 number').optional(),
+  /** Our template name to the message body per locale, with {{var}} placeholders. */
+  TWILIO_TEMPLATES: templateMap('{ "en": body, "he": body }', localised).optional(),
+  PROVIDER_NOTIFY_EMAIL: z.enum(['sim', 'postmark']).default('sim'),
+  POSTMARK_SERVER_TOKEN: secret().optional(),
+  POSTMARK_FROM: z.string().regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/, 'must be an email address').optional(),
+  /** Our template name to the Postmark template alias per locale. */
+  POSTMARK_TEMPLATES: templateMap('{ "en": alias, "he": alias }', localised).optional(),
+  PROVIDER_NOTIFY_PUSH: z.enum(['sim', 'expo']).default('sim'),
+  EXPO_ACCESS_TOKEN: secret().optional(),
+  /** Our template name to `{ "title": { en, he }, "body": { en, he } }`. */
+  EXPO_TEMPLATES: templateMap('{ "title": { "en", "he" }, "body": { "en", "he" } }', (v) => {
+    if (!isPlain(v) || Object.keys(v).length !== 2) return undefined;
+    const title = localised(v['title']);
+    const body = localised(v['body']);
+    return title && body ? { title, body } : undefined;
+  }).optional(),
   /** The member token key: a private ES256 JWK as JSON, from Secrets Manager. Checked here, because a
    *  JSON.parse error quotes its input and would carry the key into a boot log. */
   JWT_SIGNING_KEY: secret().refine((k) => {

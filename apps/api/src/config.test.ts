@@ -262,6 +262,23 @@ const SETS: Record<string, { choose: Record<string, string>; keys: Record<string
       GOOGLE_CLIENT_SECRET: GOOGLE_SECRET,
     },
   },
+  // T-0041
+  stripe: {
+    choose: { PROVIDER_FUNDING: 'stripe' },
+    keys: { STRIPE_API_KEY: 'sk_test_do_not_print', STRIPE_WEBHOOK_SECRET: 'whsec_current_do_not_print', STRIPE_PLAN_PRODUCTS: '{"club":"prod_Club123"}' },
+  },
+  twilio: {
+    choose: { PROVIDER_NOTIFY_SMS: 'twilio' },
+    keys: { TWILIO_ACCOUNT_SID: 'ACdo-not-print', TWILIO_AUTH_TOKEN: 'twilio-token-do-not-print', TWILIO_FROM_SMS: '+12025550100', TWILIO_TEMPLATES: '{"auth.otp":{"en":"Code {{code}}","he":"קוד {{code}}"}}' },
+  },
+  postmark: {
+    choose: { PROVIDER_NOTIFY_EMAIL: 'postmark' },
+    keys: { POSTMARK_SERVER_TOKEN: 'postmark-token-do-not-print', POSTMARK_FROM: 'club@kesher.example', POSTMARK_TEMPLATES: '{"auth.otp":{"en":"otp-en","he":"otp-he"}}' },
+  },
+  expo: {
+    choose: { PROVIDER_NOTIFY_PUSH: 'expo' },
+    keys: { EXPO_ACCESS_TOKEN: 'expo-token-do-not-print', EXPO_TEMPLATES: '{"auth.otp":{"title":{"en":"Code","he":"קוד"},"body":{"en":"{{code}}","he":"{{code}}"}}}' },
+  },
 };
 
 describe('marketplace and identity provider choices (T-0042)', () => {
@@ -379,5 +396,87 @@ describe('marketplace and identity provider choices (T-0042)', () => {
     const c = loadApiConfig({ ...env, ...SETS['airalo']!.choose, ...SETS['airalo']!.keys, ...SETS['oidc']!.keys });
     expect(String(c.AIRALO_CLIENT_SECRET)).toBe('[redacted]');
     expect(JSON.stringify({ a: c.AIRALO_CLIENT_SECRET, g: c.GOOGLE_CLIENT_SECRET, k: c.APPLE_PRIVATE_KEY })).not.toMatch(/do-not-print/);
+  });
+});
+
+describe('Stripe and notification provider choices (T-0041)', () => {
+  it('default to sim and need none of their keys', () => {
+    const c = loadApiConfig(env);
+    expect([c.PROVIDER_FUNDING, c.PROVIDER_NOTIFY_SMS, c.PROVIDER_NOTIFY_EMAIL, c.PROVIDER_NOTIFY_PUSH]).toEqual(['sim', 'sim', 'sim', 'sim']);
+    expect(c.STRIPE_API_KEY).toBeUndefined();
+    expect(loadWorkerConfig(env).PROVIDER_NOTIFY_PUSH).toBe('sim');
+  });
+
+  it('refuses a vendor name it does not know', () => {
+    for (const key of ['PROVIDER_FUNDING', 'PROVIDER_NOTIFY_SMS', 'PROVIDER_NOTIFY_EMAIL', 'PROVIDER_NOTIFY_PUSH']) {
+      expect(thrown(() => loadApiConfig({ ...env, [key]: 'holafly' })).invalid.join()).toMatch(new RegExp(key));
+    }
+  });
+
+  it('takes one or two Stripe webhook secrets, as Secrets, and refuses none, three, a repeat or an empty entry', () => {
+    const { choose, keys } = SETS['stripe']!;
+    const one = loadApiConfig({ ...env, ...choose, ...keys });
+    expect(one.STRIPE_WEBHOOK_SECRET?.map((s) => s.reveal())).toEqual(['whsec_current_do_not_print']);
+    const two = loadApiConfig({ ...env, ...choose, ...keys, STRIPE_WEBHOOK_SECRET: 'whsec_new_do_not_print, whsec_old_do_not_print' });
+    expect(two.STRIPE_WEBHOOK_SECRET?.map((s) => s.reveal())).toEqual(['whsec_new_do_not_print', 'whsec_old_do_not_print']);
+    expect(loadWorkerConfig({ ...env, ...choose, ...keys, STRIPE_WEBHOOK_SECRET: 'a-do-not-print,b-do-not-print' }).STRIPE_WEBHOOK_SECRET).toHaveLength(2);
+    for (const bad of ['a,b,c', 'a,a', 'a,', ',a', ' , ']) {
+      const e = thrown(() => loadApiConfig({ ...env, ...choose, ...keys, STRIPE_WEBHOOK_SECRET: bad }));
+      expect(e.invalid.join()).toMatch(/STRIPE_WEBHOOK_SECRET/);
+    }
+  });
+
+  it('accepts a test-mode Stripe key only: live keys wait for the production guard, and nothing is quoted', () => {
+    const { choose, keys } = SETS['stripe']!;
+    for (const ok of ['sk_test_do_not_print', 'rk_test_do_not_print']) expect(() => loadApiConfig({ ...env, ...choose, ...keys, STRIPE_API_KEY: ok })).not.toThrow();
+    for (const bad of ['sk_live_do_not_print', 'rk_live_do_not_print', 'pk_test_do_not_print', 'do-not-print']) {
+      const e = thrown(() => loadApiConfig({ ...env, ...choose, ...keys, STRIPE_API_KEY: bad }));
+      expect(e.invalid.join()).toMatch(/STRIPE_API_KEY/);
+      expect(`${e.message} ${e.invalid.join()}`).not.toContain('do-not-print');
+    }
+  });
+
+  it('checks the maps and addresses it can, without quoting them', () => {
+    const bad: [string, Record<string, string>, string][] = [
+      ['stripe', { STRIPE_PLAN_PRODUCTS: '{"club":"price_123"}' }, 'STRIPE_PLAN_PRODUCTS'],
+      ['stripe', { STRIPE_PLAN_PRODUCTS: '{}' }, 'STRIPE_PLAN_PRODUCTS'],
+      ['stripe', { STRIPE_PLAN_PRODUCTS: '{"__proto__":"prod_x"}' }, 'STRIPE_PLAN_PRODUCTS'],
+      ['stripe', { STRIPE_PLAN_PRODUCTS: 'not json do-not-print' }, 'STRIPE_PLAN_PRODUCTS'],
+      ['twilio', { TWILIO_FROM_SMS: '0501234567' }, 'TWILIO_FROM_SMS'],
+      ['twilio', { TWILIO_TEMPLATES: '{"auth.otp":{"en":"only english"}}' }, 'TWILIO_TEMPLATES'],
+      ['twilio', { TWILIO_TEMPLATES: '{"auth.otp":{"en":"a","he":"b","fr":"c"}}' }, 'TWILIO_TEMPLATES'],
+      ['twilio', { TWILIO_TEMPLATES: '{"constructor":{"en":"a","he":"b"}}' }, 'TWILIO_TEMPLATES'],
+      ['twilio', { TWILIO_TEMPLATES: '[]' }, 'TWILIO_TEMPLATES'],
+      ['postmark', { POSTMARK_FROM: 'not-an-email' }, 'POSTMARK_FROM'],
+      ['postmark', { POSTMARK_TEMPLATES: '{"auth.otp":{"en":"","he":"x"}}' }, 'POSTMARK_TEMPLATES'],
+      ['postmark', { POSTMARK_TEMPLATES: '{"__proto__":{"en":"a","he":"b"}}' }, 'POSTMARK_TEMPLATES'],
+      ['expo', { EXPO_TEMPLATES: '{"auth.otp":{"title":{"en":"a","he":"b"}}}' }, 'EXPO_TEMPLATES'],
+      ['expo', { EXPO_TEMPLATES: '{"auth.otp":{"en":"a","he":"b"}}' }, 'EXPO_TEMPLATES'],
+    ];
+    for (const [name, patch, key] of bad) {
+      const { choose, keys } = SETS[name]!;
+      const e = thrown(() => loadApiConfig({ ...env, ...choose, ...keys, ...patch }));
+      expect(e.invalid.join()).toMatch(new RegExp(key));
+      expect(`${e.message} ${e.invalid.join()}`).not.toContain('do-not-print');
+    }
+  });
+
+  it('parses the template maps into plain own-key objects', () => {
+    const c = loadApiConfig({ ...env, ...SETS['twilio']!.keys, ...SETS['postmark']!.keys, ...SETS['expo']!.keys, ...SETS['stripe']!.keys });
+    expect(Object.keys(c.TWILIO_TEMPLATES ?? {})).toEqual(['auth.otp']);
+    expect(c.TWILIO_TEMPLATES?.['auth.otp']).toEqual({ en: 'Code {{code}}', he: 'קוד {{code}}' });
+    expect(c.POSTMARK_TEMPLATES?.['auth.otp']).toEqual({ en: 'otp-en', he: 'otp-he' });
+    expect(c.EXPO_TEMPLATES?.['auth.otp']?.title.he).toBe('קוד');
+    expect(c.STRIPE_PLAN_PRODUCTS).toEqual({ club: 'prod_Club123' });
+  });
+
+  it('the four choices together load for the API and the worker, and credentials print nowhere', () => {
+    const all = { ...env, ...Object.assign({}, ...['stripe', 'twilio', 'postmark', 'expo'].map((n) => ({ ...SETS[n]!.choose, ...SETS[n]!.keys }))) };
+    for (const load of [loadApiConfig, loadWorkerConfig]) {
+      const c = load(all);
+      expect([c.PROVIDER_FUNDING, c.PROVIDER_NOTIFY_SMS, c.PROVIDER_NOTIFY_EMAIL, c.PROVIDER_NOTIFY_PUSH]).toEqual(['stripe', 'twilio', 'postmark', 'expo']);
+      expect(JSON.stringify(c)).not.toMatch(/do-not-print/);
+      expect(String(c.TWILIO_AUTH_TOKEN)).toBe('[redacted]');
+    }
   });
 });
