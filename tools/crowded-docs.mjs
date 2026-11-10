@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Crowded's published API docs, as a file we can read and cite. Their docs live in a Postman collection
 // (https://documenter.getpostman.com/view/20019814/2sBXwnuYMb); this fetches the collection JSON and renders it to
-// plain markdown in docs/vendors/crowded/postman-collection.md, so a question about the API ("which calls answer 409?",
+// plain markdown in docs/vendors/crowded/postman-<published id>.md, so a question about the API ("which calls answer 409?",
 // "how are webhooks retried?") is answered by grep and cited by line, not from memory.
 //
 // Crowded has published more than one view of the docs, and they differ (the 2026-11-10 comparison is in README.md): every
