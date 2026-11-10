@@ -14,7 +14,7 @@ export function fxHandlers(fx: FxService, stepUp: StepUpService): Record<string,
     }),
     convert: route(async (req) => {
       const p = requirePrincipal(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       assertNotRestricted(p, 'fx_convert', req.now);
       const key = requireIdempotencyKey(req);
       return created(await fx.convert(p.partyId, req.body, key, req.now));

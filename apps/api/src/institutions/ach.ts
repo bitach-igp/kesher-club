@@ -126,7 +126,7 @@ export function achPullHandlers(ach: InstitutionAch, stepUp: StepUpService, staf
     createInstitutionAchPull: route(async (req) => {
       const by = await financeOf(req, staffOf);
       await ach.gate(); // a feature that is off asks for no passkey
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       const key = requireIdempotencyKey(req);
       return created(await ach.pull(by.institutionId, by, req.body, key, req.now));
     }),

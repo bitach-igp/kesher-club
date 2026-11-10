@@ -70,6 +70,25 @@ export interface OtpSession {
   consumedAt?: string;
 }
 
+export type CeremonyKind = 'registration' | 'authentication' | 'step_up';
+
+/** One pending passkey challenge (T-0682). `key` is what the service looks it up by; one live ceremony per (kind, key). */
+export interface Ceremony {
+  ceremonyId: string;
+  kind: CeremonyKind;
+  key: string;
+  partyId: string;
+  options: unknown;
+  issuedAt: string;
+}
+
+/** The hash of a session's step-up token and when it stops counting (T-0682). */
+export interface StepUpRecord {
+  sessionId: string;
+  tokenHash: string;
+  expiresAt: string;
+}
+
 export interface IdentityRepository {
   findUserByPhone(phone: string): Promise<UserAccount | undefined>;
   findUser(partyId: string): Promise<UserAccount | undefined>;
@@ -101,6 +120,16 @@ export interface IdentityRepository {
 
   setRestriction(partyId: string, until: string, reason: Restriction['reason']): Promise<void>;
   getRestriction(partyId: string): Promise<Restriction | undefined>;
+
+  /** Stores a ceremony, replacing any live one for the same (kind, key), and drops ceremonies issued before `staleBefore`. */
+  saveCeremony(c: Ceremony, staleBefore: string): Promise<void>;
+  /** Hands the ceremony to exactly one caller: a second take, here or on another instance, finds nothing. Expiry is the caller's check. */
+  takeCeremony(kind: CeremonyKind, key: string, at: string): Promise<Ceremony | undefined>;
+
+  /** One step-up token per session; a new one replaces the old. Rows expired before `now` are dropped. */
+  putStepUp(r: StepUpRecord, now: string): Promise<void>;
+  findStepUp(sessionId: string): Promise<StepUpRecord | undefined>;
+  deleteStepUp(sessionId: string): Promise<void>;
 }
 
 export class InMemoryIdentityRepository implements IdentityRepository {
@@ -111,6 +140,8 @@ export class InMemoryIdentityRepository implements IdentityRepository {
   private readonly devices = new Map<string, Device>();
   private readonly sessions = new Map<string, SessionFamily>();
   private readonly restrictions = new Map<string, Restriction>();
+  private readonly ceremonies = new Map<string, Ceremony & { consumed?: true }>();
+  private readonly stepUps = new Map<string, StepUpRecord>();
 
   async findUserByPhone(phone: string) {
     return [...this.users.values()].find((u) => u.phone === phone);
@@ -205,5 +236,28 @@ export class InMemoryIdentityRepository implements IdentityRepository {
   }
   async getRestriction(partyId: string) {
     return this.restrictions.get(partyId);
+  }
+
+  async saveCeremony(c: Ceremony, staleBefore: string) {
+    for (const [k, v] of this.ceremonies) if (v.issuedAt < staleBefore) this.ceremonies.delete(k);
+    this.ceremonies.set(`${c.kind}|${c.key}`, c);
+  }
+  async takeCeremony(kind: CeremonyKind, key: string) {
+    const k = `${kind}|${key}`;
+    const c = this.ceremonies.get(k);
+    if (!c || c.consumed) return undefined;
+    this.ceremonies.set(k, { ...c, consumed: true });
+    return c;
+  }
+
+  async putStepUp(r: StepUpRecord, now: string) {
+    for (const [k, v] of this.stepUps) if (v.expiresAt < now) this.stepUps.delete(k);
+    this.stepUps.set(r.sessionId, r);
+  }
+  async findStepUp(sessionId: string) {
+    return this.stepUps.get(sessionId);
+  }
+  async deleteStepUp(sessionId: string) {
+    this.stepUps.delete(sessionId);
   }
 }

@@ -127,7 +127,7 @@ export function consentHandlers(d: { consent: ConsentService; stepUp: StepUpServ
     approveAgentConsent: route(async (req) => {
       const p = requirePrincipal(req);
       await gate();
-      requireStepUp(d.stepUp, req);
+      await requireStepUp(d.stepUp, req);
       const b = (req.body ?? {}) as { scopes?: unknown };
       return ok(await d.consent.approve(req.params['id'] ?? '', p.partyId, b.scopes, req.now));
     }),

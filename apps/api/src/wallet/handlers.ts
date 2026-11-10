@@ -15,7 +15,7 @@ export function walletHandlers(loads: LoadService, stepUp: StepUpService, flags:
     createLoad: route(async (req) => {
       const p = requirePrincipal(req);
       if (!(await flags.isOn(WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       const key = requireIdempotencyKey(req);
       return created(await loads.request(p.partyId, req.body, key, req.now));
     }),
@@ -26,7 +26,7 @@ export function walletHandlers(loads: LoadService, stepUp: StepUpService, flags:
     setAutoReload: route(async (req) => {
       const p = requirePrincipal(req);
       if (!(await flags.isOn(WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       requireIdempotencyKey(req);
       return ok(await autoReload.set(p.partyId, req.params['id'] ?? '', req.body, req.now));
     }),
@@ -34,7 +34,7 @@ export function walletHandlers(loads: LoadService, stepUp: StepUpService, flags:
     getClosure: route(async (req) => ok(await closure.status(requirePrincipal(req).partyId, req.now))),
     closeAccount: route(async (req) => {
       const p = requirePrincipal(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       requireIdempotencyKey(req);
       return ok(await closure.close(p.partyId, req.now));
     }),
