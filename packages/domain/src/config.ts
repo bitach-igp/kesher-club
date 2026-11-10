@@ -68,13 +68,6 @@ export const baseConfigShape = {
   PROVIDER_MODE_DEFAULT: z.enum(['sim', 'sandbox', 'live']),
 } as const;
 
-const failSecure = (cfg: unknown, ctx: z.RefinementCtx) => {
-  const c = cfg as { APP_ENV: string; PROVIDER_MODE_DEFAULT: string };
-  if (c.APP_ENV === 'prod' && c.PROVIDER_MODE_DEFAULT === 'sim') {
-    ctx.addIssue({ code: 'custom', path: ['PROVIDER_MODE_DEFAULT'], message: 'simulators are not allowed in production' });
-  }
-};
-
 /** Builds a config schema: the base shape plus app-specific keys. Secrets may not carry defaults. */
 export function defineConfig<T extends z.ZodRawShape>(extra: T) {
   for (const [key, schema] of Object.entries(extra)) {
@@ -89,7 +82,7 @@ export function defineConfig<T extends z.ZodRawShape>(extra: T) {
       node = def?.innerType;
     }
   }
-  return z.object({ ...baseConfigShape, ...extra }).superRefine(failSecure);
+  return z.object({ ...baseConfigShape, ...extra });
 }
 
 export const baseConfigSchema = defineConfig({});

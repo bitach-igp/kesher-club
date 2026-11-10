@@ -1,5 +1,5 @@
 // Sandbox runs for the Stripe and notification adapters (T-0041). Off unless SANDBOX_CONTRACTS=1 and the vendor's own sandbox
-// credentials are set, so CI (which sets neither) skips every block; the deploy smoke job sets both. Nothing here uses a live key:
+// credentials are set, so CI (which sets neither) skips every block; run it by hand, or from a job that sets both (none does yet). Nothing here uses a live key:
 // Stripe takes a test-mode key only, Twilio's test credentials or a trial account, Postmark's POSTMARK_API_TEST server token or a
 // sandbox server, and Expo takes any well-formed token. The notification suites are the full NotifyPort contract, the same one each
 // adapter passes against its fake. Stripe is a smoke subset, not its contract suites: those need a signed vendor webhook on demand

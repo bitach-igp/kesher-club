@@ -6,6 +6,7 @@ import { Secret } from '@kesher/domain';
 import { fixedClock, NotifyError, type AdvanceableClock, type BillingPort, type EsimPort, type FederatedIdPPort, type FundingPort, type InstitutionBankingPort, type InsurancePort, type NotifyPort, type OrgIdPPort } from '@kesher/ports';
 import { PORTS } from '@kesher/ports';
 import { describe, expect, it } from 'vitest';
+import { simulatorFlagViolations } from './config.ts';
 import type { SqlClient } from './db.ts';
 import { createRegistry, crowdedWebhookSecrets, IGNORED_LIVE_BINDING_WARNING, LIVE_BINDING_WARNING, overridesFromConfig, systemClock, type CrowdedBankingOverride } from './registry.ts';
 
@@ -416,6 +417,15 @@ const pushSet = {
 const sim = { PROVIDER_INSTITUTION_BANKING: 'sim' as const };
 
 describe('Stripe and notification bindings (T-0041)', () => {
+  it('a Stripe-bound billing and funding port is not a simulator, so the T-0043 prod guard does not fire on it', () => {
+    const { registry } = bind({ ...sim, ...stripeSet });
+    const bills = (flag: string) => simulatorFlagViolations((port) => registry.bindingFor(port, 'IL')?.mode, (f) => f === flag);
+    expect(bills('billing.stripe')).toEqual([]);
+    expect(bills('funding.ach')).toEqual([]);
+    const plain = bind({ ...sim }).registry;
+    expect(simulatorFlagViolations((port) => plain.bindingFor(port, 'IL')?.mode, (f) => f === 'billing.stripe')).toEqual([{ port: 'billing', flag: 'billing.stripe' }]);
+  });
+
   it('PROVIDER_FUNDING=stripe binds the Stripe adapters to funding and billing in both markets, and every other port stays on its simulator', () => {
     const { registry, simulators, providers } = bind({ ...sim, ...stripeSet });
     for (const market of MARKETS) {

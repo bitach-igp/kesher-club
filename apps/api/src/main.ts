@@ -3,6 +3,9 @@
 // then listen. SIGTERM stops accepting, lets in-flight requests finish (up to DRAIN_MS) and closes
 // the pool. Lifecycle lines go to stdout as JSON and carry no request data, member data or config
 // values (constitution art. 9, AGENTS.md).
+import { ApprovalService } from './approvals/service.ts';
+import { AuditService } from './audit/service.ts';
+import { assertProdSimulatorsSafe, FlagService } from './flags/service.ts';
 import type http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createLogger } from '@kesher/domain';
@@ -38,7 +41,10 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
     const signingKey = await importSigningKey(JSON.parse(config.JWT_SIGNING_KEY.reveal()) as JWK, config.JWT_SIGNING_KID);
     // The banking port's provider is chosen by config (T-0659); its idempotency keys live in Postgres so a restart loses none.
     const { registry, providers } = createRegistry(config.PROVIDER_MODE_DEFAULT, undefined, overridesFromConfig(config, db, (message) => logger('warning', { message })));
+    // T-0043: prod may leave a port on its simulator only while every flag it gates is off (registry default and store).
+    await assertProdSimulatorsSafe(config.APP_ENV, registry, config.MARKET, new FlagService(db, new ApprovalService(db), new AuditService(db)));
     const app = createApp({
+      refuseFlagsOnSimulators: config.APP_ENV === 'prod',
       db,
       registry,
       market: config.MARKET,

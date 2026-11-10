@@ -3,6 +3,9 @@
 // the provider registry and createApp (the worker builds the API's services and never serves HTTP), then
 // every job on the scheduler. SIGTERM schedules nothing more, lets running jobs finish (up to DRAIN_MS)
 // and closes the pools. Lines go to stdout as JSON with no member data, payloads or config values.
+import { ApprovalService } from '@kesher/api/approvals/service';
+import { AuditService } from '@kesher/api/audit/service';
+import { assertProdSimulatorsSafe, FlagService } from '@kesher/api/flags/service';
 import { createApp } from '@kesher/api/app';
 import { PostgresIdentityRepository } from '@kesher/api/auth/pg-repository';
 import { importSigningKey } from '@kesher/api/auth/tokens';
@@ -59,7 +62,10 @@ export async function main(env: Record<string, string | undefined>, opts: Worker
     // Same provider choice as the API (T-0659): the worker replays webhook events and reads provider state through the same adapter.
     const { registry, providers } = createRegistry(config.PROVIDER_MODE_DEFAULT, undefined, overridesFromConfig(config, db, (message) => emit('warning', { message })));
     const clock = opts.clock ?? (() => new Date());
-    const app = createApp({ db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), clock, crowdedWebhookSecrets: crowdedWebhookSecrets(config) });
+    // T-0043: prod may leave a port on its simulator only while every flag it gates is off (registry default and store).
+    await assertProdSimulatorsSafe(config.APP_ENV, registry, config.MARKET, new FlagService(db, new ApprovalService(db), new AuditService(db)));
+    const app = createApp({
+      refuseFlagsOnSimulators: config.APP_ENV === 'prod', db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), clock, crowdedWebhookSecrets: crowdedWebhookSecrets(config) });
     const jobs = (opts.buildJobs ?? defaultJobs)({ app, db, registry, market: config.MARKET, clock, runs: pgRunLog(db), catalogue });
     const scheduler = new Scheduler(jobs, advisoryLock(locks, config.MARKET), emit);
     scheduler.start();

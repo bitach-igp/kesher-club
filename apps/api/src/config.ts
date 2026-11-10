@@ -1,7 +1,7 @@
 // Process configuration for the API and the worker (T-0020, constitution art. 6). Both build their
 // services through createApp, so they share one shape; the API adds its port. The base shape from
-// @kesher/domain brings APP_ENV, DATABASE_URL, TEMPORAL_ADDRESS and PROVIDER_MODE_DEFAULT, and already
-// refuses simulators in prod. Key names are the ones Terraform passes (T-0025); the database password
+// @kesher/domain brings APP_ENV, DATABASE_URL, TEMPORAL_ADDRESS and PROVIDER_MODE_DEFAULT, and no longer
+// refuses simulators in prod (T-0043): `simulatorFlagViolations` below does, per port. Key names are the ones Terraform passes (T-0025); the database password
 // may arrive separately as PGPASSWORD, which node-postgres reads when DATABASE_URL carries none.
 // PROVIDER_MODE_DEFAULT is `sim` or `sandbox` (T-0040). It only labels the environment: which vendor backs a port is chosen per
 // port by a PROVIDER_<PORT> key (T-0659 for the US banking port), and a port with no choice stays on its simulator. `live` is
@@ -354,3 +354,49 @@ const load = <S extends Parameters<typeof loadConfig>[0]>(schema: S, env: Record
 
 export const loadApiConfig = (env: Record<string, string | undefined>): ApiConfig => load(apiConfigSchema, env);
 export const loadWorkerConfig = (env: Record<string, string | undefined>): WorkerConfig => load(workerConfigSchema, env);
+
+/**
+ * The flags each port's vendor backs (T-0043). In prod a port may stay on its simulator only while every flag here is off, in
+ * `config/flags.json` and in the flag store; the process refuses to start, and a flip is refused, otherwise. Ports with no row
+ * (auth, notify, events, kyb detail) gate nothing a member can turn on by a flag.
+ */
+export const PORT_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  billing: ['billing.stripe', 'billing.applePay', 'billing.googlePay'],
+  funding: ['funding.ach', 'funding.rtp', 'wallet.enabled'],
+  bank: ['institutions.bankFeed'],
+  'institution-banking': ['institutions.usBanking', 'institutions.deposits', 'institutions.money'],
+  'card-issuing': ['card.virtual', 'card.physical', 'card.agentic', 'card.paymentPasskey'],
+  'wallet-provisioning': ['card.pushProvisioning', 'card.webPushProvisioning'],
+  kyc: ['kyc.mdl'],
+  kyb: ['institutions.kyb.checks'],
+  fx: ['fx.enabled'],
+  payout: ['payouts.nium'],
+  esim: ['esim.airalo', 'esim.holafly'],
+  insurance: ['insurance.coverGenius'],
+  concierge: ['concierge.partner'],
+  pass: ['wallet.pass'],
+  'il-payinit': ['il.payinit'],
+  'org-idp': ['auth.orgSso'],
+  'federated-idp': ['auth.social.enabled'],
+};
+
+export interface SimulatorFlagViolation {
+  port: string;
+  flag: string;
+}
+
+/** Every (port, flag) pair where the port runs on a simulator (`modeOf` answers `sim`) and the flag is on. */
+export function simulatorFlagViolations(modeOf: (port: string) => string | undefined, isOn: (flag: string) => boolean): SimulatorFlagViolation[] {
+  const out: SimulatorFlagViolation[] = [];
+  for (const [port, flags] of Object.entries(PORT_FLAGS)) {
+    if (modeOf(port) !== 'sim') continue;
+    for (const flag of flags) if (isOn(flag)) out.push({ port, flag });
+  }
+  return out;
+}
+
+/** Throws one error naming each port and flag. Never quotes a value. */
+export function assertNoLiveFlagOnSimulator(violations: readonly SimulatorFlagViolation[]): void {
+  if (violations.length === 0) return;
+  throw new Error(`Production refuses to start: ${violations.map((v) => `port ${v.port} is a simulator but flag ${v.flag} is on`).join('; ')}`);
+}
