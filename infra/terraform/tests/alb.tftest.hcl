@@ -104,3 +104,61 @@ run "one_route_exempted" {
     error_message = "T-0068: exactly host, path and method, nothing else"
   }
 }
+
+# T-0069: an internal ALB admits the VPC CIDR by default; naming security groups replaces that rule, one rule per group.
+run "internal_default_admits_the_vpc" {
+  command = plan
+
+  module {
+    source = "./modules/alb"
+  }
+
+  variables {
+    internal = true
+  }
+
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.https_internal) == 1 && length(aws_vpc_security_group_ingress_rule.https_from_security_group) == 0
+    error_message = "T-0069: with no allowed security group an internal ALB admits the VPC CIDR"
+  }
+}
+
+run "internal_with_allowed_security_groups" {
+  command = plan
+
+  module {
+    source = "./modules/alb"
+  }
+
+  variables {
+    internal                   = true
+    allowed_security_group_ids = ["sg-0000000000000000a", "sg-0000000000000000b"]
+  }
+
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.https_internal) == 0 && length(aws_vpc_security_group_ingress_rule.https_from_security_group) == 2
+    error_message = "T-0069: named security groups replace the VPC-CIDR ingress, one rule each"
+  }
+
+  assert {
+    condition     = [for r in aws_vpc_security_group_ingress_rule.https_from_security_group : r.referenced_security_group_id] == ["sg-0000000000000000a", "sg-0000000000000000b"]
+    error_message = "T-0069: each rule admits exactly one named security group"
+  }
+}
+
+run "public_alb_ignores_allowed_security_groups" {
+  command = plan
+
+  module {
+    source = "./modules/alb"
+  }
+
+  variables {
+    allowed_security_group_ids = ["sg-0000000000000000a"]
+  }
+
+  assert {
+    condition     = length(aws_vpc_security_group_ingress_rule.https_public) == 1 && length(aws_vpc_security_group_ingress_rule.https_from_security_group) == 0
+    error_message = "T-0069: a public ALB keeps its internet ingress and takes no security-group rules"
+  }
+}

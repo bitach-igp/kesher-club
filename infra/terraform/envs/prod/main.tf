@@ -18,6 +18,10 @@ locals {
     vpn     = "vpn.${var.domain}"
   }
 
+  # T-0069: the console's own way to the IL API. It resolves to the internal ALB (private addresses, inside the VPC only), so the
+  # console's calls do not leave through the NAT gateway and re-enter the public ALB.
+  internal_api_host = "api-il-internal.${var.domain}"
+
   # One api, jit and worker service per market (T-0026): the same image with MARKET set, on the shared
   # database, KMS keys and secrets (party ids are unique across markets). `rule` offsets each market's
   # listener rule priorities so they never collide.
@@ -435,6 +439,30 @@ module "admin_alb" {
   deletion_protection = var.deletion_protection
 }
 
+# T-0069: the console-to-API hop. An internal ALB (private subnets, reachable from inside the VPC only) forwards to the IL API service, so the
+# console's requests never pass the NAT gateway or the public ALB: the API sees the staff member's address (the console forwards it, the ALB
+# appends the console task's private address, which the API skips) and the public WAF's per-IP limit is not shared by every console call.
+# The WAF here is per console task address, so its limit is raised (the staff members behind it are authenticated and the public ALB's
+# limit, which stops the internet, is untouched). The roster import's exemption (T-0068) is repeated for this host.
+module "internal_alb" {
+  source                   = "../../modules/alb"
+  name                     = "${local.name}-internal"
+  internal                 = true
+  vpc_id                   = module.network.vpc_id
+  vpc_cidr                 = module.network.vpc_cidr
+  subnet_ids               = module.network.private_subnet_ids
+  certificate_arn          = aws_acm_certificate_validation.this.certificate_arn
+  access_logs_bucket       = module.logs_bucket.bucket_name
+  log_kms_key_arn          = module.kms_logs.key_arn
+  deletion_protection      = var.deletion_protection
+  rate_limit_per_5_minutes = 100000
+
+  # The trust boundary (T-0069): the API believes the client address the sender forwards, so only the console's tasks may connect, not the VPC
+  # (Client VPN users are source-NATed into it and could forge x-forwarded-for).
+  allowed_security_group_ids = [module.console.security_group_id]
+  large_body_route           = { host = local.internal_api_host, path_regex = "^/v1/institutions/[0-9a-f-]+/rosters$" }
+}
+
 module "api" {
   source                     = "../../modules/ecs-service"
   for_each                   = local.markets
@@ -461,6 +489,33 @@ module "api" {
     priority              = 10 + each.value.rule
     health_check_path     = "/v1/status"
   }
+}
+
+# The IL API service also takes the console's calls from the internal ALB: a second listener rule on the same target group, and the
+# task security group admits that ALB (the module's own rule admits the public one). The container port is the ecs-service module's default.
+resource "aws_lb_listener_rule" "api_internal" {
+  listener_arn = module.internal_alb.https_listener_arn
+  priority     = 10
+
+  action {
+    type             = "forward"
+    target_group_arn = module.api["il"].target_group_arn
+  }
+
+  condition {
+    host_header {
+      values = [local.internal_api_host]
+    }
+  }
+}
+
+resource "aws_vpc_security_group_ingress_rule" "api_il_from_internal_alb" {
+  security_group_id            = module.api["il"].security_group_id
+  description                  = "Container port from the internal load balancer (the console's calls)"
+  referenced_security_group_id = module.internal_alb.security_group_id
+  from_port                    = 3000
+  to_port                      = 3000
+  ip_protocol                  = "tcp"
 }
 
 # Provider webhooks arrive on the dedicated listener and land on the api target group.
@@ -605,7 +660,7 @@ module "console" {
     NODE_ENV            = "production"
     APP_ENV             = local.env
     CONSOLE_ENVIRONMENT = "production"
-    CONSOLE_API_URL     = "https://${local.market_hosts.il.api}/v1"
+    CONSOLE_API_URL     = "https://${local.internal_api_host}/v1" # internal ALB, not the public host (T-0069)
   }
   log_kms_key_arn = module.kms_logs.key_arn
   ingress = {
@@ -694,6 +749,19 @@ resource "aws_route53_record" "alb" {
     name                   = module.alb.dns_name
     zone_id                = module.alb.zone_id
     evaluate_target_health = true
+  }
+}
+
+resource "aws_route53_record" "api_internal" {
+  provider = aws.dns
+
+  zone_id = var.hosted_zone_id
+  name    = local.internal_api_host
+  type    = "A"
+  alias {
+    name                   = module.internal_alb.dns_name
+    zone_id                = module.internal_alb.zone_id
+    evaluate_target_health = false
   }
 }
 
