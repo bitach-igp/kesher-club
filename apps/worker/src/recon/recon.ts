@@ -87,16 +87,25 @@ export class ReconJob {
     const { from, to } = businessDayWindow(statementDate);
     const ids = partnerTxns.map((t) => t.externalId);
     type Ours = { external_id: string; journal_id: string; currency: Currency; amount_minor: string; in_window: boolean };
+    // Candidates first, so only the statement day's transfers (and the ones the statement names) are aggregated, never all history:
+    // funding transfers only (a payout is also a `transfer` ref, under a provider name that may coincide), with a journal in the
+    // window (found through ledger.journal_transfer_id_idx) or named by the statement.
     const funding = await this.db.query<Ours>(
-      `select r.external_id, (array_agg(j.id order by j.effective_at, j.id))[1] as journal_id, p.currency, sum(p.amount_minor)::text as amount_minor,
-              bool_or(j.effective_at >= $2 and j.effective_at < $3) as in_window
-         from ops.external_ref r
-         join ledger.journal j on j.transfer_id = r.entity_id
+      `with cand as (
+         select r.external_id, r.entity_id,
+                exists (select 1 from ledger.journal w where w.transfer_id = r.entity_id and w.effective_at >= $2 and w.effective_at < $3) as in_window
+           from ops.external_ref r
+           join ops.transfer t on t.id = r.entity_id and t.kind in ('load', 'refund')
+          where r.entity_type in ('transfer', 'refund') and r.provider = $1
+        )
+       select c.external_id, (array_agg(j.id order by j.effective_at, j.id))[1] as journal_id, p.currency, sum(p.amount_minor)::text as amount_minor, bool_or(c.in_window) as in_window
+         from cand c
+         join ledger.journal j on j.transfer_id = c.entity_id
          join ledger.posting p on p.journal_id = j.id
          join ledger.account a on a.id = p.account_id and a.type::text = 'partner_settlement'
-        where r.entity_type in ('transfer', 'refund') and r.provider = $1
-        group by r.external_id, p.currency
-       having sum(p.amount_minor) <> 0 and (bool_or(j.effective_at >= $2 and j.effective_at < $3) or r.external_id = any($4::text[]))`,
+        where c.in_window or c.external_id = any($4::text[])
+        group by c.external_id, p.currency
+       having sum(p.amount_minor) <> 0`,
       [provider, from, to, ids],
     );
     const legacy = await this.db.query<Ours>(

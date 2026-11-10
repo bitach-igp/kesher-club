@@ -12,6 +12,7 @@ import { StaticFlags } from '@kesher/api/billing/capabilities';
 import { createRegistry } from '@kesher/api/registry';
 import { runLoad } from '@kesher/api/wallet/loads';
 import { fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type FundingPort, type FundingStatementPort } from '@kesher/ports';
+import { reportReconBreaks } from '../jobs.ts';
 import { deadlineFor, ReconJob, type PartnerTransaction } from './recon.ts';
 import { FundingStatementSource } from './statement-source.ts';
 
@@ -147,6 +148,25 @@ describe('ReconJob over the funding flow (T-0684, REQ-LED-004)', () => {
     expect(report.matched).toBe(3);
   });
 
+  it('a payout transfer under the same provider name is not on the funding side', async () => {
+    // A payout is also an `ops.transfer` with a `transfer` ref, and a payout vendor may share the funding provider's name.
+    const t = uuidv7();
+    await fdb.query(`insert into ops.transfer (id, idempotency_key, kind, from_party_id, amount_minor, currency, state, market, created_at, updated_at) values ($1, 'recon-payout-1', 'payout', $2, 500, 'USD', 'settled', 'US', $3, $3)`, [t, uuidv7(), NOW]);
+    const pl = new PostgresLedger(fdb);
+    const accts = new AccountService(fdb, pl);
+    await pl.post({
+      idempotencyKey: 'recon-payout-1:settle',
+      kind: 'payout',
+      transferId: t,
+      effectiveAt: NOW,
+      postings: [{ accountId: await accts.systemAccount('suspense', 'USD'), currency: 'USD', amountMinor: 500n }, { accountId: await accts.systemAccount('partner_settlement', 'USD'), currency: 'USD', amountMinor: -500n }],
+    });
+    await fdb.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('transfer', $1, 'simulator', 'po_recon_1')`, [t]);
+    const statement = await new FundingStatementSource({ provider: 'simulator', port: funding }).fetch('simulator', DAY);
+    const report = await nightly(jobAt({ fetch: async () => statement }, '2026-11-03T03:32:00Z'));
+    expect(report.breaks.map((b) => b.externalId)).not.toContain('po_recon_1');
+  });
+
   it('a partner row whose amount differs from the journal is an amount_mismatch, and a day with no activity is clean', async () => {
     const statement = await new FundingStatementSource({ provider: 'simulator', port: funding }).fetch('simulator', DAY);
     const tampered = statement.map((t) => (t.type === 'refund' ? { ...t, amount: money(t.amount.minor - 1n, t.amount.currency) } : t));
@@ -163,5 +183,10 @@ describe('ReconJob over the funding flow (T-0684, REQ-LED-004)', () => {
     const rows = await fdb.query<{ severity: string; payload: Record<string, string> }>(`select severity, payload from ops.case where kind = 'recon_break' and payload->>'reason' = 'deadline_missed'`);
     expect(rows.rows).toHaveLength(1);
     expect(rows.rows[0]!.payload).toMatchObject({ provider: 'simulator', runDate: '2026-11-21' });
+    // The monitoring gauge tolerates it: a deadline case has no ops.recon_break row and no amount, but counts as an open break for its age.
+    const ages: number[] = [];
+    const metrics = { reconBreakOpenUsd: () => undefined, reconBreakOldestHours: (h: number) => void ages.push(h) } as unknown as Parameters<typeof reportReconBreaks>[1];
+    await reportReconBreaks(fdb, metrics, new Date('2026-11-21T10:30:00Z'));
+    expect(ages[0]).toBeGreaterThan(0);
   });
 });
