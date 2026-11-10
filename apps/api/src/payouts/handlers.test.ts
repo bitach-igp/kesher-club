@@ -197,3 +197,15 @@ describe('a cooled-off institution payout keeps its requester (T-0628)', () => {
   });
 });
 
+
+describe('T-0556: an institution payout is not a member\'s to cancel', () => {
+  it('a member token, or the institution\'s own finance staff, naming an institution payout id gets 404 and the payout is untouched; reject stays the institution\'s route', async () => {
+    const item = (await list(staff.one)).items[0]!;
+    const before = (await app.services.transfers.get(item.id))!.state;
+    const asMember = await call({ access: memberAccess }, 'POST', `/v1/payouts/${item.id}/cancel`, undefined, 'inst-cancel-1');
+    expect(asMember.status).toBe(404);
+    const asStaff = await call(staff.one, 'POST', `/v1/payouts/${item.id}/cancel`, undefined, 'inst-cancel-2');
+    expect(asStaff.status).toBe(404);
+    expect((await app.services.transfers.get(item.id))!.state).toBe(before);
+  });
+});

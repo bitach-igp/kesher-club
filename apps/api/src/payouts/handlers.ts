@@ -76,6 +76,12 @@ export function payoutHandlers(payouts: PayoutService, stepUp: StepUpService, d:
       return created(view);
     }),
 
+    cancelPayout: route(async (req) => {
+      const p = requirePrincipal(req);
+      requireIdempotencyKey(req);
+      return ok(await payouts.cancel(req.params['id'] ?? '', p.partyId, req.now));
+    }),
+
     listInstitutionPayouts: route(async (req) => {
       const { p, institutionId } = await financeOf(d, req, req.params['id']);
       const limit = Math.min(100, Math.max(1, Number(req.query['limit'] ?? PAGE) || PAGE));

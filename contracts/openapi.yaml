@@ -2386,6 +2386,26 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/InstitutionPayout" }
         default: { $ref: "#/components/responses/Problem" }
+  /payouts/{id}/cancel:
+    post:
+      operationId: cancelPayout
+      summary: Cancel your own payout while it is still cooling off; the reserved money goes back to the wallet
+      description: >-
+        REQ-PO-001, REQ-WAL-001 (T-0556). The signed-in member's own payout, in its cool-off only (a new payee over
+        ₪2,000, up to 24 h). The amount reserved for it returns to the wallet once; nothing was sent to the rail. A payout
+        already cancelled answers 200 as it stands. A payout past its cool-off (at the rail or settled) answers 409
+        `IDEMPOTENCY_CONFLICT`; another member's payout, or an institution's, is 404. No step-up: it only returns the
+        member's own money to their wallet. Idempotent.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      responses:
+        "200":
+          description: The payout, cancelled
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Payout" }
+        default: { $ref: "#/components/responses/Problem" }
   /payouts:
     post:
       operationId: createPayout
@@ -5855,7 +5875,7 @@ components:
       required: [id, state, amount]
       properties:
         id: { type: string, format: uuid }
-        state: { type: string, enum: [cooling_off, awaiting_second_approval, submitted, processing, settled, failed, reversed] }
+        state: { type: string, enum: [cooling_off, awaiting_second_approval, submitted, processing, settled, failed, reversed, cancelled] }
         amount: { $ref: "#/components/schemas/Money" }
         scheduledFor: { type: string, format: date-time }
     InstitutionPayout:

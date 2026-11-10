@@ -32,3 +32,6 @@ POST /addon-orders the `quantity` request property's max was set to `10.00`
 
 # T-0312 (REQ-BIL-002, REQ-BIL-003): starting a membership starts a recurring charge, so it needs a step-up like every other money action. The mobile app has no membership-creation call; the demo seed (the only caller) is a dev tool.
 POST /memberships added the new required `header` request parameter `x-step-up`
+
+# T-0556 (REQ-PO-001): a member can cancel a payout that is still cooling off, so Payout.state gains `cancelled`. A payout reaches it only through the new POST /payouts/{id}/cancel, which no shipped client calls yet; the mobile app, the only client, reads Payout.state through its own model and is ours, so it gains the word in the same release as its cancel button.
+POST /payouts added the new `cancelled` enum value to the `state` response property for the response status `201`

@@ -32,7 +32,7 @@ export const COOL_OFF_MS = 24 * 60 * 60_000;
 /** A first payout to a payee above this cools off (REQ-PO-002: ₪2,000). */
 export const COOL_OFF_THRESHOLD_MINOR = 200_000n;
 export const FAILED_TEMPLATE = 'money.payout_failed';
-export type PayoutState = 'cooling_off' | 'awaiting_second_approval' | 'submitted' | 'processing' | 'settled' | 'failed' | 'reversed' | 'rejected';
+export type PayoutState = 'cooling_off' | 'awaiting_second_approval' | 'submitted' | 'processing' | 'settled' | 'failed' | 'reversed' | 'rejected' | 'cancelled';
 /** A second finance member rejected the payout: the transfer fails with this code before anything moved. */
 export const REJECTED = 'REJECTED';
 /** A payout the rail never took (it was down) is retried by the sweep from this age, and failed (reversed, the member told) at STRANDED_AFTER_MS (T-0541, RUN-01). */
@@ -558,6 +558,29 @@ export class PayoutService implements PayoutActivities {
     return (await runPayout(this, await this.inputFor(t), t.idempotencyKey, now)).transfer;
   }
 
+  /**
+   * POST /payouts/{id}/cancel (T-0556): a member ends their own payout while it still cools off. The transition goes first: it is
+   * taken under the transfer's row lock and the state machine refuses `cancel` from anything but `pending_hold`, so it cannot
+   * succeed once the release has moved the payout on, and the reserve is returned only after it did (never both a cancelled payout
+   * and a payout that went to the rail on money already given back). A crash between the two leaves a cancelled payout whose
+   * reserve a replay returns (the reversal key is idempotent). Another member's payout and an institution's are not found.
+   */
+  async cancel(transferId: string, partyId: string, now: Date): Promise<PayoutView> {
+    const t = /^[0-9a-f-]{36}$/i.test(transferId) ? await this.d.transfers.get(transferId) : undefined;
+    if (!t || t.kind !== 'payout' || t.fromPartyId !== partyId || (await this.sourceOf(t)).kind !== 'member') throw new DomainError('NOT_FOUND', 'Payout not found');
+    if (t.state === 'cancelled') {
+      await this.unreserve(t);
+      return this.view(t);
+    }
+    if (t.state !== 'pending_hold') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This payout is no longer cooling off and cannot be cancelled');
+    const cancelled = await this.d.transfers.apply(t.id, 'cancel', now, { reason: 'cancelled by the member during the cool-off' });
+    await this.unreserve(cancelled);
+    // A request left open (the approval is asked for after the cool-off, so normally none) ends with the payout.
+    const req = await this.d.approvals.find('payout', t.id);
+    if (req) await this.d.approvals.expire(req.id, now);
+    return this.view(cancelled);
+  }
+
   /** The institution's payouts, newest first, a page at a time, with the approvals so far and its available balance. */
   async listForInstitution(institutionId: string, viewer: string, cursor: { at: string; id: string } | undefined, limit: number): Promise<{ items: InstitutionPayoutRow[]; next?: { at: string; id: string }; available: Money }> {
     return this.institutionRows(institutionId, viewer, cursor, limit);
@@ -614,6 +637,9 @@ export class PayoutService implements PayoutActivities {
         break;
       case 'settled':
         state = 'settled';
+        break;
+      case 'cancelled':
+        state = 'cancelled';
         break;
       case 'failed':
         state = t.failureCode === REJECTED ? 'rejected' : t.reversalJournalId ? 'reversed' : 'failed';

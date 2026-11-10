@@ -3096,6 +3096,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/payouts/{id}/cancel": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Cancel your own payout while it is still cooling off; the reserved money goes back to the wallet
+         * @description REQ-PO-001, REQ-WAL-001 (T-0556). The signed-in member's own payout, in its cool-off only (a new payee over ₪2,000, up to 24 h). The amount reserved for it returns to the wallet once; nothing was sent to the rail. A payout already cancelled answers 200 as it stands. A payout past its cool-off (at the rail or settled) answers 409 `IDEMPOTENCY_CONFLICT`; another member's payout, or an institution's, is 404. No step-up: it only returns the member's own money to their wallet. Idempotent.
+         */
+        readonly post: operations["cancelPayout"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/payouts/{id}/reject": {
         readonly parameters: {
             readonly query?: never;
@@ -4890,7 +4910,7 @@ export interface components {
             /** Format: date-time */
             readonly scheduledFor?: string;
             /** @enum {string} */
-            readonly state: "cooling_off" | "awaiting_second_approval" | "submitted" | "processing" | "settled" | "failed" | "reversed";
+            readonly state: "cooling_off" | "awaiting_second_approval" | "submitted" | "processing" | "settled" | "failed" | "reversed" | "cancelled";
         };
         readonly PayoutAccount: {
             /** Format: date-time */
@@ -10270,6 +10290,32 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["InstitutionPayout"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly cancelPayout: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The payout, cancelled */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["Payout"];
                 };
             };
             readonly default: components["responses"]["Problem"];

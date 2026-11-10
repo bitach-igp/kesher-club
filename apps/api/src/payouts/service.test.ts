@@ -489,6 +489,125 @@ describe('T-0540: a payout that waits has its funds reserved (REQ-PO-001, REQ-WA
   });
 });
 
+describe('T-0556: a member cancels a payout that is still cooling off (REQ-PO-001, REQ-WAL-001)', () => {
+  const unreserveKey = (k: string) => `${k}:unreserve`;
+  async function newMember(minor: bigint) {
+    const party = uuidv7(now);
+    await app.services.accounts.provisionMember(party);
+    await runLoad(app.services.loads, { payerPartyId: party, memberPartyId: party, method: 'card', amount: money(minor, 'ILS'), paymentMethodId: 'pm_ok' }, `po-fund-${party}`, now);
+    return party;
+  }
+  const purse = async (party: string) => {
+    const p = (await app.services.accounts.purses(party)).find((x) => x.currency === 'ILS')!;
+    return { available: p.available.minor, holds: p.holds.minor };
+  };
+  const ask = (party: string, key: string, minor: bigint) =>
+    app.services.payouts.request(party, { payee: { iban: IL, name: 'Yeshivat Example' }, amount: { minor: minor.toString(), currency: 'ILS' }, reference: 'tuition' }, key, now);
+  const vendorRefs = async (id: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ops.external_ref where entity_type = 'transfer' and entity_id = $1`, [id])).rows[0]!.n;
+
+  it('a cooling-off payout is cancelled: the reserve is reversed once, the purse is back, nothing reached the partner account or the vendor; a replay is a no-op', async () => {
+    const party = await newMember(500_000n);
+    const key = `po-cancel-1-${party}`;
+    const v = await ask(party, key, 300_000n);
+    expect(v.state).toBe('cooling_off');
+    expect(await purse(party)).toEqual({ available: 200_000n, holds: 300_000n });
+    const t = (await app.services.transfers.get(v.id))!;
+    const done = await app.services.payouts.cancel(t.id, party, now);
+    expect(done).toMatchObject({ id: t.id, state: 'cancelled', amount: { minor: '300000' } });
+    expect((await app.services.transfers.get(t.id))!.state).toBe('cancelled');
+    expect(await purse(party)).toEqual({ available: 500_000n, holds: 0n });
+    expect(await journals(unreserveKey(key))).toBe(1);
+    expect(await journals(settleKey(key))).toBe(0);
+    expect(await vendorRefs(t.id)).toBe(0);
+    // Replay: 200 with the payout as it stands, no second reversal.
+    expect(await app.services.payouts.cancel(t.id, party, now)).toMatchObject({ id: t.id, state: 'cancelled' });
+    expect(await journals(unreserveKey(key))).toBe(1);
+    expect(await purse(party)).toEqual({ available: 500_000n, holds: 0n });
+    // The sweep does not list it, and a run returns the cancelled transfer without releasing or submitting it.
+    expect((await app.services.payouts.resumable(new Date(now.getTime() + COOL_OFF_MS + 1))).map((x) => x.id)).not.toContain(t.id);
+    const out = await runPayout(app.services.payouts, await app.services.payouts.inputFor(t), key, new Date(now.getTime() + COOL_OFF_MS + 1));
+    expect(out.transfer.state).toBe('cancelled');
+    expect(await journals(settleKey(key))).toBe(0);
+    expect(await vendorRefs(t.id)).toBe(0);
+    expect((await app.services.transfers.history(t.id)).map((e) => e.to)).toEqual(['created', 'submitted', 'pending_hold', 'cancelled']);
+  });
+
+  it('another member\'s payout and an unknown id are 404 and stay untouched', async () => {
+    const owner = await newMember(400_000n);
+    const other = await newMember(1_000n);
+    const v = await ask(owner, `po-cancel-2-${owner}`, 300_000n);
+    await expect(app.services.payouts.cancel(v.id, other, now)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(app.services.payouts.cancel(uuidv7(now), owner, now)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(app.services.payouts.cancel('not-an-id', owner, now)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect((await app.services.transfers.get(v.id))!.state).toBe('pending_hold');
+    expect(await purse(owner)).toEqual({ available: 100_000n, holds: 300_000n });
+  });
+
+  it('a payout past the hold (at the rail) and a settled one are 409 and keep their journal; the cancel never races the release into both', async () => {
+    const party = await newMember(900_000n);
+    const key = `po-cancel-3-${party}`;
+    const v = await ask(party, key, 300_000n);
+    advance(COOL_OFF_MS);
+    // The release won: the payout is at the rail (pending with its journal). Cancelling is refused and nothing is reversed.
+    const run = await runPayout(app.services.payouts, await app.services.payouts.inputFor((await app.services.transfers.get(v.id))!), key, now);
+    expect(run.transfer.state).toBe('pending');
+    await expect(app.services.payouts.cancel(v.id, party, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await journals(unreserveKey(key))).toBe(0);
+    expect(await journals(settleKey(key))).toBe(1);
+    // Settled by the rail's webhook: still 409.
+    const po = (await vendorPayoutOf(v.id))!;
+    expect((await hook(sim().nextWebhook(po))).status).toBe(200);
+    expect((await app.services.transfers.get(v.id))!.state).toBe('settled');
+    await expect(app.services.payouts.cancel(v.id, party, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await journals(unreserveKey(key))).toBe(0);
+    // The race itself: the release lands between the cancel's read and its transition; the state machine refuses the cancel from
+    // pending and the reserve is NOT given back (the release carries on and posts from it).
+    const party2 = await newMember(900_000n);
+    const key2 = `po-cancel-3b-${party2}`;
+    const v2 = await ask(party2, key2, 300_000n);
+    const payouts = app.services.payouts;
+    const realGet = app.services.transfers.get.bind(app.services.transfers);
+    let first = true;
+    vi.spyOn(app.services.transfers, 'get').mockImplementation(async (id, ...rest) => {
+      const t = await realGet(id, ...rest);
+      if (first && id === v2.id && t) {
+        first = false;
+        await app.services.transfers.apply(id, 'release_hold', now, { reason: 'cooling off over' });
+      }
+      return t;
+    });
+    await expect(payouts.cancel(v2.id, party2, now)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    vi.restoreAllMocks();
+    expect(await journals(unreserveKey(key2))).toBe(0);
+    expect((await app.services.transfers.get(v2.id))!.state).toBe('pending');
+    expect(await purse(party2)).toEqual({ available: 600_000n, holds: 300_000n });
+  });
+
+  it('over HTTP: it needs a session and an Idempotency-Key of 8 to 128 characters, and answers the cancelled payout', async () => {
+    await signInAgain();
+    const before = await available();
+    const v = (await payout({ amount: { minor: '300000', currency: 'ILS' }, payee: { iban: IL3, name: 'Yeshivat Example' } }, 'po-cancel-http-1')).body as PayoutView;
+    expect(v.state).toBe('cooling_off');
+    expect(await available()).toBe(before - 300_000n);
+    const url = `/v1/payouts/${v.id}/cancel`;
+    expect((await dispatch(app, { method: 'POST', url, headers: { 'idempotency-key': 'cancel-http-1' }, rawBody: '', now })).status).toBe(401);
+    expect((await call('POST', url, undefined, {})).status).toBe(422);
+    expect((await call('POST', url, undefined, { 'idempotency-key': 'short' })).status).toBe(422);
+    expect((await call('POST', url, undefined, { 'idempotency-key': 'x'.repeat(129) })).status).toBe(422);
+    const r = await call('POST', url, undefined, { 'idempotency-key': 'cancel-http-1' });
+    expect([r.status, r.body]).toEqual([200, { id: v.id, state: 'cancelled', amount: { minor: '300000', currency: 'ILS' } }]);
+    expect(await available()).toBe(before);
+    expect((await call('POST', url, undefined, { 'idempotency-key': 'cancel-http-2' })).body).toMatchObject({ state: 'cancelled' });
+    expect(await journals(unreserveKey('po-cancel-http-1'))).toBe(1);
+  });
+
+  it('cancelling a payout that is not in the caller\'s name answers 404 over HTTP', async () => {
+    const owner = await newMember(400_000n);
+    const v = await ask(owner, `po-cancel-5-${owner}`, 300_000n);
+    expect((await call('POST', `/v1/payouts/${v.id}/cancel`, undefined, { 'idempotency-key': 'cancel-http-404' })).status).toBe(404);
+  });
+});
+
 describe('T-0554: an institution payout whose approval is rejected or runs out ends (REQ-PO-001, REQ-INS-020)', () => {
   const requester = uuidv7(NOW);
   const finance2 = { partyId: uuidv7(NOW), role: 'finance' };
