@@ -273,16 +273,55 @@ describe('the WAF lets one route past the body-size rule and no other (T-0068)',
     it(`${file}: only the public ALB exempts the roster import, on the IL API host the console calls`, () => {
       const hcl = read(file);
       const alb = hcl.slice(hcl.indexOf('module "alb" {'), hcl.indexOf('module "admin_alb" {'));
-      const admin = hcl.slice(hcl.indexOf('module "admin_alb" {'), hcl.indexOf('module "api" {'));
+      const admin = hcl.slice(hcl.indexOf('module "admin_alb" {'), hcl.indexOf('# T-0069: the console-to-API hop'));
       const route = /large_body_route\s*=\s*\{([^}]*)\}/.exec(alb)?.[1] ?? '';
       expect(route).toMatch(/host\s*=\s*local\.market_hosts\["il"\]\.api/);
       expect(route).toMatch(/path_regex\s*=\s*"\^\/v1\/institutions\/\[0-9a-f-\]\+\/rosters\$"/);
       expect(route).not.toMatch(/method/);
       expect(admin).not.toMatch(/large_body_route/);
-      expect(hcl.match(/large_body_route/g)).toHaveLength(1);
+      // The one other exemption is the internal ALB's (T-0069), on the internal host the console calls.
+      expect(hcl.match(/large_body_route\s*=/g)).toHaveLength(2);
       // The path is the one the console posts to: the OpenAPI operation importRoster.
       expect(read('contracts/openapi.yaml')).toMatch(/\/institutions\/\{id\}\/rosters:\s+post:\s+operationId: importRoster/);
       expect(read('apps/console/src/api.ts')).toMatch(/c\.post\('\/institutions\/\{id\}\/rosters'/);
     });
   }
+});
+
+// T-0069: the console reaches the IL API through an internal ALB, not the NAT gateway and the public ALB, and the API's client-address rule
+// (apps/api/src/institutions/us-banking.ts, tested in us-banking.test.ts) skips the one private hop that ALB appends.
+describe('the console calls the API over the internal ALB (T-0069)', () => {
+  for (const file of ['infra/terraform/envs/staging/main.tf', 'infra/terraform/envs/prod/main.tf']) {
+    it(`${file}: CONSOLE_API_URL is the internal host, on an internal ALB that forwards only that host to the IL API`, () => {
+      const hcl = read(file);
+      const slice = (start: string, end: string) => hcl.slice(hcl.indexOf(start), hcl.indexOf(end, hcl.indexOf(start) + 10));
+      expect(hcl).toMatch(/internal_api_host\s*=\s*"api-il-internal\.\$\{var\.domain\}"/);
+      // The host is covered by the wildcard certificate (one label under the domain) and is not the public IL host.
+      expect(hcl).toMatch(/subject_alternative_names\s*=\s*\["\*\.\$\{var\.domain\}"\]/);
+      expect(hcl).not.toMatch(/internal_api_host\s*=\s*local\.market_hosts/);
+      expect(slice('module "console" {', '\nresource "aws_vpc_security_group_ingress_rule" "db_from_services"')).toMatch(/CONSOLE_API_URL\s*=\s*"https:\/\/\$\{local\.internal_api_host\}\/v1"/);
+      expect(hcl).not.toMatch(/CONSOLE_API_URL\s*=\s*"https:\/\/\$\{local\.market_hosts/);
+      const alb = slice('module "internal_alb" {', '\nmodule "api" {');
+      expect(alb).toMatch(/internal\s*=\s*true/);
+      expect(alb).toMatch(/subnet_ids\s*=\s*module\.network\.private_subnet_ids/);
+      expect(alb).toMatch(/host\s*=\s*local\.internal_api_host/);
+      const rule = slice('resource "aws_lb_listener_rule" "api_internal" {', '\nresource "aws_vpc_security_group_ingress_rule" "api_il_from_internal_alb"');
+      expect(rule).toMatch(/listener_arn\s*=\s*module\.internal_alb\.https_listener_arn/);
+      expect(rule).toMatch(/target_group_arn\s*=\s*module\.api\["il"\]\.target_group_arn/);
+      expect(rule).toMatch(/values\s*=\s*\[local\.internal_api_host\]/);
+      const sg = slice('resource "aws_vpc_security_group_ingress_rule" "api_il_from_internal_alb" {', '\n}\n');
+      expect(sg).toMatch(/referenced_security_group_id\s*=\s*module\.internal_alb\.security_group_id/);
+      expect(sg).toMatch(/security_group_id\s*=\s*module\.api\["il"\]\.security_group_id/);
+      // The record resolves the host to the internal ALB only.
+      expect(slice('resource "aws_route53_record" "api_internal" {', '\n}\n')).toMatch(/name\s*=\s*module\.internal_alb\.dns_name/);
+      // The public ALB still has no rule for the internal host: a request carrying that Host header from the internet gets the 404 default.
+      expect(hcl.match(/host_headers\s*=\s*\[local\.internal_api_host\]/g) ?? []).toHaveLength(0);
+    });
+  }
+
+  it('the module ALB is internal-only when asked: no 0.0.0.0/0 ingress, the VPC CIDR instead', () => {
+    const alb = read('infra/terraform/modules/alb/main.tf');
+    expect(alb).toMatch(/https_public[\s\S]*count\s*=\s*var\.internal \? 0 : 1/);
+    expect(alb).toMatch(/https_internal[\s\S]*count\s*=\s*var\.internal \? 1 : 0/);
+  });
 });

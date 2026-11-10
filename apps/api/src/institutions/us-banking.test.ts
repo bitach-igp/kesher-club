@@ -13,7 +13,8 @@ import { createApp, type App } from '../app.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { PostgresKeyLedger } from './us-banking.ts';
+import { PostgresKeyLedger, clientIp } from './us-banking.ts';
+import type { HttpRequest } from '../http.ts';
 
 let db: TestDatabase;
 const NOW = new Date('2026-11-03T09:00:00Z');
@@ -296,5 +297,39 @@ describe('the Postgres key ledger (T-0648\'s KeyLedger)', () => {
     expect(await ledger.get('holder:ch000001')).toEqual({ body: '', result: 'institution' });
     await ledger.put('nothing', { body: 'h', result: undefined });
     expect(await ledger.get('nothing')).toEqual({ body: 'h', result: undefined });
+  });
+});
+
+// T-0069: the address recorded for the bank application is the requester's, whichever ALB the request came through.
+describe('the requester\'s address behind the load balancers (T-0069)', () => {
+  const of = (xff: string | undefined) => clientIp({ headers: xff === undefined ? {} : { 'x-forwarded-for': xff } } as unknown as HttpRequest);
+
+  it('a direct client is the last entry the internet-facing ALB appended; anything the client put before it is ignored', () => {
+    expect(of('198.51.100.4')).toBe('198.51.100.4');
+    expect(of('203.0.113.99, 198.51.100.4')).toBe('198.51.100.4');
+    expect(of('2001:db8::7')).toBe('2001:db8::7');
+  });
+
+  it('a link relayed by the console records the staff member, not the NAT gateway or the console task', () => {
+    // The console forwards the staff member's address, the internal ALB appends the console task's private one.
+    expect(of('198.51.100.4, 10.20.3.7')).toBe('198.51.100.4');
+    expect(of('2001:db8::7, fd00::17')).toBe('2001:db8::7');
+  });
+
+  it('a client cannot make the API skip its own address: a private entry anywhere but last is not a hop', () => {
+    expect(of('10.0.0.5, 198.51.100.4')).toBe('198.51.100.4');
+    expect(of('198.51.100.9, 10.0.0.5, 198.51.100.4')).toBe('198.51.100.4');
+  });
+
+  it('skips one internal hop only, and never records a private address', () => {
+    expect(of('198.51.100.9, 10.0.0.5, 10.1.1.1')).toBeUndefined();
+    expect(of('10.1.1.1')).toBeUndefined();
+    expect(of('127.0.0.1')).toBeUndefined();
+    expect(of('172.16.0.1, 172.31.255.255')).toBeUndefined();
+    expect(of('::ffff:192.168.1.1')).toBeUndefined();
+    expect(of('')).toBeUndefined();
+    expect(of(undefined)).toBeUndefined();
+    expect(of('not-an-ip')).toBeUndefined();
+    expect(of('198.51.100.4, junk')).toBeUndefined();
   });
 });
