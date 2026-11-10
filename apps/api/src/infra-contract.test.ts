@@ -305,6 +305,9 @@ describe('the console calls the API over the internal ALB (T-0069)', () => {
       expect(alb).toMatch(/internal\s*=\s*true/);
       expect(alb).toMatch(/subnet_ids\s*=\s*module\.network\.private_subnet_ids/);
       expect(alb).toMatch(/host\s*=\s*local\.internal_api_host/);
+      // The trust boundary: only the console's task security group may connect, never the VPC CIDR (Client VPN users are inside it and could forge x-forwarded-for).
+      expect(alb).toMatch(/allowed_security_group_ids\s*=\s*\[module\.console\.security_group_id\]/);
+      expect(alb).not.toMatch(/vpc_cidr\s*=\s*"|0\.0\.0\.0\/0/);
       const rule = slice('resource "aws_lb_listener_rule" "api_internal" {', '\nresource "aws_vpc_security_group_ingress_rule" "api_il_from_internal_alb"');
       expect(rule).toMatch(/listener_arn\s*=\s*module\.internal_alb\.https_listener_arn/);
       expect(rule).toMatch(/target_group_arn\s*=\s*module\.api\["il"\]\.target_group_arn/);
@@ -319,9 +322,18 @@ describe('the console calls the API over the internal ALB (T-0069)', () => {
     });
   }
 
+  it('the module admits only the named security groups when given, and the VPC CIDR only when none is named', () => {
+    const alb = read('infra/terraform/modules/alb/main.tf');
+    const vars = read('infra/terraform/modules/alb/variables.tf');
+    expect(vars).toMatch(/variable "allowed_security_group_ids"[\s\S]*?default\s*=\s*\[\]/);
+    expect(alb).toMatch(/"https_internal"[\s\S]*?count\s*=\s*var\.internal && length\(var\.allowed_security_group_ids\) == 0 \? 1 : 0/);
+    expect(alb).toMatch(/"https_from_security_group"[\s\S]*?for_each\s*=\s*var\.internal \? toset\(var\.allowed_security_group_ids\) : toset\(\[\]\)[\s\S]*?referenced_security_group_id\s*=\s*each\.key/);
+    expect(alb).not.toMatch(/description\s*=\s*"[^"]*Client VPN/);
+  });
+
   it('the module ALB is internal-only when asked: no 0.0.0.0/0 ingress, the VPC CIDR instead', () => {
     const alb = read('infra/terraform/modules/alb/main.tf');
     expect(alb).toMatch(/https_public[\s\S]*count\s*=\s*var\.internal \? 0 : 1/);
-    expect(alb).toMatch(/https_internal[\s\S]*count\s*=\s*var\.internal \? 1 : 0/);
+    expect(alb).toMatch(/https_internal[\s\S]*count\s*=\s*var\.internal && length\(var\.allowed_security_group_ids\) == 0 \? 1 : 0/);
   });
 });

@@ -456,7 +456,11 @@ module "internal_alb" {
   log_kms_key_arn          = module.kms_logs.key_arn
   deletion_protection      = var.deletion_protection
   rate_limit_per_5_minutes = 100000
-  large_body_route         = { host = local.internal_api_host, path_regex = "^/v1/institutions/[0-9a-f-]+/rosters$" }
+
+  # The trust boundary (T-0069): the API believes the client address the sender forwards, so only the console's tasks may connect, not the VPC
+  # (Client VPN users are source-NATed into it and could forge x-forwarded-for).
+  allowed_security_group_ids = [module.console.security_group_id]
+  large_body_route           = { host = local.internal_api_host, path_regex = "^/v1/institutions/[0-9a-f-]+/rosters$" }
 }
 
 module "api" {

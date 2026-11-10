@@ -20,6 +20,12 @@ variable "internal" {
   default = false
 }
 
+variable "allowed_security_group_ids" {
+  description = "Internal ALB only. When non-empty, replaces the VPC-CIDR ingress: only these security groups may connect (T-0069)."
+  type        = list(string)
+  default     = []
+}
+
 variable "certificate_arn" {
   type = string
 }

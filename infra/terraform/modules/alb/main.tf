@@ -23,15 +23,28 @@ resource "aws_vpc_security_group_ingress_rule" "https_public" {
   ip_protocol       = "tcp"
 }
 
+# Internal ALB: by default anything inside the VPC (which includes Client VPN users, source-NATed into VPC addresses). With
+# allowed_security_group_ids it admits only those senders instead (T-0069): the API trusts the address an admitted sender forwards.
 resource "aws_vpc_security_group_ingress_rule" "https_internal" {
-  count = var.internal ? 1 : 0
+  count = var.internal && length(var.allowed_security_group_ids) == 0 ? 1 : 0
 
   security_group_id = aws_security_group.this.id
-  description       = "HTTPS from inside the VPC (Client VPN)"
+  description       = "HTTPS from inside the VPC"
   cidr_ipv4         = var.vpc_cidr
   from_port         = 443
   to_port           = 443
   ip_protocol       = "tcp"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "https_from_security_group" {
+  for_each = var.internal ? toset(var.allowed_security_group_ids) : toset([])
+
+  security_group_id            = aws_security_group.this.id
+  description                  = "HTTPS from an allowed sender"
+  referenced_security_group_id = each.key
+  from_port                    = 443
+  to_port                      = 443
+  ip_protocol                  = "tcp"
 }
 
 resource "aws_vpc_security_group_ingress_rule" "webhooks" {
