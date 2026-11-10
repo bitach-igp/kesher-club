@@ -124,7 +124,15 @@ export class AddonOrderService {
     // a refusal leaves nothing behind and a retry with the same key starts clean.
     await this.assertFunds(input.memberPartyId, (await this.credit.quote(input.membership, item, quantity, now)).price);
     const id = uuidv7(now);
-    const q = await this.credit.apply(input.membership, item, quantity, id, now);
+    let q;
+    try {
+      q = await this.credit.apply(input.membership, item, quantity, id, now);
+    } catch (e) {
+      // A racing create with this key may have taken the whole credit after our quote: the key's order is the answer, not LIMIT_EXCEEDED.
+      const winner = e instanceof DomainError && e.code === 'LIMIT_EXCEEDED' ? await this.byKey(input.idempotencyKey) : undefined;
+      if (winner) return this.chargeIfCreated(this.sameRequest(winner, input.memberPartyId, input.sku, quantity), now);
+      throw e;
+    }
     const cost = money(item.cost.minor * BigInt(quantity), item.cost.currency);
     try {
       await this.db.transaction(async (tx) => {
@@ -137,6 +145,9 @@ export class AddonOrderService {
         await enqueue(tx, 'addon_order', id, 'addon_order.created', { sku: item.sku, kind: item.kind, price: q.price, credit: q.credit });
       });
     } catch (e) {
+      // No order row exists for this attempt's id, so the credit it consumed (`addon:{id}`) is handed back whatever the failure was.
+      // Known window, left open (T-0557 As-built): a crash between credit.apply and the insert strands the consumption.
+      await this.restoreCredit(id, q.credit);
       if (isPgError(e, PG.UNIQUE_VIOLATION)) return this.chargeIfCreated(this.sameRequest((await this.byKey(input.idempotencyKey))!, input.memberPartyId, input.sku, quantity), now);
       throw e;
     }
@@ -216,7 +227,7 @@ export class AddonOrderService {
     if (o.state !== 'failed') throw new DomainError('IDEMPOTENCY_CONFLICT', 'Only a failed order can be refunded');
     let refundJournalId: string | undefined;
     if (o.chargeJournalId) refundJournalId = (await this.ledger.reverse(o.chargeJournalId, `addon:${o.id}:refund`)).id;
-    await this.restoreCredit(o);
+    await this.restoreCredit(o.id, o.credit);
     return this.transition(o.id, 'refunded', now, { ...(refundJournalId ? { refundJournalId } : {}), reason });
   }
 
@@ -237,13 +248,13 @@ export class AddonOrderService {
   }
 
   /** Credits are consumed with `addon:<orderId>`; a refund hands the units back with a negative consumption row (idempotent). */
-  private async restoreCredit(o: AddonOrder): Promise<void> {
-    if (o.credit.minor <= 0n) return;
-    const units = await this.db.query<{ membership_id: string; amount: string; key: string; period_start: string }>(`select membership_id, amount::text as amount, key, period_start::text as period_start from billing.entitlement_consumption where idempotency_key = $1`, [`addon:${o.id}`]);
+  private async restoreCredit(orderId: string, credit: Money): Promise<void> {
+    if (credit.minor <= 0n) return;
+    const units = await this.db.query<{ membership_id: string; amount: string; key: string; period_start: string }>(`select membership_id, amount::text as amount, key, period_start::text as period_start from billing.entitlement_consumption where idempotency_key = $1`, [`addon:${orderId}`]);
     const u = units.rows[0];
     if (!u) return;
     await this.db.transaction(async (tx) => {
-      const inserted = await tx.query(`insert into billing.entitlement_consumption (idempotency_key, membership_id, key, amount, period_start) values ($1, $2, $3, $4, $5::date) on conflict do nothing returning 1`, [`addon:${o.id}:refund`, u.membership_id, u.key, (-BigInt(u.amount)).toString(), u.period_start]);
+      const inserted = await tx.query(`insert into billing.entitlement_consumption (idempotency_key, membership_id, key, amount, period_start) values ($1, $2, $3, $4, $5::date) on conflict do nothing returning 1`, [`addon:${orderId}:refund`, u.membership_id, u.key, (-BigInt(u.amount)).toString(), u.period_start]);
       if (inserted.rows.length === 0) return;
       await tx.query(`update billing.entitlement_usage set used = greatest(used - $3, 0), updated_at = now() where membership_id = $1 and key = $2 and period_start = $4::date`, [u.membership_id, u.key, u.amount, u.period_start]);
     });

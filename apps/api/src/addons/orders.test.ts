@@ -294,6 +294,91 @@ describe('replays, races and a re-checked charge (T-0548, follow-up of T-0542)',
   });
 });
 
+describe('the loser of a same-key create gives its credit back (T-0557, TST-MKT-001)', () => {
+  const sku = 'esim:airalo:IL-5GB-30D';
+  const planCode = 'club-plus';
+  beforeAll(async () => {
+    // A 20 GB credit, so that two 5 GB consumptions both fit and the race is about the key, not the limit.
+    const plans = new PlanService(db);
+    await plans.ensurePlan(planCode, 'Club plus');
+    await plans.createVersion({ planCode, price: money(9_900n, 'USD'), termMonths: 10, entitlements: { 'esim.dataGb': { limit: '20', unit: 'gb', period: 'month' } }, effectiveFrom: new Date('2026-01-01T00:00:00Z') });
+  });
+  async function plusMember(fundMinor = 10_000n) {
+    const m = await member(false, fundMinor);
+    const membership = await memberships.create({ idempotencyKey: `m:${m.memberPartyId}`, memberPartyId: m.memberPartyId, funderPartyId: uuidv7(), funderEmail: 'f@example.com', planCode }, now);
+    return { ...m, membership };
+  }
+  const consumed = async (membershipId: string) => (await db.query<{ n: string }>(`select coalesce(sum(amount), 0)::text as n from billing.entitlement_consumption where membership_id = $1 and idempotency_key like 'addon:%'`, [membershipId])).rows[0]!.n;
+  const used = async (membershipId: string) => (await db.query<{ n: string }>(`select coalesce(sum(used), 0)::text as n from billing.entitlement_usage where membership_id = $1`, [membershipId])).rows[0]!.n;
+  const chargeJournals = async (id: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [`addon:${id}:charge`])).rows[0]!.n;
+
+  it('two creates with one key at once: one order, one charge journal, one order\'s units used, the loser\'s consumption net zero', async () => {
+    const { memberPartyId, membership } = await plusMember();
+    const input = { idempotencyKey: 'c-1-race-key', memberPartyId, membership, sku };
+    const [a, b] = await Promise.all([orders.create(input, now), orders.create(input, now)]);
+    expect(a.id).toBe(b.id);
+    expect(a).toMatchObject({ state: 'charged', credit: money(2500n, 'USD'), price: money(0n, 'USD') });
+    expect((await db.query(`select 1 from addons.addon_order where idempotency_key = 'c-1-race-key'`)).rows).toHaveLength(1);
+    expect(await chargeJournals(a.id)).toBe(1);
+    expect(await used(membership.id)).toBe('5'); // one order's units, bigint-safe as text
+    expect(await consumed(membership.id)).toBe('5'); // the loser's +5 and its -5 cancel
+    expect((await entitlements.can(membership, 'esim.dataGb', 1n, now)).remaining).toBe(15n);
+    // The winner's consumption is the order's, and it is the only one left standing.
+    expect((await db.query(`select 1 from billing.entitlement_consumption where idempotency_key = $1`, [`addon:${a.id}`])).rows).toHaveLength(1);
+    expect((await db.query(`select 1 from billing.entitlement_consumption where membership_id = $1 and idempotency_key like '%:refund'`, [membership.id])).rows).toHaveLength(1);
+  });
+
+  it('a loser that finds the credit already used up by the winner returns the winner\'s order, not LIMIT_EXCEEDED', async () => {
+    // The 5 GB club plan: the winner takes all of it, the loser\'s own consume is refused.
+    const { memberPartyId, membership } = await member();
+    const input = { idempotencyKey: 'c-2-race-limit', memberPartyId, membership, sku };
+    const [a, b] = await Promise.all([orders.create(input, now), orders.create(input, now)]);
+    expect(a.id).toBe(b.id);
+    expect(await used(membership!.id)).toBe('5');
+    expect(await consumed(membership!.id)).toBe('5');
+    expect(await chargeJournals(a.id)).toBe(1);
+  });
+
+  it('an order insert that fails for another reason hands the credit back and leaves no order', async () => {
+    const { memberPartyId, membership } = await plusMember();
+    let calls = 0;
+    const real = db.transaction.bind(db);
+    // Call 1 is the credit consumption, call 2 the order insert.
+    const spy = vi.spyOn(db, 'transaction').mockImplementation(((fn: Parameters<typeof real>[0]) => (++calls === 2 ? Promise.reject(new Error('disk full')) : real(fn))) as typeof real);
+    await expect(orders.create({ idempotencyKey: 'c-3-insert-fails', memberPartyId, membership, sku }, now)).rejects.toThrow('disk full');
+    spy.mockRestore();
+    expect(await orders.byKey('c-3-insert-fails')).toBeUndefined();
+    expect(await consumed(membership.id)).toBe('0');
+    expect(await used(membership.id)).toBe('0');
+    // A retry with the same key starts clean and spends the credit once.
+    const retry = await orders.create({ idempotencyKey: 'c-3-insert-fails', memberPartyId, membership, sku }, now);
+    expect(retry.state).toBe('charged');
+    expect(await used(membership.id)).toBe('5');
+  });
+
+  it('a sequential replay of a charged key consumes nothing more', async () => {
+    const { memberPartyId, membership } = await plusMember();
+    const o = await orders.create({ idempotencyKey: 'c-4-replay', memberPartyId, membership, sku }, now);
+    const rows = async () => (await db.query<{ n: number }>(`select count(*)::int as n from billing.entitlement_consumption where membership_id = $1`, [membership.id])).rows[0]!.n;
+    expect(await rows()).toBe(1);
+    expect((await orders.create({ idempotencyKey: 'c-4-replay', memberPartyId, membership, sku }, now)).id).toBe(o.id);
+    expect(await rows()).toBe(1);
+    expect(await used(membership.id)).toBe('5');
+  });
+
+  it('a refunded order still restores its credit exactly once', async () => {
+    const { memberPartyId, membership } = await plusMember();
+    const o = await orders.create({ idempotencyKey: 'c-5-refund', memberPartyId, membership, sku }, now);
+    await orders.transition(o.id, 'failed', now, { failureCode: 'PROVIDER_UNAVAILABLE' });
+    await orders.refund(o.id, now, 'vendor outage');
+    expect(await used(membership.id)).toBe('0');
+    expect(await consumed(membership.id)).toBe('0');
+    expect((await db.query(`select 1 from billing.entitlement_consumption where idempotency_key = $1`, [`addon:${o.id}:refund`])).rows).toHaveLength(1);
+    await expect(orders.refund(o.id, now, 'twice')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(await used(membership.id)).toBe('0');
+  });
+});
+
 describe('POST /addon-orders needs a step-up like every money route (T-0542)', () => {
   const T = new Date('2026-11-10T09:00:00Z');
   let app: App;
