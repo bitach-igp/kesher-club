@@ -158,7 +158,7 @@ lists the SBOM, and the finished run has `sbom-api` and the other artifacts. Run
 
 ## Known limitations of the console on the public ALB (T-0047)
 
-The console is not deployed yet, so nothing regresses today. Both need an owner's follow-up card before a console is used in production:
+The console is not deployed yet, so nothing regresses today. One still needs an owner's follow-up card before a console is used in production:
 
 - **Client address (T-0069).** The console calls the API at the public `api-il` host, so the hop goes through the NAT gateway and the public ALB. The API reads the last `x-forwarded-for` entry (it assumes one internet-facing ALB), so bank-application links the console relays record the NAT address, and every console and admin call shares the NAT addresses for the WAF's per-IP rate limit (2000 per 5 minutes).
-- **Body size (T-0068).** The ALB's WAF rule `SizeRestrictions_BODY` blocks bodies over 8 KB; the console's roster import sends up to 900 KB, so large imports would get 403.
+- **Body size (T-0068, fixed).** The ALB's WAF rule `SizeRestrictions_BODY` blocks bodies over 8 KB; the console's roster import sends up to 900 KB. `modules/alb`'s `large_body_route` counts that one rule and a second rule (`body-size-outside-exempt-route`) blocks it everywhere except `POST /v1/institutions/{id}/rosters` on the IL API host, on the public ALB only. After the next apply, check a 900 KB import in staging (200) and an oversized body on any other route (403).

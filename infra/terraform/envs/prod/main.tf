@@ -417,6 +417,9 @@ module "alb" {
   log_kms_key_arn     = module.kms_logs.key_arn
   deletion_protection = var.deletion_protection
   webhook_listener    = length(var.webhook_provider_cidrs) == 0 ? null : { allowed_cidrs = var.webhook_provider_cidrs }
+
+  # T-0068: the console's roster import (up to 900 KB) is the one body over 8 KB the WAF lets through; it calls the IL API host (CONSOLE_API_URL).
+  large_body_route = { host = local.market_hosts["il"].api, path_regex = "^/v1/institutions/[^/]+/rosters$" }
 }
 
 module "admin_alb" {

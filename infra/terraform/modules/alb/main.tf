@@ -162,11 +162,98 @@ resource "aws_wafv2_web_acl" "this" {
         managed_rule_group_statement {
           name        = rule.key
           vendor_name = "AWS"
+
+          # T-0068: the one rule counts (and labels) instead of blocking, only for the common rule set and only when a route is
+          # exempted. The "body-size-outside-exempt-route" rule below blocks what carries the label anywhere else.
+          dynamic "rule_action_override" {
+            for_each = rule.key == "AWSManagedRulesCommonRuleSet" && var.large_body_route != null ? [1] : []
+            content {
+              name = "SizeRestrictions_BODY"
+              action_to_use {
+                count {}
+              }
+            }
+          }
         }
       }
       visibility_config {
         cloudwatch_metrics_enabled = true
         metric_name                = rule.key
+        sampled_requests_enabled   = true
+      }
+    }
+  }
+
+  # T-0068: SizeRestrictions_BODY (counted above for the exempt route) blocks everywhere except POST on the exempt host and path.
+  dynamic "rule" {
+    for_each = var.large_body_route == null ? [] : [var.large_body_route]
+    content {
+      name     = "body-size-outside-exempt-route"
+      priority = 50
+      action {
+        block {}
+      }
+      statement {
+        and_statement {
+          statement {
+            label_match_statement {
+              scope = "LABEL"
+              key   = "awswaf:managed:aws:core-rule-set:SizeRestrictions_Body"
+            }
+          }
+          statement {
+            not_statement {
+              statement {
+                and_statement {
+                  statement {
+                    byte_match_statement {
+                      positional_constraint = "EXACTLY"
+                      search_string         = rule.value.host
+                      field_to_match {
+                        single_header {
+                          name = "host"
+                        }
+                      }
+                      text_transformation {
+                        priority = 0
+                        type     = "LOWERCASE"
+                      }
+                    }
+                  }
+                  statement {
+                    regex_match_statement {
+                      regex_string = rule.value.path_regex
+                      field_to_match {
+                        uri_path {}
+                      }
+                      text_transformation {
+                        priority = 0
+                        type     = "NONE"
+                      }
+                    }
+                  }
+                  statement {
+                    byte_match_statement {
+                      positional_constraint = "EXACTLY"
+                      search_string         = rule.value.method
+                      field_to_match {
+                        method {}
+                      }
+                      text_transformation {
+                        priority = 0
+                        type     = "NONE"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      visibility_config {
+        cloudwatch_metrics_enabled = true
+        metric_name                = "body-size-outside-exempt-route"
         sampled_requests_enabled   = true
       }
     }

@@ -53,6 +53,20 @@ variable "managed_rule_groups" {
   ]
 }
 
+variable "large_body_route" {
+  description = <<-EOT
+    The one route allowed past the common rule set's SizeRestrictions_BODY (bodies over 8 KB): POST to a host and a path.
+    `host` is the exact lowercase Host header; `path_regex` is a full-match RE2 expression on the URI path.
+    null (the default) keeps the rule blocking everywhere. Every other route still blocks oversized bodies.
+  EOT
+  type = object({
+    host       = string
+    path_regex = string
+    method     = optional(string, "POST")
+  })
+  default = null
+}
+
 variable "rate_limit_per_5_minutes" {
   type    = number
   default = 2000
