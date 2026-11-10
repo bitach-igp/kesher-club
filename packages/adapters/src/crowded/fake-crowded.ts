@@ -23,7 +23,7 @@ export interface FakeCrowdedOptions {
 const wire = (m: bigint): number => Number(m);
 const cents = (v: unknown): bigint => BigInt(Number(v));
 const ok = (data: unknown, status = 200, meta?: Json): Response => new Response(JSON.stringify({ data, ...(meta ? { meta } : {}) }), { status, headers: { 'content-type': 'application/json' } });
-const err = (status: number, message: string, code?: string): Response => new Response(JSON.stringify({ type: status === 400 ? 'ResourceInputError' : 'Error', statusCode: status, message, ...(code ? { code } : {}), requestId: 'req_fake' }), { status, headers: { 'content-type': 'application/json' } });
+const err = (status: number, message: string, code?: string, type?: string): Response => new Response(JSON.stringify({ type: type ?? (status === 400 ? 'ResourceInputError' : 'Error'), statusCode: status, message, ...(code ? { code } : {}), requestId: 'req_fake' }), { status, headers: { 'content-type': 'application/json' } });
 
 export class FakeCrowded {
   readonly fetch: typeof globalThis.fetch;
@@ -309,7 +309,8 @@ export class FakeCrowded {
     if (this.inFlightAchCalls > 0) {
       this.inFlightAchCalls--;
       this.originateKeyed(acct, ch, it);
-      return err(409, 'A request with this idempotencyKey is being processed', 'DUPLICATE_REQUEST');
+      // The live sandbox's shape (observed 2026-11-10): a ConflictException whose message starts with the marker, no `code`.
+      return err(409, 'DUPLICATE_REQUEST: A payment with this idempotency key is already being processed', undefined, 'ConflictException');
     }
     return this.originateKeyed(acct, ch, it);
   }

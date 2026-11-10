@@ -71,9 +71,9 @@ export interface CrowdedInstitutionBankingOptions {
   collectionCounterpartyRef?: string;
   /** The payer's IP and consent for payment intents. Required to create a payment page; never assumed. */
   payer?: { ip: string; consented: true };
-  /** Verifies the webhook signature over the raw body (T-0649 provides the HMAC one). Without it every webhook is refused. */
   /** The wait between retries of an in-flight ACH (T-0695). Injected so tests never sleep; defaults to a real timer. */
   sleep?: (ms: number) => Promise<void>;
+  /** Verifies the webhook signature over the raw body (T-0649 provides the HMAC one). Without it every webhook is refused. */
   verifyWebhookSignature?: (headers: Record<string, string>, rawBody: string) => boolean | Promise<boolean>;
 }
 
@@ -84,6 +84,13 @@ const MIN_CENTS = 100n;
 const IN_FLIGHT_WAITS_MS = [1000, 2000, 4000] as const;
 const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const isDuplicate = (e: unknown): boolean => e instanceof CrowdedApiError && (e.status === 409 || e.code === 'DUPLICATE_REQUEST');
+/**
+ * Only this answer means "in flight, retry shortly": any other 409 is not retried (T-0695). The live sandbox answers
+ * `{"type":"ConflictException","message":"DUPLICATE_REQUEST: ..."}` with no `code` field (observed 2026-11-10), so the
+ * marker is read from the code or from the start of the message.
+ */
+const isInFlight = (e: unknown): boolean =>
+  e instanceof CrowdedApiError && e.status === 409 && (e.code === 'DUPLICATE_REQUEST' || e.message.startsWith('DUPLICATE_REQUEST'));
 
 export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort {
   private readonly c: CrowdedClient;
@@ -159,7 +166,7 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
         return await fn();
       } catch (e) {
         if (!isDuplicate(e)) throw e;
-        const wait = retryInFlight ? IN_FLIGHT_WAITS_MS[attempt] : undefined;
+        const wait = retryInFlight && isInFlight(e) ? IN_FLIGHT_WAITS_MS[attempt] : undefined;
         if (wait === undefined) {
           throw new InstitutionBankingError('OUTCOME_UNKNOWN', 'Crowded may already hold this payment: read it back before retrying, and do not resend under a new key');
         }
