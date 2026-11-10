@@ -62,7 +62,8 @@ import { OtpService } from './auth/otp.ts';
 import { PasskeyService } from './auth/passkeys.ts';
 import { RecoveryService } from './auth/recovery.ts';
 import { InMemoryIdentityRepository, type IdentityRepository } from './auth/repository.ts';
-import { SocialSignIn, socialHandlers } from './auth/social.ts';
+import { SocialSignIn, SocialTokenRevoker, socialHandlers } from './auth/social.ts';
+import { SocialLinks } from './auth/social-links.ts';
 import { requireStepUp, StepUpService } from './auth/step-up.ts';
 import { TokenService, type SigningKey } from './auth/tokens.ts';
 import { AccountService } from './ledger/accounts.ts';
@@ -178,6 +179,8 @@ function buildServices(o: AppOptions) {
   const approvals = new ApprovalService(o.db);
   const audit = new AuditService(o.db);
   const flags: FeatureFlags = o.flags ?? new FlagService(o.db, approvals, audit, simulatorFlipGuard(o));
+  const pii = o.pii ?? createPiiCipher({ dataKey: new Secret(randomBytes(32).toString('base64')), indexKey: new Secret(randomBytes(32).toString('base64')) });
+  const socialLinks = new SocialLinks({ identity, pii, clock });
   const social = new SocialSignIn({ db: o.db, flags, port: () => o.registry.resolve<FederatedIdPPort>('federated-idp', o.market), identity, tokens, clock, events: passkeys.events });
   const orders = new AddonOrderService(o.db, ledger, accounts, new CreditService(entitlements), o.market);
   const roster = new RosterService(o.db);
@@ -247,7 +250,7 @@ function buildServices(o: AppOptions) {
   const p2pLimits = new P2pLimitService(o.db, memberships, entitlements, plans);
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
   const preferences = new PreferenceService(o.db);
-  const displayNames = new DisplayNameService(o.db, o.pii ?? createPiiCipher({ dataKey: new Secret(randomBytes(32).toString('base64')), indexKey: new Secret(randomBytes(32).toString('base64')) }));
+  const displayNames = new DisplayNameService(o.db, pii);
   const recipients = new RecipientLookup({ identity, kyc, names: displayNames });
   const oauthConfig: OAuthConfig = { issuer: o.issuer, resource: o.oauth?.resource ?? `${o.issuer.replace(/\/$/, '')}/mcp`, consentUrl: o.oauth?.consentUrl ?? 'kesher://connect' };
   const cimd = new CimdRegistry(o.db, o.cimd?.resolve ?? (async (host) => (await lookup(host, { all: true })).map((a) => a.address)), o.cimd?.fetch ?? ((url, init) => fetch(url, init)), clock.now);
@@ -272,10 +275,11 @@ function buildServices(o: AppOptions) {
   const deposits = new InstitutionDeposits({ db: o.db, ledger, accounts, transfers, approvals, audit, flags, kyb: kybGate });
   if (o.registry.bindingFor('bank', o.market)) webhooks.bind(BANK_PROVIDER, { verifier: bankCreditVerifier(o.registry.resolve<BankPort>('bank', o.market)), process: (e) => deposits.applyBankEvent(e, clock.now()).then(() => undefined) });
   const usFunding = new InstitutionUsFunding({ db: o.db, flags, audit, kyb: kybGate, registry: o.registry, deposits, usBanking, collectionCounterpartyRef: () => o.usCollectionCounterpartyRef, collectionAccountRef: () => o.usCollectionAccountRef });
-  const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator' });
+  const revoker = new SocialTokenRevoker({ db: o.db, links: socialLinks, port: () => o.registry.resolve<FederatedIdPPort>('federated-idp', o.market) });
+  const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', revoker });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, social, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
+  return { clock, identity, tokens, otp, passkeys, social, socialLinks, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
 /** T-0043: in prod, the reason a flag cannot be turned on (its port is a simulator), else undefined. */

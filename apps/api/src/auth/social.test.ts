@@ -10,10 +10,12 @@ import { createApp, type App } from '../app.ts';
 import { StaticFlags, type FeatureFlags } from '../billing/capabilities.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import { SocialTokenRevoker } from './social.ts';
 import { generateSigningKey } from './tokens.ts';
 
 let db: TestDatabase;
 let app: App;
+let host: SimulatorHost;
 let social = false;
 const NOW = new Date('2026-11-10T09:00:00Z');
 const ISSUER = 'https://api.kesher.example';
@@ -37,7 +39,8 @@ const events = () => app.services.passkeys.events.filter((e) => e.type === 'new_
 
 beforeAll(async () => {
   db = await createTestDatabase();
-  app = createApp({ db, registry: new SimulatorHost().registry, market: 'IL', signingKey: await generateSigningKey(), issuer: ISSUER, clock: () => NOW, flags });
+  host = new SimulatorHost();
+  app = createApp({ db, registry: host.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: ISSUER, clock: () => NOW, flags });
 }, 60_000);
 afterAll(async () => db.close());
 
@@ -113,5 +116,21 @@ describe('T-0691: Sign in with Apple and Google', () => {
     expect((await signIn({ provider: 'apple', idToken: 'ok:x', deviceId: 'd-3' })).status).toBe(422);
     expect((await signIn({ provider: 'apple', idToken: 'outage', nonce: 'n1', deviceId: 'd-3' })).status).toBe(503);
   });
-});
 
+  // T-0692: the revoker alone, on a token that cannot be opened (the closure tests cover the rest end to end).
+  it('SocialTokenRevoker: a stored token that cannot be unsealed opens the case with a code only and is erased; with none it does nothing', async () => {
+    const partyId = await member('+972501260004');
+    const revoker = new SocialTokenRevoker({ db, links: app.services.socialLinks, port: () => host.simulators['federated-idp'] });
+    await revoker.revokeForClosure(partyId, NOW);
+    expect((await db.query(`select 1 from ops.case where dedupe_key = $1`, [`apple-revoke:${partyId}`])).rows).toHaveLength(0);
+
+    await app.services.identity.linkFederated({ partyId, provider: 'apple', subject: `apple:${partyId}`, refreshTokenSealed: new Uint8Array(40).fill(7), createdAt: NOW.toISOString() });
+    const before = host.simulators['federated-idp'].revoked.length;
+    await revoker.revokeForClosure(partyId, NOW);
+    await revoker.revokeForClosure(partyId, NOW);
+    expect(host.simulators['federated-idp'].revoked.length).toBe(before);
+    expect(await app.services.identity.findFederatedToken(partyId, 'apple')).toBeUndefined();
+    const rows = (await db.query<{ payload: unknown }>(`select payload from ops.case where dedupe_key = $1`, [`apple-revoke:${partyId}`])).rows;
+    expect(rows).toEqual([{ payload: { partyId, provider: 'apple', failure: 'REVOKE_FAILED' } }]);
+  });
+});
