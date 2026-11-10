@@ -64,7 +64,7 @@ const until = async (done: () => boolean, ms: number, what: () => string): Promi
 };
 
 // T-0042: the start-up log names all five overridable ports; the new four stay on the simulator unless chosen.
-const ALL_SIM = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim' };
+const ALL_SIM = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim', funding: 'sim', 'notify-sms': 'sim', 'notify-email': 'sim', 'notify-push': 'sim' };
 
 describe('main (T-0022)', () => {
   it('boots on Postgres and the simulators, runs one cycle of every job, and stops cleanly', async () => {
