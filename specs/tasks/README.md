@@ -318,6 +318,7 @@
 | [T-0689](T-0689.md) | MON | `provider.error` is emitted for every port and rejected webhooks are counted | — | 16 deploy |
 | [T-0690](T-0690.md) | SETUP | A scheduled workflow runs every adapter's contract suite against the vendor sandboxes | — | 16 deploy |
 | [T-0691](T-0691.md) | AUTH | Sign in with Apple and Google are offered together, behind a flag | REQ-AUTH-004 | later |
-| [T-0692](T-0692.md) | AUTH | Deleting an Apple-linked account revokes the Apple token | REQ-AUTH-005 | later |
+| [T-0692](T-0692.md) | AUTH | Closing an Apple-linked account revokes the Apple token | REQ-AUTH-005 | later |
 | [T-0693](T-0693.md) | AUTH | Institution staff are deprovisioned within 15 minutes by a SCIM call | REQ-AUTH-008 | later |
+| [T-0694](T-0694.md) | AUTH | A member's Apple or Google link is stored, with the Apple refresh token sealed | REQ-AUTH-004, REQ-AUTH-005 | later |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
