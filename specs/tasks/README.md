@@ -321,4 +321,5 @@
 | [T-0692](T-0692.md) | AUTH | Closing an Apple-linked account revokes the Apple token | REQ-AUTH-005 | later |
 | [T-0693](T-0693.md) | AUTH | Institution staff are deprovisioned within 15 minutes by a SCIM call | REQ-AUTH-008 | later |
 | [T-0694](T-0694.md) | AUTH | A member's Apple or Google link is stored, with the Apple refresh token sealed | REQ-AUTH-004, REQ-AUTH-005 | later |
+| [T-0695](T-0695.md) | INS | A Crowded 409 DUPLICATE_REQUEST means in flight: retry the same key, never read it as a conflict | REQ-INS-024, REQ-INS-022 | later |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
