@@ -101,5 +101,33 @@ export function identityRepositoryContract(name: string, make: () => Promise<Ide
       await repo.setRestriction(partyId, at(60 * 48), 'otp_recovery');
       expect(await repo.getRestriction(partyId)).toMatchObject({ partyId, until: at(60 * 48), reason: 'otp_recovery', createdAt: expect.any(String) });
     });
+
+    it('links a member to an IdP subject, keeps one link per member and subject, and unlinks (T-0694)', async () => {
+      const repo = await make();
+      const [a, b] = [randomUUID(), randomUUID()];
+      const sub = `sub-${a}`;
+      const sealed = Uint8Array.from([1, 2, 3, 4]);
+      expect(await repo.findFederatedSubject(a, 'apple')).toBeUndefined();
+      expect(await repo.linkFederated({ partyId: a, provider: 'apple', subject: sub, refreshTokenSealed: sealed, createdAt: T0 })).toBe('linked');
+      expect(await repo.findFederatedSubject(a, 'apple')).toBe(sub);
+      expect(Array.from((await repo.findFederatedToken(a, 'apple'))!)).toEqual([1, 2, 3, 4]);
+      // Refused writes leave nothing behind: not a second link for the member, not a subject another member holds.
+      expect(await repo.linkFederated({ partyId: a, provider: 'apple', subject: `other-${a}`, createdAt: T0 })).toBe('member_already_linked');
+      expect(await repo.linkFederated({ partyId: b, provider: 'apple', subject: sub, refreshTokenSealed: sealed, createdAt: T0 })).toBe('subject_taken');
+      expect(await repo.findFederatedSubject(b, 'apple')).toBeUndefined();
+      expect(await repo.findFederatedToken(b, 'apple')).toBeUndefined();
+      // The same subject string under the other provider is a different identity; Google keeps no token row.
+      expect(await repo.linkFederated({ partyId: b, provider: 'google', subject: sub, createdAt: T0 })).toBe('linked');
+      expect(await repo.findFederatedToken(b, 'google')).toBeUndefined();
+
+      expect(await repo.deleteFederatedToken(a, 'apple')).toBe(true);
+      expect(await repo.deleteFederatedToken(a, 'apple')).toBe(false);
+      expect(await repo.findFederatedSubject(a, 'apple')).toBe(sub);
+      expect(await repo.unlinkFederated(a, 'apple')).toBe(true);
+      expect(await repo.unlinkFederated(a, 'apple')).toBe(false);
+      expect(await repo.findFederatedSubject(a, 'apple')).toBeUndefined();
+      // The subject is free again.
+      expect(await repo.linkFederated({ partyId: b, provider: 'apple', subject: sub, createdAt: T0 })).toBe('linked');
+    });
   });
 }
