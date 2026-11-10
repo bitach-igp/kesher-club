@@ -1124,6 +1124,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/admin/webhook-deliveries/{id}/replay": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Replay one webhook message to one endpoint of its institution
+         * @description REQ-NOT-002 (T-0688), behind webhooks.outbound. `id` is the message id from the delivery list. The endpoint must be a live one of the message's institution (404 otherwise). The same Idempotency-Key replays once. Staff token only.
+         */
+        readonly post: operations["replayAdminWebhookDelivery"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/agent-grants": {
         readonly parameters: {
             readonly query?: never;
@@ -2386,6 +2406,74 @@ export interface paths {
         readonly options?: never;
         readonly head?: never;
         readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/webhook-deliveries": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Recent webhook messages with their delivery attempts
+         * @description REQ-NOT-002 (T-0688). Behind webhooks.outbound. Any active staff role of this institution; another institution's staff get 404. The 50 newest messages; payloads are not shown.
+         */
+        readonly get: operations["listWebhookDeliveries"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/webhook-endpoints": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The institution's live webhook endpoints (never their secrets)
+         * @description REQ-NOT-002 (T-0688). Behind webhooks.outbound. Any active staff role of this institution; another institution's staff get 404.
+         */
+        readonly get: operations["listWebhookEndpoints"];
+        readonly put?: never;
+        /**
+         * Register a webhook endpoint; the signing secret is returned once
+         * @description REQ-NOT-002 (T-0688), behind the flag webhooks.outbound (404 FEATURE_OFF when off). Institution admins only (403 for other staff; another institution's staff get 404). The URL must be a public https host name on port 443: IP literals, `localhost` and internal names are refused with 422 VALIDATION_FAILED. The Standard Webhooks secret (`whsec_...`) is in this response only: it is not stored on our side, not logged, and not listed later. The same Idempotency-Key and request answer the same endpoint (and secret) and create nothing twice; the same key with a different URL or event types is 409 IDEMPOTENCY_CONFLICT.
+         */
+        readonly post: operations["createWebhookEndpoint"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/institutions/{id}/webhook-endpoints/{endpointId}": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        readonly post?: never;
+        /**
+         * Delete a webhook endpoint
+         * @description REQ-NOT-002 (T-0688). Institution admins only. The endpoint is deactivated at the delivery provider first, so no later event, replay or rotation reaches it, and it leaves the list. Another institution's endpoint, or one already deleted, is 404.
+         */
+        readonly delete: operations["deleteWebhookEndpoint"];
+        readonly options?: never;
+        readonly head?: never;
+        /**
+         * Rotate an endpoint's signing secret
+         * @description REQ-NOT-002 (T-0688). Institution admins only. Body `{ "rotateSecret": true }` is the only change supported: the new secret is in this response once, and the previous one stays valid for 24 hours. Another institution's endpoint, or a deleted one, is 404.
+         */
+        readonly patch: operations["updateWebhookEndpoint"];
         readonly trace?: never;
     };
     readonly "/intents": {
@@ -5274,6 +5362,46 @@ export interface components {
             /** Format: uuid */
             readonly quoteId: string;
         };
+        readonly WebhookAttempt: {
+            /** Format: date-time */
+            readonly at: string;
+            readonly attemptId: string;
+            readonly attemptNumber: number;
+            readonly endpointId: string;
+            readonly messageId: string;
+            /** Format: date-time */
+            readonly nextRetryAt?: string;
+            readonly responseStatus?: number;
+            /** @enum {string} */
+            readonly status: "pending" | "succeeded" | "failed" | "exhausted";
+        };
+        readonly WebhookDelivery: {
+            readonly attempts: readonly components["schemas"]["WebhookAttempt"][];
+            readonly eventType: string;
+            readonly messageId: string;
+            /** Format: date-time */
+            readonly sentAt: string;
+        };
+        readonly WebhookEndpoint: {
+            /** Format: date-time */
+            readonly createdAt: string;
+            readonly endpointId: string;
+            readonly eventTypes: readonly components["schemas"]["WebhookEventType"][];
+            /** Format: date-time */
+            readonly rotatedAt?: string;
+            readonly url: string;
+        };
+        readonly WebhookEndpointSecret: {
+            readonly endpointId: string;
+            readonly eventTypes: readonly components["schemas"]["WebhookEventType"][];
+            /** Format: date-time */
+            readonly previousSecretValidUntil?: string;
+            /** @description Standard Webhooks signing secret, shown only in this response. */
+            readonly secret: string;
+            readonly url: string;
+        };
+        /** @enum {string} */
+        readonly WebhookEventType: "member.onboarded" | "membership.status_changed" | "allowance.run.completed" | "collection.paid" | "payout.status_changed" | "roster.import.completed";
     };
     responses: {
         /** @description RFC 9457 problem details */
@@ -7090,6 +7218,38 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["StaffAssignment"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly replayAdminWebhookDelivery: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly endpointId: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The new delivery attempt */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["WebhookAttempt"];
                 };
             };
             readonly default: components["responses"]["Problem"];
@@ -9051,6 +9211,145 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["UsFundingQuote"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listWebhookDeliveries: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Messages, newest first */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["WebhookDelivery"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listWebhookEndpoints: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Endpoints, oldest first */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["WebhookEndpoint"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createWebhookEndpoint: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly eventTypes: readonly components["schemas"]["WebhookEventType"][];
+                    readonly url: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The endpoint with its secret */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["WebhookEndpointSecret"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly deleteWebhookEndpoint: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly endpointId: string;
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Deleted */
+            readonly 204: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content?: never;
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly updateWebhookEndpoint: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Client-generated key; replays return the original response for 24 h. */
+                readonly "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+            };
+            readonly path: {
+                readonly endpointId: string;
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** @enum {boolean} */
+                    readonly rotateSecret: true;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The endpoint with its new secret */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["WebhookEndpointSecret"];
                 };
             };
             readonly default: components["responses"]["Problem"];

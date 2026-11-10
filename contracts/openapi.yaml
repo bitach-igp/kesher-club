@@ -1959,6 +1959,109 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/StaffChange" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/webhook-endpoints:
+    post:
+      operationId: createWebhookEndpoint
+      summary: Register a webhook endpoint; the signing secret is returned once
+      description: >-
+        REQ-NOT-002 (T-0688), behind the flag webhooks.outbound (404 FEATURE_OFF when off). Institution admins only
+        (403 for other staff; another institution's staff get 404). The URL must be a public https host name on port 443:
+        IP literals, `localhost` and internal names are refused with 422 VALIDATION_FAILED. The Standard Webhooks secret
+        (`whsec_...`) is in this response only: it is not stored on our side, not logged, and not listed later. The same
+        Idempotency-Key and request answer the same endpoint (and secret) and create nothing twice; the same key with a
+        different URL or event types is 409 IDEMPOTENCY_CONFLICT.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [url, eventTypes]
+              properties:
+                url: { type: string, maxLength: 2048 }
+                eventTypes: { type: array, minItems: 1, items: { $ref: "#/components/schemas/WebhookEventType" } }
+      responses:
+        "201":
+          description: The endpoint with its secret
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookEndpointSecret" }
+        default: { $ref: "#/components/responses/Problem" }
+    get:
+      operationId: listWebhookEndpoints
+      summary: The institution's live webhook endpoints (never their secrets)
+      description: REQ-NOT-002 (T-0688). Behind webhooks.outbound. Any active staff role of this institution; another institution's staff get 404.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Endpoints, oldest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/WebhookEndpoint" } }
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/webhook-endpoints/{endpointId}:
+    patch:
+      operationId: updateWebhookEndpoint
+      summary: Rotate an endpoint's signing secret
+      description: >-
+        REQ-NOT-002 (T-0688). Institution admins only. Body `{ "rotateSecret": true }` is the only change supported: the
+        new secret is in this response once, and the previous one stays valid for 24 hours. Another institution's
+        endpoint, or a deleted one, is 404.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: endpointId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rotateSecret]
+              properties:
+                rotateSecret: { type: boolean, enum: [true] }
+      responses:
+        "200":
+          description: The endpoint with its new secret
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookEndpointSecret" }
+        default: { $ref: "#/components/responses/Problem" }
+    delete:
+      operationId: deleteWebhookEndpoint
+      summary: Delete a webhook endpoint
+      description: REQ-NOT-002 (T-0688). Institution admins only. The endpoint is deactivated at the delivery provider first, so no later event, replay or rotation reaches it, and it leaves the list. Another institution's endpoint, or one already deleted, is 404.
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: endpointId, in: path, required: true, schema: { type: string, maxLength: 128 } }
+      responses:
+        "204":
+          description: Deleted
+        default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/webhook-deliveries:
+    get:
+      operationId: listWebhookDeliveries
+      summary: Recent webhook messages with their delivery attempts
+      description: REQ-NOT-002 (T-0688). Behind webhooks.outbound. Any active staff role of this institution; another institution's staff get 404. The 50 newest messages; payloads are not shown.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: Messages, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/WebhookDelivery" } }
+        default: { $ref: "#/components/responses/Problem" }
   /institutions/{id}/staff-grants/{grantId}/approve:
     post:
       operationId: approveStaffGrant
@@ -2998,6 +3101,34 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ApprovalRequest" }
+        default: { $ref: "#/components/responses/Problem" }
+  /admin/webhook-deliveries/{id}/replay:
+    post:
+      operationId: replayAdminWebhookDelivery
+      tags: [admin]
+      summary: Replay one webhook message to one endpoint of its institution
+      description: >-
+        REQ-NOT-002 (T-0688), behind webhooks.outbound. `id` is the message id from the delivery list. The endpoint must be a
+        live one of the message's institution (404 otherwise). The same Idempotency-Key replays once. Staff token only.
+      security: [{ staff: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, maxLength: 128 } }
+        - { $ref: "#/components/parameters/IdempotencyKey" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpointId]
+              properties:
+                endpointId: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: The new delivery attempt
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WebhookAttempt" }
         default: { $ref: "#/components/responses/Problem" }
   /admin/institutions:
     get:
@@ -4523,6 +4654,47 @@ components:
         role: { type: string, enum: [staff, finance, admin] }
         active: { type: boolean }
         since: { type: string, format: date-time }
+    WebhookEventType:
+      type: string
+      enum: [member.onboarded, membership.status_changed, allowance.run.completed, collection.paid, payout.status_changed, roster.import.completed]
+    WebhookEndpoint:
+      type: object
+      required: [endpointId, url, eventTypes, createdAt]
+      properties:
+        endpointId: { type: string }
+        url: { type: string }
+        eventTypes: { type: array, items: { $ref: "#/components/schemas/WebhookEventType" } }
+        createdAt: { type: string, format: date-time }
+        rotatedAt: { type: string, format: date-time }
+    WebhookEndpointSecret:
+      type: object
+      required: [endpointId, url, eventTypes, secret]
+      properties:
+        endpointId: { type: string }
+        url: { type: string }
+        eventTypes: { type: array, items: { $ref: "#/components/schemas/WebhookEventType" } }
+        secret: { type: string, description: "Standard Webhooks signing secret, shown only in this response." }
+        previousSecretValidUntil: { type: string, format: date-time }
+    WebhookAttempt:
+      type: object
+      required: [attemptId, messageId, endpointId, attemptNumber, status, at]
+      properties:
+        attemptId: { type: string }
+        messageId: { type: string }
+        endpointId: { type: string }
+        attemptNumber: { type: integer, minimum: 1 }
+        status: { type: string, enum: [pending, succeeded, failed, exhausted] }
+        responseStatus: { type: integer }
+        at: { type: string, format: date-time }
+        nextRetryAt: { type: string, format: date-time }
+    WebhookDelivery:
+      type: object
+      required: [messageId, eventType, sentAt, attempts]
+      properties:
+        messageId: { type: string }
+        eventType: { type: string }
+        sentAt: { type: string, format: date-time }
+        attempts: { type: array, items: { $ref: "#/components/schemas/WebhookAttempt" } }
     StaffInvite:
       type: object
       required: [id, role, channel, sentAt, expiresAt]

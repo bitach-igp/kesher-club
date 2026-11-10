@@ -71,6 +71,21 @@ export function eventsContract(name: string, make: () => EventsPort, opts: Event
       expect(rotated.previousSecretValidUntil).toBeTruthy();
     });
 
+    it('a deleted endpoint is no longer sent to, replayed or rotated, and delete is idempotent', async () => {
+      const port = make();
+      const gone = await port.createEndpoint({ institutionId: 'org_1', url: opts.goodUrl, eventTypes: ['collection.paid'] }, 'ep-6');
+      const kept = await port.createEndpoint({ institutionId: 'org_1', url: `${opts.goodUrl}?kept=1`, eventTypes: ['collection.paid'] }, 'ep-7');
+      const before = await port.send(event, 'send-6');
+      await port.deleteEndpoint(gone.endpointId, 'del-1');
+      await port.deleteEndpoint(gone.endpointId, 'del-1');
+      const after = await port.send(event, 'send-7');
+      expect(after.attempts.map((a) => a.endpointId)).toEqual([kept.endpointId]);
+      await expect(port.replay(before.messageId, gone.endpointId, 'replay-6')).rejects.toMatchObject({ code: 'UNKNOWN_ENDPOINT' });
+      await expect(port.rotateSecret(gone.endpointId, 'rot-6')).rejects.toMatchObject({ code: 'UNKNOWN_ENDPOINT' });
+      await port.createEndpoint({ institutionId: 'org_1', url: `${opts.goodUrl}?new=1`, eventTypes: ['collection.paid'] }, 'ep-8');
+      expect((await port.send(event, 'send-8')).attempts.map((a) => a.endpointId)).not.toContain(gone.endpointId);
+    });
+
     it('rejects non-https endpoints and unknown ids', async () => {
       const port = make();
       await expect(port.createEndpoint({ institutionId: 'org_1', url: 'http://insecure.example', eventTypes: [] }, 'ep-5')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });

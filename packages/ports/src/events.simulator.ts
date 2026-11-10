@@ -52,6 +52,15 @@ export class EventsSimulator implements EventsPort {
     })) as Endpoint;
   }
 
+  async deleteEndpoint(endpointId: string, key: string): Promise<void> {
+    await this.idem.run(key, async () => {
+      const ep = this.endpoints.get(endpointId);
+      if (!ep) throw new EventsError('UNKNOWN_ENDPOINT', endpointId);
+      this.endpoints.set(endpointId, { ...ep, active: false });
+      return true;
+    });
+  }
+
   async send(event: OutboundEvent, key: string): Promise<{ messageId: string; attempts: readonly DeliveryAttempt[] }> {
     return (await this.idem.run(key, async () => {
       const targets = [...this.endpoints.values()].filter((e) => e.active && e.institutionId === event.institutionId && e.eventTypes.includes(event.type));
@@ -85,7 +94,7 @@ export class EventsSimulator implements EventsPort {
     const out: DeliveryAttempt[] = [];
     for (const [messageId, list] of this.attempts) {
       for (const a of [...list]) {
-        if (a.status === 'failed' && a.nextRetryAt && Date.parse(a.nextRetryAt) <= this.clock.now().getTime()) {
+        if (a.status === 'failed' && a.nextRetryAt && this.endpoints.get(a.endpointId)?.active && Date.parse(a.nextRetryAt) <= this.clock.now().getTime()) {
           a.status = 'exhausted'; // superseded by the retry row
           out.push(this.attempt(messageId, this.mustEndpoint(a.endpointId), a.attemptNumber + 1));
         }
@@ -122,7 +131,7 @@ export class EventsSimulator implements EventsPort {
 
   private mustEndpoint(id: string) {
     const e = this.endpoints.get(id);
-    if (!e) throw new EventsError('UNKNOWN_ENDPOINT', id);
+    if (!e?.active) throw new EventsError('UNKNOWN_ENDPOINT', id);
     return e;
   }
 }

@@ -45,6 +45,8 @@ export interface DeliveryAttempt {
 export interface EventsPort {
   createEndpoint(input: { institutionId: string; url: string; eventTypes: readonly OutboundEventType[] }, idempotencyKey: string): Promise<Endpoint>;
   rotateSecret(endpointId: string, idempotencyKey: string): Promise<Endpoint>;
+  /** Deactivates the endpoint at the provider: no later `send` targets it, and `replay` and `rotateSecret` answer UNKNOWN_ENDPOINT. Idempotent. */
+  deleteEndpoint(endpointId: string, idempotencyKey: string): Promise<void>;
   /** Enqueues to every active endpoint subscribed to the type. Idempotent by key: one message id per key. */
   send(event: OutboundEvent, idempotencyKey: string): Promise<{ messageId: string; attempts: readonly DeliveryAttempt[] }>;
   /** Re-sends an existing message to one endpoint (replay UI). */
