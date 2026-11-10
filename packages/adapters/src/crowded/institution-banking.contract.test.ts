@@ -307,14 +307,89 @@ describe('hardening', () => {
     expect((await h.adapter.account(entityRef)).balance.minor).toBe(90_000n);
   });
 
-  it('a 409 on a payment is OUTCOME_UNKNOWN, never our IDEMPOTENCY_CONFLICT', async () => {
-    const h = harness();
-    const entityRef = await approvedEntity(h);
-    h.fake.fund(entityRef, 100_000n);
-    const b = restarted(h, (url, init) => (init?.method === 'POST' && url.endsWith(`/chapters/${entityRef}/payments`) ? json(409, { message: 'dup', code: 'DUPLICATE_REQUEST' }) : undefined));
-    const e = await b.sendAch(ach(entityRef)).catch((x: unknown) => x);
-    expect(e).toMatchObject({ code: 'OUTCOME_UNKNOWN' });
-    expect((e as Error).message).toMatch(/read it back/);
+  describe('a 409 DUPLICATE_REQUEST on an ACH create is in flight (T-0695)', () => {
+    const creates = (h: Harness) => h.fake.calls.filter((c) => c.method === 'POST' && c.path.endsWith('/payments'));
+    const wireKey = (c: { body: unknown }) => (c.body as { data: { payments: { idempotencyKey: string }[] } }).data.payments[0]!.idempotencyKey;
+    const withSleep = () => {
+      const waits: number[] = [];
+      return { waits, sleep: async (ms: number) => void waits.push(ms) };
+    };
+
+    it('retries the same key after a wait and returns the payment the first call made: one payment at the fake', async () => {
+      const s = withSleep();
+      const h = harness({ sleep: s.sleep });
+      const entityRef = await approvedEntity(h);
+      h.fake.fund(entityRef, 100_000n);
+      h.fake.inFlightAchCalls = 2;
+      const r = await h.adapter.sendAch(ach(entityRef));
+      expect(r.status).toBe('pending');
+      expect(s.waits).toEqual([1000, 2000]);
+      expect(h.fake.count('payments')).toBe(1);
+      expect(new Set(creates(h).map(wireKey)).size).toBe(1);
+      expect(creates(h)).toHaveLength(3);
+      expect((await h.adapter.account(entityRef)).balance.minor).toBe(90_000n);
+      expect(await h.adapter.sendAch(ach(entityRef))).toEqual(r);
+    });
+
+    it('a 409 that never clears is OUTCOME_UNKNOWN after 3 retries (waits 1 s, 2 s, 4 s), same key throughout', async () => {
+      const s = withSleep();
+      const h = harness({ sleep: s.sleep });
+      const entityRef = await approvedEntity(h);
+      h.fake.fund(entityRef, 100_000n);
+      h.fake.inFlightAchCalls = 99;
+      const e = await h.adapter.sendAch(ach(entityRef)).catch((x: unknown) => x);
+      expect(e).toMatchObject({ code: 'OUTCOME_UNKNOWN' });
+      expect((e as Error).message).toMatch(/read it back before retrying, and do not resend under a new key/);
+      expect(s.waits).toEqual([1000, 2000, 4000]);
+      expect(creates(h)).toHaveLength(4);
+      expect(new Set(creates(h).map(wireKey)).size).toBe(1);
+      expect(h.fake.count('payments')).toBe(1);
+    });
+
+    it('a 409 on a payment is never our IDEMPOTENCY_CONFLICT', async () => {
+      const s = withSleep();
+      const h = harness();
+      const entityRef = await approvedEntity(h);
+      h.fake.fund(entityRef, 100_000n);
+      const b = restarted(h, (url, init) => (init?.method === 'POST' && url.endsWith(`/chapters/${entityRef}/payments`) ? json(409, { message: 'dup', code: 'DUPLICATE_REQUEST' }) : undefined), { sleep: s.sleep });
+      const e = await b.sendAch(ach(entityRef)).catch((x: unknown) => x);
+      expect(e).toMatchObject({ code: 'OUTCOME_UNKNOWN' });
+      expect((e as Error).message).toMatch(/read it back/);
+    });
+
+    it('a network error or a 5xx is not retried here', async () => {
+      const s = withSleep();
+      const h = harness();
+      const entityRef = await approvedEntity(h);
+      h.fake.fund(entityRef, 100_000n);
+      let seen = 0;
+      const hook = (status: number | 'net') => (url: string, init: RequestInit | undefined) => {
+        if (init?.method !== 'POST' || !url.endsWith(`/chapters/${entityRef}/payments`)) return undefined;
+        seen++;
+        if (status === 'net') throw new TypeError('fetch failed');
+        return json(status, { message: 'x' });
+      };
+      for (const status of [503, 500, 'net'] as const) {
+        seen = 0;
+        await expect(restarted(h, hook(status), { sleep: s.sleep }).sendAch(ach(entityRef, `key-ach-${status}-0`))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+        expect(seen).toBe(1);
+      }
+      expect(s.waits).toEqual([]);
+    });
+
+    it('a book transfer does not retry a 409: the fund call keeps its own handling', async () => {
+      const s = withSleep();
+      const h = harness();
+      const { entityRef } = await h.adapter.createEntity({ ...NEW('key-entity-0409', 'Israel Global Pay, LLC'), holder: 'platform' });
+      h.fake.decide(entityRef);
+      h.fake.fund(entityRef, 100_000n);
+      const { subAccountRef } = await h.adapter.createSubAccount({ entityRef, institutionId: 'inst-0001', idempotencyKey: 'key-sub-00001' });
+      let seen = 0;
+      const b = restarted(h, (url, init) => (init?.method === 'POST' && url.endsWith('/subaccounts/fund') ? (seen++, json(409, { message: 'dup', code: 'DUPLICATE_REQUEST' })) : undefined), { sleep: s.sleep });
+      await expect(b.bookTransfer({ fromRef: entityRef, toRef: subAccountRef, amount: money(5_000n, 'USD'), memo: 'KC-1', idempotencyKey: 'key-book-0409' })).rejects.toMatchObject({ code: 'OUTCOME_UNKNOWN' });
+      expect(seen).toBe(1);
+      expect(s.waits).toEqual([]);
+    });
   });
 
   it('an item error or a failed item in a payment answer is REJECTED', async () => {

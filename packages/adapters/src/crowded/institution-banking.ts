@@ -72,12 +72,18 @@ export interface CrowdedInstitutionBankingOptions {
   /** The payer's IP and consent for payment intents. Required to create a payment page; never assumed. */
   payer?: { ip: string; consented: true };
   /** Verifies the webhook signature over the raw body (T-0649 provides the HMAC one). Without it every webhook is refused. */
+  /** The wait between retries of an in-flight ACH (T-0695). Injected so tests never sleep; defaults to a real timer. */
+  sleep?: (ms: number) => Promise<void>;
   verifyWebhookSignature?: (headers: Record<string, string>, rawBody: string) => boolean | Promise<boolean>;
 }
 
 const bigintJson = (_k: string, v: unknown): unknown => (typeof v === 'bigint' ? v.toString() : v);
 /** Crowded's smallest collection and ACH: $1.00. */
 const MIN_CENTS = 100n;
+/** Waits before each retry of an ACH create Crowded answers 409 DUPLICATE_REQUEST (in flight): three retries (T-0695). */
+const IN_FLIGHT_WAITS_MS = [1000, 2000, 4000] as const;
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const isDuplicate = (e: unknown): boolean => e instanceof CrowdedApiError && (e.status === 409 || e.code === 'DUPLICATE_REQUEST');
 
 export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort {
   private readonly c: CrowdedClient;
@@ -138,19 +144,27 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
   }
 
   /**
-   * A call that moves money. Crowded dedupes a repeated `idempotencyKey` for about 48 hours, but how it answers the
-   * repeat is undocumented (Q14). A 409 here is therefore never read as our own IDEMPOTENCY_CONFLICT (the ledger decides
-   * that): it means Crowded may already hold this payment, so the outcome is unknown. The caller must read it back and
-   * must not resend under a new key.
+   * A call that moves money. Crowded dedupes a repeated `idempotencyKey` for about 48 hours. A 409 here is never read as
+   * our own IDEMPOTENCY_CONFLICT (the ledger decides that): it means Crowded may already hold this payment, so the
+   * outcome is unknown. The caller must read it back and must not resend under a new key.
+   * `retryInFlight` (the ACH create only, T-0695): Crowded documents a 409 DUPLICATE_REQUEST there as "another request
+   * with this key is being processed, retry shortly" and answers the retry with the payment the first request made. So
+   * the same call, with the SAME wire key, is repeated after 1 s, 2 s, 4 s; a 409 that outlasts those is OUTCOME_UNKNOWN.
+   * Only a 409 is retried: a network error or a 5xx surfaces at once, as before.
    */
-  private async moneyCall<T>(fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn();
-    } catch (e) {
-      if (e instanceof CrowdedApiError && (e.status === 409 || e.code === 'DUPLICATE_REQUEST')) {
-        throw new InstitutionBankingError('OUTCOME_UNKNOWN', 'Crowded may already hold this payment: read it back before retrying, and do not resend under a new key');
+  private async moneyCall<T>(fn: () => Promise<T>, retryInFlight = false): Promise<T> {
+    const sleep = this.o.sleep ?? realSleep;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (!isDuplicate(e)) throw e;
+        const wait = retryInFlight ? IN_FLIGHT_WAITS_MS[attempt] : undefined;
+        if (wait === undefined) {
+          throw new InstitutionBankingError('OUTCOME_UNKNOWN', 'Crowded may already hold this payment: read it back before retrying, and do not resend under a new key');
+        }
+        await sleep(wait);
       }
-      throw e;
     }
   }
 
@@ -350,7 +364,7 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
         const r = await this.moneyCall(() => this.c.post(`/chapters/${chapterId}/payments`, {
           type: 'achCounterparty',
           payments: [{ counterpartyId: input.counterpartyRef, amount: toCents(input.amount), description: 'KESHER', addenda: input.addenda, sameDay: false, applyFee: true, idempotencyKey: uuidFromKey(`ach:${input.idempotencyKey}`) }],
-        }));
+        }), true);
         const p = firstItem(r.data);
         // A bulk-style item says `status: success | failed` and puts the payment's own status in `paymentStatus`.
         const status = p['paymentStatus'] ?? p['status'];

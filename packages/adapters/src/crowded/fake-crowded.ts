@@ -3,7 +3,8 @@
 // documented status vocabularies and errors, and the quirks the adapter must survive: an unmasked `accountNumber`,
 // creates with no idempotency key, a 201 whose status is Rejected, a payment intent that is an upsert. Control methods
 // stand in for what happens outside the API (the bank decides, a funder pays, a transfer moves on).
-// Fixtures: an organization named `OUTAGE…` answers 503; a counterpartyId starting `ach_rejected_201` answers 201 Rejected.
+// Fixtures: an organization named `OUTAGE…` answers 503; a counterpartyId starting `ach_rejected_201` answers 201 Rejected;
+// `inFlightAchCalls = n` makes the next n ACH creates answer 409 DUPLICATE_REQUEST (in flight).
 import { createHash } from 'node:crypto';
 
 type Json = Record<string, unknown>;
@@ -47,6 +48,12 @@ export class FakeCrowded {
   private readonly funded = new Map<string, Json>();
   /** A fee on collected payments, and whether the payer covered it (so the fee item is `amount - fee`). */
   collectFee: { fee: bigint; covered: boolean } = { fee: 0n, covered: false };
+  /**
+   * The next N ACH creates answer 409 DUPLICATE_REQUEST, as when another request with the same key is in flight (T-0695).
+   * The first of them is that other request: it makes the payment (once per key), and the call after the N answers the
+   * original payment, as Crowded documents.
+   */
+  inFlightAchCalls = 0;
   /** Quotes carry no fee (a malformed quote). */
   quoteWithoutFee = false;
 
@@ -113,7 +120,7 @@ export class FakeCrowded {
   accountNumber(chapterId: string): string {
     return this.accountOf(chapterId).accountNumber;
   }
-  count(kind: 'organizations' | 'chapters' | 'collections'): number {
+  count(kind: 'organizations' | 'chapters' | 'collections' | 'payments'): number {
     return this[kind === 'organizations' ? 'orgs' : kind].length;
   }
 
@@ -299,6 +306,15 @@ export class FakeCrowded {
     if (d['type'] !== 'achCounterparty' || items.length !== 1 || !acct) return err(400, 'Unsupported payment request', 'VALIDATION_ERROR');
     const it = items[0]!;
     if (String(it['counterpartyId']).startsWith('ach_rejected_201')) return ok({ id: this.id('pay'), method: 'ach', status: 'Rejected', error: 'Account closed' }, 201);
+    if (this.inFlightAchCalls > 0) {
+      this.inFlightAchCalls--;
+      this.originateKeyed(acct, ch, it);
+      return err(409, 'A request with this idempotencyKey is being processed', 'DUPLICATE_REQUEST');
+    }
+    return this.originateKeyed(acct, ch, it);
+  }
+
+  private originateKeyed(acct: Account, ch: Chapter, it: Json): Response {
     return this.keyed(it['idempotencyKey'], it, () => {
       const sent = cents(it['amount']);
       if (!(sent >= 100n) || String(it['addenda'] ?? '').length > 80) return err(400, 'Invalid amount or addenda', 'VALIDATION_ERROR');
