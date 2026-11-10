@@ -172,7 +172,7 @@ To see which published view is right, we called the live sandbox with calls that
   - payments: list (200), get (404), cancel (404);
   - quotes: ACH and wire (400, both want `data.amount`);
   - sandbox simulate (400, `"data" is required`);
-  - the five payment types on `POST /chapters/{id}/payments`: `ach`, `achCounterparty`, `wire` and `wireCounterparty` each answer 400 "At least one payment is required" for an empty list, and the server's own message names all five (`book`, `ach`, `wire`, `achCounterparty`, `wireCounterparty`); the two ACH and two wire requests in the Postman list are these types of one route;
+  - the four origination types on `POST /chapters/{id}/payments`: `ach`, `achCounterparty`, `wire` and `wireCounterparty` each answer 400 "At least one payment is required" for an empty list (the two ACH and two wire requests in the Postman list are these types of one route). The server's own message names a fifth type, `book`, which both views document and which is not one of the 17;
   - the two webhook event-type examples are the one `GET /webhooks/event-types` (200).
 - **`userPaysFees`, which only `2sBXwnuYMb` documents, exists too**: a collection create with `userPaysFees: "x"` answers `"data.userPaysFees" must be a boolean`. It makes the payer pay the processing fee on top of the amount (default: the chapter absorbs it), which is what REQ-INS-023 (fees billed to US funders) needs; the adapter does not send it yet.
 - **There is no Related Entities, FX, exchange-rate, ILS quote or wallet route** (`GET /related-entities`, `/fx`, `/exchange-rates`, `/chapters/{id}/payments/quotes/ils`, `/chapters/{id}/wallets`, `/me`, `/partners/me` all answer `Cannot GET`).
