@@ -518,7 +518,7 @@ export function usFundingHandlers(svc: InstitutionUsFunding, stepUp: StepUpServi
     }),
     createInstitutionUsFunding: route(async (req) => {
       const { institutionId, partyId } = await own(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       return created(await svc.request(institutionId, partyId, req.body, requireIdempotencyKey(req), req.now));
     }),
     listInstitutionUsFunding: route(async (req) => {
@@ -527,12 +527,12 @@ export function usFundingHandlers(svc: InstitutionUsFunding, stepUp: StepUpServi
     }),
     approveInstitutionUsFunding: route(async (req) => {
       const { institutionId, partyId } = await own(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       return ok(await svc.approve(institutionId, req.params['requestId'] ?? '', partyId, req.now));
     }),
     cancelInstitutionUsFunding: route(async (req) => {
       const { institutionId, partyId } = await own(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       return ok(await svc.cancel(institutionId, req.params['requestId'] ?? '', partyId, req.now));
     }),
   };

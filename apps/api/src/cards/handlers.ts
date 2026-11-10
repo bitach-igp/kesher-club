@@ -39,7 +39,7 @@ export function cardHandlers(cards: CardService, jit: JitService, provisioning: 
     activateCard: route(async (req) => {
       const p = requirePrincipal(req);
       const key = requireIdempotencyKey(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       const b = (req.body ?? {}) as { last4?: unknown };
       if (typeof b.last4 !== 'string') throw new DomainError('VALIDATION_FAILED', 'last4 is required');
       return ok(await physical.activate(p.partyId, req.params['id'] ?? '', b.last4, key, req.now));
@@ -51,7 +51,7 @@ export function cardHandlers(cards: CardService, jit: JitService, provisioning: 
       const id = req.params['id'] ?? '';
       if (b.status === 'frozen') return ok(await viewFor(await cards.setStatus(p.partyId, id, 'frozen', key, req.now), p.partyId));
       // Unfreezing and closing move money's exposure the other way: both need a fresh step-up.
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       if (b.status === 'active') return ok(await viewFor(await cards.setStatus(p.partyId, id, 'active', key, req.now), p.partyId));
       if (b.status === 'closed') {
         const reasons: readonly string[] = ['lost', 'stolen', 'damaged', 'other'];
@@ -62,13 +62,13 @@ export function cardHandlers(cards: CardService, jit: JitService, provisioning: 
     }),
     cardDetailsToken: route(async (req) => {
       const p = requirePrincipal(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       return ok(await cards.detailsToken(p.partyId, req.params['id'] ?? ''));
     }),
     startPushProvisioning: route(async (req) => {
       const p = requirePrincipal(req);
       requireIdempotencyKey(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       const b = (req.body ?? {}) as { deviceId?: unknown; clientData?: unknown };
       if (typeof b.deviceId !== 'string') throw new DomainError('VALIDATION_FAILED', 'deviceId is required');
       const clientData = b.clientData && typeof b.clientData === 'object' && !Array.isArray(b.clientData) ? Object.fromEntries(Object.entries(b.clientData as Record<string, unknown>).filter(([, v]) => typeof v === 'string') as [string, string][]) : undefined;

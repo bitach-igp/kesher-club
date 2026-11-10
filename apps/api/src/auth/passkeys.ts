@@ -1,8 +1,8 @@
 // Passkey registration (T-0110, REQ-AUTH-001) and authentication with device binding (T-0111,
 // REQ-AUTH-002). Two-step ceremonies: a call without `response` returns options; the second call
 // verifies. Passkeys are the only sign-in; the response carries the recovery entry point as a link.
-import { randomUUID } from 'node:crypto';
-import { DomainError } from '@kesher/domain';
+import { createHash, randomUUID } from 'node:crypto';
+import { DomainError, uuidv7 } from '@kesher/domain';
 import type { AuthPort, Clock, PasskeyAuthenticationOptions, PasskeyAuthenticationResponse, PasskeyRegistrationOptions, PasskeyRegistrationResponse } from '@kesher/ports';
 import type { Principal } from '../http.ts';
 import type { OtpService } from './otp.ts';
@@ -43,15 +43,7 @@ export interface AuthenticateResult {
 
 export type AuthEvent = { type: 'new_device_sign_in'; partyId: string; deviceId: string; at: string } | { type: 'passkey_added'; partyId: string; deviceId: string; at: string };
 
-interface PendingCeremony<O> {
-  options: O;
-  partyId: string;
-  issuedAt: number;
-}
-
 export class PasskeyService {
-  private readonly pendingRegistrations = new Map<string, PendingCeremony<PasskeyRegistrationOptions>>();
-  private readonly pendingAuthentications = new Map<string, PendingCeremony<PasskeyAuthenticationOptions>>();
   /** Domain events for notifications (consumed by the outbox / NotifyService). */
   readonly events: AuthEvent[] = [];
 
@@ -74,22 +66,26 @@ export class PasskeyService {
     this.otp = otp;
   }
 
+  private staleBefore(now: Date): string {
+    return new Date(now.getTime() - CEREMONY_TTL_MS).toISOString();
+  }
+
   async register(input: RegisterInput): Promise<RegisterResult> {
     const now = this.clock.now();
-    const ceremonyKey = `${input.deviceId}|${input.otpSessionToken ?? input.principal?.partyId ?? input.recoveryFor ?? ''}`;
+    // The key may embed the otp-session token, so only its hash reaches the table.
+    const ceremonyKey = createHash('sha256').update(`${input.deviceId}|${input.otpSessionToken ?? input.principal?.partyId ?? input.recoveryFor ?? ''}`).digest('base64url');
     if (!input.response) {
       const partyId = input.recoveryFor ?? input.principal?.partyId ?? `pending:${randomUUID()}`;
       const options = await this.port.registrationOptions({ id: partyId, name: input.principal ? partyId : 'new member' });
-      this.pendingRegistrations.set(ceremonyKey, { options, partyId, issuedAt: now.getTime() });
+      await this.repo.saveCeremony({ ceremonyId: uuidv7(), kind: 'registration', key: ceremonyKey, partyId, options, issuedAt: now.toISOString() }, this.staleBefore(now));
       return { options };
     }
-    const pending = this.pendingRegistrations.get(ceremonyKey);
-    this.pendingRegistrations.delete(ceremonyKey);
-    if (!pending || now.getTime() - pending.issuedAt > CEREMONY_TTL_MS) throw new DomainError('UNAUTHENTICATED', 'Registration ceremony missing or expired');
+    const pending = await this.repo.takeCeremony('registration', ceremonyKey, now.toISOString());
+    if (!pending || now.getTime() - Date.parse(pending.issuedAt) > CEREMONY_TTL_MS) throw new DomainError('UNAUTHENTICATED', 'Registration ceremony missing or expired');
 
     let cred;
     try {
-      cred = await this.port.verifyRegistration(pending.options, input.response);
+      cred = await this.port.verifyRegistration(pending.options as PasskeyRegistrationOptions, input.response);
     } catch {
       throw new DomainError('UNAUTHENTICATED', 'Passkey registration could not be verified');
     }
@@ -123,18 +119,17 @@ export class PasskeyService {
     if (!input.response) {
       // Discoverable credentials: no allow-list, the authenticator picks the resident key.
       const options = await this.port.authenticationOptions([]);
-      this.pendingAuthentications.set(input.deviceId, { options, partyId: '', issuedAt: now.getTime() });
+      await this.repo.saveCeremony({ ceremonyId: uuidv7(), kind: 'authentication', key: input.deviceId, partyId: '', options, issuedAt: now.toISOString() }, this.staleBefore(now));
       return { options, recovery };
     }
-    const pending = this.pendingAuthentications.get(input.deviceId);
-    this.pendingAuthentications.delete(input.deviceId);
-    if (!pending || now.getTime() - pending.issuedAt > CEREMONY_TTL_MS) throw new DomainError('UNAUTHENTICATED', 'Sign-in ceremony missing or expired');
+    const pending = await this.repo.takeCeremony('authentication', input.deviceId, now.toISOString());
+    if (!pending || now.getTime() - Date.parse(pending.issuedAt) > CEREMONY_TTL_MS) throw new DomainError('UNAUTHENTICATED', 'Sign-in ceremony missing or expired');
 
     const stored = await this.repo.findPasskey(input.response.credentialId);
     if (!stored) throw new DomainError('UNAUTHENTICATED', 'Unknown passkey');
     const user = await this.repo.findUser(stored.partyId);
     if (!user || user.status === 'closed') throw new DomainError('UNAUTHENTICATED', 'Account unavailable');
-    const result = await this.port.verifyAuthentication(pending.options, input.response, { credentialId: stored.credentialId, publicKey: stored.publicKey, counter: stored.counter, userId: stored.partyId, createdAt: stored.createdAt });
+    const result = await this.port.verifyAuthentication(pending.options as PasskeyAuthenticationOptions, input.response, { credentialId: stored.credentialId, publicKey: stored.publicKey, counter: stored.counter, userId: stored.partyId, createdAt: stored.createdAt });
     if (!result.verified) throw new DomainError('UNAUTHENTICATED', 'Passkey assertion rejected');
     await this.repo.updatePasskeyCounter(stored.credentialId, result.newCounter, now.toISOString());
 

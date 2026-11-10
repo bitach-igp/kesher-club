@@ -315,7 +315,7 @@ export function usBankingHandlers(svc: InstitutionUsBanking, stepUp: StepUpServi
     createInstitutionUsBanking: route(async (req) => {
       await svc.requireFlag();
       const { institutionId, partyId } = await own(req, ['admin']);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       return created(await svc.link(institutionId, partyId, req.body, requireIdempotencyKey(req), clientIp(req), req.now));
     }),
     getInstitutionUsBanking: route(async (req) => {

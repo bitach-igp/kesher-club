@@ -69,7 +69,7 @@ describe('auth handlers', () => {
     const { stepUpToken } = s2.body as { stepUpToken: string };
     expect(stepUpToken).toMatch(/^su_/);
     clock.advance(1000);
-    expect(stepUp.isFresh({ partyId: 'x', roles: [], sessionId: 'nope', deviceId: 'd1' }, stepUpToken, clock.now())).toBe(false);
+    expect(await stepUp.isFresh({ partyId: 'x', roles: [], sessionId: 'nope', deviceId: 'd1' }, stepUpToken, clock.now())).toBe(false);
 
     // Replaying the already-rotated refresh token ends the whole device family (REQ-AUTH-007).
     const replay = await call('refreshToken', { deviceId: 'd1' }, { authorization: `Bearer ${a2.tokens.refreshToken}` });

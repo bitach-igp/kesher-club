@@ -166,7 +166,7 @@ export class IntentService {
   async approve(req: HttpRequest, intentId: string, idempotencyKey: string): Promise<ApprovalResult> {
     const principal = req.principal;
     if (!principal) throw new DomainError('UNAUTHENTICATED', 'Sign in required');
-    requireStepUp(this.stepUp, req);
+    await requireStepUp(this.stepUp, req);
     const intent = await this.get(intentId);
     if (!intent || intent.partyId !== principal.partyId) throw new DomainError('NOT_FOUND', 'Intent not found');
     // A replay reuses the first approval's funding choice; one the sweep finished has none stored, so the body's.

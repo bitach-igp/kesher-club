@@ -225,7 +225,7 @@ export function collectionsHandlers(collections: CollectionsService, stepUp: Ste
     listFeeItems: route(async (req) => ok(await collections.listForMember(requirePrincipal(req).partyId))),
     payFeeItem: route(async (req) => {
       const p = requirePrincipal(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       requireIdempotencyKey(req);
       return ok(await collections.pay(p.partyId, req.params['id'] ?? '', req.now));
     }),

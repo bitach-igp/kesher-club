@@ -72,3 +72,8 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-09 | T-0657 | #279 | Sonnet APPROVE (as-built notes added); checked against the real Crowded sandbox | green |
 | 2026-11-09 | T-0681 | #282 | Sonnet REQUEST_CHANGES (sweep missed the read inside release) then fixed per their option, not re-reviewed; CI green | green |
 | 2026-11-09 | T-0073 | #281 | independent review, no blockers; fixed the unproven "app bug" claim (now observed-in-script only), Ctrl-C cleanup and leftover key file, a test title; 23 of 24 screenshots re-taken, T-0612-bad-iban kept (state unreachable since T-0625, owner to decide); recorder signal cleanup not run at runtime | green |
+| 2026-11-10 | T-0043 | #287 | Sonnet APPROVE (first round) | green |
+| 2026-11-10 | T-0041 | #288 | Sonnet REQUEST_CHANGES (branch stale against main after T-0043; no test of the prod guard with Stripe bound) then fixed and re-reviewed APPROVE | green |
+| 2026-11-10 | T-0683 | #290 | Sonnet APPROVE (first round; the funding port had no listing, added as a separate interface) | green |
+| 2026-11-10 | T-0684 | #291 | Sonnet REQUEST_CHANGES twice (unindexed ledger.journal.transfer_id join; payouts could show as false breaks; alarms test count) then fixed and confirmed APPROVE, desktop PASS | green |
+| 2026-11-10 | T-0682 | #289 | Sonnet APPROVE (every requireStepUp and isFresh call site awaited), desktop PASS, main merged in and the delta confirmed | green |

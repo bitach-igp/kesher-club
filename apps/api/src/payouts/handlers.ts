@@ -68,7 +68,7 @@ export function payoutHandlers(payouts: PayoutService, stepUp: StepUpService, d:
   return {
     createPayout: route(async (req) => {
       const p = requirePrincipal(req);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       assertNotRestricted(p, 'payout', req.now);
       const key = requireIdempotencyKey(req);
       const { newPayee, ...view } = await payouts.request(p.partyId, req.body, key, req.now);
@@ -90,7 +90,7 @@ export function payoutHandlers(payouts: PayoutService, stepUp: StepUpService, d:
 
     createInstitutionPayout: route(async (req) => {
       const { p, institutionId } = await financeOf(d, req, req.params['id']);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       assertNotRestricted(p, 'payout', req.now);
       const key = requireIdempotencyKey(req);
       // A withdrawal to the institution's own verified account (T-0625): the payee is never the client's to name.
@@ -106,7 +106,7 @@ export function payoutHandlers(payouts: PayoutService, stepUp: StepUpService, d:
 
     approvePayout: route(async (req) => {
       const { p, institutionId, approver } = await financeOf(d, req, undefined);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       requireIdempotencyKey(req);
       const id = req.params['id'] ?? '';
       await payouts.decide(id, institutionId, approver, 'approve', req.now);
@@ -115,7 +115,7 @@ export function payoutHandlers(payouts: PayoutService, stepUp: StepUpService, d:
 
     rejectPayout: route(async (req) => {
       const { p, institutionId, approver } = await financeOf(d, req, undefined);
-      requireStepUp(stepUp, req);
+      await requireStepUp(stepUp, req);
       requireIdempotencyKey(req);
       const reason = typeof (req.body as { reason?: unknown } | undefined)?.reason === 'string' ? (req.body as { reason: string }).reason.trim() : '';
       if (!reason || reason.length > 500) throw new DomainError('VALIDATION_FAILED', 'A reason of 1 to 500 characters is required');
