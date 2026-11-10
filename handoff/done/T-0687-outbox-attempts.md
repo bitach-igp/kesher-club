@@ -23,3 +23,13 @@ Steps (from repo root, PowerShell on Windows unless stated; a throwaway Postgres
 10. docker rm -f t0687-pg
 Expected: step 3 applies 0031 cleanly; step 4 lists `attempts integer NO 0` and `last_error_class text YES`; step 7 (run within 8 s of step 6, which holds ids 1 and 2) returns the other two ids (3 and 4), never 1 or 2; step 8 prints 4; in step 9 the insert fails with a not-null violation, the first update fails with `current transaction is aborted` (25P02), and after the rollback to the savepoint the second update succeeds and the commit completes: the final select shows id 1 with attempts 1 and last_error_class ConstraintError.
 Report back: the output of steps 3, 4, 7, 8 and 9.
+
+## Result
+PASS, 2026-11-10 07:08 Asia/Jerusalem, runner worktree at a140d2d, Docker 29.9.2, postgres:16.
+- Step 3 as written failed twice for environment reasons, not the migration: `atlas` is not on the PC's PATH, and on a fresh postgres:16 the ledger migrations stop at `revoke ... from club_app` with `pq: role "club_app" does not exist (42704)`. Reran on a fresh container with `db/roles.sql` piped in first (BOM-less `$OutputEncoding`, as in T-0684) and Atlas from the `arigaio/atlas` image on the container's network. Future requests: include the roles.sql step (or use `node db/migrate.mjs --docker`).
+- Step 3: `-- migrating version 0031` / `-> alter table ops.outbox add column attempts integer not null default 0, add column last_error_class text;` / `-- ok`; `-- 31 migrations`, `-- 150 sql statements`, exit 0.
+- Step 4: `attempts | integer | NO | 0` and `last_error_class | text | YES |` (2 rows).
+- Step 7 (about 1.4 s after step 6 started, while it held ids 1 and 2): `BEGIN`, ids `3` and `4` (2 rows), `COMMIT`.
+- Step 8: `unpublished 4`.
+- Step 9 (captured with stderr on a second fresh container, same setup): `BEGIN`, `SAVEPOINT`, `ERROR: null value in column "aggregate" of relation "outbox" violates not-null constraint`, `ERROR: current transaction is aborted, commands ignored until end of transaction block`, `ROLLBACK`, `UPDATE 1`, `COMMIT`; final select `1 | 1 | ConstraintError`.
+- Step 10: container removed.
