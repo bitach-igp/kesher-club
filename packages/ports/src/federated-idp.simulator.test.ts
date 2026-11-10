@@ -7,6 +7,7 @@ federatedIdPContract('simulator', () => new FederatedIdPSimulator(), {
   relayCode: 'ok:noa:relay',
   badCode: 'nope',
   outageCode: 'outage',
+  identity: { good: (provider) => `ok:noa-${provider}:nonce=n1`, rejected: () => ['badaud', 'expired', 'badsig', 'garbage'] },
 });
 
 describe('FederatedIdPSimulator specifics', () => {

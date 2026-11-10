@@ -40,6 +40,15 @@ export class FederatedIdPSimulator implements FederatedIdPPort {
     };
   }
 
+  /** Identity tokens use the code grammar `ok:<subject>[:relay][:nonce=<n>]`; `badaud`, `expired` and `badsig` are rejected like the real checks. */
+  async verifyIdentityToken(provider: FederatedProvider, input: { idToken: string; nonce: string }): Promise<FederatedIdentity> {
+    if (!(provider in ENDPOINTS)) throw new FederatedIdPError('UNSUPPORTED_PROVIDER', provider);
+    if (input.idToken === 'outage') throw new FederatedIdPError('PROVIDER_UNAVAILABLE', 'Simulated IdP outage');
+    if (input.idToken === 'badaud' || input.idToken === 'expired' || input.idToken === 'badsig') throw new FederatedIdPError('INVALID_CODE', `id_token rejected (${input.idToken})`);
+    const { refreshToken: _unused, ...identity } = await this.exchangeCode(provider, { code: input.idToken, nonce: input.nonce, redirectUri: '' });
+    return identity;
+  }
+
   async revoke(provider: FederatedProvider, refreshToken: string, idempotencyKey: string): Promise<{ revoked: true; auditRef: string }> {
     return this.revocations.run(idempotencyKey, async () => {
       this.revoked.push({ provider, refreshToken });

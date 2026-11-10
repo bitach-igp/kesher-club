@@ -26,6 +26,12 @@ export interface FederatedIdPPort {
   authorizationUrl(provider: FederatedProvider, input: { state: string; nonce: string; redirectUri: string }): Promise<FederatedAuthorization>;
   /** Exchanges the authorization code; verifies the id_token nonce. */
   exchangeCode(provider: FederatedProvider, input: { code: string; nonce: string; redirectUri: string }): Promise<FederatedIdentity>;
+  /**
+   * Verifies an identity token the app already holds (native Sign in with Apple / Google): signature against the
+   * provider's keys, issuer, audience (our client id), expiry and the nonce the app sent. Throws INVALID_CODE for a
+   * token that is bad, expired or for another audience, NONCE_MISMATCH for a wrong nonce (T-0691).
+   */
+  verifyIdentityToken(provider: FederatedProvider, input: { idToken: string; nonce: string }): Promise<FederatedIdentity>;
   /** Apple requires calling the revoke endpoint on account deletion (REQ-AUTH-005). Idempotent. */
   revoke(provider: FederatedProvider, refreshToken: string, idempotencyKey: string): Promise<{ revoked: true; auditRef: string }>;
 }
