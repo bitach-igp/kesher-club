@@ -377,6 +377,19 @@ describe('hardening', () => {
       expect(s.waits).toEqual([]);
     });
 
+    it('an ACH create answering another kind of 409 is not retried', async () => {
+      const s = withSleep();
+      const h = harness();
+      const entityRef = await approvedEntity(h);
+      h.fake.fund(entityRef, 100_000n);
+      let seen = 0;
+      const hook = (url: string, init?: RequestInit): Response | undefined =>
+        init?.method === 'POST' && url.endsWith(`/chapters/${entityRef}/payments`) ? (seen++, json(409, { type: 'ResourceConflictError', message: 'The counterparty is being changed' })) : undefined;
+      await expect(restarted(h, hook, { sleep: s.sleep }).sendAch(ach(entityRef, 'key-ach-other409'))).rejects.toMatchObject({ code: 'OUTCOME_UNKNOWN' });
+      expect(seen).toBe(1);
+      expect(s.waits).toEqual([]);
+    });
+
     it('a book transfer does not retry a 409: the fund call keeps its own handling', async () => {
       const s = withSleep();
       const h = harness();
