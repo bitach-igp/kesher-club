@@ -46,3 +46,5 @@ export * from './agent-gateway.ts';
 export * from './il-payinit.ts';
 export * from './il-payinit.simulator.ts';
 export * from './notify.preferences.ts';
+export * from './funding-account.ts';
+export * from './funding-account.simulator.ts';
