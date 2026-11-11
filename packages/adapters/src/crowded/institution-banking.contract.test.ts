@@ -218,6 +218,42 @@ describe('CrowdedInstitutionBankingAdapter over the fake', () => {
   });
 });
 
+describe('idempotency keys on the wire (T-0734)', () => {
+  const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  it('an ACH, a sub-account create and a book transfer reach Crowded with a v4 key and succeed (the live API refuses any other version)', async () => {
+    const h = harness();
+    const platform = await h.adapter.createEntity({ ...NEW('key-entity-0734', 'Israel Global Pay, LLC'), holder: 'platform' });
+    h.fake.decide(platform.entityRef);
+    h.fake.fund(platform.entityRef, 500_000n);
+    const sub = await h.adapter.createSubAccount({ entityRef: platform.entityRef, institutionId: '0190a0a0-0000-7000-8000-000000000101', idempotencyKey: 'key-sub-00734' });
+    await h.adapter.bookTransfer({ fromRef: platform.entityRef, toRef: sub.subAccountRef, amount: money(1_000n, 'USD'), memo: 'KC-7M4QX2HD', idempotencyKey: 'key-book-00734' });
+    await expect(h.adapter.sendAch(ach(platform.entityRef, 'key-ach-00734'))).resolves.toMatchObject({ status: expect.any(String) });
+    const body = (c: { body: unknown }) => (c.body as { data: unknown }).data;
+    const sent = h.fake.calls.filter((c) => c.method === 'POST').map((c) => {
+      const d = body(c) as { idempotencyKey?: string; payments?: { idempotencyKey: string }[] } | { idempotencyKey: string }[];
+      return Array.isArray(d) ? d[0]?.idempotencyKey : 'payments' in d ? d.payments?.[0]?.idempotencyKey : d.idempotencyKey;
+    }).filter((k): k is string => typeof k === 'string');
+    expect(sent.length).toBeGreaterThanOrEqual(3);
+    for (const k of sent) expect(k).toMatch(V4);
+  });
+
+  it('the fake refuses a non-v4 key as the live API does: 400 ValidationError on a payment and a sub-account create', async () => {
+    const h = harness();
+    const platform = await h.adapter.createEntity({ ...NEW('key-entity-0735', 'Israel Global Pay, LLC'), holder: 'platform' });
+    h.fake.decide(platform.entityRef);
+    h.fake.fund(platform.entityRef, 500_000n);
+    const v5 = '0190a0a0-0000-5000-8000-00000000c0de';
+    const post = async (path: string, data: unknown) => {
+      const r = await h.fake.fetch(`${BASE}${path}`, { method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' }, body: JSON.stringify({ data }) });
+      return { status: r.status, body: (await r.json()) as { message: string; type: string } };
+    };
+    const pay = await post(`/chapters/${platform.entityRef}/payments`, { type: 'achCounterparty', payments: [{ counterpartyId: 'cp_kesher', amount: Number(10_000n), description: 'KESHER', addenda: 'KC-7M4QX2HD', sameDay: false, applyFee: true, idempotencyKey: v5 }] });
+    expect(pay).toMatchObject({ status: 400, body: { type: 'ValidationError', message: 'Idempotency key must be a valid UUID v4' } });
+    const sub = await post(`/chapters/${platform.entityRef}/subaccounts`, { name: 'x', email: 'a@b.example', idempotencyKey: v5 });
+    expect(sub).toMatchObject({ status: 400, body: { type: 'ValidationError' } });
+  });
+});
+
 // ---- hardening (Opus review of T-0648) ---------------------------------------------------------------------------------
 
 type Harness = ReturnType<typeof harness>;
