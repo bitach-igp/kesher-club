@@ -8,9 +8,11 @@
 import { toWire, fromWire } from '@kesher/domain';
 import type { Money } from '@kesher/domain';
 import { type Clock, fixedClock, IdempotencyStore, Sequence } from './base.ts';
-import { FundingError, type FundingMethod, type FundingPort, type HostedLoadInput, type FundingStatementPort, type Load, type Refund, type SettledEntry, type SettledPage } from './funding.ts';
+import { assertHttps, FundingError, isPublicIp, type FundingMethod, type FundingPort, type HostedLoadInput, type FundingStatementPort, type Load, type Refund, type SettledEntry, type SettledPage } from './funding.ts';
 
 const ACH_HOLD_BUSINESS_DAYS = 3;
+/** How long a simulated payment page stays open. */
+const HOSTED_PAGE_MS = 60 * 60 * 1000;
 
 /** Adds business days (Mon–Fri) to a date, in UTC. Exported for the wallet's "on hold until" copy. */
 export function addBusinessDays(from: Date, days: number): Date {
@@ -51,15 +53,22 @@ export class FundingSimulator implements FundingPort, FundingStatementPort {
     if (input.amount.minor <= 0n) throw new FundingError('VALIDATION_FAILED', 'Amount must be positive');
     if (input.method === 'rtp') throw new FundingError('UNSUPPORTED_METHOD', 'RTP not enabled in the simulator');
     if (input.method === 'hosted') {
-      const h = input.hosted as { payerIp?: unknown; userConsented?: unknown } | undefined;
-      if (typeof h?.payerIp !== 'string' || h.payerIp === '' || h.userConsented !== true) throw new FundingError('VALIDATION_FAILED', 'A hosted load needs the payer ip and userConsented true');
+      const h = input.hosted as { payerIp?: unknown; userConsented?: unknown; successUrl?: unknown; failureUrl?: unknown } | undefined;
+      if (typeof h?.payerIp !== 'string' || h.userConsented !== true) throw new FundingError('VALIDATION_FAILED', 'A hosted load needs the payer ip and userConsented true');
+      if (!isPublicIp(h.payerIp)) throw new FundingError('VALIDATION_FAILED', 'payerIp must be the payer\'s public IP address');
+      for (const [k, v] of [['successUrl', h.successUrl], ['failureUrl', h.failureUrl]] as const) {
+        if (v !== undefined) {
+          if (typeof v !== 'string') throw new FundingError('VALIDATION_FAILED', `${k} must be a string`);
+          assertHttps(v, k);
+        }
+      }
     }
     return this.idem.run(idempotencyKey, async () => {
       if (input.paymentMethodId === 'pm_declined') throw new FundingError('DECLINED', 'Simulated decline');
       const loadId = this.ids.next();
       const load: Load =
         input.method === 'hosted'
-          ? { loadId, method: 'hosted', amount: input.amount, status: 'requires_action', action: { type: 'payment_page', url: `https://pay.simulator.invalid/${loadId}` } }
+          ? { loadId, method: 'hosted', amount: input.amount, status: 'requires_action', action: { type: 'payment_page', url: `https://pay.simulator.invalid/${loadId}`, expiresAt: new Date(this.clock.now().getTime() + HOSTED_PAGE_MS).toISOString() } }
           : input.method === 'ach'
           ? { loadId, method: 'ach', amount: input.amount, status: 'on_hold', holdUntil: addBusinessDays(this.clock.now(), ACH_HOLD_BUSINESS_DAYS).toISOString() }
           : { loadId, method: input.method, amount: input.amount, status: 'succeeded' };
@@ -158,13 +167,18 @@ export class FundingSimulator implements FundingPort, FundingStatementPort {
 
   async parseWebhook(headers: Record<string, string>, rawBody: string): Promise<{ eventId: string; load: Load }> {
     if (headers['x-sim-signature'] !== 'sim') throw new FundingError('BAD_SIGNATURE', 'Webhook signature invalid');
-    const b = JSON.parse(rawBody) as { eventId: string; loadId: string; status: Load['status']; amount: { minor: string; currency: string } };
+    const b = JSON.parse(rawBody) as { eventId: string; loadId: string; status: Load['status']; method?: 'card' | 'ach'; amount: { minor: string; currency: string } };
     const prior = this.events.get(b.eventId);
     if (prior) return prior;
     const load = this.must(b.loadId);
     if (fromWire(b.amount).minor !== load.amount.minor) throw new FundingError('VALIDATION_FAILED', 'Webhook amount differs from the load');
     const { holdUntil: _hold, ...rest } = load;
-    const next: Load = b.status === 'succeeded' ? { ...rest, status: b.status } : { ...load, status: b.status };
+    let next: Load = b.status === 'succeeded' ? { ...rest, status: b.status } : { ...load, status: b.status };
+    if (load.method === 'hosted' && b.status !== 'requires_action') {
+      // Once paid the load carries the method the payer used (card unless the hook says ach); a failed one has none to report.
+      const { action: _action, ...bare } = next;
+      next = b.status === 'failed' ? bare : { ...bare, method: b.method ?? 'card' };
+    }
     this.loads.set(load.loadId, next);
     if (next.status === 'succeeded' && !this.loadSettledAt.has(load.loadId)) this.loadSettledAt.set(load.loadId, this.clock.now().toISOString());
     const out = { eventId: b.eventId, load: { ...next } };
@@ -173,9 +187,9 @@ export class FundingSimulator implements FundingPort, FundingStatementPort {
   }
 
   /** Control-panel hook: a signed webhook settling or failing a load. */
-  webhookFor(loadId: string, status: 'succeeded' | 'failed'): { headers: Record<string, string>; rawBody: string } {
+  webhookFor(loadId: string, status: 'succeeded' | 'failed', method?: 'card' | 'ach'): { headers: Record<string, string>; rawBody: string } {
     const l = this.must(loadId);
-    return { headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: this.evIds.next(), loadId, status, amount: toWire(l.amount) }) };
+    return { headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: this.evIds.next(), loadId, status, ...(method ? { method } : {}), amount: toWire(l.amount) }) };
   }
 
   async listSettled(input: { from: string; to: string; cursor?: string; limit?: number }): Promise<SettledPage> {
