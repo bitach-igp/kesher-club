@@ -15,7 +15,7 @@ import { FakeStripe, StripeFundingAdapter } from '@kesher/adapters';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { holdKey, loadState, LoadService, releaseKey, runLoad, settleKey, type LoadView } from './loads.ts';
+import { HELD_RECHECK_MS, holdKey, loadState, LoadService, releaseKey, runLoad, settleKey, type LoadView } from './loads.ts';
 
 const seedTransfer = (db: { query: (t: string, p?: readonly unknown[]) => Promise<unknown> }, f: { id: string; kind: string; state: string; market: string; at: Date }) =>
   db.query(
@@ -440,6 +440,63 @@ describe('TST-WAL-006: loads into the chosen purse', () => {
     const stale = (await app.services.loads.stale(NOW, 60_000, 1000)).map((t) => t.id);
     expect(stale).toContain(held);
     expect(stale).not.toContain(settled);
+  });
+
+  describe('a held load is asked about once per interval (T-0558, TST-WAL-003)', () => {
+    const achLoad = (key: string) => load({ method: 'ach', paymentMethodId: 'pm_bank', amount: { minor: '1500', currency: 'USD' } }, key);
+    const staleIds = async (at: Date) => (await app.services.loads.stale(at, 60_000, 1000)).map((t) => t.id);
+    const HOUR = 3_600_000;
+
+    it('a never-asked hold is swept; once asked it waits out HELD_RECHECK_MS, and a due hold is swept every cycle', async () => {
+      expect((await achLoad('load-asked-1')).status).toBe(201);
+      const t = (await app.services.transfers.byKey('load-asked-1'))!;
+      expect(t).toMatchObject({ state: 'pending_hold', holdReleasesAt: '2026-11-05T09:00:00.000Z' });
+      const t0 = new Date(NOW.getTime() + HOUR);
+      expect(await staleIds(t0)).toContain(t.id); // no marker: asked on its first sweep
+      await app.services.loads.recordAsked(t.id, t0);
+      expect(await staleIds(new Date(t0.getTime() + HOUR))).not.toContain(t.id);
+      expect(await staleIds(new Date(t0.getTime() + HELD_RECHECK_MS - 1))).not.toContain(t.id);
+      expect(await staleIds(new Date(t0.getTime() + HELD_RECHECK_MS))).toContain(t.id); // asked again after the interval
+      // A fresh marker never hides a due hold: asked every cycle until it releases.
+      const due = new Date('2026-11-05T09:01:00Z');
+      await app.services.loads.recordAsked(t.id, new Date(due.getTime() - 60_000));
+      expect(await staleIds(due)).toContain(t.id);
+      // The marker is one row per load, upserted.
+      await app.services.loads.recordAsked(t.id, due);
+      expect((await db.query(`select 1 from ops.load_check where transfer_id = $1`, [t.id])).rows).toHaveLength(1);
+    });
+
+    it('the marker is about held loads only: a submitted load with a marker is still swept', async () => {
+      const id = uuidv7();
+      await seedTransfer(db, { id, kind: 'load', state: 'submitted', market: 'US', at: new Date(NOW.getTime() - HOUR) });
+      await app.services.loads.recordAsked(id, NOW);
+      expect(await staleIds(NOW)).toContain(id);
+    });
+
+    it('the marker never moves backwards, and release() itself writes it for an ordinary read (N1, N2)', async () => {
+      expect((await achLoad('load-asked-release-1')).status).toBe(201);
+      const t = (await app.services.transfers.byKey('load-asked-release-1'))!;
+      const at = new Date(NOW.getTime() + HOUR);
+      expect((await app.services.loads.release(t, at)).state).toBe('settled');
+      const marker = async () => (await db.query<{ last_asked_at: Date }>(`select last_asked_at from ops.load_check where transfer_id = $1`, [t.id])).rows[0]!.last_asked_at.getTime();
+      expect(await marker()).toBe(at.getTime());
+      await app.services.loads.recordAsked(t.id, new Date(at.getTime() - HOUR)); // an older clock reading
+      expect(await marker()).toBe(at.getTime());
+      await app.services.loads.recordAsked(t.id, new Date(at.getTime() + HOUR));
+      expect(await marker()).toBe(at.getTime() + HOUR);
+    });
+
+    it('an UNKNOWN_LOAD hold records its marker, opens one case, and is not swept again inside the interval', async () => {
+      expect((await achLoad('load-asked-unknown-1')).status).toBe(201);
+      const t = (await app.services.transfers.byKey('load-asked-unknown-1'))!;
+      const ask = vi.spyOn(host.simulators.funding, 'getLoad').mockRejectedValue(new FundingError('UNKNOWN_LOAD', 'no such load'));
+      const at = new Date(NOW.getTime() + HOUR);
+      expect((await app.services.loads.release(t, at)).state).toBe('pending_hold');
+      ask.mockRestore();
+      expect((await db.query<{ last_asked_at: Date }>(`select last_asked_at from ops.load_check where transfer_id = $1`, [t.id])).rows[0]!.last_asked_at.getTime()).toBe(at.getTime());
+      expect((await db.query(`select 1 from ops.case where kind = 'load_unknown' and dedupe_key = $1`, [`load-unknown:${t.id}`])).rows).toHaveLength(1);
+      expect(await staleIds(new Date(at.getTime() + HOUR))).not.toContain(t.id);
+    });
   });
 
   describe('a fail racing a hold, and a load the vendor does not know (T-0547)', () => {

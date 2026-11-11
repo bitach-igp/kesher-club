@@ -5,7 +5,7 @@
 // vendor about loads whose webhook never came, so a member's money is never stuck on a lost event.
 import { applyVendorState, runLoad, type LoadInput, type LoadRun, type LoadService } from '@kesher/api/wallet/loads';
 import type { Transfer } from '@kesher/api/transfers/service';
-import type { FundingPort } from '@kesher/ports';
+import { FundingError, type FundingPort } from '@kesher/ports';
 
 export const SWEEP_CYCLE_MS = 60_000;
 /** A load the vendor has not confirmed within this long is asked about directly. */
@@ -69,7 +69,20 @@ export class LoadWorkflow {
     const loadId = await this.loads.vendorLoadOf(t.id);
     if (!loadId) return t; // submitted but the pull never returned: the member's rerun with the same key completes it
     asked();
-    const load = await this.port.getLoad(loadId);
+    let load;
+    try {
+      load = await this.port.getLoad(loadId);
+    } catch (e) {
+      // A held load the vendor does not know is a case for people, with its marker, as in `release` (T-0558); any other load keeps throwing.
+      if (t.state === 'pending_hold' && e instanceof FundingError && e.code === 'UNKNOWN_LOAD') {
+        await this.loads.holdUnknown(t, loadId, now);
+        return t;
+      }
+      throw e;
+    }
+    // A held load is asked about once per HELD_RECHECK_MS (T-0558): note this read so the next sweeps leave it alone.
+    // Not a `failed` answer: if failing the load then throws, it must be asked again next cycle.
+    if (t.state === 'pending_hold' && load.status !== 'failed') await this.loads.recordAsked(t.id, now);
     return (await applyVendorState(this.loads, t, load, t.idempotencyKey, now)).transfer;
   }
 }

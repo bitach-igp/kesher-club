@@ -1,4 +1,4 @@
-h1:Ge4YlK4lDvpdhOsZdZonucZSyaBNqiAnwWF+FWPsKks=
+h1:wO6d3SjyKFvBG+ZyxyEi7JxIXohLjoYrXuS44gcYfCw=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
@@ -30,3 +30,4 @@ h1:Ge4YlK4lDvpdhOsZdZonucZSyaBNqiAnwWF+FWPsKks=
 0029_legal_publish_approval_kind.sql h1:oZCdS7gz433dApUb7F+C7QOrhcWIdWegkzlZrsQ3mw8=
 0030_journal_transfer_id_index.sql h1:Jc8EN0MEDQwq9z/g559d+nUXt3inmvERkFKHP9k5VDc=
 0031_outbox_attempts.sql h1:R6f4w1v/8vpsnyhSLokvHxndB25VBNccidBXkxLyJ3I=
+0032_load_last_asked.sql h1:0xk21gA3ZBiHW5MELXUr6iEb36LctS/0RjjAAQG3LbA=
