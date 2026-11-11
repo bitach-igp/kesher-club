@@ -326,4 +326,17 @@
 | [T-0694](T-0694.md) | AUTH | A member's Apple or Google link is stored, with the Apple refresh token sealed | REQ-AUTH-004, REQ-AUTH-005 | later |
 | [T-0695](T-0695.md) | INS | A Crowded 409 DUPLICATE_REQUEST on an ACH means in flight: retry the same key before calling the outcome unknown | REQ-INS-024 | later |
 | [T-0696](T-0696.md) | INS | A sub-account create whose outcome is unknown is looked up by name, not retried | REQ-INS-024 | later |
+| [T-0697](T-0697.md) | WAL | FundingPort can start a hosted load and answer a pending one with a payment-page action | REQ-WAL-002 | later |
+| [T-0698](T-0698.md) | WAL | FundingAccountPort: ensure a member's contact and wallet account at the funding vendor, with KYC pass-through | REQ-WAL-002 | later |
+| [T-0699](T-0699.md) | INS | The Crowded adapter creates a member's contact and wallet account, against the fake and the gated sandbox suite | REQ-INS-022 | later |
+| [T-0700](T-0700.md) | WAL | The Crowded funding adapter starts a load as a collection and an intent and reads it back | REQ-WAL-002, REQ-WAL-003 | later |
+| [T-0703](T-0703.md) | WAL | Crowded payment events move a hosted load: re-read, then hold, credit or fail, replay-safe | REQ-WAL-002, REQ-WAL-003 | later |
+| [T-0704](T-0704.md) | WAL | The funding port can move vendor-held money into the member's wallet account: release-funds, then a book payment | REQ-WAL-003 | later |
+| [T-0705](T-0705.md) | WAL | A load credits the vendor wallet before its release journal, a refused account cannot load, and a return after release opens a case | REQ-WAL-003, REQ-WAL-002 | later |
+| [T-0706](T-0706.md) | WAL | A closure refund of a load Crowded cannot refund goes to a case, not to a refund call | REQ-WAL-005 | later |
+| [T-0707](T-0707.md) | LED | The nightly partner reconciliation can read Crowded's collect payments as the funding statement | REQ-LED-004 | later |
+| [T-0708](T-0708.md) | LED | A nightly funding-side proof: loads credited equal what Crowded moved into member wallets, with balance drift reported | REQ-LED-004 | later |
+| [T-0709](T-0709.md) | WAL | PROVIDER_FUNDING can be `crowded`: config keys, registry binding, production guard, Terraform and setup docs | REQ-WAL-002 | later |
+| [T-0714](T-0714.md) | WAL | POST /loads accepts a hosted method, answers with the payment-page action, and a load can be read back | REQ-WAL-002, REQ-WAL-003 | later |
+| [T-0715](T-0715.md) | WAL | Add money opens the Crowded payment page and shows the load as pending until the vendor says it settled (needs a design) | REQ-WAL-002, REQ-WAL-003 | later |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.

@@ -196,6 +196,23 @@ Each of these created sandbox data (left behind: counterparty 2405860, ACH payme
 - **Same key, different body** answered `500 InternalServerErrorException` (not a replay, unlike ACH payments, which replay the original). Our adapter derives the key from the transfer key, so the body never changes under a key.
 - Left in the sandbox: sub-accounts 870fbf10 and cda34a3b (with owners `probe-sub@example.com` and `probe-sub2@example.com`); there is no delete route we know of.
 
+## Funding rail without Stripe (proposed)
+[ADR-018](../../adr/ADR-018.md) (proposed, owner to ratify) asks whether Crowded can be the rail that credits a member's wallet if Stripe
+is dropped: each member a contact with a `wallet` account, a load a collection plus an intent paid on the hosted page, our hold, then
+`release-funds` and a book payment into the member's account. Cards T-0697 to T-0715 (not contiguous, listed in the ADR). Nothing below is
+answered; numbering continues after question 28 and does not change the existing ones.
+
+29. **Fund holding:** is it enabled for our partner (release-funds, move-fees), and what hold length do they advise for a bank transfer?
+30. **Apple Pay and Google Pay:** are they available on the hosted or embedded payment page? (Not mentioned anywhere in the docs.)
+31. **Member wallet accounts:** does the `wallet` product ("account for business expenses") suit consumers under our program; what KYC steps and ACH limits per account (`include=limits`); does Crowded onboard members itself through a link?
+32. **Contact identity:** is `externalId` (or any metadata) settable on a contact? Contacts are unique by mobile within a chapter, so how do two people with one mobile coexist?
+33. **Fees:** who pays the processing fee on a member's payment (`feeCovered`), is the REST `amount` gross and the webhook `amount` net (question 13), and which entity is invoiced the platform fee (question 26)?
+34. **Returns after release:** who bears an ACH return that arrives after we released the money (is the chapter account debited), and what is the return window?
+35. **Settlement time:** which field of a collect payment says when it succeeded (the listing filters by `createdAt` only), and which account holds held collection funds (`product: hold`)?
+36. **Third-party funds:** question 18 applies in full: a member's money would sit in a platform chapter. Until it is answered this rail is not ready for production.
+37. **Sandbox:** can a hosted collection payment be driven to `Succeeded` and `Returned` in the sandbox (the simulator covers only payments we originate, question 15)?
+38. **Saved methods:** is there any way to charge a member's saved card or bank account later (auto-reload), or is every payment on the page?
+
 ## Reading their API docs
 Crowded's docs are a Postman collection. `node tools/crowded-docs.mjs` fetches every published view and renders it to markdown, so a question about their API is answered by grep and cited by line, not from memory:
 [postman-2sBXwnuYMb.md](postman-2sBXwnuYMb.md) (the link Crowded sent on 2026-11-10, 68 requests) and [postman-2sBYArTsS6.md](postman-2sBYArTsS6.md) (85 requests, published 2026-08-20; api-inventory.md was written from it).
