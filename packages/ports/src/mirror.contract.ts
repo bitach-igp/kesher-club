@@ -3,7 +3,9 @@
 //   in order, each echoing the leg the vendor holds; ILS, zero, negative amounts, an empty or oversize batch, an empty
 //   memo, a short key or a key or memo repeated inside the batch refuse the whole batch (VALIDATION_FAILED) before the provider;
 // - books a key once: a replay answers `booked` with the same paymentRef and the FIRST leg, even when the new body differs;
-// - refuses one leg without stopping the others (continue-on-error), with a code from the closed set;
+// - refuses one leg without stopping the others (continue-on-error), with a code from the closed set. A refusal the vendor
+//   persists (a Rejected overdraw) has a paymentRef, is listed as failed and is found by memo; a refusal before
+//   persistence (validation, unknown or unavailable account) has no paymentRef, is never listed and reads not_found;
 // - refuses a memo over 80 printable ASCII characters (the vendor never sees it);
 // - finds a leg by chapter and memo without moving anything (the vendor has no lookup by key), so a lost answer is
 //   recovered by memo before any resend; two payments with one memo are `ambiguous`;
@@ -154,29 +156,52 @@ export function mirrorContract<P extends MirrorPort>(name: string, make: () => P
       expect(await bal(port)).toBe(3_500n);
       expect(await port.accountBalance('acct_m2')).toMatchObject({ status: 'frozen' });
       expect(await port.accountBalance('acct_m3')).toMatchObject({ status: 'closed' });
-      // A refused leg is final for its key: a replay answers the same refusal.
+      // Refused before persistence (unavailable, unknown): no payment, nothing to read back or list.
+      for (const k of ['key-leg-0002', 'key-leg-0003', 'key-leg-0005']) {
+        expect(res.find((r) => r.leg?.memo === `KC-${k}`)).toBeUndefined();
+        expect(await port.readBack({ chapterRef, memo: `KC-${k}` })).toEqual({ status: 'not_found' });
+      }
+      expect(res[1]?.paymentRef).toBeUndefined();
+      expect(res[2]?.paymentRef).toBeUndefined();
+      const listed: string[] = [];
+      for await (const p of port.payments({ chapterRef, from: FROM, to: TO })) listed.push(p.memo);
+      expect(listed.sort()).toEqual(['KC-key-leg-0001', 'KC-key-leg-0004', 'KC-key-leg-0006']);
+      // A persisted refusal (the overdraw) has a payment and is final for its key: a replay answers the same refusal.
+      expect(res[0]?.paymentRef).toBeTruthy();
       const [again] = await port.bookBatch([leg('key-leg-0001', { direction: 'to_checking', amount: money(5_000n, 'USD') })], chapterRef);
       expect(again).toMatchObject({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
     });
 
-    it('reports the vendor reason code a leg is refused with, and reads it back by memo', async () => {
+    it('a persisted refusal (PAYMENT_FAILED) has a payment, is listed as failed and is found by memo; an unpersisted one (VALIDATION_ERROR) is none of these', async () => {
       const port = await seeded();
       opts.refuse(port, 'key-leg-0001', 'PAYMENT_FAILED');
-      const [r] = await port.bookBatch([leg('key-leg-0001')], chapterRef);
-      expect(r).toMatchObject({ status: 'refused', reasonCode: 'PAYMENT_FAILED' });
-      expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0001' })).toMatchObject({ status: 'found', result: { status: 'refused', reasonCode: 'PAYMENT_FAILED' } });
+      opts.refuse(port, 'key-leg-0002', 'VALIDATION_ERROR');
+      const [persisted, unpersisted] = await port.bookBatch([leg('key-leg-0001'), leg('key-leg-0002')], chapterRef);
+      expect(persisted).toMatchObject({ status: 'refused', reasonCode: 'PAYMENT_FAILED' });
+      expect(persisted?.paymentRef).toBeTruthy();
+      expect(unpersisted).toMatchObject({ status: 'refused', reasonCode: 'VALIDATION_ERROR' });
+      expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0001' })).toMatchObject({ status: 'found', result: { status: 'refused', reasonCode: 'PAYMENT_FAILED', paymentRef: persisted?.paymentRef } });
+      expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0002' })).toEqual({ status: 'not_found' });
+      const listed: MirrorPayment[] = [];
+      for await (const p of port.payments({ chapterRef, from: FROM, to: TO })) listed.push(p);
+      expect(listed.map((p) => [p.paymentRef, p.status])).toEqual([[persisted?.paymentRef, 'failed']]);
       expect(await bal(port)).toBe(10_000n);
     });
 
-    it('maps a vendor item Rejected to refused and a Pending or unrecognised one to unknown, never booked', async () => {
+    it('maps a vendor item Rejected (InsufficientFunds) to a persisted refusal, and a Pending or unrecognised one to unknown, never booked', async () => {
       const port = await seeded();
       opts.vendorStatus(port, 'key-leg-0001', 'Rejected');
       opts.vendorStatus(port, 'key-leg-0002', 'Pending');
       const [rejected, pending] = await port.bookBatch([leg('key-leg-0001'), leg('key-leg-0002', { accountRef: 'acct_m2' })], chapterRef);
       expect(rejected).toMatchObject({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
+      expect(rejected?.paymentRef).toBeTruthy();
       expect(pending?.status).toBe('unknown');
       expect(await bal(port)).toBe(10_000n);
+      expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0001' })).toMatchObject({ status: 'found', result: { status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS', paymentRef: rejected?.paymentRef } });
       expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0002' })).toMatchObject({ status: 'found', result: { status: 'unknown' } });
+      const listed: MirrorPayment[] = [];
+      for await (const p of port.payments({ chapterRef, from: FROM, to: TO })) listed.push(p);
+      expect(listed.find((p) => p.paymentRef === rejected?.paymentRef)).toMatchObject({ status: 'failed', memo: 'KC-key-leg-0001' });
     });
 
     it('recovers a leg whose answer was lost by reading it back by memo, moving nothing', async () => {
@@ -195,11 +220,31 @@ export function mirrorContract<P extends MirrorPort>(name: string, make: () => P
       expect(await bal(port)).toBe(12_500n);
     });
 
-    it('answers ambiguous when two payments carry one memo', async () => {
+    it('answers ambiguous, with every candidate, when two payments carry one memo; the leg and since narrow the match', async () => {
       const port = await seeded();
-      await port.bookBatch([leg('key-leg-0001', { memo: 'KC-same' })], chapterRef);
-      await port.bookBatch([leg('key-leg-0002', { memo: 'KC-same' })], chapterRef);
-      expect(await port.readBack({ chapterRef, memo: 'KC-same' })).toEqual({ status: 'ambiguous' });
+      const [first] = await port.bookBatch([leg('key-leg-0001', { memo: 'KC-same' })], chapterRef);
+      const [second] = await port.bookBatch([leg('key-leg-0002', { memo: 'KC-same', amount: money(700n, 'USD') })], chapterRef);
+      const read = await port.readBack({ chapterRef, memo: 'KC-same' });
+      expect(read.status).toBe('ambiguous');
+      if (read.status === 'ambiguous') expect(read.candidates.map((c) => c.paymentRef).sort()).toEqual([first?.paymentRef, second?.paymentRef].sort());
+      expect(await port.readBack({ chapterRef, memo: 'KC-same', amount: money(700n, 'USD') })).toMatchObject({ status: 'found', result: { paymentRef: second?.paymentRef } });
+      expect(await port.readBack({ chapterRef, memo: 'KC-same', amount: money(1n, 'USD') })).toEqual({ status: 'not_found' });
+      expect(await port.readBack({ chapterRef, memo: 'KC-same', accountRef: 'acct_m2' })).toEqual({ status: 'not_found' });
+      expect(await port.readBack({ chapterRef, memo: 'KC-same', direction: 'to_checking' })).toEqual({ status: 'not_found' });
+      expect(await port.readBack({ chapterRef, memo: 'KC-same', since: new Date('2099-01-01T00:00:00Z') })).toEqual({ status: 'not_found' });
+      expect(await port.readBack({ chapterRef, memo: 'KC-same', since: new Date('2000-01-01T00:00:00Z') })).toMatchObject({ status: 'ambiguous' });
+    });
+
+    it('a refused leg retried under a new key and the same memo is ambiguous, with both candidates to act on; a new memo is not', async () => {
+      const port = await seeded(10_000n, 1_000n);
+      const [refused] = await port.bookBatch([leg('key-leg-0001', { amount: money(5_000n, 'USD') })], chapterRef); // overdraws checking
+      expect(refused).toMatchObject({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
+      await port.bookBatch([leg('key-leg-0002', { memo: 'KC-key-leg-0001', amount: money(500n, 'USD') })], chapterRef);
+      const read = await port.readBack({ chapterRef, memo: 'KC-key-leg-0001' });
+      expect(read.status).toBe('ambiguous');
+      if (read.status === 'ambiguous') expect(read.candidates.map((c) => c.status).sort()).toEqual(['booked', 'refused']);
+      await port.bookBatch([leg('key-leg-0003', { memo: 'KC-key-leg-0001-a2', amount: money(500n, 'USD') })], chapterRef);
+      expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0001-a2' })).toMatchObject({ status: 'found', result: { status: 'booked' } });
     });
 
     it('a request whose answer is lost is OUTCOME_UNKNOWN; its legs are found by memo and a resend of the same keys books nothing more', async () => {
@@ -240,6 +285,8 @@ export function mirrorContract<P extends MirrorPort>(name: string, make: () => P
       expect(rows[5]?.paymentRef).toBe(failed?.paymentRef);
       const none: MirrorPayment[] = [];
       for await (const p of port.payments({ chapterRef, from: new Date('2020-01-01T00:00:00Z'), to: new Date('2020-02-01T00:00:00Z') })) none.push(p);
+      expect(none).toEqual([]);
+      for await (const p of port.payments({ chapterRef, from: FROM, to: TO, since: new Date('2099-01-01T00:00:00Z') })) none.push(p);
       expect(none).toEqual([]);
     });
 

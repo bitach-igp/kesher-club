@@ -78,6 +78,35 @@ describe('MirrorSimulator', () => {
     expect((await sim.bookBatch([leg('key-leg-0002')], CHAPTER))[0]).toMatchObject({ status: 'refused', reasonCode: 'PAYMENT_FAILED' });
   });
 
+  it('refuse takes no DUPLICATE_PAYMENT, and a hold must be a non-negative bigint within the balance', () => {
+    const sim = open();
+    expect(() => sim.refuse('key-leg-0001', 'DUPLICATE_PAYMENT' as never)).toThrow();
+    sim.openAccount('acct_m2', 500n);
+    for (const bad of [-1n, 501n, 5 as unknown as bigint]) expect(() => sim.setHold('acct_m2', bad)).toThrow();
+    sim.setHold('acct_m2', 500n);
+  });
+
+  it('a refused batch (validation) consumes no fixture: not loseBatch, not vendorStatus, not refuse', async () => {
+    const sim = open();
+    sim.loseBatch();
+    sim.vendorStatus('key-leg-0001', 'Rejected');
+    await expect(sim.bookBatch([leg('key-leg-0001'), leg('key-leg-0001')], CHAPTER)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    sim.outage(true);
+    await expect(sim.bookBatch([leg('key-leg-0001')], CHAPTER)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    sim.outage(false);
+    await expect(sim.bookBatch([leg('key-leg-0001')], CHAPTER)).rejects.toMatchObject({ code: 'OUTCOME_UNKNOWN' });
+    // The Rejected fixture was used by that batch (persisted, INSUFFICIENT_FUNDS) and loseBatch is spent.
+    expect((await sim.bookBatch([leg('key-leg-0001')], CHAPTER))[0]).toMatchObject({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
+  });
+
+  it('loseBatch is consumed by the next batch that passes validation, even one made only of replays', async () => {
+    const sim = open();
+    await sim.bookBatch([leg('key-leg-0001')], CHAPTER);
+    sim.loseBatch();
+    await expect(sim.bookBatch([leg('key-leg-0001')], CHAPTER)).rejects.toMatchObject({ code: 'OUTCOME_UNKNOWN' });
+    expect((await sim.bookBatch([leg('key-leg-0001')], CHAPTER))[0]?.status).toBe('booked');
+  });
+
   it('fixtures are one-shot, survive a refused batch, and clearFixtures drops the unused', async () => {
     const sim = open();
     sim.refuse('key-leg-0001', 'PAYMENT_FAILED');
@@ -103,7 +132,9 @@ describe('MirrorSimulator', () => {
 describe('mirrorItemResult', () => {
   it('Sent is booked, Rejected is refused whatever else the item says, anything else is unknown', () => {
     expect(mirrorItemResult({ paymentStatus: 'Sent', paymentRef: 'p1' })).toEqual({ status: 'booked', paymentRef: 'p1' });
-    expect(mirrorItemResult({ paymentStatus: 'Rejected' })).toEqual({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
+    expect(mirrorItemResult({ paymentStatus: 'Rejected' })).toEqual({ status: 'refused', reasonCode: 'PAYMENT_FAILED' });
+    expect(mirrorItemResult({ paymentStatus: 'Rejected', reasonCode: 'InsufficientFunds' })).toEqual({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
+    expect(mirrorItemResult({ paymentStatus: 'Rejected', reasonCode: 'Something' })).toMatchObject({ reasonCode: 'PAYMENT_FAILED' });
     expect(mirrorItemResult({ paymentStatus: 'Rejected', reasonCode: 'ACCOUNT_UNAVAILABLE' })).toMatchObject({ status: 'refused', reasonCode: 'ACCOUNT_UNAVAILABLE' });
     for (const s of ['Pending', 'Returned', '', 'sent']) expect(mirrorItemResult({ paymentStatus: s }).status).toBe('unknown');
   });

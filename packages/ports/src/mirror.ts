@@ -32,7 +32,11 @@ export interface MirrorLeg {
   accountRef: string;
   /** USD, positive. */
   amount: Money;
-  /** Required, at most 80 printable ASCII characters, unique per leg (the correlation id, carries our KC- reference). */
+  /**
+   * Required, at most 80 printable ASCII characters, unique per leg (the correlation id, carries our KC- reference).
+   * A retry of a leg that ended refused, under a NEW key, MUST use a different memo (an attempt suffix, as the planner
+   * builds it): the same memo under two keys makes `readBack` answer `ambiguous`.
+   */
   memo: string;
   /** 8 to 128 characters of letters, digits and `._:-`, unique per leg. */
   idempotencyKey: string;
@@ -46,11 +50,22 @@ export interface MirrorStoredLeg {
   memo: string;
 }
 
+/** The closed set of refusal reasons a leg can end with. */
+export type MirrorReasonCode = 'INSUFFICIENT_FUNDS' | 'ACCOUNT_UNAVAILABLE' | 'NOT_FOUND' | 'VALIDATION_ERROR' | 'PAYMENT_FAILED';
+
 /**
- * The closed set of refusal reasons. `DUPLICATE_PAYMENT` is the vendor's answer to a reused key: it is NOT a final
- * refusal; the adapter resolves it by reading the payment back and answering what the first payment became.
+ * The vendor's error code for a reused key. Adapter-internal and deliberately NOT a `MirrorReasonCode`: it is never a
+ * final refusal. The adapter resolves it by reading the payment back and answering what the first payment became.
  */
-export type MirrorReasonCode = 'INSUFFICIENT_FUNDS' | 'ACCOUNT_UNAVAILABLE' | 'NOT_FOUND' | 'VALIDATION_ERROR' | 'PAYMENT_FAILED' | 'DUPLICATE_PAYMENT';
+export type MirrorDuplicateCode = 'DUPLICATE_PAYMENT';
+
+/**
+ * Which refusals the vendor persists (live sandbox, 2026-11-11). A payment the vendor Rejected (an overdraw:
+ * `InsufficientFunds`, or `PAYMENT_FAILED`) gets a payment id and is listed with status `failed`, so it has a
+ * `paymentRef`, appears in `payments()` and is found by `readBack`. A refusal before persistence (validation: the wrong
+ * side, `NOT_FOUND`, `ACCOUNT_UNAVAILABLE`, `VALIDATION_ERROR`) gets no id and is never listed: `readBack` answers `not_found`.
+ */
+export const MIRROR_PERSISTED_REFUSALS: readonly MirrorReasonCode[] = ['INSUFFICIENT_FUNDS', 'PAYMENT_FAILED'];
 
 /**
  * `booked`: the money moved. `refused`: it did not and will not for this key. `unknown`: the vendor may hold it (the
@@ -64,7 +79,11 @@ export interface MirrorLegResult {
   leg?: MirrorStoredLeg;
 }
 
-export type MirrorReadBack = { status: 'found'; result: MirrorLegResult } | { status: 'not_found' } | { status: 'ambiguous' };
+export type MirrorReadBack =
+  | { status: 'found'; result: MirrorLegResult }
+  | { status: 'not_found' }
+  /** More than one payment matched: every candidate (paymentRef, status, leg) so the caller can resolve it. */
+  | { status: 'ambiguous'; candidates: MirrorLegResult[] };
 
 export type MirrorAccountStatus = 'open' | 'frozen' | 'closed';
 
@@ -121,8 +140,9 @@ export interface MirrorPort {
    *   or a memo repeated inside the batch.
    * - A refused leg does not stop the others. A memo over 80 characters or outside printable ASCII is refused
    *   `VALIDATION_ERROR` for that leg; the vendor never saw it, so a read-back finds nothing.
-   * - A key already booked answers its first result with the stored leg (see `MirrorStoredLeg`); a refused key answers
-   *   its refusal again.
+   * - A key already persisted answers its first result with the stored leg (see `MirrorStoredLeg`), a persisted
+   *   refusal included. A refusal before persistence (see `MIRROR_PERSISTED_REFUSALS`) carries no `paymentRef` or `leg`
+   *   and leaves nothing for the key: the vendor decides afresh on a resend.
    * - The vendor's own item status maps through `mirrorItemResult`: `Sent` is `booked`; `Rejected` is `refused`,
    *   never `booked`, even on an item the vendor called a success; `Pending` or anything unrecognised is `unknown`.
    * - Any failure after the request may have been sent (timeout, 5xx, connection loss, an unreadable answer) is
@@ -133,15 +153,23 @@ export interface MirrorPort {
   bookBatch(legs: MirrorLeg[], chapterRef: string): Promise<MirrorLegResult[]>;
   /**
    * Finds a leg of the chapter by its memo, moving nothing: `found` with what the vendor holds, `not_found`, or
-   * `ambiguous` when more than one payment carries the memo (resolve by hand: a memo must be unique per leg).
+   * `ambiguous` (with every candidate) when more than one payment matches. `accountRef`, `direction` and `amount`
+   * optionally narrow the match (the adapter compares source, destination and amount); `since` bounds the scan of the
+   * vendor's list to payments created at or after it (a reconciler window). Notes: a leg refused before persistence is
+   * never listed, so it reads `not_found`; the vendor may normalise or truncate a description, which is unknown, so an
+   * adapter matches on the memo as sent and treats a miss as `not_found`, not as proof nothing booked unless the
+   * request provably never left; a payment still Pending when read is `unknown`.
    */
-  readBack(input: { chapterRef: string; memo: string }): Promise<MirrorReadBack>;
+  readBack(input: { chapterRef: string; memo: string; accountRef?: string; direction?: MirrorDirection; amount?: Money; since?: Date }): Promise<MirrorReadBack>;
   /** The chapter checking account. */
   checkingBalance(chapterRef: string): Promise<MirrorBalance>;
   /** A member account. */
   accountBalance(accountRef: string): Promise<MirrorBalance>;
-  /** The chapter's book payments with `from <= createdAt < to`, across pages, each exactly once (what a reconciler joins on). */
-  payments(input: { chapterRef: string; from: Date; to: Date }): AsyncIterable<MirrorPayment>;
+  /**
+   * The chapter's book payments with `from <= createdAt < to`, across pages, each exactly once (what a reconciler joins
+   * on). `since` is the same lower bound as `from` (the later of the two applies), so a reconciler window can bound both calls.
+   */
+  payments(input: { chapterRef: string; from: Date; to: Date; since?: Date }): AsyncIterable<MirrorPayment>;
   /** Account transactions with `from <= at < to`, across pages, each exactly once. No payment reference (see `MirrorMovement`). */
   movements(input: { from: Date; to: Date }): AsyncIterable<MirrorMovement>;
 }
@@ -190,15 +218,22 @@ export function validateMirrorBatch(legs: MirrorLeg[]): void {
   }
 }
 
+/** The vendor's `InsufficientFunds` is INSUFFICIENT_FUNDS; one of our own codes stays; anything else, or none, is PAYMENT_FAILED. */
+function mirrorReason(code: string | undefined): MirrorReasonCode {
+  if (code === 'InsufficientFunds') return 'INSUFFICIENT_FUNDS';
+  const ours: MirrorReasonCode[] = ['INSUFFICIENT_FUNDS', 'ACCOUNT_UNAVAILABLE', 'NOT_FOUND', 'VALIDATION_ERROR', 'PAYMENT_FAILED'];
+  return ours.find((c) => c === code) ?? 'PAYMENT_FAILED';
+}
+
 /**
  * Maps the vendor's per-item `paymentStatus` to a leg result, the one rule an adapter and the simulator share:
- * `Sent` is booked; `Rejected` is refused (`reasonCode`, default INSUFFICIENT_FUNDS), never booked, even on an item the
+ * `Sent` is booked; `Rejected` is refused, never booked, even on an item the
  * vendor reported as a success; `Pending` and anything unrecognised is `unknown` (resolve by `readBack`).
  */
-export function mirrorItemResult(item: { paymentStatus: string; reasonCode?: MirrorReasonCode; paymentRef?: string; leg?: MirrorStoredLeg }): MirrorLegResult {
+export function mirrorItemResult(item: { paymentStatus: string; reasonCode?: string; paymentRef?: string; leg?: MirrorStoredLeg }): MirrorLegResult {
   const extra = { ...(item.paymentRef ? { paymentRef: item.paymentRef } : {}), ...(item.leg ? { leg: item.leg } : {}) };
   if (item.paymentStatus === 'Sent') return { status: 'booked', ...extra };
-  if (item.paymentStatus === 'Rejected') return { status: 'refused', reasonCode: item.reasonCode ?? 'INSUFFICIENT_FUNDS', ...extra };
+  if (item.paymentStatus === 'Rejected') return { status: 'refused', reasonCode: mirrorReason(item.reasonCode), ...extra };
   return { status: 'unknown', ...extra };
 }
 

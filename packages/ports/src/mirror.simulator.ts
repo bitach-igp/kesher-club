@@ -2,23 +2,29 @@
 // The panel's hooks: `openChapter(chapterRef, minor)` makes a checking account, `openAccount(accountRef, minor)` a member's
 // open account, `setStatus(ref, 'open' | 'frozen' | 'closed')` (an unopened reference is an error), `setHold(ref, minor)`.
 // A payment is kept with the leg as first sent (a reused key with another body replays the FIRST payment, as the vendor does).
-// Deterministic fixtures, one-shot (consumed the first time their key is processed; `clearFixtures()` drops the unused):
-// - `refuse(key, code)`: the leg is refused with that code once sent (the payment is listed as failed);
-// - `vendorStatus(key, 'Rejected' | 'Pending')`: the vendor answers a success item whose paymentStatus is Rejected (refused,
-//   INSUFFICIENT_FUNDS unless `refuse` names another) or Pending (unknown, nothing moves until `settle(key)`);
+// Deterministic fixtures, one-shot (consumed the first time their key is processed; `clearFixtures()` drops the unused;
+// a batch refused by validation, or by an outage, consumes none):
+// - `refuse(key, code)`: the leg is refused with that code once sent. INSUFFICIENT_FUNDS and PAYMENT_FAILED are PERSISTED
+//   (a payment id, listed as failed, found by readBack); VALIDATION_ERROR, NOT_FOUND and ACCOUNT_UNAVAILABLE are refused
+//   before persistence (no id, never listed, readBack not_found), as the vendor does. DUPLICATE_PAYMENT is rejected (never a final refusal);
+// - `vendorStatus(key, 'Rejected' | 'Pending')`: the vendor answers an item whose paymentStatus is Rejected (reasonCode
+//   InsufficientFunds: refused INSUFFICIENT_FUNDS, persisted, unless `refuse` names another) or Pending (unknown, nothing
+//   moves until `settle(key)`);
 // - `loseAnswer(key)`: the leg books, then its answer is lost (`unknown`); a read-back or a resend finds it booked;
-// - `loseBatch()`: the next batch books every leg it can, then answers OUTCOME_UNKNOWN for the whole request;
+// - `loseBatch()`: the next batch that passes validation books every leg it can, then answers OUTCOME_UNKNOWN for the whole
+//   request, even when all its legs are replays (the fixture is consumed by that batch);
 // - `outage(on)`: every call answers PROVIDER_UNAVAILABLE and nothing moves (the request never left).
 // Precedence on one key: `refuse` beats `vendorStatus` beats `loseAnswer` (which is dropped).
 // A leg is refused INSUFFICIENT_FUNDS when the account it draws from has less available (balance minus hold),
 // NOT_FOUND for an account the vendor does not know, ACCOUNT_UNAVAILABLE when either side is frozen or closed, and
 // VALIDATION_ERROR for a memo over 80 printable ASCII characters (the vendor never saw it: not stored, nothing to read back).
-// Every refusal the vendor saw is kept as a failed payment, a simplification (the vendor may not list validation errors).
-import { money } from '@kesher/domain';
+// Only a persisted refusal is kept as a failed payment; a replay of a key that was refused before persistence is decided afresh.
+import { type Money, money } from '@kesher/domain';
 import { type Clock, fixedClock, Sequence } from './base.ts';
 import {
   type MirrorAccountStatus,
   type MirrorBalance,
+  type MirrorDirection,
   type MirrorLeg,
   type MirrorLegResult,
   type MirrorMovement,
@@ -26,6 +32,7 @@ import {
   type MirrorPort,
   type MirrorReadBack,
   type MirrorReasonCode,
+  MIRROR_PERSISTED_REFUSALS,
   MirrorError,
   isMirrorMemo,
   mirrorItemResult,
@@ -85,9 +92,12 @@ export class MirrorSimulator implements MirrorPort {
     this.known(ref).status = status;
   }
   setHold(ref: string, minor: bigint): void {
-    this.known(ref).hold = minor;
+    const a = this.known(ref);
+    if (typeof minor !== 'bigint' || minor < 0n || minor > a.balance) throw new Error('MirrorSimulator: a hold is a non-negative bigint, at most the balance');
+    a.hold = minor;
   }
   refuse(key: string, code: MirrorReasonCode): void {
+    if ((code as string) === 'DUPLICATE_PAYMENT') throw new Error('MirrorSimulator: DUPLICATE_PAYMENT is not a refusal a leg can end with');
     this.refusals.set(key, code);
   }
   vendorStatus(key: string, status: 'Rejected' | 'Pending'): void {
@@ -141,7 +151,7 @@ export class MirrorSimulator implements MirrorPort {
 
   private echo(p: Payment): MirrorLegResult {
     const { accountRef, direction, amount, memo } = p.leg;
-    return mirrorItemResult({ paymentStatus: PAYMENT_STATUS[p.status], ...(p.reasonCode ? { reasonCode: p.reasonCode } : {}), paymentRef: p.paymentRef, leg: { accountRef, direction, amount, memo } });
+    return mirrorItemResult({ paymentStatus: PAYMENT_STATUS[p.status], ...(p.reasonCode ? { reasonCode: p.reasonCode === 'INSUFFICIENT_FUNDS' ? 'InsufficientFunds' : p.reasonCode } : {}), paymentRef: p.paymentRef, leg: { accountRef, direction, amount, memo } });
   }
 
   /** Why the leg cannot move now, or undefined. */
@@ -180,6 +190,8 @@ export class MirrorSimulator implements MirrorPort {
     this.lost.delete(key);
     const p: Payment = { paymentRef: this.ids.pay.next(), key, chapterRef, leg: { ...l }, status: 'sent', at: this.clock.now() };
     const reason = forced ?? (vendor === 'Rejected' ? 'INSUFFICIENT_FUNDS' : vendor === 'Pending' ? undefined : this.refusalFor(l, chapterRef));
+    // Refused before persistence: no payment id, not listed, nothing kept for the key.
+    if (reason && !MIRROR_PERSISTED_REFUSALS.includes(reason)) return { status: 'refused', reasonCode: reason };
     if (reason) {
       p.status = 'failed';
       p.reasonCode = reason;
@@ -191,12 +203,20 @@ export class MirrorSimulator implements MirrorPort {
     return this.echo(p);
   }
 
-  async readBack(input: { chapterRef: string; memo: string }): Promise<MirrorReadBack> {
+  async readBack(input: { chapterRef: string; memo: string; accountRef?: string; direction?: MirrorDirection; amount?: Money; since?: Date }): Promise<MirrorReadBack> {
     this.up();
-    const found = this.payList.filter((p) => p.chapterRef === input.chapterRef && p.leg.memo === input.memo);
-    if (found.length === 0) return { status: 'not_found' };
+    const found = this.payList.filter(
+      (p) =>
+        p.chapterRef === input.chapterRef &&
+        p.leg.memo === input.memo &&
+        (input.accountRef === undefined || p.leg.accountRef === input.accountRef) &&
+        (input.direction === undefined || p.leg.direction === input.direction) &&
+        (input.amount === undefined || (p.leg.amount.currency === input.amount.currency && p.leg.amount.minor === input.amount.minor)) &&
+        (input.since === undefined || p.at >= input.since),
+    );
     const [only] = found;
-    return found.length > 1 || !only ? { status: 'ambiguous' } : { status: 'found', result: this.echo(only) };
+    if (!only) return { status: 'not_found' };
+    return found.length > 1 ? { status: 'ambiguous', candidates: found.map((p) => this.echo(p)) } : { status: 'found', result: this.echo(only) };
   }
 
   private view(ref: string, kind: Acct['kind']): MirrorBalance {
@@ -213,9 +233,10 @@ export class MirrorSimulator implements MirrorPort {
     return this.view(accountRef, 'member');
   }
 
-  async *payments(input: { chapterRef: string; from: Date; to: Date }): AsyncIterable<MirrorPayment> {
+  async *payments(input: { chapterRef: string; from: Date; to: Date; since?: Date }): AsyncIterable<MirrorPayment> {
     this.up();
-    const inRange = this.payList.filter((p) => p.chapterRef === input.chapterRef && p.at >= input.from && p.at < input.to);
+    const lower = input.since && input.since > input.from ? input.since : input.from;
+    const inRange = this.payList.filter((p) => p.chapterRef === input.chapterRef && p.at >= lower && p.at < input.to);
     for (let i = 0; i < inRange.length; i += this.pageSize) {
       for (const p of inRange.slice(i, i + this.pageSize)) {
         const toMember = p.leg.direction === 'from_checking';
