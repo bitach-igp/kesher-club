@@ -101,11 +101,15 @@ export function parseRef(r: string, parts: number): string[] {
   return p;
 }
 
-/** A stable UUID (v5, SHA-1) of our idempotency key, for Crowded's body `idempotencyKey` (a UUID, not our free text). */
+/**
+ * A stable UUID of our idempotency key, for Crowded's body `idempotencyKey` (a UUID, not our free text). It is a VERSION 4
+ * shape (version nibble 4, variant 10xx) filled from a namespaced SHA-1: the live API refuses any other version with
+ * 400 "Idempotency key must be a valid UUID v4" (sandbox, 2026-11-11, T-0734). Deterministic, so a retry sends the same key.
+ */
 export function uuidFromKey(key: string): string {
   const ns = Buffer.from('0190a0a000007000800000000000c0de', 'hex');
   const h = createHash('sha1').update(ns).update(key).digest();
-  h[6] = (h[6]! & 0x0f) | 0x50;
+  h[6] = (h[6]! & 0x0f) | 0x40;
   h[8] = (h[8]! & 0x3f) | 0x80;
   const x = h.subarray(0, 16).toString('hex');
   return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;

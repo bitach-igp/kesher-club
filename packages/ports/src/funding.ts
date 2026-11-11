@@ -4,8 +4,29 @@
 // confirms (SEQ-02). ACH loads carry the bank's hold days.
 import type { Money } from '@kesher/domain';
 
-export type FundingMethod = 'card' | 'apple_pay' | 'google_pay' | 'ach' | 'rtp';
+/** `hosted`: the payer picks card or bank on the vendor's payment page; a `Load` read after payment carries the method actually used. */
+export type FundingMethod = 'card' | 'apple_pay' | 'google_pay' | 'ach' | 'rtp' | 'hosted';
 export type LoadStatus = 'requires_action' | 'processing' | 'succeeded' | 'failed' | 'on_hold';
+
+/** A payment page to open (an `embed` kind may follow). */
+export interface LoadAction {
+  type: 'payment_page';
+  url: string;
+  /** ISO 8601 UTC. */
+  expiresAt?: string;
+}
+
+/**
+ * The payer's details a hosted load needs: the vendor's intent requires the payer's public IP and explicit consent (ADR-018 A3).
+ * `payerIp` must satisfy `isPublicIp`; `successUrl` and `failureUrl` must satisfy `isHttpsUrl`. Restricting redirects to an
+ * allowlist of our own hosts is the adapter's job (T-0700), not the port's.
+ */
+export interface HostedLoadInput {
+  payerIp: string;
+  userConsented: true;
+  successUrl?: string;
+  failureUrl?: string;
+}
 
 export interface Load {
   loadId: string;
@@ -16,7 +37,88 @@ export interface Load {
   holdUntil?: string;
   /** Client-side secret for a payment sheet when status is requires_action. Never logged. */
   clientSecret?: string;
+  /** What the payer must do next while status is requires_action and the vendor hosts the payment. The url is never logged. */
+  action?: LoadAction;
   failureCode?: string;
+}
+
+/** An IPv4 literal as four octets, or undefined (no leading zeros, each 0-255). */
+function v4Octets(ip: string): number[] | undefined {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(ip);
+  if (!m) return undefined;
+  const o = m.slice(1).map((x) => (x.length > 1 && x.startsWith('0') ? NaN : Number(x)));
+  return o.every((n) => n >= 0 && n <= 255) ? o : undefined;
+}
+
+function publicV4(o: readonly number[]): boolean {
+  const [a, b] = o as [number, number];
+  if (a === 0 || a === 10 || a === 127 || a >= 224) return false; // this-network, private, loopback, multicast and reserved
+  if (a === 100 && b >= 64 && b <= 127) return false; // CGNAT
+  if (a === 169 && b === 254) return false; // link-local
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  return !(a === 192 && b === 168);
+}
+
+/** Eight 16-bit groups of an IPv6 literal (with `::` and an embedded IPv4 tail), or undefined. No zone ids. */
+function v6Groups(ip: string): number[] | undefined {
+  if (!/^[0-9a-f:.]+$/i.test(ip) || (ip.match(/::/g) ?? []).length > 1) return undefined;
+  let tail: number[] = [];
+  let text = ip;
+  const dot = ip.lastIndexOf(':') >= 0 ? ip.slice(ip.lastIndexOf(':') + 1) : '';
+  if (dot.includes('.')) {
+    const o = v4Octets(dot);
+    if (!o) return undefined;
+    tail = [(o[0]! << 8) | o[1]!, (o[2]! << 8) | o[3]!];
+    text = ip.slice(0, ip.lastIndexOf(':') + 1) + '0:0';
+  }
+  const [head, rest, extra] = text.split('::');
+  if (extra !== undefined) return undefined;
+  const parse = (part: string | undefined): number[] | undefined => {
+    if (part === undefined || part === '') return [];
+    const gs = part.split(':');
+    return gs.every((g) => /^[0-9a-f]{1,4}$/i.test(g)) ? gs.map((g) => parseInt(g, 16)) : undefined;
+  };
+  const h = parse(head);
+  const r = text.includes('::') ? parse(rest) : [];
+  if (!h || !r) return undefined;
+  const fill = 8 - h.length - r.length;
+  if (text.includes('::') ? fill < 1 : fill !== 0) return undefined;
+  const groups = [...h, ...new Array<number>(text.includes('::') ? fill : 0).fill(0), ...r];
+  if (tail.length) groups.splice(6, 2, ...tail);
+  return groups.length === 8 ? groups : undefined;
+}
+
+/**
+ * True for an IPv4 or IPv6 literal on the public internet: not private, loopback, link-local, unspecified, CGNAT, multicast or
+ * reserved, and an IPv4-mapped form (`::ffff:a.b.c.d`) is judged by the IPv4 address inside it. A hosted load's `payerIp` must pass.
+ */
+export function isPublicIp(ip: string): boolean {
+  const o = v4Octets(ip);
+  if (o) return publicV4(o);
+  const g = v6Groups(ip);
+  if (!g) return false;
+  const g0 = g[0]!;
+  const low = [g[6]! >> 8, g[6]! & 255, g[7]! >> 8, g[7]! & 255];
+  if (g.slice(0, 5).every((x) => x === 0) && (g[5] === 0xffff || g[5] === 0)) return publicV4(low); // mapped, compatible, ::, ::1
+  if ((g0 & 0xfe00) === 0xfc00) return false; // unique local
+  if ((g0 & 0xffc0) === 0xfe80) return false; // link-local
+  if ((g0 & 0xff00) === 0xff00) return false; // multicast
+  return (g0 & 0xe000) === 0x2000; // only global unicast is public
+}
+
+/** True for an absolute URL with protocol exactly `https:`, a host and no credentials. */
+export function isHttpsUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && u.hostname !== '' && u.username === '' && u.password === '' && /^https:\/\/[^/?#\\]/.test(url);
+  } catch {
+    return false;
+  }
+}
+
+/** Throws VALIDATION_FAILED unless `isHttpsUrl(url)`. Adapters reuse it for every url they hand out or pass to the vendor. */
+export function assertHttps(url: string, what = 'url'): void {
+  if (!isHttpsUrl(url)) throw new FundingError('VALIDATION_FAILED', `${what} must be an https url without credentials`);
 }
 
 export type RefundStatus = 'pending' | 'succeeded' | 'failed';
@@ -31,7 +133,7 @@ export interface Refund {
 }
 
 export interface FundingPort {
-  createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string }, idempotencyKey: string): Promise<Load>;
+  createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string; hosted?: HostedLoadInput }, idempotencyKey: string): Promise<Load>;
   getLoad(loadId: string): Promise<Load>;
   /** Returns up to the load's remaining amount to its source. Same key → the same refund. */
   refund(input: { loadId: string; amount: Money }, idempotencyKey: string): Promise<Refund>;

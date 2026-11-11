@@ -1,7 +1,7 @@
 // FundingPort contract (TST-WAL-002/003 at the port layer).
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
-import { FundingError, type FundingPort, type FundingStatementPort, type SettledEntry } from './funding.ts';
+import { FundingError, isHttpsUrl, type FundingPort, type FundingStatementPort, type SettledEntry } from './funding.ts';
 import type { AdvanceableClock } from './base.ts';
 
 export interface FundingContractOptions {
@@ -12,6 +12,8 @@ export interface FundingContractOptions {
   succeededWebhook: (port: FundingPort, loadId: string) => Promise<{ headers: Record<string, string>; rawBody: string }>;
   /** A payment method whose loads cannot be refunded (the vendor answers failed). */
   norefundPaymentMethod?: string;
+  /** The adapter supports the hosted (payment-page) method; default false, so adapters that do not run unchanged. */
+  hosted?: boolean;
 }
 
 export function fundingContract(name: string, make: () => FundingPort, opts: FundingContractOptions): void {
@@ -86,6 +88,69 @@ export function fundingContract(name: string, make: () => FundingPort, opts: Fun
       await expect(port.refund({ loadId: 'nope', amount: money(100n, 'USD') }, 'R-5')).rejects.toMatchObject({ code: 'UNKNOWN_LOAD' });
       await expect(port.getRefund('nope')).rejects.toBeInstanceOf(FundingError);
     });
+
+    if (opts.hosted) {
+      const hosted = { payerIp: '203.0.113.7', userConsented: true } as const;
+      it('a hosted load answers pending with a payment-page action, no clientSecret, and one load per key (A8)', async () => {
+        const port = make();
+        const a = await port.createLoad({ customerId: 'c1', method: 'hosted', amount, hosted }, 'H-1-key');
+        expect(a.status).toBe('requires_action');
+        expect(a.method).toBe('hosted');
+        expect(a.amount).toEqual(amount);
+        expect(a.clientSecret).toBeUndefined();
+        expect(a.action?.type).toBe('payment_page');
+        expect(a.action?.url).toMatch(/^https:\/\//);
+        const b = await port.createLoad({ customerId: 'c1', method: 'hosted', amount, hosted }, 'H-1-key');
+        expect(b).toEqual(a);
+        expect(await port.getLoad(a.loadId)).toEqual(a);
+      });
+
+      it('a hosted load needs the payer ip and consent exactly true (A3)', async () => {
+        const port = make();
+        const bad = [
+          undefined,
+          { userConsented: true },
+          { payerIp: '', userConsented: true },
+          { payerIp: '203.0.113.7' },
+          { payerIp: '203.0.113.7', userConsented: false },
+          { payerIp: '203.0.113.7', userConsented: 'true' },
+          ...['not-an-ip', '10.0.0.1', '127.0.0.1', '169.254.1.1', '::1', 'fd00::1', '192.168.1.1', '0.0.0.0', '100.64.0.1', '224.0.0.1', '::', 'fe80::1', 'ff02::1', '::ffff:10.0.0.1', '::ffff:7f00:1', '256.1.1.1', '1.2.3', '203.0.113.7:80'].map((payerIp) => ({ payerIp, userConsented: true })),
+        ];
+        for (const [i, h] of bad.entries()) {
+          await expect(port.createLoad({ customerId: 'c1', method: 'hosted', amount, ...(h ? { hosted: h as never } : {}) }, `H-bad-${i}`)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+        }
+      });
+
+      it('a hosted load takes a public IPv4 or IPv6 payer address', async () => {
+        const port = make();
+        for (const [i, payerIp] of ['203.0.113.7', '8.8.8.8', '2606:4700:4700::1111', '::ffff:8.8.8.8'].entries()) {
+          expect((await port.createLoad({ customerId: 'c1', method: 'hosted', amount, hosted: { payerIp, userConsented: true } }, `H-ip-${i}`)).status).toBe('requires_action');
+        }
+      });
+
+      it('redirect urls must be https without credentials, and a good pair is accepted (open-redirect guard)', async () => {
+        const port = make();
+        for (const [i, bad] of ['javascript:alert(1)', 'http://x.example', 'ftp://x', 'https://user:pw@x.example', 'not a url', 'https://'].entries()) {
+          await expect(port.createLoad({ customerId: 'c1', method: 'hosted', amount, hosted: { ...hosted, successUrl: bad } }, `H-su-${i}`)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+          await expect(port.createLoad({ customerId: 'c1', method: 'hosted', amount, hosted: { ...hosted, failureUrl: bad } }, `H-fu-${i}`)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+        }
+        const ok = await port.createLoad({ customerId: 'c1', method: 'hosted', amount, hosted: { ...hosted, successUrl: 'https://app.example/ok', failureUrl: 'https://app.example/no' } }, 'H-url-ok');
+        expect(ok.status).toBe('requires_action');
+      });
+
+      it('the action url is https and expiresAt, when present, is an ISO 8601 UTC instant', async () => {
+        const a = (await make().createLoad({ customerId: 'c1', method: 'hosted', amount, hosted }, 'H-act-1')).action!;
+        expect(isHttpsUrl(a.url)).toBe(true);
+        if (a.expiresAt !== undefined) {
+          expect(a.expiresAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/);
+          expect(Number.isNaN(Date.parse(a.expiresAt))).toBe(false);
+        }
+      });
+    } else {
+      it('an adapter without hosted answers UNSUPPORTED_METHOD', async () => {
+        await expect(make().createLoad({ customerId: 'c1', method: 'hosted', amount, hosted: { payerIp: '203.0.113.7', userConsented: true } }, 'H-un-key')).rejects.toMatchObject({ code: 'UNSUPPORTED_METHOD' });
+      });
+    }
 
     if (opts.norefundPaymentMethod) {
       it('a refund the vendor refuses comes back failed with a code, not as an exception', async () => {
