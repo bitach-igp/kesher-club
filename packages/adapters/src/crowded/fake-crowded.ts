@@ -5,6 +5,10 @@
 // stand in for what happens outside the API (the bank decides, a funder pays, a transfer moves on).
 // Fixtures: an organization named `OUTAGE…` answers 503; a counterpartyId starting `ach_rejected_201` answers 201 Rejected;
 // `inFlightAchCalls = n` makes the next n ACH creates answer 409 DUPLICATE_REQUEST (in flight).
+// Sub-accounts answer the live sandbox's shape (2026-11-10, T-0696): a repeat of the same idempotencyKey answers 500, never
+// the first sub-account; `subAccountQuota = n` makes a create past n sub-accounts answer 429, checked before the key; the
+// chapter list finds sub-accounts by `search` and never says whose they are, `GET /chapters/{id}` carries the parent as
+// `masterChapterId` (checked against the live sandbox 2026-11-11), and only the create response has `parentChapterId`.
 import { createHash } from 'node:crypto';
 
 type Json = Record<string, unknown>;
@@ -46,6 +50,7 @@ export class FakeCrowded {
   private readonly ledger: { id: string; chapterId: string; accountId: string; direction: 'Credit' | 'Debit'; amount: bigint; title: string; at: Date }[] = [];
   private readonly keys = new Map<string, { body: string; response: Response }>();
   private readonly funded = new Map<string, Json>();
+  private readonly subKeys = new Set<string>();
   /** A fee on collected payments, and whether the payer covered it (so the fee item is `amount - fee`). */
   collectFee: { fee: bigint; covered: boolean } = { fee: 0n, covered: false };
   /**
@@ -56,6 +61,8 @@ export class FakeCrowded {
   inFlightAchCalls = 0;
   /** Quotes carry no fee (a malformed quote). */
   quoteWithoutFee = false;
+  /** Sub-accounts the tenant may hold; a create past it answers 429 SubscriptionQuotaExceededError (before the key is looked at). */
+  subAccountQuota: number | undefined = undefined;
 
   constructor(opts: FakeCrowdedOptions) {
     this.token = opts.token;
@@ -122,6 +129,10 @@ export class FakeCrowded {
   }
   count(kind: 'organizations' | 'chapters' | 'collections' | 'payments'): number {
     return this[kind === 'organizations' ? 'orgs' : kind].length;
+  }
+  /** Sub-accounts (chapters with a parent) created so far. */
+  subAccountCount(): number {
+    return this.chapters.filter((c) => c.parent).length;
   }
 
   /** The names (titles for collections) of what has been created, oldest first: what a lookup by name can see. */
@@ -196,7 +207,16 @@ export class FakeCrowded {
       this.chapters.push(c);
       return ok({ ...c, status: 'Active', ein: null }, 201);
     }
-    if (method === 'GET' && path === '/chapters') return this.page(this.chapters.filter((c) => (!q['search'] || c.name.includes(q['search'])) && (!q['filter[organizationId]'] || c.organizationId === q['filter[organizationId]'])), q);
+    if (method === 'GET' && path === '/chapters') {
+      const rows = this.chapters.filter((c) => (!q['search'] || c.name.includes(q['search'])) && (!q['filter[organizationId]'] || c.organizationId === q['filter[organizationId]']));
+      return this.page(rows.map(({ parent: _parent, ...c }) => c), q);
+    }
+    if (method === 'GET' && (m = path.match(/^\/chapters\/([^/]+)$/))) {
+      const c = this.chapters.find((x) => x.id === m![1]);
+      if (!c) return err(404, 'Chapter not found', undefined, 'NotExistError');
+      const { parent, ...rest } = c;
+      return ok({ ...rest, status: 'Active', isMasterSubAccount: false, isMasterSubEntity: false, ...(parent ? { masterChapterId: parent } : {}) });
+    }
 
     if ((m = path.match(/^\/chapters\/([^/]+)\/(.*)$/))) {
       const chapter = this.chapters.find((c) => c.id === m![1]);
@@ -228,12 +248,16 @@ export class FakeCrowded {
     if (method === 'POST' && rest === 'subaccounts') {
       if (ch.application !== 'Approved') return err(400, 'Parent has no account', 'VALIDATION_ERROR');
       if (!d['email'] && !d['owner']) return err(400, 'owner or email required', 'VALIDATION_ERROR');
-      return this.keyed(d['idempotencyKey'], d, () => {
-        const sub: Chapter = { id: this.id('ch'), name: String(d['name']), organizationId: ch.organizationId, parent: ch.id };
-        this.chapters.push(sub);
-        this.openAccount(sub.id);
-        return ok({ id: sub.id, name: sub.name, parentChapterId: ch.id, status: 'Active', createdAt: this.now().toISOString() }, 201);
-      });
+      // The live shape (2026-11-10): the quota is checked before the key; a key seen before answers 500, whatever the body.
+      if (this.subAccountQuota !== undefined && this.subAccountCount() >= this.subAccountQuota) return err(429, 'Limit has already been reached', undefined, 'SubscriptionQuotaExceededError');
+      const key = String(d['idempotencyKey']);
+      if (!/^[0-9a-f-]{36}$/.test(key)) return err(400, 'idempotencyKey must be a UUID', 'VALIDATION_ERROR');
+      if (this.subKeys.has(key)) return err(500, 'Internal server error', undefined, 'InternalServerErrorException');
+      this.subKeys.add(key);
+      const sub: Chapter = { id: this.id('ch'), name: String(d['name']), organizationId: ch.organizationId, parent: ch.id };
+      this.chapters.push(sub);
+      this.openAccount(sub.id);
+      return ok({ id: sub.id, name: sub.name, parentChapterId: ch.id, status: 'Active', createdAt: this.now().toISOString() }, 201);
     }
     if (method === 'POST' && rest === 'subaccounts/fund') {
       const items = Array.isArray(data) ? (data as Json[]) : [];

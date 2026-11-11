@@ -461,3 +461,128 @@ describe('hardening', () => {
     await expect(b.account(entityRef)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
   });
 });
+
+// ---- sub-account create with an unknown outcome (T-0696) ----------------------------------------------------------------
+
+describe('createSubAccount looks a sub-account up by name (T-0696)', () => {
+  const INST = '0190a0a0-0000-7000-8000-000000000101';
+  const NAME = `Institution ${INST}`;
+  const sub = (entityRef: string, key = 'key-sub-00001', institutionId = INST) => ({ entityRef, institutionId, idempotencyKey: key });
+  const platformEntity = async (h: Harness, key = 'key-entity-0009', institutionId = '0190a0a0-0000-7000-8000-000000000001') => {
+    const { entityRef } = await h.adapter.createEntity({ ...NEW(key, 'Israel Global Pay, LLC'), holder: 'platform', institutionId });
+    h.fake.decide(entityRef);
+    return entityRef;
+  };
+  const subPosts = (h: Harness) => h.fake.calls.filter((c) => c.method === 'POST' && c.path.endsWith('/subaccounts'));
+  /** The create reaches the fake (the sub-account exists) but its answer is lost; the wire stays down until `up()`. */
+  const lostAnswer = (h: Harness, how: 'http500' | 'network') => {
+    let down = false;
+    const hook = async (url: string, init: RequestInit | undefined): Promise<Response | undefined> => {
+      if (init?.method === 'POST' && url.endsWith('/subaccounts')) {
+        await h.fake.fetch(url, init);
+        down = true;
+      }
+      if (!down) return undefined;
+      if (how === 'network') throw new TypeError('fetch failed');
+      return json(503, { message: 'Unavailable' });
+    };
+    return { hook, up: () => void (down = false) };
+  };
+
+  it.each(['http500', 'network'] as const)('an unknown outcome (%s) then the same key again finds the sub-account and makes no second one', async (how) => {
+    const h = harness();
+    const entityRef = await platformEntity(h);
+    const lost = lostAnswer(h, how);
+    const a = restarted(h, lost.hook);
+    await expect(a.createSubAccount(sub(entityRef))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(h.fake.subAccountCount()).toBe(1);
+    lost.up();
+    const found = await a.createSubAccount(sub(entityRef));
+    expect(h.fake.subAccountCount()).toBe(1);
+    expect(subPosts(h)).toHaveLength(1);
+    expect(found).toEqual({ subAccountRef: expect.stringMatching(/^ch/), hasOwnAccountNumber: true });
+    // The same answer again, from the ledger now, and a restarted process finds the same one.
+    expect(await a.createSubAccount(sub(entityRef))).toEqual(found);
+    expect(await restarted(h).createSubAccount(sub(entityRef))).toEqual(found);
+    expect(h.fake.names('chapters').filter((n) => n === NAME)).toHaveLength(1);
+  });
+
+  it('a post that ends unknown is followed by a lookup, and the first call already answers the sub-account', async () => {
+    const h = harness();
+    const entityRef = await platformEntity(h);
+    const a = restarted(h, async (url, init) => {
+      if (init?.method === 'POST' && url.endsWith('/subaccounts')) {
+        await h.fake.fetch(url, init);
+        return json(500, { type: 'InternalServerErrorException', message: 'boom' });
+      }
+      return undefined;
+    });
+    const r = await a.createSubAccount(sub(entityRef));
+    expect(h.fake.subAccountCount()).toBe(1);
+    expect(subPosts(h)).toHaveLength(1);
+    expect(h.fake.names('chapters')).toContain(NAME);
+    expect(r.subAccountRef).toMatch(/^ch/);
+  });
+
+  it('a clean first create posts once, after one lookup that found nothing', async () => {
+    const h = harness();
+    const entityRef = await platformEntity(h);
+    const r = await h.adapter.createSubAccount(sub(entityRef));
+    expect(subPosts(h)).toHaveLength(1);
+    expect(h.fake.calls.filter((c) => c.method === 'GET' && c.path === '/chapters' && c.query['search'] === NAME)).toHaveLength(1);
+    expect(await h.adapter.createSubAccount(sub(entityRef))).toEqual(r);
+    expect(subPosts(h)).toHaveLength(1);
+  });
+
+  it('the live shape: the same key twice at the fake answers 500, and the list finds a sub-account by search', async () => {
+    const h = harness();
+    const entityRef = await platformEntity(h);
+    const body = { data: { name: NAME, email: 'ops@kesher.example', idempotencyKey: '0190a0a0-0000-4000-8000-0000000000aa' } };
+    const post = () => h.fake.fetch(`${BASE}/chapters/${entityRef}/subaccounts`, { method: 'POST', headers: { authorization: `Bearer ${TOKEN}` }, body: JSON.stringify(body) });
+    expect((await post()).status).toBe(201);
+    expect((await post()).status).toBe(500);
+    const list = await h.fake.fetch(`${BASE}/chapters?search=${encodeURIComponent(NAME)}`, { headers: { authorization: `Bearer ${TOKEN}` } });
+    expect(((await list.json()) as { data: { name: string }[] }).data.map((c) => c.name)).toEqual([NAME]);
+  });
+
+  it('a name match claimed by another key is not reused: VALIDATION_FAILED, and nothing is posted', async () => {
+    const h = harness();
+    const entityRef = await platformEntity(h);
+    const ledger = new InMemoryKeyLedger();
+    const one = restarted(h, undefined, { ledger });
+    await one.createSubAccount(sub(entityRef, 'key-sub-00001'));
+    // Another key, the same ledger (so the claim is known): the existing sub-account is not handed to it.
+    await expect(restarted(h, undefined, { ledger }).createSubAccount(sub(entityRef, 'key-sub-00002'))).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(subPosts(h)).toHaveLength(1);
+    expect(h.fake.subAccountCount()).toBe(1);
+  });
+
+  it('a same-named chapter under another parent is not reused (the live path: the list names no parent, GET /chapters/{id} gives masterChapterId)', async () => {
+    const h = harness();
+    const a = await platformEntity(h, 'key-entity-000a', '0190a0a0-0000-7000-8000-00000000000a');
+    const b = await platformEntity(h, 'key-entity-000b', '0190a0a0-0000-7000-8000-00000000000b');
+    const underA = await h.adapter.createSubAccount(sub(a, 'key-sub-0000a'));
+    const underB = await restarted(h).createSubAccount(sub(b, 'key-sub-0000b'));
+    expect(underB.subAccountRef).not.toBe(underA.subAccountRef);
+    expect(h.fake.subAccountCount()).toBe(2);
+    // And each parent still finds its own after a restart.
+    expect(await restarted(h).createSubAccount(sub(a, 'key-sub-0000a'))).toEqual(underA);
+    expect(await restarted(h).createSubAccount(sub(b, 'key-sub-0000b'))).toEqual(underB);
+    expect(h.fake.subAccountCount()).toBe(2);
+    expect(h.fake.calls.some((c) => c.method === 'GET' && /^\/chapters\/ch\d+$/.test(c.path))).toBe(true);
+  });
+
+  it('a 429 quota answer is surfaced as a quota error, posts once, and is not retried or looped', async () => {
+    const h = harness();
+    const entityRef = await platformEntity(h);
+    h.fake.subAccountQuota = 0;
+    const err = await h.adapter.createSubAccount(sub(entityRef)).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'PROVIDER_UNAVAILABLE', message: expect.stringMatching(/quota/i) });
+    expect(subPosts(h)).toHaveLength(1);
+    expect(h.fake.subAccountCount()).toBe(0);
+    // Quota lifted: the same key now creates it.
+    h.fake.subAccountQuota = undefined;
+    await h.adapter.createSubAccount(sub(entityRef));
+    expect(h.fake.subAccountCount()).toBe(1);
+  });
+});
