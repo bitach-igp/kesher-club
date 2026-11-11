@@ -557,9 +557,8 @@ describe('createSubAccount looks a sub-account up by name (T-0696)', () => {
     expect(h.fake.subAccountCount()).toBe(1);
   });
 
-  it.each([false, true])('a same-named chapter under another parent is not reused (the list shows the parent: %s)', async (shows) => {
+  it('a same-named chapter under another parent is not reused (the live path: the list names no parent, GET /chapters/{id} gives masterChapterId)', async () => {
     const h = harness();
-    h.fake.listShowsParent = shows;
     const a = await platformEntity(h, 'key-entity-000a', '0190a0a0-0000-7000-8000-00000000000a');
     const b = await platformEntity(h, 'key-entity-000b', '0190a0a0-0000-7000-8000-00000000000b');
     const underA = await h.adapter.createSubAccount(sub(a, 'key-sub-0000a'));
@@ -570,6 +569,7 @@ describe('createSubAccount looks a sub-account up by name (T-0696)', () => {
     expect(await restarted(h).createSubAccount(sub(a, 'key-sub-0000a'))).toEqual(underA);
     expect(await restarted(h).createSubAccount(sub(b, 'key-sub-0000b'))).toEqual(underB);
     expect(h.fake.subAccountCount()).toBe(2);
+    expect(h.fake.calls.some((c) => c.method === 'GET' && /^\/chapters\/ch\d+$/.test(c.path))).toBe(true);
   });
 
   it('a 429 quota answer is surfaced as a quota error, posts once, and is not retried or looped', async () => {

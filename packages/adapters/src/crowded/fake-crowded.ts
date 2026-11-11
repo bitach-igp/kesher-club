@@ -7,8 +7,8 @@
 // `inFlightAchCalls = n` makes the next n ACH creates answer 409 DUPLICATE_REQUEST (in flight).
 // Sub-accounts answer the live sandbox's shape (2026-11-10, T-0696): a repeat of the same idempotencyKey answers 500, never
 // the first sub-account; `subAccountQuota = n` makes a create past n sub-accounts answer 429, checked before the key; the
-// chapter list finds sub-accounts by `search` and does not say whose they are (`listShowsParent` turns that on), while
-// `GET /chapters/{id}` carries `parentChapterId`.
+// chapter list finds sub-accounts by `search` and never says whose they are, `GET /chapters/{id}` carries the parent as
+// `masterChapterId` (checked against the live sandbox 2026-11-11), and only the create response has `parentChapterId`.
 import { createHash } from 'node:crypto';
 
 type Json = Record<string, unknown>;
@@ -63,8 +63,6 @@ export class FakeCrowded {
   quoteWithoutFee = false;
   /** Sub-accounts the tenant may hold; a create past it answers 429 SubscriptionQuotaExceededError (before the key is looked at). */
   subAccountQuota: number | undefined = undefined;
-  /** Whether a chapter in the list names its parent. Off by default: the live list is not known to. */
-  listShowsParent = false;
 
   constructor(opts: FakeCrowdedOptions) {
     this.token = opts.token;
@@ -211,13 +209,13 @@ export class FakeCrowded {
     }
     if (method === 'GET' && path === '/chapters') {
       const rows = this.chapters.filter((c) => (!q['search'] || c.name.includes(q['search'])) && (!q['filter[organizationId]'] || c.organizationId === q['filter[organizationId]']));
-      return this.page(rows.map(({ parent, ...c }) => (this.listShowsParent && parent ? { ...c, parentChapterId: parent } : c)), q);
+      return this.page(rows.map(({ parent: _parent, ...c }) => c), q);
     }
     if (method === 'GET' && (m = path.match(/^\/chapters\/([^/]+)$/))) {
       const c = this.chapters.find((x) => x.id === m![1]);
       if (!c) return err(404, 'Chapter not found', undefined, 'NotExistError');
       const { parent, ...rest } = c;
-      return ok({ ...rest, status: 'Active', ...(parent ? { parentChapterId: parent } : {}) });
+      return ok({ ...rest, status: 'Active', isMasterSubAccount: false, isMasterSubEntity: false, ...(parent ? { masterChapterId: parent } : {}) });
     }
 
     if ((m = path.match(/^\/chapters\/([^/]+)\/(.*)$/))) {
