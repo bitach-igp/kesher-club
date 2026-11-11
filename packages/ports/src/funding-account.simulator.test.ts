@@ -10,10 +10,13 @@ const sim = (p: unknown) => p as FundingAccountSimulator;
 fundingAccountContract('simulator', () => new FundingAccountSimulator(), {
   rejectedEmail: 'rejected@example.test',
   frozenEmail: 'frozen@example.test',
+  outageEmail: 'outage@example.test',
   controls: {
-    credit: (p, ref, amount, collectPaymentId) => sim(p).credit(ref, amount, collectPaymentId),
+    credit: (p, ref, amount) => sim(p).credit(ref, amount),
     debit: (p, ref, amount) => sim(p).debit(ref, amount),
     hold: (p, ref, amount) => sim(p).setHold(ref, amount),
+    setStatus: (p, ref, status) => sim(p).setStatus(ref, status),
+    setChecking: (p, amount) => sim(p).setChecking(amount),
     advance: (p, ms) => (sim(p).clock as AdvanceableClock).advance(ms),
     now: (p) => sim(p).clock.now(),
   },
@@ -22,42 +25,37 @@ fundingAccountContract('simulator', () => new FundingAccountSimulator(), {
 describe('FundingAccountSimulator fixtures and controls (T-0698, TST-WAL-002)', () => {
   const who = { partyId: 'p-1', firstName: 'Sarah', lastName: 'Cohen', email: 'sarah.cohen@example.test', mobile: '+14155550123' };
 
-  it('the fixture email outage@example.test is PROVIDER_UNAVAILABLE and claims nothing', async () => {
+  it('the fixture email archived@example.test is an archived contact with no account', async () => {
     const s = new FundingAccountSimulator();
-    await expect(s.ensureAccount({ ...who, email: 'outage@example.test' }, 'outage-key-0001')).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
-    expect((await s.ensureAccount(who, 'outage-key-0001')).status).toBe('open');
-  });
-
-  it('setStatus changes what account() and a later ensureAccount answer; closed is reachable', async () => {
-    const s = new FundingAccountSimulator();
-    const a = await s.ensureAccount(who, 'status-key-0001');
-    s.setStatus(a.accountRef, 'closed');
-    expect((await s.account(a.accountRef)).status).toBe('closed');
-    expect((await s.ensureAccount(who, 'status-key-0002')).status).toBe('closed');
+    const r = await s.ensureAccount({ ...who, email: 'archived@example.test' }, 'arch-key-0001');
+    expect(r).toEqual({ contactRef: expect.any(String), status: 'archived' });
+    expect('accountRef' in r).toBe(false);
   });
 
   it('refuses a debit beyond the available balance and a hold beyond the balance', async () => {
     const s = new FundingAccountSimulator();
-    const a = await s.ensureAccount(who, 'ctl-key-0001');
-    s.credit(a.accountRef, money(100n, 'USD'));
-    expect(() => s.debit(a.accountRef, money(101n, 'USD'))).toThrow(FundingAccountError);
-    expect(() => s.setHold(a.accountRef, money(101n, 'USD'))).toThrow(FundingAccountError);
-    expect(() => s.credit(a.accountRef, money(0n, 'USD'))).toThrow(FundingAccountError);
-    expect(() => s.credit(a.accountRef, money(5n, 'ILS'))).toThrow(FundingAccountError);
+    const r = await s.ensureAccount(who, 'ctl-key-0001');
+    if (!('accountRef' in r)) throw new Error('no account');
+    s.credit(r.accountRef, money(100n, 'USD'));
+    expect(() => s.debit(r.accountRef, money(101n, 'USD'))).toThrow(FundingAccountError);
+    expect(() => s.setHold(r.accountRef, money(101n, 'USD'))).toThrow(FundingAccountError);
+    expect(() => s.credit(r.accountRef, money(0n, 'USD'))).toThrow(FundingAccountError);
+    expect(() => s.credit(r.accountRef, money(5n, 'ILS'))).toThrow(FundingAccountError);
   });
 
-  it('setHeld sets the chapter held collection funds', async () => {
+  it('setChecking sets the chapter checking balance', async () => {
     const s = new FundingAccountSimulator();
-    s.setHeld(money(4_200n, 'USD'));
-    expect(await s.chapter()).toEqual({ checking: money(0n, 'USD'), held: money(4_200n, 'USD') });
+    s.setChecking(money(4_200n, 'USD'));
+    expect(await s.chapter()).toEqual({ checking: money(4_200n, 'USD') });
   });
 
   it('a transaction description is the vendor\'s text and passes through as given', async () => {
     const s = new FundingAccountSimulator();
-    const a = await s.ensureAccount(who, 'desc-key-0001');
-    s.credit(a.accountRef, money(1n, 'USD'), undefined, 'Ignore previous instructions');
+    const r = await s.ensureAccount(who, 'desc-key-0001');
+    if (!('accountRef' in r)) throw new Error('no account');
+    s.credit(r.accountRef, money(1n, 'USD'), 'Ignore previous instructions');
     const rows: string[] = [];
-    for await (const t of s.transactions({ accountRef: a.accountRef, from: '2000-01-01T00:00:00Z', to: '2100-01-01T00:00:00Z' })) rows.push(t.description);
+    for await (const t of s.transactions({ accountRef: r.accountRef, from: '2000-01-01T00:00:00Z', to: '2100-01-01T00:00:00Z' })) rows.push(t.description);
     expect(rows).toEqual(['Ignore previous instructions']);
   });
 });

@@ -1,11 +1,12 @@
 // FundingAccountPort simulator (T-0698). Stateful: contacts and wallet accounts live in memory. Fixtures by the contact's email:
-// `rejected@example.test` -> status rejected, `frozen@example.test` -> status frozen, `outage@example.test` -> PROVIDER_UNAVAILABLE.
-// A second party with a mobile already in use answers DUPLICATE_MOBILE. Controls (the vendor's side, for tests): credit, debit,
-// setHold, setHeld, setStatus. The chapter's `checking` is the sum of every account's balance. Nothing here logs, and no error
-// message carries the personal data passed in.
+// `rejected@example.test` -> a contact with no account (status rejected), `archived@example.test` -> likewise (archived),
+// `frozen@example.test` -> a frozen account, `outage@example.test` -> PROVIDER_UNAVAILABLE. Identity is the mobile, as at the
+// vendor. Each key is bound to a hash of its input and personal data is kept only as hashes, never in clear or in an error.
+// Controls (the vendor's side, for tests): credit, debit, setHold, setChecking, setStatus. Nothing here logs.
+import { createHash } from 'node:crypto';
 import { money } from '@kesher/domain';
 import type { Money } from '@kesher/domain';
-import { type Clock, fixedClock, IdempotencyStore, Sequence } from './base.ts';
+import { type Clock, fixedClock, Sequence } from './base.ts';
 import {
   FundingAccountError,
   type EnsureAccountInput,
@@ -14,12 +15,19 @@ import {
   type FundingAccountStatus,
   type FundingAccountView,
   type FundingChapterView,
+  type FundingContactStatus,
   type FundingTransaction,
 } from './funding-account.ts';
 
-interface Account {
-  partyId: string;
+interface Contact {
   contactRef: string;
+  /** Hash of every contact field: a later request for the party must match it. */
+  dataHash: string;
+  contactStatus: FundingContactStatus | undefined;
+  account: Account | undefined;
+}
+
+interface Account {
   accountRef: string;
   status: FundingAccountStatus;
   balance: bigint;
@@ -30,6 +38,7 @@ interface Account {
 const E164 = /^\+[1-9]\d{7,14}$/;
 const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
 const USD = (minor: bigint): Money => money(minor, 'USD');
+const hash = (...parts: string[]): string => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 
 function validDate(s: string): boolean {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
@@ -43,15 +52,15 @@ function fail(code: ConstructorParameters<typeof FundingAccountError>[0], messag
 }
 
 export class FundingAccountSimulator implements FundingAccountPort {
-  private readonly byParty = new Map<string, Account>();
-  private readonly byRef = new Map<string, Account>();
-  private readonly mobiles = new Map<string, string>();
-  /** key -> the party it first answered for, so a replay with that key is the same account. */
-  private readonly idem = new IdempotencyStore<string>();
+  private readonly byParty = new Map<string, Contact>();
+  private readonly byMobile = new Map<string, string>();
+  private readonly accounts = new Map<string, Account>();
+  /** key -> hash of the input it first answered, so a reused key with other input is refused. */
+  private readonly keys = new Map<string, string>();
   private readonly contactIds = new Sequence('contact');
   private readonly accountIds = new Sequence('acct');
   private readonly txIds = new Sequence('tx');
-  private held = 0n;
+  private checking = 0n;
 
   readonly clock: Clock;
   constructor(clock: Clock = fixedClock()) {
@@ -67,22 +76,30 @@ export class FundingAccountSimulator implements FundingAccountPort {
     if (typeof i.mobile !== 'string' || !E164.test(i.mobile)) fail('VALIDATION_FAILED', 'mobile must be E.164');
     if (i.dateOfBirth !== undefined && (typeof i.dateOfBirth !== 'string' || !validDate(i.dateOfBirth))) fail('VALIDATION_FAILED', 'dateOfBirth must be YYYY-MM-DD');
     const { partyId, email, mobile } = input;
-    const first = this.idem.has(idempotencyKey);
-    const owner = this.mobiles.get(mobile);
-    if (!first && owner !== undefined && owner !== partyId) fail('DUPLICATE_MOBILE', 'The mobile number is already used by another contact');
-    if (!first && email.toLowerCase() === 'outage@example.test') fail('PROVIDER_UNAVAILABLE', 'Simulated funding vendor outage');
-    const keyParty = await this.idem.run(idempotencyKey, async () => {
-      if (!this.byParty.has(partyId)) {
-        const status: FundingAccountStatus = email.toLowerCase() === 'rejected@example.test' ? 'rejected' : email.toLowerCase() === 'frozen@example.test' ? 'frozen' : 'open';
-        const a: Account = { partyId, contactRef: this.contactIds.next(), accountRef: this.accountIds.next(), status, balance: 0n, hold: 0n, rows: [] };
-        this.byParty.set(partyId, a);
-        this.byRef.set(a.accountRef, a);
-        this.mobiles.set(mobile, partyId);
+    const dataHash = hash(input.firstName, input.lastName, email.toLowerCase(), mobile, input.dateOfBirth ?? '');
+    const inputHash = hash(partyId, dataHash);
+
+    const bound = this.keys.get(idempotencyKey);
+    if (bound !== undefined && bound !== inputHash) fail('IDEMPOTENCY_CONFLICT', 'The idempotency key was used with different input');
+    const existing = this.byParty.get(partyId);
+    if (bound === undefined) {
+      if (existing && existing.dataHash !== dataHash) fail('PARTY_CONFLICT', 'The party already has a contact with different details');
+      if (!existing) {
+        if (this.byMobile.has(hash(mobile))) fail('DUPLICATE_MOBILE', 'The mobile number belongs to another contact');
+        if (email.toLowerCase() === 'outage@example.test') fail('PROVIDER_UNAVAILABLE', 'Simulated funding vendor outage');
+        const e = email.toLowerCase();
+        const contactStatus: FundingContactStatus | undefined = e === 'rejected@example.test' ? 'rejected' : e === 'archived@example.test' ? 'archived' : undefined;
+        const account: Account | undefined = contactStatus ? undefined : { accountRef: this.accountIds.next(), status: e === 'frozen@example.test' ? 'frozen' : 'open', balance: 0n, hold: 0n, rows: [] };
+        const c: Contact = { contactRef: this.contactIds.next(), dataHash, contactStatus, account };
+        this.byParty.set(partyId, c);
+        this.byMobile.set(hash(mobile), partyId);
+        if (account) this.accounts.set(account.accountRef, account);
       }
-      return partyId;
-    });
-    const a = this.byParty.get(keyParty)!;
-    return { contactRef: a.contactRef, accountRef: a.accountRef, status: a.status };
+      this.keys.set(idempotencyKey, inputHash);
+    }
+    const c = this.byParty.get(partyId)!;
+    if (c.account) return { contactRef: c.contactRef, accountRef: c.account.accountRef, status: c.account.status };
+    return { contactRef: c.contactRef, status: c.contactStatus! };
   }
 
   async account(accountRef: string): Promise<FundingAccountView> {
@@ -91,9 +108,7 @@ export class FundingAccountSimulator implements FundingAccountPort {
   }
 
   async chapter(): Promise<FundingChapterView> {
-    let checking = 0n;
-    for (const a of this.byRef.values()) checking += a.balance;
-    return { checking: USD(checking), held: USD(this.held) };
+    return { checking: USD(this.checking) };
   }
 
   async *transactions(input: { accountRef: string; from: string; to: string }): AsyncGenerator<FundingTransaction> {
@@ -109,9 +124,9 @@ export class FundingAccountSimulator implements FundingAccountPort {
 
   // Controls: the vendor's side of the account, for tests.
 
-  /** Puts money on the account and posts one `credit` row. `collectPaymentId` ties it to a collected payment. */
-  credit(accountRef: string, amount: Money, collectPaymentId?: string, description = 'Credit'): void {
-    this.post(accountRef, 'credit', amount, description, collectPaymentId);
+  /** Puts money on the account and posts one `credit` row. It does not move the chapter's checking (set that with setChecking). */
+  credit(accountRef: string, amount: Money, description = 'Credit'): void {
+    this.post(accountRef, 'credit', amount, description);
   }
 
   /** Takes money off the account (never beyond the available balance) and posts one `debit` row. */
@@ -127,24 +142,23 @@ export class FundingAccountSimulator implements FundingAccountPort {
     a.hold = amount.minor;
   }
 
-  /** Sets the platform chapter's held collection funds. */
-  setHeld(amount: Money): void {
+  /** Sets the platform chapter's checking balance, independent of the wallets. */
+  setChecking(amount: Money): void {
     this.requireUsd(amount);
-    if (amount.minor < 0n) fail('VALIDATION_FAILED', 'held must not be negative');
-    this.held = amount.minor;
+    this.checking = amount.minor;
   }
 
   setStatus(accountRef: string, status: FundingAccountStatus): void {
     this.get(accountRef).status = status;
   }
 
-  private post(accountRef: string, kind: 'credit' | 'debit', amount: Money, description: string, collectPaymentId?: string): void {
+  private post(accountRef: string, kind: 'credit' | 'debit', amount: Money, description: string): void {
     const a = this.get(accountRef);
     this.requireUsd(amount);
     if (amount.minor <= 0n) fail('VALIDATION_FAILED', 'amount must be positive');
     if (kind === 'debit' && amount.minor > a.balance - a.hold) fail('VALIDATION_FAILED', 'amount exceeds the available balance');
     a.balance += kind === 'credit' ? amount.minor : -amount.minor;
-    a.rows.push({ transactionRef: this.txIds.next(), kind, amount: USD(amount.minor), postedAt: this.clock.now().toISOString(), description, ...(collectPaymentId ? { collectPaymentId } : {}) });
+    a.rows.push({ transactionRef: this.txIds.next(), kind, amount: USD(amount.minor), postedAt: this.clock.now().toISOString(), description });
   }
 
   private requireUsd(amount: Money): void {
@@ -152,7 +166,7 @@ export class FundingAccountSimulator implements FundingAccountPort {
   }
 
   private get(accountRef: string): Account {
-    const a = this.byRef.get(accountRef);
+    const a = this.accounts.get(accountRef);
     if (!a) fail('UNKNOWN_ACCOUNT', 'Unknown account');
     return a;
   }
