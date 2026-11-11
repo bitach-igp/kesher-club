@@ -335,8 +335,23 @@
 | [T-0705](T-0705.md) | WAL | A load credits the vendor wallet before its release journal, a refused account cannot load, and a return after release opens a case | REQ-WAL-003, REQ-WAL-002 | later |
 | [T-0706](T-0706.md) | WAL | A closure refund of a load Crowded cannot refund goes to a case, not to a refund call | REQ-WAL-005 | later |
 | [T-0707](T-0707.md) | LED | The nightly partner reconciliation can read Crowded's collect payments as the funding statement | REQ-LED-004 | later |
-| [T-0708](T-0708.md) | LED | A nightly funding-side proof: loads credited equal what Crowded moved into member wallets, with balance drift reported | REQ-LED-004 | later |
+| [T-0708](T-0708.md) | LED | A nightly same-day balance proof: each member's ledger wallet plus pending equals their Crowded balance, and a difference is a break | REQ-LED-004 | later |
 | [T-0709](T-0709.md) | WAL | PROVIDER_FUNDING can be `crowded`: config keys, registry binding, production guard, Terraform and setup docs | REQ-WAL-002 | later |
 | [T-0714](T-0714.md) | WAL | POST /loads accepts a hosted method, answers with the payment-page action, and a load can be read back | REQ-WAL-002, REQ-WAL-003 | later |
 | [T-0715](T-0715.md) | WAL | Add money opens the Crowded payment page and shows the load as pending until the vendor says it settled (needs a design) | REQ-WAL-002, REQ-WAL-003 | later |
+| [T-0716](T-0716.md) | LED | PostgresLedger takes two optional in-transaction hooks: before a journal posts and after it is inserted | REQ-LED-001, REQ-LED-003 | later |
+| [T-0717](T-0717.md) | WAL | The mirror queue: a table written with the journal, idempotent enqueue, claim with backoff and a dead-letter state, and the `wallet.mirror` flag | REQ-LED-004, REQ-WAL-002 | later |
+| [T-0718](T-0718.md) | WAL | MirrorPort: book a USD amount between a member's vendor account and checking, read it back by key, list movements; simulator and contract | REQ-WAL-002, REQ-LED-004 | later |
+| [T-0719](T-0719.md) | WAL | The Crowded adapter implements MirrorPort with Book Payment, against the fake and the gated sandbox suite | REQ-WAL-002, REQ-LED-004 | later |
+| [T-0721](T-0721.md) | WAL | The mirror planner: from a journal's postings to the Crowded legs by net member delta, USD only, every journal kind classified | REQ-LED-004, REQ-WAL-002, REQ-PAY-001 | later |
+| [T-0722](T-0722.md) | WAL | The mirror drain: books queued legs at Crowded in order, retries with backoff, reads back an unknown outcome, opens a case when a leg dies | REQ-LED-004, REQ-WAL-002 | later |
+| [T-0723](T-0723.md) | PAY | A send between mirrored members checks both Crowded accounts first, and a send whose second leg is permanently refused is compensated | REQ-PAY-001, REQ-PAY-003, REQ-PAY-005 | later |
+| [T-0724](T-0724.md) | WAL | The unmirrored-exposure cap: per member and total, no default, fail closed with PROVIDER_UNAVAILABLE for journals that start a movement | REQ-LED-004, REQ-WAL-002 | later |
+| [T-0725](T-0725.md) | CRD | A card clearing is mirrored as one leg to checking; a stand-in overdraw is a case; the cap declines an authorisation | REQ-CRD-003, REQ-CRD-004 | later |
+| [T-0726](T-0726.md) | CRD | BLOCKED on D3 and ADR-006: if Crowded issues the cards, ingest their authorisations and transactions into the ledger | REQ-CRD-003, REQ-CRD-004 | later |
+| [T-0727](T-0727.md) | INS | BLOCKED on Crowded question 45: a linked institution's fee and allowance legs go through checking only when its USD sits in the member chapter | REQ-INS-003, REQ-INS-006 | later |
+| [T-0728](T-0728.md) | WAL | The mirror drain books up to ten independent legs in one Crowded request, never a pair together | REQ-LED-004, REQ-WAL-002 | later |
+| [T-0729](T-0729.md) | WAL | The checking-account float: expected balance from the ledger, an intraday check against Crowded, a case when it runs short | REQ-LED-004, REQ-WAL-003 | later |
+| [T-0732](T-0732.md) | LED | The same-day coverage proof: every journal touching a mirrored account has its legs settled at Crowded by the cutoff, or a case opens | REQ-LED-004 | later |
+| [T-0733](T-0733.md) | WAL | BLOCKED on D2: an ACH load credits the wallet at once up to the member's instant-access limit, from platform float, with a reserve | REQ-WAL-003, REQ-WAL-002 | later |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
