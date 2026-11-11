@@ -2,13 +2,17 @@
 // PROVIDER_UNAVAILABLE; ACH loads start on_hold for 3 business days; card/wallet loads succeed at once.
 // Refunds succeed at once up to the load's remaining amount; a load paid with "pm_norefund" refunds as
 // failed (REFUND_REFUSED), and "pm_slowrefund" as pending until `settleRefund(refundId)`.
-// `settle(loadId)` (control panel) clears a hold or finishes a processing load.
+// `settle(loadId)` (control panel) puts a processing load on hold or clears a hold. A `hosted` load answers
+// requires_action with a payment_page action (https://pay.simulator.invalid/{loadId}); `payHosted(loadId, 'card'|'ach')`
+// and `failHosted(loadId, code)` play the payer.
 import { toWire, fromWire } from '@kesher/domain';
 import type { Money } from '@kesher/domain';
 import { type Clock, fixedClock, IdempotencyStore, Sequence } from './base.ts';
-import { FundingError, type FundingMethod, type FundingPort, type FundingStatementPort, type Load, type Refund, type SettledEntry, type SettledPage } from './funding.ts';
+import { assertHttps, FundingError, isPublicIp, type FundingMethod, type FundingPort, type HostedLoadInput, type FundingStatementPort, type Load, type Refund, type SettledEntry, type SettledPage } from './funding.ts';
 
 const ACH_HOLD_BUSINESS_DAYS = 3;
+/** How long a simulated payment page stays open. */
+const HOSTED_PAGE_MS = 60 * 60 * 1000;
 
 /** Adds business days (Mon–Fri) to a date, in UTC. Exported for the wallet's "on hold until" copy. */
 export function addBusinessDays(from: Date, days: number): Date {
@@ -44,15 +48,28 @@ export class FundingSimulator implements FundingPort, FundingStatementPort {
     this.clock = clock;
   }
 
-  async createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string }, idempotencyKey: string): Promise<Load> {
+  async createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string; hosted?: HostedLoadInput }, idempotencyKey: string): Promise<Load> {
     if (input.paymentMethodId === 'pm_outage') throw new FundingError('PROVIDER_UNAVAILABLE', 'Simulated funding outage');
     if (input.amount.minor <= 0n) throw new FundingError('VALIDATION_FAILED', 'Amount must be positive');
     if (input.method === 'rtp') throw new FundingError('UNSUPPORTED_METHOD', 'RTP not enabled in the simulator');
+    if (input.method === 'hosted') {
+      const h = input.hosted as { payerIp?: unknown; userConsented?: unknown; successUrl?: unknown; failureUrl?: unknown } | undefined;
+      if (typeof h?.payerIp !== 'string' || h.userConsented !== true) throw new FundingError('VALIDATION_FAILED', 'A hosted load needs the payer ip and userConsented true');
+      if (!isPublicIp(h.payerIp)) throw new FundingError('VALIDATION_FAILED', 'payerIp must be the payer\'s public IP address');
+      for (const [k, v] of [['successUrl', h.successUrl], ['failureUrl', h.failureUrl]] as const) {
+        if (v !== undefined) {
+          if (typeof v !== 'string') throw new FundingError('VALIDATION_FAILED', `${k} must be a string`);
+          assertHttps(v, k);
+        }
+      }
+    }
     return this.idem.run(idempotencyKey, async () => {
       if (input.paymentMethodId === 'pm_declined') throw new FundingError('DECLINED', 'Simulated decline');
       const loadId = this.ids.next();
       const load: Load =
-        input.method === 'ach'
+        input.method === 'hosted'
+          ? { loadId, method: 'hosted', amount: input.amount, status: 'requires_action', action: { type: 'payment_page', url: `https://pay.simulator.invalid/${loadId}`, expiresAt: new Date(this.clock.now().getTime() + HOSTED_PAGE_MS).toISOString() } }
+          : input.method === 'ach'
           ? { loadId, method: 'ach', amount: input.amount, status: 'on_hold', holdUntil: addBusinessDays(this.clock.now(), ACH_HOLD_BUSINESS_DAYS).toISOString() }
           : { loadId, method: input.method, amount: input.amount, status: 'succeeded' };
       this.loads.set(loadId, load);
@@ -60,6 +77,44 @@ export class FundingSimulator implements FundingPort, FundingStatementPort {
       if (load.status === 'succeeded') this.loadSettledAt.set(loadId, this.clock.now().toISOString());
       return { ...load };
     });
+  }
+
+  /** Control-panel hook: the payer paid a hosted load on the page, by card (succeeds) or bank (processing until `settle`). */
+  payHosted(loadId: string, method: 'card' | 'ach'): Load {
+    const l = this.pendingHosted(loadId);
+    const { action: _action, ...rest } = l;
+    const next: Load = { ...rest, method, status: method === 'card' ? 'succeeded' : 'processing' };
+    this.loads.set(loadId, next);
+    if (next.status === 'succeeded') this.loadSettledAt.set(loadId, this.clock.now().toISOString());
+    return { ...next };
+  }
+
+  /** Control-panel hook: the hosted payment failed (declined, abandoned, ...). */
+  failHosted(loadId: string, failureCode: string): Load {
+    const { action: _action, ...rest } = this.pendingHosted(loadId);
+    const next: Load = { ...rest, status: 'failed', failureCode };
+    this.loads.set(loadId, next);
+    return { ...next };
+  }
+
+  /** Control-panel hook: a processing load goes on hold for the ACH hold days; a load on hold is released as succeeded. */
+  settle(loadId: string): Load {
+    const l = this.must(loadId);
+    let next: Load;
+    if (l.status === 'processing') next = { ...l, status: 'on_hold', holdUntil: addBusinessDays(this.clock.now(), ACH_HOLD_BUSINESS_DAYS).toISOString() };
+    else if (l.status === 'on_hold') {
+      const { holdUntil: _hold, ...rest } = l;
+      next = { ...rest, status: 'succeeded' };
+      this.loadSettledAt.set(loadId, this.clock.now().toISOString());
+    } else throw new FundingError('VALIDATION_FAILED', `A ${l.status} load cannot be settled`);
+    this.loads.set(loadId, next);
+    return { ...next };
+  }
+
+  private pendingHosted(loadId: string): Load {
+    const l = this.must(loadId);
+    if (l.method !== 'hosted' || l.status !== 'requires_action') throw new FundingError('VALIDATION_FAILED', 'Only a pending hosted load can be paid or failed');
+    return l;
   }
 
   async getLoad(loadId: string): Promise<Load> {
@@ -112,13 +167,18 @@ export class FundingSimulator implements FundingPort, FundingStatementPort {
 
   async parseWebhook(headers: Record<string, string>, rawBody: string): Promise<{ eventId: string; load: Load }> {
     if (headers['x-sim-signature'] !== 'sim') throw new FundingError('BAD_SIGNATURE', 'Webhook signature invalid');
-    const b = JSON.parse(rawBody) as { eventId: string; loadId: string; status: Load['status']; amount: { minor: string; currency: string } };
+    const b = JSON.parse(rawBody) as { eventId: string; loadId: string; status: Load['status']; method?: 'card' | 'ach'; amount: { minor: string; currency: string } };
     const prior = this.events.get(b.eventId);
     if (prior) return prior;
     const load = this.must(b.loadId);
     if (fromWire(b.amount).minor !== load.amount.minor) throw new FundingError('VALIDATION_FAILED', 'Webhook amount differs from the load');
     const { holdUntil: _hold, ...rest } = load;
-    const next: Load = b.status === 'succeeded' ? { ...rest, status: b.status } : { ...load, status: b.status };
+    let next: Load = b.status === 'succeeded' ? { ...rest, status: b.status } : { ...load, status: b.status };
+    if (load.method === 'hosted' && b.status !== 'requires_action') {
+      // Once paid the load carries the method the payer used (card unless the hook says ach); a failed one has none to report.
+      const { action: _action, ...bare } = next;
+      next = b.status === 'failed' ? bare : { ...bare, method: b.method ?? 'card' };
+    }
     this.loads.set(load.loadId, next);
     if (next.status === 'succeeded' && !this.loadSettledAt.has(load.loadId)) this.loadSettledAt.set(load.loadId, this.clock.now().toISOString());
     const out = { eventId: b.eventId, load: { ...next } };
@@ -127,9 +187,9 @@ export class FundingSimulator implements FundingPort, FundingStatementPort {
   }
 
   /** Control-panel hook: a signed webhook settling or failing a load. */
-  webhookFor(loadId: string, status: 'succeeded' | 'failed'): { headers: Record<string, string>; rawBody: string } {
+  webhookFor(loadId: string, status: 'succeeded' | 'failed', method?: 'card' | 'ach'): { headers: Record<string, string>; rawBody: string } {
     const l = this.must(loadId);
-    return { headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: this.evIds.next(), loadId, status, amount: toWire(l.amount) }) };
+    return { headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: this.evIds.next(), loadId, status, ...(method ? { method } : {}), amount: toWire(l.amount) }) };
   }
 
   async listSettled(input: { from: string; to: string; cursor?: string; limit?: number }): Promise<SettledPage> {
