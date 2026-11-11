@@ -16,6 +16,9 @@
 //   collection that no other key has claimed (the claim is noted in the ledger), so two fee items that look alike get
 //   two collections. With the ledger lost entirely, two look-alike fee items cannot be told apart (the objects are
 //   interchangeable, but a retry may then be given the other one's ref).
+// - A sub-account create takes a key but never answers a repeat with the first sub-account (a repeat is a 500, a full
+//   quota a 429; T-0696). So it too is looked up by its exact name `Institution <id>` under the same parent, before the
+//   post and again after one that ends unknown, claimed like a collection, and a 429 is a quota error, never retried.
 // - A payment intent needs the payer's IP and consent. The port carries neither, and an adapter must not assert
 //   consent for someone: the caller supplies `payer` explicitly, or createPaymentPage refuses.
 // - Quoting an ACH needs a saved counterparty (`collectionCounterpartyRef`, Kesher's collection account), set up by ops.
@@ -189,6 +192,41 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
     return undefined;
   }
 
+  /**
+   * The sub-account of `parent` named `name`, if there is one: `GET /chapters?search=` lists sub-accounts as chapters, so an
+   * exact name is matched and then its parent checked (the list item's `parentChapterId` or `masterChapterId` when it has
+   * one, else `GET /chapters/{id}`, else our own `parent:` note); a same-named chapter of another parent, or one whose
+   * parent cannot be told, is not ours. A match another key has claimed is VALIDATION_FAILED, never handed to this key.
+   */
+  private async findSubAccount(parent: string, name: string, key: string): Promise<string | undefined> {
+    for await (const item of this.c.list('/chapters', { search: name })) {
+      if (!isRecord(item) || item['name'] !== name) continue;
+      const id = str(item['id']);
+      if (!(await this.isSubAccountOf(item, id, parent))) continue;
+      const owner = await this.noted(`claim:${parent}:${id}`);
+      if (owner !== undefined && owner !== key) throw new InstitutionBankingError('VALIDATION_FAILED', 'That sub-account already belongs to another request');
+      return id;
+    }
+    return undefined;
+  }
+
+  private async isSubAccountOf(listed: Record<string, unknown>, id: string, parent: string): Promise<boolean> {
+    const parentOf = (o: Record<string, unknown>): string | undefined => {
+      const p = o['parentChapterId'] ?? o['masterChapterId'];
+      return typeof p === 'string' || typeof p === 'number' ? String(p) : undefined;
+    };
+    let p = parentOf(listed);
+    if (p === undefined) {
+      try {
+        const r = await this.c.get(`/chapters/${id}`);
+        p = isRecord(r.data) ? parentOf(r.data) : undefined;
+      } catch (e) {
+        if (!(e instanceof CrowdedApiError && e.isMissing)) throw e;
+      }
+    }
+    return p !== undefined ? p === parent : (await this.noted(`parent:${id}`)) === parent;
+  }
+
   // ---- entity, application, account -----------------------------------------------------------------------------
 
   async createEntity(input: { holder: Holder; institutionId: string; legalName: string; ein: string; idempotencyKey: string }): Promise<{ entityRef: string }> {
@@ -255,8 +293,31 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
         input.idempotencyKey,
         input,
         async () => {
-          const r = await this.c.post(`/chapters/${parent}/subaccounts`, { name: `Institution ${input.institutionId}`, email: this.o.subAccountEmail, idempotencyKey: uuidFromKey(`sub:${input.idempotencyKey}`) });
-          const id = str((r.data as Record<string, unknown>)['id']);
+          // Crowded never answers a repeat of a sub-account create with the first one (a repeat of the same key is a 500,
+          // a full quota a 429; observed 2026-11-10, T-0696), so a sub-account is looked up by name before it is posted and
+          // again after a post whose outcome is unknown, never retried under the same key.
+          const name = `Institution ${input.institutionId}`;
+          let id = await this.findSubAccount(parent!, name, input.idempotencyKey);
+          if (id === undefined) {
+            try {
+              const r = await this.c.post(`/chapters/${parent}/subaccounts`, { name, email: this.o.subAccountEmail, idempotencyKey: uuidFromKey(`sub:${input.idempotencyKey}`) });
+              id = str((r.data as Record<string, unknown>)['id']);
+            } catch (e) {
+              if (e instanceof CrowdedApiError && e.status === 429) {
+                throw new InstitutionBankingError('PROVIDER_UNAVAILABLE', "Crowded's sub-account quota for this tenant is full (429): raise it with Crowded before trying again");
+              }
+              // A 4xx other than 409 is a refusal: nothing was made. A transport error, a 5xx or a 409 may have followed a create.
+              const unknown = e instanceof CrowdedTransportError || (e instanceof CrowdedApiError && (e.status >= 500 || e.status === 409));
+              if (!unknown) throw e;
+              try {
+                id = await this.findSubAccount(parent!, name, input.idempotencyKey);
+              } catch (again) {
+                throw again instanceof InstitutionBankingError && again.code === 'VALIDATION_FAILED' ? again : e;
+              }
+              if (id === undefined) throw e;
+            }
+          }
+          await this.note(`claim:${parent}:${id}`, input.idempotencyKey);
           await this.note(`parent:${id}`, parent!);
           return { subAccountRef: id, hasOwnAccountNumber: true };
         },
