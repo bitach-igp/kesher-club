@@ -22,6 +22,8 @@ export * from './bank.ts';
 export * from './bank.simulator.ts';
 export * from './institution-banking.ts';
 export * from './institution-banking.simulator.ts';
+export * from './mirror.ts';
+export * from './mirror.simulator.ts';
 export * from './card-issuing.ts';
 export * from './card-issuing.simulator.ts';
 export * from './wallet-provisioning.ts';
