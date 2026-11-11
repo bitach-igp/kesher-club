@@ -48,11 +48,15 @@ describe('ids, names and refs', () => {
     for (const bad of ['ch1', 'ch1:', 'ch1:a/b', 'ch1:a b', 'a:b:c', 'ch1:..', '..:x', 'ch1:a%2Fb', 'ch1:a?x=1', 'ch1:a#b']) expect(() => parseRef(bad, 2)).toThrow(/Unknown reference/);
   });
 
-  it('our key becomes a stable version-5 UUID', () => {
+  it('our key becomes a stable, valid version-4 UUID (the live API refuses any other version)', () => {
+    const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
     const u = uuidFromKey('us-fund:inst:key-0001');
-    expect(u).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(u).toMatch(V4);
     expect(uuidFromKey('us-fund:inst:key-0001')).toBe(u);
     expect(uuidFromKey('us-fund:inst:key-0002')).not.toBe(u);
+    const many = new Set(Array.from({ length: 200 }, (_, i) => uuidFromKey(`ach:key-${i}`)));
+    expect(many.size).toBe(200);
+    for (const x of many) expect(x).toMatch(V4);
   });
 });
 

@@ -354,4 +354,5 @@
 | [T-0729](T-0729.md) | WAL | The checking-account float: expected balance from the ledger, an intraday check against Crowded, a case when it runs short | REQ-LED-004, REQ-WAL-003 | later |
 | [T-0732](T-0732.md) | LED | The same-day coverage proof: every journal touching a mirrored account has its legs settled at Crowded by the cutoff, or a case opens | REQ-LED-004 | later |
 | [T-0733](T-0733.md) | WAL | BLOCKED on D2: an ACH load credits the wallet at once up to the member's instant-access limit, from platform float, with a reserve | REQ-WAL-003, REQ-WAL-002 | later |
+| [T-0734](T-0734.md) | INS | Crowded idempotency keys are UUID v4, as the live API requires; the fake refuses any other version | REQ-INS-024 | fix |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.

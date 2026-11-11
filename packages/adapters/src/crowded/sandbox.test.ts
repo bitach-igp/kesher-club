@@ -1,6 +1,7 @@
 // Crowded sandbox smoke test (T-0648): runs only when CROWDED_SANDBOX_TOKEN is set, otherwise it is skipped. It is
 // read-only: it lists organizations to prove the token and the base URL work. The full contract suite cannot run
 // against the sandbox unattended, because approving a bank application needs a person (T-0655, questions 9 and 15).
+// A body `idempotencyKey` must be a strict UUID v4: the live API answers 400 for any other version (T-0734, `uuidFromKey`).
 import { describe, expect, it } from 'vitest';
 import { CrowdedClient, SANDBOX_BASE_URL } from './client.ts';
 

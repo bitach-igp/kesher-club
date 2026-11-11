@@ -27,6 +27,10 @@ export interface FakeCrowdedOptions {
 const wire = (m: bigint): number => Number(m);
 const cents = (v: unknown): bigint => BigInt(Number(v));
 const ok = (data: unknown, status = 200, meta?: Json): Response => new Response(JSON.stringify({ data, ...(meta ? { meta } : {}) }), { status, headers: { 'content-type': 'application/json' } });
+/** The live API's rule (sandbox, 2026-11-11, T-0734): a body `idempotencyKey` is a strict UUID v4; a version-5 key is a 400. */
+const V4_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const isV4Key = (key: unknown): key is string => typeof key === 'string' && V4_KEY.test(key);
+const V4_MESSAGE = 'Idempotency key must be a valid UUID v4';
 const err = (status: number, message: string, code?: string, type?: string): Response => new Response(JSON.stringify({ type: type ?? (status === 400 ? 'ResourceInputError' : 'Error'), statusCode: status, message, ...(code ? { code } : {}), requestId: 'req_fake' }), { status, headers: { 'content-type': 'application/json' } });
 
 export class FakeCrowded {
@@ -178,7 +182,7 @@ export class FakeCrowded {
 
   /** A create with a body `idempotencyKey`: the same body answers the same response, another body is 409. */
   private keyed(key: unknown, body: unknown, make: () => Response): Response {
-    if (typeof key !== 'string' || !/^[0-9a-f-]{36}$/.test(key)) return err(400, 'idempotencyKey must be a UUID', 'VALIDATION_ERROR');
+    if (!isV4Key(key)) return err(400, V4_MESSAGE, undefined, 'ValidationError');
     const text = JSON.stringify(body);
     const prior = this.keys.get(key);
     if (prior) return prior.body === text ? prior.response.clone() : err(409, 'Idempotency key reused', 'DUPLICATE_REQUEST');
@@ -251,7 +255,7 @@ export class FakeCrowded {
       // The live shape (2026-11-10): the quota is checked before the key; a key seen before answers 500, whatever the body.
       if (this.subAccountQuota !== undefined && this.subAccountCount() >= this.subAccountQuota) return err(429, 'Limit has already been reached', undefined, 'SubscriptionQuotaExceededError');
       const key = String(d['idempotencyKey']);
-      if (!/^[0-9a-f-]{36}$/.test(key)) return err(400, 'idempotencyKey must be a UUID', 'VALIDATION_ERROR');
+      if (!isV4Key(key)) return err(400, V4_MESSAGE, undefined, 'ValidationError');
       if (this.subKeys.has(key)) return err(500, 'Internal server error', undefined, 'InternalServerErrorException');
       this.subKeys.add(key);
       const sub: Chapter = { id: this.id('ch'), name: String(d['name']), organizationId: ch.organizationId, parent: ch.id };
@@ -262,6 +266,7 @@ export class FakeCrowded {
     if (method === 'POST' && rest === 'subaccounts/fund') {
       const items = Array.isArray(data) ? (data as Json[]) : [];
       const results = items.map((it) => {
+        if (!isV4Key(it['idempotencyKey'])) return { id: it['id'], status: 'failed', error: V4_MESSAGE };
         const seen = this.funded.get(String(it['idempotencyKey']));
         if (seen) return seen;
         const sub = this.chapters.find((c) => c.id === it['id'] && c.parent === ch.id);
@@ -329,6 +334,7 @@ export class FakeCrowded {
     const items = Array.isArray(d['payments']) ? (d['payments'] as Json[]) : [];
     if (d['type'] !== 'achCounterparty' || items.length !== 1 || !acct) return err(400, 'Unsupported payment request', 'VALIDATION_ERROR');
     const it = items[0]!;
+    if (!isV4Key(it['idempotencyKey'])) return err(400, V4_MESSAGE, undefined, 'ValidationError');
     if (String(it['counterpartyId']).startsWith('ach_rejected_201')) return ok({ id: this.id('pay'), method: 'ach', status: 'Rejected', error: 'Account closed' }, 201);
     if (this.inFlightAchCalls > 0) {
       this.inFlightAchCalls--;
