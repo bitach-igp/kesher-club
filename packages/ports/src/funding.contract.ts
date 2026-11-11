@@ -12,6 +12,8 @@ export interface FundingContractOptions {
   succeededWebhook: (port: FundingPort, loadId: string) => Promise<{ headers: Record<string, string>; rawBody: string }>;
   /** A payment method whose loads cannot be refunded (the vendor answers failed). */
   norefundPaymentMethod?: string;
+  /** The adapter supports the hosted (payment-page) method; default false, so adapters that do not run unchanged. */
+  hosted?: boolean;
 }
 
 export function fundingContract(name: string, make: () => FundingPort, opts: FundingContractOptions): void {
@@ -86,6 +88,42 @@ export function fundingContract(name: string, make: () => FundingPort, opts: Fun
       await expect(port.refund({ loadId: 'nope', amount: money(100n, 'USD') }, 'R-5')).rejects.toMatchObject({ code: 'UNKNOWN_LOAD' });
       await expect(port.getRefund('nope')).rejects.toBeInstanceOf(FundingError);
     });
+
+    if (opts.hosted) {
+      const hosted = { payerIp: '203.0.113.7', userConsented: true } as const;
+      it('a hosted load answers pending with a payment-page action, no clientSecret, and one load per key (A8)', async () => {
+        const port = make();
+        const a = await port.createLoad({ customerId: 'c1', method: 'hosted', amount, hosted }, 'H-1-key');
+        expect(a.status).toBe('requires_action');
+        expect(a.method).toBe('hosted');
+        expect(a.amount).toEqual(amount);
+        expect(a.clientSecret).toBeUndefined();
+        expect(a.action?.type).toBe('payment_page');
+        expect(a.action?.url).toMatch(/^https:\/\//);
+        const b = await port.createLoad({ customerId: 'c1', method: 'hosted', amount, hosted }, 'H-1-key');
+        expect(b).toEqual(a);
+        expect(await port.getLoad(a.loadId)).toEqual(a);
+      });
+
+      it('a hosted load needs the payer ip and consent exactly true (A3)', async () => {
+        const port = make();
+        const bad = [
+          undefined,
+          { userConsented: true },
+          { payerIp: '', userConsented: true },
+          { payerIp: '203.0.113.7' },
+          { payerIp: '203.0.113.7', userConsented: false },
+          { payerIp: '203.0.113.7', userConsented: 'true' },
+        ];
+        for (const [i, h] of bad.entries()) {
+          await expect(port.createLoad({ customerId: 'c1', method: 'hosted', amount, ...(h ? { hosted: h as never } : {}) }, `H-bad-${i}`)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+        }
+      });
+    } else {
+      it('an adapter without hosted answers UNSUPPORTED_METHOD', async () => {
+        await expect(make().createLoad({ customerId: 'c1', method: 'hosted', amount, hosted: { payerIp: '203.0.113.7', userConsented: true } }, 'H-un-key')).rejects.toMatchObject({ code: 'UNSUPPORTED_METHOD' });
+      });
+    }
 
     if (opts.norefundPaymentMethod) {
       it('a refund the vendor refuses comes back failed with a code, not as an exception', async () => {

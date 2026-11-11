@@ -4,8 +4,25 @@
 // confirms (SEQ-02). ACH loads carry the bank's hold days.
 import type { Money } from '@kesher/domain';
 
-export type FundingMethod = 'card' | 'apple_pay' | 'google_pay' | 'ach' | 'rtp';
+/** `hosted`: the payer picks card or bank on the vendor's payment page; a `Load` read after payment carries the method actually used. */
+export type FundingMethod = 'card' | 'apple_pay' | 'google_pay' | 'ach' | 'rtp' | 'hosted';
 export type LoadStatus = 'requires_action' | 'processing' | 'succeeded' | 'failed' | 'on_hold';
+
+/** A payment page to open (an `embed` kind may follow). */
+export interface LoadAction {
+  type: 'payment_page';
+  url: string;
+  /** ISO 8601 UTC. */
+  expiresAt?: string;
+}
+
+/** The payer's details a hosted load needs: the vendor's intent requires the IP and explicit consent (ADR-018 A3). */
+export interface HostedLoadInput {
+  payerIp: string;
+  userConsented: true;
+  successUrl?: string;
+  failureUrl?: string;
+}
 
 export interface Load {
   loadId: string;
@@ -16,6 +33,8 @@ export interface Load {
   holdUntil?: string;
   /** Client-side secret for a payment sheet when status is requires_action. Never logged. */
   clientSecret?: string;
+  /** What the payer must do next while status is requires_action and the vendor hosts the payment. The url is never logged. */
+  action?: LoadAction;
   failureCode?: string;
 }
 
@@ -31,7 +50,7 @@ export interface Refund {
 }
 
 export interface FundingPort {
-  createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string }, idempotencyKey: string): Promise<Load>;
+  createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string; hosted?: HostedLoadInput }, idempotencyKey: string): Promise<Load>;
   getLoad(loadId: string): Promise<Load>;
   /** Returns up to the load's remaining amount to its source. Same key → the same refund. */
   refund(input: { loadId: string; amount: Money }, idempotencyKey: string): Promise<Refund>;
