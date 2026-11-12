@@ -973,4 +973,53 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
     expect(await journals(key)).toBe(1);
     expect((await app.services.transfers.byKey(key))!.state).toBe('settled');
   });
+
+  it('a funder loading a member credits the MEMBER\'s vendor account, never the funder\'s; the funder having no account does not block; the member having none is NO_ACCOUNT', async () => {
+    const t = await setup();
+    const s = app.services;
+    const funder = uuidv7(NOW);
+    const member2 = uuidv7(NOW);
+    const noAccount = uuidv7(NOW);
+    const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
+    // The funder has an account too, to show it is never the one credited; the member's is what the ledger credits.
+    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_account', $1, $2, 'a:funder'), ('funding_account', $3, $2, 'a:member')`, [funder, provider, member2]);
+    const members = { forMember: async (id: string) => ({ funderPartyId: funder, status: 'active', id }) } as unknown as typeof s.memberships;
+    const svc = new LoadService({ db, port: t.sim, credit: t.sim as Required<FundingSimulator>, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: members, flags: s.flags, provider });
+    const body = (m: string) => ({ memberPartyId: m, amount: USD_100, method: 'card', paymentMethodId: 'pm_ok' });
+    expect((await svc.request(funder, body(member2), 'funder-load-0001', NOW)).state).toBe('settled');
+    expect(t.spy.mock.calls[0]![0]).toMatchObject({ accountRef: 'a:member' });
+    expect(await journals('funder-load-0001')).toBe(1);
+
+    // The member has no account ref: refused NO_ACCOUNT, no call, no journal.
+    const before = t.spy.mock.calls.length;
+    await svc.request(funder, body(noAccount), 'funder-load-0002', NOW);
+    expect(t.spy.mock.calls.length).toBe(before);
+    expect(await journals('funder-load-0002')).toBe(0);
+    expect(await caseRows('funder-load-0002')).toMatchObject([{ status: 'open', payload: { reasonCode: 'NO_ACCOUNT' } }]);
+  });
+
+  it('an outage is PROVIDER_UNAVAILABLE and nothing posts; a request the vendor will never accept (an ILS load) opens one case and is not an error each cycle; NOT_SUCCEEDED after a succeeded read is pending, no case', async () => {
+    const t = await setup();
+    t.sim.outageNext();
+    await expect(t.svc.request(t.party, t.body, 'card-credit-outage', NOW)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(await journals('card-credit-outage')).toBe(0);
+    expect(await caseRows('card-credit-outage')).toEqual([]);
+
+    const ils = { ...t.body, amount: { minor: '10000', currency: 'ILS' } };
+    await t.svc.request(t.party, ils, 'card-credit-ils01', NOW);
+    expect(await caseRows('card-credit-ils01')).toMatchObject([{ status: 'open', payload: { reasonCode: 'VALIDATION_FAILED' } }]);
+    expect(await journals('card-credit-ils01')).toBe(0);
+    const ilsCalls = () => t.spy.mock.calls.filter((c) => String(c[1]).startsWith('card-credit-ils01')).length;
+    const calls = ilsCalls();
+    for (const x of await t.svc.stale(LATER, 0)) await t.svc.applyVendorLoad((await t.svc.vendorLoadOf(x.id))!, LATER);
+    expect(ilsCalls()).toBe(calls);
+    expect(await caseRows('card-credit-ils01')).toHaveLength(1);
+
+    t.spy.mockResolvedValueOnce({ status: 'refused', reasonCode: 'NOT_SUCCEEDED' });
+    await t.svc.request(t.party, t.body, 'card-credit-flap01', NOW);
+    expect(await caseRows('card-credit-flap01')).toEqual([]);
+    expect(await journals('card-credit-flap01')).toBe(0);
+    for (const x of await t.svc.stale(LATER, 0)) await t.svc.applyVendorLoad((await t.svc.vendorLoadOf(x.id))!, LATER);
+    expect(await journals('card-credit-flap01')).toBe(1);
+  });
 });

@@ -520,12 +520,12 @@ describe('the credit before the release journal (T-0705)', () => {
     expect((await transfers.get(t.id))!.state).toBe('pending_hold');
     expect(await journals(releaseKey(t.key))).toBe(0);
 
-    // Open: neither the vendor's credit nor its load read is asked again.
+    // Open: the vendor's load is still read (a bank return must be seen) but the credit is not asked again.
     spy.mockClear();
     const reads = cloads.vendorReads;
     expect(await cjob.run()).toMatchObject({ released: 0, credited: 0, refused: 0 });
     expect(spy).not.toHaveBeenCalled();
-    expect(cloads.vendorReads).toBe(reads);
+    expect(cloads.vendorReads).toBe(reads + 1);
     await db.query(`update ops.case set status = 'investigating' where dedupe_key = $1`, [`load-credit:${t.id}`]);
     await cjob.run();
     expect(spy).not.toHaveBeenCalled();
@@ -581,5 +581,29 @@ describe('the credit before the release journal (T-0705)', () => {
     expect(await cjob.run()).toMatchObject({ released: 0, credited: 0, refused: 0 });
     expect(spy).not.toHaveBeenCalled();
     expect((await transfers.get(t.id))!.state).toBe('failed');
+  });
+
+  it('a bank return while a credit case is open fails the load: the hold is reversed, nothing is credited', async () => {
+    const t = await held();
+    csim.settle(t.loadId);
+    now = THURSDAY;
+    csim.failNext('ACCOUNT_UNAVAILABLE');
+    await cjob.run();
+    expect(await caseOf(t.id)).toMatchObject([{ status: 'open' }]);
+    // The vendor then reports the load failed (a return): the next cycle reads it and fails the load.
+    (csim as unknown as { loads: Map<string, { status: string }> }).loads.get(t.loadId)!.status = 'failed';
+    spy.mockClear();
+    expect(await cjob.run()).toMatchObject({ released: 0 });
+    expect(spy).not.toHaveBeenCalled();
+    expect((await transfers.get(t.id))!.state).toBe('failed');
+    expect(await journals(releaseKey(t.key))).toBe(0);
+  });
+
+  it('a refusal already held by an open case is not counted again', async () => {
+    const t = await held({ account: false });
+    csim.settle(t.loadId);
+    now = THURSDAY;
+    expect(await cjob.run()).toMatchObject({ refused: 1 });
+    expect(await cjob.run()).toMatchObject({ refused: 0 });
   });
 });

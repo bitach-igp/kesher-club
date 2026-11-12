@@ -24,7 +24,7 @@
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
 import { applyBps, DomainError, fromWire, money, sub, toWire, uuidv7, type Currency, type Money, type Posting } from '@kesher/domain';
-import { applyRate, FundingAccountError, FundingError, type FundingAccountPort, type FundingCreditPort, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
+import { applyRate, FundingAccountError, FundingError, type FundingAccountPort, type CreditResult, type FundingCreditPort, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import type { Database } from '../db.ts';
@@ -353,8 +353,6 @@ export class LoadService implements LoadActivities {
     if (loadId) {
       // A load the vendor does not know is a case for people, opened once; it is not asked about again until they act (T-0547).
       if (await this.unknownLoadOpen(transfer.id)) return transfer;
-      // A refused credit waits for people the same way: not asked again while its case is open (T-0705).
-      if (this.d.credit && (await this.creditCase(transfer.id)).open) return transfer;
       this.reads += 1;
       try {
         vendor = await this.d.port.getLoad(loadId);
@@ -541,32 +539,44 @@ export class LoadService implements LoadActivities {
     // Not `succeeded` (an ACH the vendor still holds, even past our hold date when its clock lags ours): nothing to credit yet, no case.
     if (vendor.status !== 'succeeded') return false;
     const attempt = found.attempt + 1;
-    const ref = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'funding_account' and entity_id = $1 and provider = $2`, [transfer.fromPartyId, this.d.provider]);
+    const ref = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'funding_account' and entity_id = $1 and provider = $2`, [transfer.toPartyId, this.d.provider]);
     const accountRef = ref.rows[0]?.external_id;
     if (!accountRef) {
       await this.openCreditCase(transfer, vendor.loadId, 'NO_ACCOUNT', attempt, now);
       return false;
     }
-    const result = await port.creditWallet({ loadId: vendor.loadId, accountRef, amount: transfer.amount }, creditKey(transfer.idempotencyKey, attempt));
+    let result: CreditResult;
+    try {
+      result = await port.creditWallet({ loadId: vendor.loadId, accountRef, amount: transfer.amount }, creditKey(transfer.idempotencyKey, attempt));
+    } catch (e) {
+      // An outage moved nothing: the same key is sent again next cycle. A request the vendor will never accept (a USD-only credit asked for an
+      // ILS load, a load it does not know) is a case for people, once, not an error every cycle.
+      if (e instanceof FundingError && (e.code === 'VALIDATION_FAILED' || e.code === 'UNKNOWN_LOAD')) {
+        await this.openCreditCase(transfer, vendor.loadId, e.code, attempt, now);
+        return false;
+      }
+      throw mapFundingError(e);
+    }
     if (result.status === 'credited') {
       this.credits += 1;
       return true;
     }
-    if (result.status === 'refused') await this.openCreditCase(transfer, vendor.loadId, result.reasonCode ?? 'REFUSED', attempt, now);
+    // `NOT_SUCCEEDED` after a `succeeded` read is the vendor's read flapping, not a refusal: retried with the same key, no case.
+    if (result.status === 'refused' && result.reasonCode !== 'NOT_SUCCEEDED') await this.openCreditCase(transfer, vendor.loadId, result.reasonCode ?? 'REFUSED', attempt, now);
     return false;
   }
 
   private async openCreditCase(transfer: Transfer, loadId: string, reasonCode: string, attempt: number, now: Date): Promise<void> {
-    this.refusals += 1;
-    await this.d.db.query(
+    const r = await this.d.db.query(
       // A resolved or dismissed case is reopened by the next refusal (the earlier decision is kept in the payload); an open one is left alone.
       `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_credit_refused', $2, 'high', 'open', $3, $4)
        on conflict (dedupe_key) do update set status = 'open', resolved_at = null, resolved_by = null, resolution = null,
          disposition = null, decided_by = null, decided_at = null, decision_note = null, assigned_to = null, assigned_at = null,
          payload = excluded.payload || jsonb_build_object('reopened', jsonb_build_object('at', excluded.opened_at, 'was', ops.case.status, 'resolution', ops.case.resolution))
-       where ops.case.status in ('resolved', 'dismissed')`,
+       where ops.case.status in ('resolved', 'dismissed') returning id`,
       [uuidv7(now), creditCaseKey(transfer.id), { transferId: transfer.id, loadId, amount: { minor: transfer.amount.minor.toString(), currency: transfer.amount.currency }, reasonCode, attempt }, now],
     );
+    if (r.rows.length > 0) this.refusals += 1;
   }
 
   private async openUnknownLoadCase(transfer: Transfer, loadId: string, now: Date): Promise<void> {
