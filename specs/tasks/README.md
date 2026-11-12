@@ -331,12 +331,12 @@
 | [T-0699](T-0699.md) | INS | The Crowded adapter creates a member's contact and wallet account, against the fake and the gated sandbox suite | REQ-INS-022 | later |
 | [T-0700](T-0700.md) | WAL | The Crowded funding adapter starts a load as a collection and an intent and reads it back | REQ-WAL-002, REQ-WAL-003 | later |
 | [T-0703](T-0703.md) | WAL | Crowded payment events move a hosted load: re-read, then hold, credit or fail, replay-safe | REQ-WAL-002, REQ-WAL-003 | later |
-| [T-0704](T-0704.md) | WAL | The funding port can move vendor-held money into the member's wallet account: release-funds, then a book payment | REQ-WAL-003 | later |
-| [T-0705](T-0705.md) | WAL | A load credits the vendor wallet before its release journal, a refused account cannot load, and a return after release opens a case | REQ-WAL-003, REQ-WAL-002 | later |
+| [T-0704](T-0704.md) | WAL | FundingCreditPort: the port step that moves a settled load's money into the member's vendor wallet account, with simulator and contract block | REQ-WAL-003 | later |
+| [T-0705](T-0705.md) | WAL | A load credits the vendor wallet before its journal (card settle and ACH release); a refused credit is a case with a numbered retry | REQ-WAL-003 | later |
 | [T-0706](T-0706.md) | WAL | A closure refund of a load Crowded cannot refund goes to a case, not to a refund call | REQ-WAL-005 | later |
 | [T-0707](T-0707.md) | LED | The nightly partner reconciliation can read Crowded's collect payments as the funding statement | REQ-LED-004 | later |
 | [T-0708](T-0708.md) | LED | A nightly same-day balance proof: each member's ledger wallet plus pending equals their Crowded balance, and a difference is a break | REQ-LED-004 | later |
-| [T-0709](T-0709.md) | WAL | PROVIDER_FUNDING can be `crowded`: config keys, registry binding, production guard, Terraform and setup docs | REQ-WAL-002 | later |
+| [T-0709](T-0709.md) | WAL | PROVIDER_FUNDING can be `crowded`: config keys, one composite funding binding, memberChapterId into both processes, production-guard tests | REQ-WAL-002 | later |
 | [T-0714](T-0714.md) | WAL | POST /loads accepts a hosted method, answers with the payment-page action, and a load can be read back | REQ-WAL-002, REQ-WAL-003 | later |
 | [T-0715](T-0715.md) | WAL | Add money opens the Crowded payment page and shows the load as pending until the vendor says it settled (needs a design) | REQ-WAL-002, REQ-WAL-003 | later |
 | [T-0716](T-0716.md) | LED | PostgresLedger takes two optional in-transaction hooks: before a journal posts and after it is inserted | REQ-LED-001, REQ-LED-003 | later |
@@ -356,4 +356,12 @@
 | [T-0733](T-0733.md) | WAL | BLOCKED on D2: an ACH load credits the wallet at once up to the member's instant-access limit, from platform float, with a reserve | REQ-WAL-003, REQ-WAL-002 | later |
 | [T-0734](T-0734.md) | INS | Crowded idempotency keys are UUID v4, as the live API requires; the fake refuses any other version | REQ-INS-024 | fix |
 | [T-0735](T-0735.md) | WAL | Crowded adapter hardening: ledger-failure wrapping, atomic title claim, query-string and IPv6 range fixes, readBack and listBookPayments bounds, bookWireKey prefix, typed Load metadata | REQ-WAL-002, REQ-LED-004 | later |
+| [T-0736](T-0736.md) | SETUP | BLOCKED on owner W1-W4: production boots with Crowded funding while membership billing is waived (the three Stripe billing flags default off) | — | later |
+| [T-0737](T-0737.md) | BIL | BLOCKED on owner F1-F7: a membership fee is deducted from the member's wallet balance (design card, to be re-cut) | REQ-BIL-003 | later |
+| [T-0738](T-0738.md) | WAL | The member's funding details: legal name, email and date of birth asked once, kept sealed, read when the funding account is made (owner I1-I4) | REQ-WAL-002 | later |
+| [T-0739](T-0739.md) | SETUP | Terraform and setup docs for Crowded funding: secret containers, plain values, webhook registration note | — | later |
+| [T-0740](T-0740.md) | WAL | A hosted load needs the member's funding account: details, ensureAccount, refs in ops.external_ref; a refused member cannot load | REQ-WAL-002 | later |
+| [T-0741](T-0741.md) | WAL | The Crowded funding adapter implements FundingCreditPort: release-funds when fund holding is on, then one book payment to the member's wallet account | REQ-WAL-003 | later |
+| [T-0742](T-0742.md) | WAL | A return after release opens a case instead of being dropped, and leaves the wallet alone | REQ-WAL-003 | later |
+| [T-0743](T-0743.md) | WAL | End-to-end self top-up against the Crowded fake: hosted load, payment event, credit, ACH hold and release, returns | REQ-WAL-002, REQ-WAL-003 | later |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
