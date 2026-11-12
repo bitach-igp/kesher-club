@@ -9,11 +9,19 @@
 // the first sub-account; `subAccountQuota = n` makes a create past n sub-accounts answer 429, checked before the key; the
 // chapter list finds sub-accounts by `search` and never says whose they are, `GET /chapters/{id}` carries the parent as
 // `masterChapterId` (checked against the live sandbox 2026-11-11), and only the create response has `parentChapterId`.
+// Member contacts and wallet accounts (T-0699): contact ids and wallet account ids are NUMBERS from two separate counters, so the
+// contact 1 and the account 1 exist side by side (an adapter that confuses the two id spaces is caught). A contact create has no
+// idempotency key; a duplicate mobile in the chapter is a Failed entry with no id; the fixture emails `rejected@example.test`
+// (an entry created Failed, with an id), `frozen@example.test` (a Frozen account) and `outage@example.test` (the whole request
+// answers 503) stand in for the bank's decisions. An account create is a bulk call with a body `idempotencyKey`, and a contact
+// that already has the product answers `accountCreated: false`. Wallet accounts show an unmasked account number, as the real list does.
 import { createHash } from 'node:crypto';
 
 type Json = Record<string, unknown>;
 interface Chapter { id: string; name: string; organizationId: string; parent?: string; application?: 'FormInProgress' | 'Approved' | 'Denied' | 'AwaitingDocuments' }
 interface Account { id: string; chapterId: string; accountNumber: string; balance: bigint }
+interface Contact { id: number; chapterId: string; firstName: string; lastName: string; mobile: string; email: string; dateOfBirth: string | null; status: 'Active' | 'Failed' | 'Archived'; createdAt: Date }
+interface Wallet { id: number; chapterId: string; contactId: number; status: 'Open' | 'Frozen' | 'Closed'; accountNumber: string; balance: bigint; hold: bigint; createdAt: Date }
 interface Payment { id: string; chapterId: string; method: 'ach'; status: 'pending' | 'processing' | 'sent' | 'returned' | 'canceled' | 'failed'; amount: bigint; counterpartyId: string; addenda: string; key: string; body: string }
 
 export interface FakeCrowdedOptions {
@@ -51,7 +59,11 @@ export class FakeCrowded {
   private readonly collections: { id: string; chapterId: string; title: string; requestedAmount: bigint }[] = [];
   private readonly intents: { id: string; chapterId: string; collectionId: string; email: string; amount: bigint; paid?: { id: string; at: Date } }[] = [];
   private readonly payments: Payment[] = [];
-  private readonly ledger: { id: string; chapterId: string; accountId: string; direction: 'Credit' | 'Debit'; amount: bigint; title: string; at: Date }[] = [];
+  private readonly ledger: { id: string; chapterId: string; accountId: string; direction: 'Credit' | 'Debit'; amount: bigint; title: string; at: Date; collectPaymentId?: string }[] = [];
+  private readonly contacts: Contact[] = [];
+  private readonly wallets: Wallet[] = [];
+  private contactSeq = 0;
+  private walletSeq = 0;
   private readonly keys = new Map<string, { body: string; response: Response }>();
   private readonly funded = new Map<string, Json>();
   private readonly subKeys = new Set<string>();
@@ -67,6 +79,8 @@ export class FakeCrowded {
   quoteWithoutFee = false;
   /** Sub-accounts the tenant may hold; a create past it answers 429 SubscriptionQuotaExceededError (before the key is looked at). */
   subAccountQuota: number | undefined = undefined;
+  /** The next wallet account creates answer a per-item `error: true` with this code (a 200, as the bulk call does). */
+  accountProvisionError: 'PROVISION_FAILED' | 'CONTACT_NOT_FOUND' | undefined = undefined;
 
   constructor(opts: FakeCrowdedOptions) {
     this.token = opts.token;
@@ -131,8 +145,79 @@ export class FakeCrowded {
   accountNumber(chapterId: string): string {
     return this.accountOf(chapterId).accountNumber;
   }
-  count(kind: 'organizations' | 'chapters' | 'collections' | 'payments'): number {
+  count(kind: 'organizations' | 'chapters' | 'collections' | 'payments' | 'contacts' | 'accounts'): number {
+    if (kind === 'accounts') return this.wallets.length; // wallet accounts; a chapter's checking account is not counted
     return this[kind === 'organizations' ? 'orgs' : kind].length;
+  }
+
+  // ---- member contacts and wallet accounts (T-0699) -------------------------------------------------------------
+
+  /** An approved chapter with its checking account, for a test that needs a platform chapter at once. */
+  seedChapter(name = 'Platform'): string {
+    const org = { id: this.id('org'), name };
+    this.orgs.push(org);
+    const ch: Chapter = { id: this.id('ch'), name, organizationId: org.id };
+    this.chapters.push(ch);
+    this.decide(ch.id);
+    return ch.id;
+  }
+  /** The chapter's checking balance is set to `minor` (a credit or debit row for the difference). */
+  setChecking(chapterId: string, minor: bigint): void {
+    const a = this.accountOf(chapterId);
+    if (minor >= a.balance) this.credit(a, minor - a.balance, 'Set balance');
+    else this.debit(a, a.balance - minor, 'Set balance');
+  }
+  /** The bank decides the contact failed (the contact keeps its mobile). */
+  failContact(mobile: string): void {
+    this.contactByMobile(mobile).status = 'Failed';
+  }
+  contactId(mobile: string): number {
+    return this.contactByMobile(mobile).id;
+  }
+  walletId(contactId: number): number {
+    const w = this.wallets.find((x) => x.contactId === contactId);
+    if (!w) throw new Error('no wallet');
+    return w.id;
+  }
+  freezeAccount(id: number): void {
+    this.wallet(id).status = 'Frozen';
+  }
+  setAccountStatus(id: number, status: 'Open' | 'Frozen' | 'Closed'): void {
+    this.wallet(id).status = status;
+  }
+  /** Sets the wallet balance (a credit or debit row for the difference). */
+  setBalance(id: number, minor: bigint): void {
+    const w = this.wallet(id);
+    if (minor >= w.balance) this.postWallet(w, 'Credit', minor - w.balance, 'Set balance');
+    else this.postWallet(w, 'Debit', w.balance - minor, 'Set balance');
+  }
+  /** A credit row, as from a released collection when `collectPaymentId` is given. */
+  creditWallet(id: number, minor: bigint, extra: { title?: string; collectPaymentId?: string } = {}): void {
+    this.postWallet(this.wallet(id), 'Credit', minor, extra.title ?? 'Credit', extra.collectPaymentId);
+  }
+  debitWallet(id: number, minor: bigint, title = 'Debit'): void {
+    this.postWallet(this.wallet(id), 'Debit', minor, title);
+  }
+  holdWallet(id: number, minor: bigint): void {
+    this.wallet(id).hold = minor;
+  }
+  /** The full account number of a wallet, for tests that check it never leaves the adapter. */
+  walletNumber(id: number): string {
+    return this.wallet(id).accountNumber;
+  }
+  private contactByMobile(mobile: string): Contact {
+    const c = this.contacts.find((x) => x.mobile === mobile);
+    if (!c) throw new Error('no such contact');
+    return c;
+  }
+  private wallet(id: number): Wallet {
+    const w = this.wallets.find((x) => x.id === id);
+    if (!w) throw new Error(`no wallet ${id}`);
+    return w;
+  }
+  private postWallet(w: Wallet, direction: 'Credit' | 'Debit', minor: bigint, title: string, collectPaymentId?: string): void {
+    w.balance += direction === 'Credit' ? minor : -minor;
+    this.ledger.push({ id: this.id('tx'), chapterId: w.chapterId, accountId: String(w.id), direction, amount: minor, title, at: this.now(), ...(collectPaymentId ? { collectPaymentId } : {}) });
   }
   /** Sub-accounts (chapters with a parent) created so far. */
   subAccountCount(): number {
@@ -247,7 +332,35 @@ export class FakeCrowded {
     if (method === 'GET' && rest === 'applications') return ch.application ? ok({ status: ch.application === 'FormInProgress' ? 'FormInProgress' : ch.application }) : err(400, 'No application', 'VALIDATION_ERROR');
     if (method === 'GET' && rest === 'accounts') {
       const a = ch.application === 'Approved' || ch.parent ? this.accounts.filter((x) => x.chapterId === ch.id) : [];
-      return this.page(a.map((x) => ({ id: x.id, name: 'Checking', status: 'Open', accountNumber: x.accountNumber, routingNumber: '084106768', currency: 'USD', balance: wire(x.balance), hold: wire(0n), available: wire(x.balance) })), q);
+      const checking = a.map((x) => ({ id: x.id, name: 'Checking', status: 'Open', accountNumber: x.accountNumber, routingNumber: '084106768', currency: 'USD', balance: wire(x.balance), hold: wire(0n), available: wire(x.balance), product: 'checking' }));
+      return this.page([...checking, ...this.wallets.filter((w) => w.chapterId === ch.id).map((w) => this.walletJson(w))], q);
+    }
+    if (method === 'POST' && rest === 'contacts') return this.createContacts(ch, data);
+    if (method === 'GET' && rest === 'contacts') {
+      const s = (q['search'] ?? '').toLowerCase();
+      const rows = this.contacts.filter((c) => c.chapterId === ch.id && (!s || [c.firstName, c.lastName, c.email, c.mobile].some((f) => f.toLowerCase().includes(s))));
+      return this.page(rows.map((c) => this.contactJson(c)), q);
+    }
+    if ((m = rest.match(/^contacts\/([^/]+)$/)) && method === 'GET') {
+      const c = this.contacts.find((x) => x.chapterId === ch.id && String(x.id) === m![1]);
+      return c ? ok(this.contactJson(c)) : err(404, 'Contact not found', undefined, 'NotExistError');
+    }
+    if (method === 'POST' && rest === 'accounts') return this.createAccounts(ch, d);
+    if ((m = rest.match(/^accounts\/([^/]+)$/)) && method === 'GET') {
+      const w = this.wallets.find((x) => x.chapterId === ch.id && String(x.id) === m![1]);
+      if (w) return ok(this.walletJson(w));
+      const c = this.accounts.find((x) => x.chapterId === ch.id && x.id === m![1]);
+      return c ? ok({ id: c.id, name: 'Checking', status: 'Open', accountNumber: c.accountNumber, routingNumber: '084106768', currency: 'USD', balance: wire(c.balance), hold: wire(0n), available: wire(c.balance), product: 'checking' }) : err(404, 'Account not found', undefined, 'NotExistError');
+    }
+    if ((m = rest.match(/^accounts\/([^/]+)\/transactions$/)) && method === 'GET') {
+      const accountId = m[1]!;
+      if (!this.wallets.some((x) => x.chapterId === ch.id && String(x.id) === accountId) && !this.accounts.some((x) => x.chapterId === ch.id && x.id === accountId)) return err(404, 'Account not found', undefined, 'NotExistError');
+      const min = q['filter[createdAt][min]'] ? new Date(q['filter[createdAt][min]']) : undefined;
+      const max = q['filter[createdAt][max]'] ? new Date(q['filter[createdAt][max]']) : undefined;
+      const rows = this.ledger
+        .filter((t) => t.chapterId === ch.id && t.accountId === accountId && (!min || t.at >= min) && (!max || t.at <= max))
+        .map((t) => ({ id: t.id, accountId: t.accountId, type: 'bookTransaction', direction: t.direction, amount: wire(t.amount), title: t.title, createdAt: t.at.toISOString(), ...(t.collectPaymentId ? { collectPaymentId: t.collectPaymentId } : {}) }));
+      return this.page(rows, q);
     }
     if (method === 'POST' && rest === 'subaccounts') {
       if (ch.application !== 'Approved') return err(400, 'Parent has no account', 'VALIDATION_ERROR');
@@ -327,6 +440,62 @@ export class FakeCrowded {
       return this.page(rows, q);
     }
     return err(404, 'No such route');
+  }
+
+  private contactJson(c: Contact): Json {
+    return { id: c.id, chapterId: c.chapterId, firstName: c.firstName, lastName: c.lastName, mobile: c.mobile, email: c.email, dateOfBirth: c.dateOfBirth, status: c.status, ...(c.status === 'Failed' ? { error: { message: 'Contact could not be verified', detail: {} } } : { error: null }), createdAt: c.createdAt.toISOString(), updatedAt: c.createdAt.toISOString(), archivedAt: null };
+  }
+  private walletJson(w: Wallet): Json {
+    return { id: w.id, name: 'Wallet', status: w.status, accountNumber: w.accountNumber, routingNumber: '084106768', currency: 'USD', balance: wire(w.balance), hold: wire(w.hold), available: wire(w.balance - w.hold), contactId: w.contactId, product: 'wallet', createdAt: w.createdAt.toISOString() };
+  }
+
+  /** Bulk contact create: each item stands alone. A duplicate mobile or a malformed item is a Failed entry with no id. */
+  private createContacts(ch: Chapter, data: unknown): Response {
+    const items = Array.isArray(data) ? (data as Json[]) : [];
+    if (items.length === 0 || items.length > 100) return err(400, 'Between 1 and 100 contacts', 'VALIDATION_ERROR');
+    if (items.some((it) => String(it['email']).toLowerCase() === 'outage@example.test')) return err(503, 'Unavailable');
+    const out = items.map((it): Json => {
+      const mobile = String(it['mobile']);
+      const bad = (message: string): Json => ({ firstName: it['firstName'], lastName: it['lastName'], mobile, email: it['email'], chapterId: ch.id, status: 'Failed', error: { message, detail: {} } });
+      if (!/^\+[1-9]\d{7,14}$/.test(mobile) || !String(it['firstName'] ?? '') || !String(it['lastName'] ?? '') || !String(it['email'] ?? '')) return bad('Invalid contact');
+      if (this.contacts.some((c) => c.chapterId === ch.id && c.mobile === mobile)) return bad('Duplicate mobile');
+      const failed = String(it['email']).toLowerCase() === 'rejected@example.test';
+      const c: Contact = { id: ++this.contactSeq, chapterId: ch.id, firstName: String(it['firstName']), lastName: String(it['lastName']), mobile, email: String(it['email']), dateOfBirth: typeof it['dateOfBirth'] === 'string' ? it['dateOfBirth'] : null, status: failed ? 'Failed' : 'Active', createdAt: this.now() };
+      this.contacts.push(c);
+      return this.contactJson(c);
+    });
+    return ok(out, 201);
+  }
+
+  /** Bulk account create (wallet only): idempotent on the body `idempotencyKey`, and on a contact that already has the product. */
+  private createAccounts(ch: Chapter, d: Json): Response {
+    const items = Array.isArray(d['items']) ? (d['items'] as Json[]) : [];
+    if (items.length === 0 || items.length > 10) return err(400, 'Between 1 and 10 items', 'VALIDATION_ERROR');
+    if (!isV4Key(d['idempotencyKey'])) return err(400, V4_MESSAGE, undefined, 'ValidationError');
+    const results = (): Json[] =>
+      items.map((it): Json => {
+        const contactId = it['contactId'];
+        const fail = (errorCode: string): Json => ({ contactId, product: it['product'], error: true, errorCode, message: errorCode, accountCreated: false, cardCreated: false });
+        if (this.accountProvisionError) return fail(this.accountProvisionError);
+        const c = this.contacts.find((x) => x.chapterId === ch.id && String(x.id) === String(contactId));
+        if (!c) return fail('CONTACT_NOT_FOUND');
+        if (it['product'] !== 'wallet' || c.status !== 'Active') return fail('PROVISION_FAILED');
+        const have = this.wallets.find((w) => w.contactId === c.id);
+        if (have) return { contactId, accountId: have.id, product: 'wallet', error: false, message: 'Account already exists', accountCreated: false, cardCreated: false };
+        const w: Wallet = { id: ++this.walletSeq, chapterId: ch.id, contactId: c.id, status: c.email.toLowerCase() === 'frozen@example.test' ? 'Frozen' : 'Open', accountNumber: `9000${String(this.n++).padStart(8, '0')}`, balance: 0n, hold: 0n, createdAt: this.now() };
+        this.wallets.push(w);
+        return { contactId, accountId: w.id, product: 'wallet', error: false, message: 'Account created successfully', accountCreated: true, cardCreated: false };
+      });
+    // A failure injected by a test is never remembered under the key, so a retry can succeed.
+    if (this.accountProvisionError) {
+      const r = results();
+      return ok({ totalProcessed: r.length, successCount: 0, failedCount: r.length, results: r });
+    }
+    return this.keyed(d['idempotencyKey'], d, () => {
+      const r = results();
+      const failedCount = r.filter((x) => x['error'] === true).length;
+      return ok({ totalProcessed: r.length, successCount: r.length - failedCount, failedCount, results: r });
+    });
   }
 
   private originate(ch: Chapter, d: Json): Response {

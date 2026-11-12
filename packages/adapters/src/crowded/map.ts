@@ -114,3 +114,17 @@ export function uuidFromKey(key: string): string {
   const x = h.subarray(0, 16).toString('hex');
   return `${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
 }
+
+/**
+ * Member-account refs are self-describing (T-0699): Crowded's contact ids and account ids are numbers from separate id
+ * spaces, so contact 7 and account 7 can both exist. A ref carries a prefix (`c:` contact, `a:` wallet account, `t:`
+ * transaction) and an id is never looked up under the wrong prefix. `fundingRef` is the only way to make one.
+ */
+export type FundingRefKind = 'c' | 'a' | 't';
+export const fundingRef = (kind: FundingRefKind, id: string): string => `${kind}:${id}`;
+/** The id inside a ref of this kind, or undefined for any other string. Ids become URL path segments, so only `[A-Za-z0-9_-]` passes. */
+export function parseFundingRef(kind: FundingRefKind, r: unknown): string | undefined {
+  if (typeof r !== 'string') return undefined;
+  const m = /^([cat]):([A-Za-z0-9_-]{1,64})$/.exec(r);
+  return m && m[1] === kind ? m[2] : undefined;
+}

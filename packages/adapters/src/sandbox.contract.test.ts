@@ -4,6 +4,7 @@
 // sandbox server, and Expo takes any well-formed token. The notification suites are the full NotifyPort contract, the same one each
 // adapter passes against its fake. Stripe is a smoke subset, not its contract suites: those need a signed vendor webhook on demand
 // and payment methods attached to a customer, which the sandbox does not hand out unattended.
+import { randomBytes, randomInt } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { fixedClock } from '@kesher/ports';
 import { notifyContract } from '@kesher/ports/contracts';
@@ -12,6 +13,8 @@ import { PostmarkNotifyAdapter } from './postmark/postmark.ts';
 import { StripeBillingAdapter } from './stripe/billing.ts';
 import { StripeFundingAdapter } from './stripe/funding.ts';
 import { signStripePayload } from './stripe/signature.ts';
+import { CrowdedClient, SANDBOX_BASE_URL } from './crowded/client.ts';
+import { CrowdedMemberAccounts } from './crowded/member-accounts.ts';
 import { TwilioNotifyAdapter } from './twilio/twilio.ts';
 
 const env = (name: string): string | undefined => {
@@ -86,5 +89,38 @@ describe.skipIf(!(enabled && stripe.key && stripe.secret && /^(sk|rk)_test_/.tes
     const raw = JSON.stringify({ id: 'evt_forged', type: 'payment_intent.succeeded', data: { object: { id: 'pi_x' } } });
     const forged = { 'stripe-signature': signStripePayload('whsec_not_the_secret', raw, Math.floor(clock.now().getTime() / 1000)) };
     await expect(funding.parseWebhook(forged, raw)).rejects.toMatchObject({ code: 'BAD_SIGNATURE' });
+  });
+});
+
+// Crowded member accounts (T-0699): one contact with a unique mobile and one wallet account in the sandbox platform chapter, and a
+// second call that is a no-op. Needs the sandbox token and the platform chapter's id (CROWDED_SANDBOX_CHAPTER_ID); CROWDED_BASE_URL
+// overrides the sandbox URL. It cannot test KYC outcomes or a payment (the sandbox has no collect payment simulator). The mobile and
+// email are made up and unique per run; the contact stays in the sandbox (archiving is out of scope).
+const crowded = { token: env('CROWDED_SANDBOX_TOKEN'), chapterId: env('CROWDED_SANDBOX_CHAPTER_ID'), baseUrl: env('CROWDED_BASE_URL') ?? SANDBOX_BASE_URL };
+describe.skipIf(!(enabled && crowded.token && crowded.chapterId))('Crowded member accounts sandbox', () => {
+  it('creates one contact and one wallet account, and the second call creates nothing', async () => {
+    const posts: string[] = [];
+    const spyFetch: typeof globalThis.fetch = (input, init) => {
+      if ((init?.method ?? 'GET') === 'POST') posts.push(new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url).pathname.replace(/^.*\/api\/v1/, ''));
+      return globalThis.fetch(input, init);
+    };
+    const hmacKey = randomBytes(32).toString('hex');
+    const build = () => new CrowdedMemberAccounts({ client: new CrowdedClient({ baseUrl: crowded.baseUrl, token: crowded.token!, fetch: spyFetch }), chapterId: crowded.chapterId!, hmacKey });
+    const unique = `${Date.now()}${randomInt(1000, 9999)}`;
+    const member = { partyId: `sandbox-${unique}`, firstName: 'Sandbox', lastName: 'Member', email: `sandbox-${unique}@example.test`, mobile: `+1415555${String(randomInt(0, 10000)).padStart(4, '0')}` };
+    const adapter = build();
+    const first = await adapter.ensureAccount(member, `sandbox-key-${unique}`);
+    expect(first.status).toBe('open');
+    expect(posts.filter((p) => p.endsWith('/contacts'))).toHaveLength(1);
+    expect(posts.filter((p) => p.endsWith('/accounts'))).toHaveLength(1);
+    const before = posts.length;
+    expect(await adapter.ensureAccount(member, `sandbox-key-${unique}-b`)).toEqual(first);
+    expect(posts.length).toBe(before); // the same adapter: nothing is sent but reads
+    // a fresh adapter with an empty ledger finds the contact by its mobile: no contact create, the same refs
+    expect(await build().ensureAccount(member, `sandbox-key-${unique}-c`)).toEqual(first);
+    expect(posts.filter((p) => p.endsWith('/contacts'))).toHaveLength(1);
+    const r = first as { accountRef: string };
+    const view = await adapter.account(r.accountRef);
+    expect(typeof view.balance.minor).toBe('bigint');
   });
 });
