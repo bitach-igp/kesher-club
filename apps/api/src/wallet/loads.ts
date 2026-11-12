@@ -162,9 +162,11 @@ export const releaseKey = (workflowId: string): string => `${workflowId}:release
 /** The vendor credit's key (T-0705): a refusal is final for its key at the vendor, so a retry after one is the next `n`. */
 export const creditKey = (workflowId: string, n: number): string => `${workflowId}:credit:${n}`;
 const creditCaseKey = (transferId: string): string => `load-credit:${transferId}`;
-/** The one case per transfer for money the vendor holds that a return or reversal now contradicts (T-0742). */
-/** `ops.external_ref` row type noting that credit attempt `n` of a transfer was begun (its external id is the credit key); see `creditedAtVendor`. */
+/** `ops.external_ref` row type noting that credit attempt `n` of a transfer was begun (its external id is the credit key); see `creditMayHaveMoved`. */
 const creditMarkerType = (n: number): string => `funding_credit:${n}`;
+/** The outcome of attempt `n` (external id `{creditKey}:{credited|pending|refused}`), written once after the vendor answered; absent after a crash in between. */
+const creditDoneType = (n: number): string => `funding_credit_done:${n}`;
+/** The one case per transfer for money the vendor holds that a return or reversal now contradicts (T-0742). */
 const returnedCaseKey = (transferId: string): string => `load-returned:${transferId}`;
 
 interface Deps {
@@ -417,12 +419,10 @@ export class LoadService implements LoadActivities {
     const current = (await this.d.transfers.get(transfer.id)) ?? transfer;
     const held = current.state === 'pending_hold' || current.state === 'pending';
     const reversals: PostedJournal[] = [];
-    // A return that arrives after the vendor credited the wallet and before our journal posted still leaves the money at the vendor:
-    // the hold is reversed below as always, and a case tells people (T-0742). Only a load with a credit step and a vendor link asks.
-    if ((held || current.state === 'submitted') && this.d.credit) {
-      const vendorId = await this.vendorLoadOf(transfer.id);
-      if (vendorId && (await this.creditedAtVendor(current, vendorId))) await this.openReturnedCase(current, vendorId, code, 'before_journal', now);
-    }
+    // A return after the vendor may have credited the wallet and before our journal posted leaves the money at the vendor (T-0742): decided
+    // from our own records only, never by asking the vendor (a credit call here could move money on a stale read). The case is opened after the
+    // hold is reversed below, so no database trouble with it delays the reversal.
+    const mayHaveMoved = (held || current.state === 'submitted') && this.d.credit ? await this.creditMayHaveMoved(current) : undefined;
     // A load still `submitted` may have a hold journal posted a moment before its row moved (T-0547): the journal decides, not the state.
     if (held || current.state === 'submitted') {
       for (const key of [holdKey(workflowId), releaseKey(workflowId)]) {
@@ -430,6 +430,7 @@ export class LoadService implements LoadActivities {
         if (posted.rows[0]) reversals.push(await this.d.ledger.reverse(posted.rows[0].id, `${key}:reversal`));
       }
     }
+    if (mayHaveMoved) await this.openReturnedCase(current, mayHaveMoved, code, 'before_journal', now);
     try {
       return await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: held ? 'returned during hold' : 'vendor' });
     } catch (e) {
@@ -579,6 +580,7 @@ export class LoadService implements LoadActivities {
       }
       throw mapFundingError(e);
     }
+    await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditDoneType(attempt), transfer.id, this.d.provider, `${creditKey(transfer.idempotencyKey, attempt)}:${result.status}`]);
     if (result.status === 'credited') {
       this.credits += 1;
       return true;
@@ -608,36 +610,29 @@ export class LoadService implements LoadActivities {
   }
 
   /**
-   * Whether the vendor may already hold this load's money in the member's wallet without our journal: the credit key the step would have
-   * used (`{wf}:credit:{n}`) is asked again, and the vendor replays its first answer for a key (the port's rule). `credited` or `pending`
-   * means the money may have moved; a refusal, or a key it never saw (refused, since the load failed), means it did not. An outage throws.
+   * The vendor load id when the vendor may already hold this load's money in the member's wallet without our journal, else undefined. Reads
+   * only our own records and calls no vendor: attempt `n` (the next after the credit case's) has a `began` marker, written before the call,
+   * and its outcome row is `credited` or `pending`, or missing (a crash between the call and the outcome: the vendor may have credited).
+   * A `refused` outcome, no marker, or an open credit case (the last attempt was refused, no later key sent) means no money moved.
    */
-  private async creditedAtVendor(transfer: Transfer, loadId: string): Promise<boolean> {
-    const port = this.d.credit;
-    if (!port || transfer.kind !== 'load') return false;
-    const accountRef = await this.memberAccountRef(transfer);
-    if (!accountRef) return false;
-    // An open credit case means the last attempt was refused (final for its key) and no later key was sent: nothing is credited.
+  private async creditMayHaveMoved(transfer: Transfer): Promise<string | undefined> {
+    if (transfer.kind !== 'load') return undefined;
+    const vendorId = await this.vendorLoadOf(transfer.id);
+    if (!vendorId) return undefined;
     const found = await this.creditCase(transfer.id);
-    if (found.open) return false;
+    if (found.open) return undefined;
     const attempt = found.attempt + 1;
-    // Only a credit this service began can have moved money: no marker, no call (a load returned during its hold asks the vendor nothing).
-    const began = await this.d.db.query(`select 1 from ops.external_ref where entity_type = $1 and entity_id = $2 and provider = $3`, [creditMarkerType(attempt), transfer.id, this.d.provider]);
-    if (!began.rows[0]) return false;
-    try {
-      const r = await port.creditWallet({ loadId, accountRef, amount: transfer.amount }, creditKey(transfer.idempotencyKey, attempt));
-      return r.status === 'credited' || r.status === 'pending';
-    } catch (e) {
-      if (e instanceof FundingError && (e.code === 'VALIDATION_FAILED' || e.code === 'UNKNOWN_LOAD')) return false;
-      throw mapFundingError(e);
-    }
+    const rows = await this.d.db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [transfer.id, this.d.provider, [creditMarkerType(attempt), creditDoneType(attempt)]]);
+    if (!rows.rows.some((r) => r.entity_type === creditMarkerType(attempt))) return undefined;
+    const done = rows.rows.find((r) => r.entity_type === creditDoneType(attempt));
+    return done?.external_id.endsWith(':refused') ? undefined : vendorId;
   }
 
   /**
    * The vendor took the money back (a return, a refund, a cancel) after the member's wallet was credited (T-0742): one case for people,
    * `load_returned_after_release`, high, per transfer. It moves nothing: no journal, no state change, no debit of the wallet (who bears
    * the loss is the owner's to decide). A resolved or dismissed case is reopened by a later report; an open one is left alone. The
-   * payload holds ids, the amount and the code only. `stage` says whether our journal had posted (`after_release`) or not (`before_journal`).
+   * payload holds ids, the amount and the code only. `stage` is `after_release` (the vendor read a settled load failed) or `before_journal` (our records show a credit began and no journal posted; the load is failed and its hold reversed).
    */
   private async openReturnedCase(transfer: Transfer, loadId: string, failureCode: string, stage: 'after_release' | 'before_journal', now: Date): Promise<void> {
     await this.d.db.query(
