@@ -5,13 +5,16 @@
 // - A book payment is HTTP 201 whatever happens. The outcome is in the item: `paymentStatus` `Sent` is booked, `Rejected` is refused (even
 //   though the item `status` says success), `Pending` or nothing readable is unknown. A `status: failed` item has no `paymentStatus`: it is
 //   mapped by its `errorCode`. `DUPLICATE_PAYMENT` is never a final refusal: the adapter reads the payment back and answers what it became.
-// - The wire key is a UUID v4 of ours (`bookWireKey`, from `uuidFromKey`), scoped to the chapter. It is derived, so a resend sends the same
+// - The wire key is a UUID v4 of ours (`bookWireKey('mirror:', key)`, from `uuidFromKey`), scoped to the chapter. It is derived, so a resend sends the same
 //   one; it is not kept anywhere (the leg result has no slot for it, and `paymentRef` is the vendor's payment id).
 // - The vendor has no lookup by key and no stored leg in the item, so a booked item's stored leg is read with `GET .../payments/{id}`: a
 //   reused key with another body replays the FIRST payment and the caller compares `leg`. If that read fails the leg is `unknown`.
-// - `readBack` scans the chapter's book payments (newest first, `filter[method]=book`) for the memo as sent, narrowed by the leg and bounded
-//   by `since`. A refusal before persistence is never listed, so it reads `not_found`; a Rejected one is listed as `failed`; Pending is `unknown`.
-//   Whether the vendor normalises or truncates a description is unknown: a miss is `not_found`, not proof that nothing booked.
+// - `readBack` lists the chapter's book payments (`filter[method]=book`, the vendor's order, which it does not rely on) and matches the memo as
+//   sent, narrowed by the leg and bounded by `since` (a row older than `since` is skipped, the walk goes on). A refusal before persistence is never
+//   listed, so it reads `not_found`; a listed `Rejected` payment (failed, canceled, returned) reads as refused; Pending is `unknown`. Whether the
+//   vendor normalises or truncates a description is unknown: a miss is `not_found`, not proof that nothing booked. A list that stops paging
+//   (a page with no new id) or one longer than READBACK_MAX_PAGES ends the walk: with no match found that is PROVIDER_UNAVAILABLE, never `not_found`.
+//   `payments` is walked the same way (no newest-first assumption, same cap), so a window deeper than the cap fails whole.
 // - Failures: a request that provably never left (429, 401, 403, or a failure before any write) is PROVIDER_UNAVAILABLE; a 400 or 422 is the
 //   vendor refusing the whole request before processing (VALIDATION_FAILED); anything else after a write may have been sent (a timeout, a
 //   5xx, a reset connection, an answer we cannot read) is OUTCOME_UNKNOWN. Reads fail PROVIDER_UNAVAILABLE. No retries here.
@@ -46,6 +49,10 @@ export interface CrowdedMirrorOptions {
   chapterId: string;
 }
 
+/** The namespace of this adapter's wire keys: a mirror leg and another caller's booking of one workflow id derive different keys. */
+const MIRROR_KEY_PREFIX = 'mirror:';
+/** Pages of the book list one read walks at most (20 of the vendor's page size). A walk past it is cut, never `not_found`. */
+export const READBACK_MAX_PAGES = 20;
 const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 const low = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
@@ -132,7 +139,7 @@ export class CrowdedMirror implements MirrorPort {
       else if (!isMirrorMemo(l.memo) || l.amount.minor > SAFE) results[i] = { status: 'refused', reasonCode: 'VALIDATION_ERROR' };
       else {
         const out = l.direction === 'from_checking';
-        items.push({ sourceAccountId: out ? checking : member, destinationAccountId: out ? member : checking, amount: Number(l.amount.minor), description: l.memo, idempotencyKey: bookWireKey(l.idempotencyKey) });
+        items.push({ sourceAccountId: out ? checking : member, destinationAccountId: out ? member : checking, amount: Number(l.amount.minor), description: l.memo, idempotencyKey: bookWireKey(MIRROR_KEY_PREFIX, l.idempotencyKey) });
         sent.push(i);
       }
     });
@@ -202,9 +209,10 @@ export class CrowdedMirror implements MirrorPort {
     if (input.accountRef !== undefined && member === undefined) return { status: 'not_found' };
     const found = await this.read(async () => {
       const hits: MirrorLegResult[] = [];
-      for await (const row of listBookPayments(this.c, chapter)) {
-        // Newest first: nothing older than `since` can match.
-        if (input.since && date(row.createdAt) < input.since) break;
+      const state = { truncated: false };
+      for await (const row of listBookPayments(this.c, chapter, { maxPages: READBACK_MAX_PAGES, state })) {
+        // The order is the vendor's, not ours to rely on: a row older than `since` is skipped, never the end of the walk.
+        if (input.since && date(row.createdAt) < input.since) continue;
         if (row.description !== input.memo) continue;
         const stored = this.storedLeg(row, checking);
         if (!stored) continue;
@@ -213,6 +221,8 @@ export class CrowdedMirror implements MirrorPort {
         if (input.amount !== undefined && (input.amount.currency !== 'USD' || stored.amount.minor !== input.amount.minor)) continue;
         hits.push(this.rowResult(row, checking));
       }
+      // The list was cut short (a vendor that does not page): a miss proves nothing, so it is not "not_found" (a resend could double-book).
+      if (state.truncated && hits.length === 0) throw new MirrorError('PROVIDER_UNAVAILABLE', 'The funding provider is not available');
       return hits;
     });
     if (found.length === 0) return { status: 'not_found' };
@@ -248,12 +258,13 @@ export class CrowdedMirror implements MirrorPort {
     const chapter = this.chapter(input.chapterRef);
     const checking = await this.checking(chapter);
     const lower = input.since && input.since > input.from ? input.since : input.from;
-    // Buffered whole: an outage on a later page throws before anything is yielded (no partial list). The vendor lists newest first.
+    // Buffered whole: an outage on a later page throws before anything is yielded (no partial list). The order is the vendor's: an old row is skipped, never the end of the walk, and the walk is capped.
     const rows = await this.read(async () => {
       const out: MirrorPayment[] = [];
-      for await (const row of listBookPayments(this.c, chapter)) {
+      const state = { truncated: false };
+      for await (const row of listBookPayments(this.c, chapter, { maxPages: READBACK_MAX_PAGES, state })) {
         const at = date(row.createdAt);
-        if (at < lower) break;
+        if (at < lower) continue;
         if (at >= input.to) continue;
         out.push({
           paymentRef: row.id,
@@ -265,6 +276,8 @@ export class CrowdedMirror implements MirrorPort {
           createdAt: at,
         });
       }
+      // A feed that was cut short is not the whole window: fail whole rather than hand a reconciler a partial list.
+      if (state.truncated) throw new MirrorError('PROVIDER_UNAVAILABLE', 'The funding provider is not available');
       return out;
     });
     yield* rows.reverse();

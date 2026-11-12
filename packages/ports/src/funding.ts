@@ -40,6 +40,8 @@ export interface Load {
   /** What the payer must do next while status is requires_action and the vendor hosts the payment. The url is never logged. */
   action?: LoadAction;
   failureCode?: string;
+  /** What the vendor or the creator attached to the load, as text. Absent when there is none. Never carries personal data (T-0735). */
+  metadata?: Readonly<Record<string, string>>;
 }
 
 /** An IPv4 literal as four octets, or undefined (no leading zeros, each 0-255). */
@@ -103,6 +105,8 @@ export function isPublicIp(ip: string): boolean {
   if ((g0 & 0xfe00) === 0xfc00) return false; // unique local
   if ((g0 & 0xffc0) === 0xfe80) return false; // link-local
   if ((g0 & 0xff00) === 0xff00) return false; // multicast
+  if (g0 === 0x2002) return false; // 6to4: embeds an IPv4 that may be private, and we do not decode it
+  if (g0 === 0x2001 && g[1] === 0x0db8) return false; // documentation (2001:db8::/32)
   return (g0 & 0xe000) === 0x2000; // only global unicast is public
 }
 
@@ -133,7 +137,7 @@ export interface Refund {
 }
 
 export interface FundingPort {
-  createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string; hosted?: HostedLoadInput }, idempotencyKey: string): Promise<Load>;
+  createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string; hosted?: HostedLoadInput; metadata?: Readonly<Record<string, string>> }, idempotencyKey: string): Promise<Load>;
   getLoad(loadId: string): Promise<Load>;
   /** Returns up to the load's remaining amount to its source. Same key → the same refund. */
   refund(input: { loadId: string; amount: Money }, idempotencyKey: string): Promise<Refund>;

@@ -105,6 +105,37 @@ describe('isPublicIp and isHttpsUrl', () => {
   });
 });
 
+describe('isPublicIp ranges that are not public (T-0735, TST-INS-006)', () => {
+  const rows: [string, string][] = [
+    ['2002::1', '6to4 (2002::/16) embeds an IPv4 we do not decode'],
+    ['2002:c0a8:0101::1', '6to4 around a private IPv4'],
+    ['2002:0808:0808::1', '6to4 around a public IPv4 is still refused'],
+    ['2001:db8::1', 'documentation (2001:db8::/32)'],
+    ['2001:db8:ffff::2', 'documentation, high end'],
+    ['fc00::1', 'unique local'],
+    ['fe80::1', 'link-local'],
+    ['ff02::1', 'multicast'],
+    ['::1', 'loopback'],
+    ['::', 'unspecified'],
+    ['10.0.0.1', 'private v4'],
+  ];
+  it.each(rows)('%s is not public (%s)', (ip) => expect(isPublicIp(ip)).toBe(false));
+  it('a public IPv6 and its neighbours of 2001:db8 stay accepted', () => {
+    for (const ip of ['2606:4700:4700::1111', '2001:4860:4860::8888', '2001:db9::1', '2001:db7::1', '2003::1']) expect(isPublicIp(ip), ip).toBe(true);
+  });
+});
+
+describe('FundingSimulator metadata (T-0735)', () => {
+  it('returns the metadata a load was created with, and undefined otherwise', async () => {
+    const sim = new FundingSimulator();
+    const base = { customerId: 'c', method: 'card' as const, amount: money(1_000n, 'USD'), paymentMethodId: 'pm_card_ok' };
+    const withMd = await sim.createLoad({ ...base, metadata: { campaign: 'spring' } }, 'key-meta-0001');
+    expect(withMd.metadata).toEqual({ campaign: 'spring' });
+    expect((await sim.getLoad(withMd.loadId)).metadata).toEqual({ campaign: 'spring' });
+    expect((await sim.createLoad(base, 'key-meta-0002')).metadata).toBeUndefined();
+  });
+});
+
 describe('FundingSimulator specifics', () => {
   it('an ACH load on Monday with a 3-day hold is spendable Thursday (REQ-WAL-003)', async () => {
     const monday = fixedClock('2026-11-02T10:00:00Z'); // 2026-11-02 is a Monday

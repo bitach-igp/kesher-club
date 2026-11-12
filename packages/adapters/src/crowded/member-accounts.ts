@@ -33,7 +33,7 @@ import {
   type FundingTransaction,
 } from '@kesher/ports';
 import { CrowdedApiError, type CrowdedClient } from './client.ts';
-import { InMemoryKeyLedger, type KeyLedger } from './institution-banking.ts';
+import { guardLedger, InMemoryKeyLedger, type KeyLedger } from './institution-banking.ts';
 import { fromCents, fundingRef, isRecord, parseFundingRef, str, uuidFromKey } from './map.ts';
 
 export interface CrowdedMemberAccountsOptions {
@@ -88,7 +88,7 @@ export class CrowdedMemberAccounts implements FundingAccountPort {
     this.c = opts.client;
     this.chapterId = opts.chapterId;
     this.key = opts.hmacKey;
-    this.ledger = opts.ledger ?? new InMemoryKeyLedger();
+    this.ledger = guardLedger(opts.ledger ?? new InMemoryKeyLedger(), () => fail('PROVIDER_UNAVAILABLE', 'The funding provider is not available'));
     this.now = opts.now ?? (() => new Date());
   }
 

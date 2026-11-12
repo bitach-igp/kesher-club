@@ -7,7 +7,8 @@ import { money } from '@kesher/domain';
 import { institutionBankingContract } from '@kesher/ports/contracts';
 import { CrowdedClient, redact } from './client.ts';
 import { FakeCrowded } from './fake-crowded.ts';
-import { CrowdedInstitutionBankingAdapter, InMemoryKeyLedger, type CrowdedInstitutionBankingOptions } from './institution-banking.ts';
+import { CrowdedInstitutionBankingAdapter, InMemoryKeyLedger, type CrowdedInstitutionBankingOptions, type KeyLedger } from './institution-banking.ts';
+import { InstitutionBankingError } from '@kesher/ports';
 
 const TOKEN = 'crowded_test_token_not_a_secret';
 const BASE = 'https://sandbox.fake.invalid/api/v1';
@@ -620,5 +621,40 @@ describe('createSubAccount looks a sub-account up by name (T-0696)', () => {
     h.fake.subAccountQuota = undefined;
     await h.adapter.createSubAccount(sub(entityRef));
     expect(h.fake.subAccountCount()).toBe(1);
+  });
+});
+
+describe('ledger failures (T-0735, TST-INS-006)', () => {
+  const boom = () => new Error('db down postgres://secret@host/x');
+  const flaky = (broken: 'get' | 'put') => {
+    const inner = new InMemoryKeyLedger();
+    const state = { armed: false };
+    const ledger: KeyLedger = {
+      get: async (k) => (state.armed && broken === 'get' ? Promise.reject(boom()) : inner.get(k)),
+      put: async (k, v) => (state.armed && broken === 'put' ? Promise.reject(boom()) : inner.put(k, v)),
+    };
+    return { ledger, state };
+  };
+
+  it('a ledger that cannot be read or written is PROVIDER_UNAVAILABLE with fixed text, never a bare Error', async () => {
+    for (const broken of ['get', 'put'] as const) {
+      const { ledger, state } = flaky(broken);
+      const h = harness({ ledger });
+      state.armed = true;
+      const e = await h.adapter.createEntity(NEW('key-ledger-0001')).then(() => undefined, (x: unknown) => x);
+      expect(e, broken).toBeInstanceOf(InstitutionBankingError);
+      expect(e, broken).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+      expect((e as Error).message, broken).not.toMatch(/postgres|key-ledger-0001/);
+    }
+  });
+
+  it('an entity made before the ledger write failed is not made again on the replay', async () => {
+    const { ledger, state } = flaky('put');
+    const h = harness({ ledger });
+    state.armed = true;
+    await expect(h.adapter.createEntity(NEW('key-ledger-0002'))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    state.armed = false;
+    await h.adapter.createEntity(NEW('key-ledger-0002'));
+    expect([h.fake.count('organizations'), h.fake.count('chapters')]).toEqual([1, 1]);
   });
 });

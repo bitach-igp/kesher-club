@@ -48,7 +48,7 @@ export class FundingSimulator implements FundingPort, FundingStatementPort {
     this.clock = clock;
   }
 
-  async createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string; hosted?: HostedLoadInput }, idempotencyKey: string): Promise<Load> {
+  async createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string; hosted?: HostedLoadInput; metadata?: Readonly<Record<string, string>> }, idempotencyKey: string): Promise<Load> {
     if (input.paymentMethodId === 'pm_outage') throw new FundingError('PROVIDER_UNAVAILABLE', 'Simulated funding outage');
     if (input.amount.minor <= 0n) throw new FundingError('VALIDATION_FAILED', 'Amount must be positive');
     if (input.method === 'rtp') throw new FundingError('UNSUPPORTED_METHOD', 'RTP not enabled in the simulator');
@@ -66,12 +66,13 @@ export class FundingSimulator implements FundingPort, FundingStatementPort {
     return this.idem.run(idempotencyKey, async () => {
       if (input.paymentMethodId === 'pm_declined') throw new FundingError('DECLINED', 'Simulated decline');
       const loadId = this.ids.next();
-      const load: Load =
+      const base: Load =
         input.method === 'hosted'
           ? { loadId, method: 'hosted', amount: input.amount, status: 'requires_action', action: { type: 'payment_page', url: `https://pay.simulator.invalid/${loadId}`, expiresAt: new Date(this.clock.now().getTime() + HOSTED_PAGE_MS).toISOString() } }
           : input.method === 'ach'
           ? { loadId, method: 'ach', amount: input.amount, status: 'on_hold', holdUntil: addBusinessDays(this.clock.now(), ACH_HOLD_BUSINESS_DAYS).toISOString() }
           : { loadId, method: input.method, amount: input.amount, status: 'succeeded' };
+      const load: Load = input.metadata ? { ...base, metadata: { ...input.metadata } } : base;
       this.loads.set(loadId, load);
       this.sources.set(loadId, input.paymentMethodId ?? '');
       if (load.status === 'succeeded') this.loadSettledAt.set(loadId, this.clock.now().toISOString());

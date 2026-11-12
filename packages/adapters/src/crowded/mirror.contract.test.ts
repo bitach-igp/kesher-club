@@ -6,10 +6,10 @@ import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
 import { MirrorError, type MirrorBalance, type MirrorLeg, type MirrorLegResult, type MirrorMovement, type MirrorPayment, type MirrorPort, type MirrorReadBack } from '@kesher/ports';
 import { mirrorContract } from '@kesher/ports/contracts';
-import { bookWireKey } from './book.ts';
+import { bookWireKey, listBookPayments } from './book.ts';
 import { CrowdedClient } from './client.ts';
 import { FakeCrowded } from './fake-crowded.ts';
-import { CrowdedMirror } from './mirror.ts';
+import { CrowdedMirror, READBACK_MAX_PAGES } from './mirror.ts';
 
 const TOKEN = 'crowded_test_token_not_a_secret';
 const BASE = 'https://sandbox.fake.invalid/api/v1';
@@ -22,7 +22,8 @@ interface Tap {
 }
 
 function harness(over: { pageSize?: number } = {}) {
-  const fake = new FakeCrowded({ token: TOKEN, pageSize: over.pageSize ?? 2 });
+  const clock = { t: new Date('2026-11-03T09:00:00Z') };
+  const fake = new FakeCrowded({ token: TOKEN, pageSize: over.pageSize ?? 2, now: () => clock.t });
   const chapterId = fake.seedChapter();
   const tap: Tap = {};
   const fetch: Fetch = async (input, init) => {
@@ -43,13 +44,13 @@ function harness(over: { pageSize?: number } = {}) {
     const mobile = `+1415555${String(1000 + ++n)}`;
     const c = await client.post(`/chapters/${chapter}/contacts`, [{ firstName: 'Test', lastName: `Member${n}`, mobile, email: `m${n}@example.test` }]);
     const contactId = (c.data as { id: number }[])[0]!.id;
-    const a = await client.post(`/chapters/${chapter}/accounts`, { items: [{ contactId, product: 'wallet' }], idempotencyKey: bookWireKey(`wallet-${chapter}-${n}`) });
+    const a = await client.post(`/chapters/${chapter}/accounts`, { items: [{ contactId, product: 'wallet' }], idempotencyKey: bookWireKey('test:', `wallet-${chapter}-${n}`) });
     const id = String((a.data as { results: { accountId: number }[] }).results[0]!.accountId);
     fake.setBalance(Number(id), minor);
     aliases.set(alias, `a:${id}`);
     return `a:${id}`;
   };
-  return { fake, chapterId, mirror, client, tap, aliases, wallet };
+  return { fake, chapterId, mirror, client, tap, aliases, wallet, clock };
 }
 type H = ReturnType<typeof harness>;
 
@@ -102,7 +103,7 @@ const walletNo = (h: H, alias: string): number => Number(h.aliases.get(alias)!.s
 
 // A fresh fake numbers its first chapter the same way every time, so the contract can name it up front.
 const CHAPTER = new FakeCrowded({ token: TOKEN }).seedChapter();
-const wire = (key: string): string => bookWireKey(key);
+const wire = (key: string): string => bookWireKey('mirror:', key);
 
 mirrorContract('crowded mirror (fake)', make, {
   chapterRef: CHAPTER,
@@ -334,5 +335,89 @@ describe('CrowdedMirror over the fake (T-0719)', () => {
     expect(() => new CrowdedMirror({ client: h.client, chapterId: '' })).toThrow();
     await expect(h.mirror.checkingBalance('../x')).rejects.toMatchObject({ code: 'NOT_FOUND' });
     await expect(h.mirror.checkingBalance('ch999999')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});
+
+describe('readBack and the book list (T-0735, TST-WAL-003, TST-LED-003)', () => {
+  const T0 = new Date('2026-11-03T09:00:00Z');
+  const hours = (n: number): Date => new Date(T0.getTime() + n * 3_600_000);
+  /** An old payment (hour 0) and a new one (hour 2), both to the checking account, then the vendor list order is set. */
+  const twoPayments = async (order: 'newest' | 'oldest' | 'interleaved') => {
+    const h = harness();
+    const ref = await h.wallet('m1', 1_000_000n);
+    await h.mirror.bookBatch([leg('key-old-0001', ref, { direction: 'to_checking' })], h.chapterId);
+    h.clock.t = hours(2);
+    await h.mirror.bookBatch([leg('key-new-0001', ref, { direction: 'to_checking' }), leg('key-new-0002', ref, { direction: 'to_checking' }), leg('key-new-0003', ref, { direction: 'to_checking' })], h.chapterId);
+    h.fake.bookListOrder = order;
+    return { h, ref };
+  };
+
+  it('does not assume newest-first: an old row ahead of the match does not end the walk', async () => {
+    for (const order of ['newest', 'oldest', 'interleaved'] as const) {
+      const { h } = await twoPayments(order);
+      const r = await h.mirror.readBack({ chapterRef: h.chapterId, memo: 'KC-key-new-0003', since: hours(1) });
+      expect(r, order).toMatchObject({ status: 'found', result: { status: 'booked' } });
+      expect(await h.mirror.readBack({ chapterRef: h.chapterId, memo: 'KC-key-old-0001', since: hours(1) }), order).toEqual({ status: 'not_found' });
+    }
+  });
+
+  it('a book list that ignores offset ends with what it has, and a read that needed more says so instead of spinning', async () => {
+    const { h } = await twoPayments('newest');
+    h.fake.ignoreOffset = true;
+    // The same first page forever: the walk stops at the first page that adds no new id.
+    const rows = [];
+    for await (const row of listBookPayments(h.client, h.chapterId)) rows.push(row);
+    expect(rows).toHaveLength(2);
+    const state = { truncated: false };
+    for await (const _ of listBookPayments(h.client, h.chapterId, { state })) void _;
+    expect(state.truncated).toBe(true);
+    // A match on the first page is still found; a miss that could hide behind the cut is not "not_found".
+    expect(await h.mirror.readBack({ chapterRef: h.chapterId, memo: 'KC-key-new-0003' })).toMatchObject({ status: 'found' });
+    await expect(h.mirror.readBack({ chapterRef: h.chapterId, memo: 'KC-nothing-here' })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+  });
+
+  it('scans a bounded number of pages: a match on page 24 is past the cap of 20, with or without since', async () => {
+    const h = harness();
+    const ref = await h.wallet('m1', 10_000_000n);
+    for (let i = 0; i < 48; i += 8) {
+      await h.mirror.bookBatch(Array.from({ length: 8 }, (_, j) => leg(`key-bulk-${String(i + j).padStart(4, '0')}`, ref, { direction: 'to_checking', amount: money(100n, 'USD') })), h.chapterId);
+    }
+    // 48 rows at 2 a page: the first booked is on page 24, the newest on page 1.
+    expect(await h.mirror.readBack({ chapterRef: h.chapterId, memo: 'KC-key-bulk-0047' })).toMatchObject({ status: 'found' });
+    expect(READBACK_MAX_PAGES).toBe(20);
+    for (const since of [undefined, new Date('2020-01-01T00:00:00Z')]) {
+      await expect(h.mirror.readBack({ chapterRef: h.chapterId, memo: 'KC-key-bulk-0000', ...(since ? { since } : {}) })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    }
+    const gets = h.fake.calls.filter((c) => c.method === 'GET' && c.path.endsWith('/payments')).length;
+    expect(gets).toBeLessThan(3 * 21 + 3);
+    // The feed does not assume newest-first and is bounded the same way.
+    await expect(collect(h.mirror.payments({ chapterRef: h.chapterId, from: new Date('2026-01-01T00:00:00Z'), to: new Date('2027-01-01T00:00:00Z') }))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+  });
+
+  it('payments does not stop at the first old row: an oldest-first list still yields the window', async () => {
+    const { h } = await twoPayments('oldest');
+    const rows = await collect(h.mirror.payments({ chapterRef: h.chapterId, from: hours(1), to: hours(5) }));
+    expect(rows.map((r) => r.memo).sort()).toEqual(['KC-key-new-0001', 'KC-key-new-0002', 'KC-key-new-0003']);
+  });
+
+  it('a list that ends on its own is not truncated', async () => {
+    const { h } = await twoPayments('newest');
+    const state = { truncated: false };
+    const rows = [];
+    for await (const row of listBookPayments(h.client, h.chapterId, { state })) rows.push(row);
+    expect(rows).toHaveLength(4);
+    expect(state.truncated).toBe(false);
+  });
+});
+
+describe('bookWireKey takes its namespace (T-0735)', () => {
+  const V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  it('a mirror key and a credit key of one workflow id differ, both are UUID v4, and the mirror value is unchanged', () => {
+    const m = bookWireKey('mirror:', 'wf-0000000001');
+    const c = bookWireKey('credit:', 'wf-0000000001');
+    expect(m).not.toBe(c);
+    expect(m).toMatch(V4);
+    expect(c).toMatch(V4);
+    expect(bookWireKey('mirror:', 'key-leg-0001')).toBe('9f07247d-18c7-42cf-b70f-b0c571734147');
   });
 });

@@ -37,7 +37,7 @@ import { createHmac } from 'node:crypto';
 import { money, type Money } from '@kesher/domain';
 import { addBusinessDays, assertHttps, FundingError, isPublicIp, type FundingErrorCode, type FundingMethod, type FundingPort, type Load, type LoadStatus } from '@kesher/ports';
 import { CrowdedApiError, type CrowdedClient } from './client.ts';
-import { InMemoryKeyLedger, type KeyLedger } from './institution-banking.ts';
+import { guardLedger, InMemoryKeyLedger, type KeyLedger } from './institution-banking.ts';
 import { fromCents, isRecord, parseFundingRef, parseRef, ref, str, toCents } from './map.ts';
 
 export interface CrowdedFundingOptions {
@@ -61,10 +61,13 @@ export interface CrowdedFundingOptions {
 
 /** What a hosted load carries beyond the port's `Load`: the payment's own ref and the processing fee, once a payment exists. */
 export interface CrowdedLoadMetadata {
+  [key: string]: string;
   /** The load as the payment names it: `crowded:<chapter>:<payment>`. */
   paymentLoadId: string;
-  fee?: Money;
-  feeCovered?: boolean;
+  /** The processing fee in cents, as a decimal string, once a payment has one. */
+  feeMinor?: string;
+  /** `'true'` when the payer covered the fee on top, `'false'` when the chapter absorbed it. */
+  feeCovered?: 'true' | 'false';
   /** The load as its intent names it: `crowded:<chapter>:<intent>`, the id a load was made under (a caller that asked by a payment id finds its own load with it). */
   intentLoadId: string;
 }
@@ -99,13 +102,17 @@ interface PaymentView {
   settledAt: Date;
 }
 
-/** A ledger whose every failure is PROVIDER_UNAVAILABLE with fixed text (a storage error can carry a connection string or a row). */
-function guarded(inner: KeyLedger): KeyLedger {
-  const unavailable = (): never => fail('PROVIDER_UNAVAILABLE', 'The funding provider is not available');
-  return {
-    get: (key) => inner.get(key).catch(unavailable),
-    put: (key, entry) => inner.put(key, entry).catch(unavailable),
-  };
+/** Laps of search, create and claim a key makes for its collection before it gives up. */
+const COLLECTION_LAPS = 3;
+
+/** The decoded name of one `name=value` query segment (an undecodable name is kept as it is). */
+function paramName(segment: string): string {
+  const raw = segment.split('=')[0]!.replace(/\+/g, ' ');
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 export class CrowdedFunding implements FundingPort {
@@ -132,7 +139,7 @@ export class CrowdedFunding implements FundingPort {
     this.c = opts.client;
     this.chapterId = opts.chapterId;
     this.key = opts.hmacKey;
-    this.ledger = guarded(opts.ledger ?? new InMemoryKeyLedger());
+    this.ledger = guardLedger(opts.ledger ?? new InMemoryKeyLedger(), () => fail('PROVIDER_UNAVAILABLE', 'The funding provider is not available'));
     this.holdDays = opts.achHoldDays;
     this.hosts = new Set(opts.redirectHosts);
     this.contactOf = opts.contactOf ?? (async (customerId) => customerId);
@@ -178,8 +185,10 @@ export class CrowdedFunding implements FundingPort {
     if (!this.hosts.has(u.host)) return fail('VALIDATION_FAILED', `${what} is not on a host we redirect to`);
     const hash = u.hash;
     u.hash = '';
-    u.searchParams.delete('intentId');
-    return `${u.href.replace(/\?$/, '')}${u.search ? '&' : '?'}intentId={intentId}${hash}`;
+    // Drop the caller's `intentId` by string: `URLSearchParams.toString()` would re-encode every other parameter (`%20`, `+`, `~`).
+    const kept = u.search.slice(1).split('&').filter((p) => p !== '' && paramName(p) !== 'intentId');
+    u.search = '';
+    return `${u.href.replace(/\?$/, '')}${kept.length ? `?${kept.join('&')}&` : '?'}intentId={intentId}${hash}`;
   }
 
   // ---- createLoad ---------------------------------------------------------------------------------------------
@@ -260,24 +269,35 @@ export class CrowdedFunding implements FundingPort {
 
   /** The collection for this key: one Crowded already holds under the title and amount that no other key has claimed, else a new one. */
   private async collection(title: string, amount: Money, key: string): Promise<string> {
-    let found: string | undefined;
-    for await (const item of this.c.list(this.path('collections'), { search: title })) {
-      if (!isRecord(item) || item['title'] !== title || fromCents(item['requestedAmount']).minor !== amount.minor) continue;
-      const id = str(item['id']);
-      const owner = await this.ledger.get(`load:claim:${id}`);
-      if (owner === undefined || owner.result === key) {
-        found = id;
-        break;
+    // Bounded: each lap that loses a claim does so to another key that made progress, so a few laps always end it.
+    for (let lap = 0; lap < COLLECTION_LAPS; lap++) {
+      for await (const item of this.c.list(this.path('collections'), { search: title })) {
+        if (!isRecord(item) || item['title'] !== title || fromCents(item['requestedAmount']).minor !== amount.minor) continue;
+        const id = str(item['id']);
+        if (await this.claim(id, key)) return id;
       }
-    }
-    if (found === undefined) {
       const r = await this.c.post(this.path('collections'), { title, requestedAmount: toCents(amount) });
       if (!isRecord(r.data)) return fail('PROVIDER_UNAVAILABLE', 'The funding provider sent an unreadable collection');
-      found = str(r.data['id']);
+      const id = str(r.data['id']);
+      // Another key may have listed and claimed this one between our create and our claim: then it is theirs, and we look again.
+      if (await this.claim(id, key)) return id;
     }
-    const id = found;
-    await this.ledger.put(`load:claim:${id}`, { body: '', result: key });
-    return id;
+    return fail('PROVIDER_UNAVAILABLE', 'The funding provider is not available');
+  }
+
+  /** Claims a collection for a key in one atomic step (the ledger's insert-if-absent): true when it is now this key's, false when another key holds it. */
+  private async claim(collectionId: string, key: string): Promise<boolean> {
+    const k = `load:claim:${collectionId}`;
+    const entry = { body: '', result: key };
+    if (this.ledger.putIfAbsent) {
+      if (await this.ledger.putIfAbsent(k, entry)) return true;
+      return (await this.ledger.get(k))?.result === key;
+    }
+    // A ledger with no insert-if-absent: a read then a write, which two concurrent keys can both win.
+    const owner = await this.ledger.get(k);
+    if (owner !== undefined && owner.result !== key) return false;
+    await this.ledger.put(k, entry);
+    return true;
   }
 
   /** The payment page url: https only, normalised. */
@@ -341,7 +361,7 @@ export class CrowdedFunding implements FundingPort {
       if (!(await this.ledger.get(key))) await this.ledger.put(key, { body: '', result: intentLoadId });
     }
     const paymentLoadId = ref('crowded', this.chapterId, p.id);
-    const metadata: CrowdedLoadMetadata = { paymentLoadId, intentLoadId, ...(p.fee ? { fee: p.fee, feeCovered: p.feeCovered } : {}) };
+    const metadata: CrowdedLoadMetadata = { paymentLoadId, intentLoadId, ...(p.fee ? { feeMinor: p.fee.minor.toString(), feeCovered: p.feeCovered ? ('true' as const) : ('false' as const) } : {}) };
     const method: FundingMethod = p.method === 'other' ? 'hosted' : p.method;
     const out = (over: { status: LoadStatus; holdUntil?: string; failureCode?: string }): CrowdedLoad => base({ method, ...over, metadata });
 
