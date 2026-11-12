@@ -162,6 +162,10 @@ export const releaseKey = (workflowId: string): string => `${workflowId}:release
 /** The vendor credit's key (T-0705): a refusal is final for its key at the vendor, so a retry after one is the next `n`. */
 export const creditKey = (workflowId: string, n: number): string => `${workflowId}:credit:${n}`;
 const creditCaseKey = (transferId: string): string => `load-credit:${transferId}`;
+/** The one case per transfer for money the vendor holds that a return or reversal now contradicts (T-0742). */
+/** `ops.external_ref` row type noting that credit attempt `n` of a transfer was begun (its external id is the credit key); see `creditedAtVendor`. */
+const creditMarkerType = (n: number): string => `funding_credit:${n}`;
+const returnedCaseKey = (transferId: string): string => `load-returned:${transferId}`;
 
 interface Deps {
   db: Database;
@@ -413,6 +417,12 @@ export class LoadService implements LoadActivities {
     const current = (await this.d.transfers.get(transfer.id)) ?? transfer;
     const held = current.state === 'pending_hold' || current.state === 'pending';
     const reversals: PostedJournal[] = [];
+    // A return that arrives after the vendor credited the wallet and before our journal posted still leaves the money at the vendor:
+    // the hold is reversed below as always, and a case tells people (T-0742). Only a load with a credit step and a vendor link asks.
+    if ((held || current.state === 'submitted') && this.d.credit) {
+      const vendorId = await this.vendorLoadOf(transfer.id);
+      if (vendorId && (await this.creditedAtVendor(current, vendorId))) await this.openReturnedCase(current, vendorId, code, 'before_journal', now);
+    }
     // A load still `submitted` may have a hold journal posted a moment before its row moved (T-0547): the journal decides, not the state.
     if (held || current.state === 'submitted') {
       for (const key of [holdKey(workflowId), releaseKey(workflowId)]) {
@@ -465,7 +475,8 @@ export class LoadService implements LoadActivities {
    * A vendor that reports in batches (Crowded, T-0703): re-reads the load by its id through the port, finds the transfer it belongs to
    * and moves it to where the vendor says the load stands now. The event that led here decides nothing, so a repeat, or two events in
    * either order, change nothing more. A load no transfer owns, or one the vendor does not know, is ignored. A load the vendor now
-   * says failed after it was credited is not touched here (a return after release is a case for people, T-0705).
+   * says failed after it was credited opens one case for people and moves nothing: no journal, no state change, no debit of the wallet
+   * (a return after release is a platform loss and who bears it is the owner's to decide, T-0742).
    */
   async applyVendorLoad(loadId: string, now: Date): Promise<Transfer | undefined> {
     let vendor: VendorLoad;
@@ -479,8 +490,12 @@ export class LoadService implements LoadActivities {
     const linked = (vendor as { metadata?: { intentLoadId?: unknown } }).metadata?.intentLoadId;
     const transfer = (await this.byVendorLoad(vendor.loadId)) ?? (typeof linked === 'string' ? await this.byVendorLoad(linked) : undefined);
     if (!transfer) return undefined;
-    if (transfer.state === 'settled' && vendor.status === 'failed') return transfer;
-    return this.applyToTransfer(transfer, { ...vendor, loadId: (await this.vendorLoadOf(transfer.id)) ?? vendor.loadId }, now);
+    const linkedId = (await this.vendorLoadOf(transfer.id)) ?? vendor.loadId;
+    if (transfer.state === 'settled' && vendor.status === 'failed') {
+      await this.openReturnedCase(transfer, linkedId, vendor.failureCode ?? 'VENDOR_FAILED', 'after_release', now);
+      return transfer;
+    }
+    return this.applyToTransfer(transfer, { ...vendor, loadId: linkedId }, now);
   }
 
   private async applyToTransfer(transfer: Transfer, load: VendorLoad, now: Date): Promise<Transfer> {
@@ -539,12 +554,19 @@ export class LoadService implements LoadActivities {
     // Not `succeeded` (an ACH the vendor still holds, even past our hold date when its clock lags ours): nothing to credit yet, no case.
     if (vendor.status !== 'succeeded') return false;
     const attempt = found.attempt + 1;
-    const ref = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'funding_account' and entity_id = $1 and provider = $2`, [transfer.toPartyId, this.d.provider]);
-    const accountRef = ref.rows[0]?.external_id;
+    const accountRef = await this.memberAccountRef(transfer);
     if (!accountRef) {
       await this.openCreditCase(transfer, vendor.loadId, 'NO_ACCOUNT', attempt, now);
       return false;
     }
+    // A stored ref skipped the account gate when the load began: an account frozen or closed since is checked again here (T-0740 review).
+    const blocked = await this.accountBlock(accountRef);
+    if (blocked) {
+      await this.openCreditCase(transfer, vendor.loadId, blocked, attempt, now);
+      return false;
+    }
+    // Written before the call, so a crash between the vendor's `credited` and our journal leaves a trace a later return can find (T-0742).
+    await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditMarkerType(attempt), transfer.id, this.d.provider, creditKey(transfer.idempotencyKey, attempt)]);
     let result: CreditResult;
     try {
       result = await port.creditWallet({ loadId: vendor.loadId, accountRef, amount: transfer.amount }, creditKey(transfer.idempotencyKey, attempt));
@@ -564,6 +586,68 @@ export class LoadService implements LoadActivities {
     // `NOT_SUCCEEDED` after a `succeeded` read is the vendor's read flapping, not a refusal: retried with the same key, no case.
     if (result.status === 'refused' && result.reasonCode !== 'NOT_SUCCEEDED') await this.openCreditCase(transfer, vendor.loadId, result.reasonCode ?? 'REFUSED', attempt, now);
     return false;
+  }
+
+  private async memberAccountRef(transfer: Transfer): Promise<string | undefined> {
+    const ref = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'funding_account' and entity_id = $1 and provider = $2`, [transfer.toPartyId, this.d.provider]);
+    return ref.rows[0]?.external_id;
+  }
+
+  /** The reason code when the member's wallet account at the vendor is no longer open (read now, never trusted from the stored ref); undefined when it is open or the binding cannot say. */
+  private async accountBlock(accountRef: string): Promise<string | undefined> {
+    const accounts = this.d.fundingAccounts;
+    if (!accounts) return undefined;
+    try {
+      const view = await accounts.account(accountRef);
+      return view.status === 'open' ? undefined : `ACCOUNT_${view.status.toUpperCase()}`;
+    } catch (e) {
+      if (e instanceof FundingAccountError && e.code === 'UNKNOWN_ACCOUNT') return 'UNKNOWN_ACCOUNT';
+      if (e instanceof FundingAccountError && e.code === 'PROVIDER_UNAVAILABLE') throw new DomainError('PROVIDER_UNAVAILABLE', 'Funding is temporarily unavailable; try again with the same key');
+      throw e;
+    }
+  }
+
+  /**
+   * Whether the vendor may already hold this load's money in the member's wallet without our journal: the credit key the step would have
+   * used (`{wf}:credit:{n}`) is asked again, and the vendor replays its first answer for a key (the port's rule). `credited` or `pending`
+   * means the money may have moved; a refusal, or a key it never saw (refused, since the load failed), means it did not. An outage throws.
+   */
+  private async creditedAtVendor(transfer: Transfer, loadId: string): Promise<boolean> {
+    const port = this.d.credit;
+    if (!port || transfer.kind !== 'load') return false;
+    const accountRef = await this.memberAccountRef(transfer);
+    if (!accountRef) return false;
+    // An open credit case means the last attempt was refused (final for its key) and no later key was sent: nothing is credited.
+    const found = await this.creditCase(transfer.id);
+    if (found.open) return false;
+    const attempt = found.attempt + 1;
+    // Only a credit this service began can have moved money: no marker, no call (a load returned during its hold asks the vendor nothing).
+    const began = await this.d.db.query(`select 1 from ops.external_ref where entity_type = $1 and entity_id = $2 and provider = $3`, [creditMarkerType(attempt), transfer.id, this.d.provider]);
+    if (!began.rows[0]) return false;
+    try {
+      const r = await port.creditWallet({ loadId, accountRef, amount: transfer.amount }, creditKey(transfer.idempotencyKey, attempt));
+      return r.status === 'credited' || r.status === 'pending';
+    } catch (e) {
+      if (e instanceof FundingError && (e.code === 'VALIDATION_FAILED' || e.code === 'UNKNOWN_LOAD')) return false;
+      throw mapFundingError(e);
+    }
+  }
+
+  /**
+   * The vendor took the money back (a return, a refund, a cancel) after the member's wallet was credited (T-0742): one case for people,
+   * `load_returned_after_release`, high, per transfer. It moves nothing: no journal, no state change, no debit of the wallet (who bears
+   * the loss is the owner's to decide). A resolved or dismissed case is reopened by a later report; an open one is left alone. The
+   * payload holds ids, the amount and the code only. `stage` says whether our journal had posted (`after_release`) or not (`before_journal`).
+   */
+  private async openReturnedCase(transfer: Transfer, loadId: string, failureCode: string, stage: 'after_release' | 'before_journal', now: Date): Promise<void> {
+    await this.d.db.query(
+      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_returned_after_release', $2, 'high', 'open', $3, $4)
+       on conflict (dedupe_key) do update set status = 'open', resolved_at = null, resolved_by = null, resolution = null,
+         disposition = null, decided_by = null, decided_at = null, decision_note = null, assigned_to = null, assigned_at = null,
+         payload = excluded.payload || jsonb_build_object('reopened', jsonb_build_object('at', excluded.opened_at, 'was', ops.case.status, 'resolution', ops.case.resolution))
+       where ops.case.status in ('resolved', 'dismissed')`,
+      [uuidv7(now), returnedCaseKey(transfer.id), { transferId: transfer.id, loadId, amount: { minor: transfer.amount.minor.toString(), currency: transfer.amount.currency }, memberPartyId: transfer.toPartyId, failureCode, reasonCode: failureCode, stage }, now],
+    );
   }
 
   private async openCreditCase(transfer: Transfer, loadId: string, reasonCode: string, attempt: number, now: Date): Promise<void> {

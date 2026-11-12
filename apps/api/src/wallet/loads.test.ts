@@ -759,12 +759,48 @@ describe('applyVendorLoad: re-read the load, then move its transfer (T-0703)', (
     expect(meta.loadId).toBe('v:intent-1');
   });
 
-  it('a credited load the vendor now says failed is left alone (a return after release is T-0705)', async () => {
-    const t = await newTransfer('avl-late-0001', 'v:intent-2');
-    const ok = svcOver(async () => vendor({ loadId: 'v:intent-2', status: 'succeeded' }));
-    await ok.applyVendorLoad('v:intent-2', NOW);
-    const late = svcOver(async () => vendor({ loadId: 'v:intent-2', status: 'failed', failureCode: 'RETURNED' }));
-    expect(await late.applyVendorLoad('v:intent-2', NOW)).toMatchObject({ id: t.id, state: 'settled' });
+  describe('a return after release opens a case and moves nothing (T-0742, TST-WAL-003)', () => {
+    const returnedCases = async (transferId: string) => (await db.query<{ kind: string; severity: string; status: string; payload: Record<string, unknown> }>(`select kind, severity, status, payload from ops.case where dedupe_key = $1`, [`load-returned:${transferId}`])).rows;
+    const journalCount = async (transferId: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where transfer_id = $1`, [transferId])).rows[0]!.n;
+    const settledLoad = async (key: string, vendorId: string) => {
+      const t = await newTransfer(key, vendorId);
+      await svcOver(async () => vendor({ loadId: vendorId, status: 'succeeded' })).applyVendorLoad(vendorId, NOW);
+      return { t, party: t.toPartyId };
+    };
+
+    it('a settled load the vendor now reads RETURNED opens ONE high case with ids, amount and code; no journal, no state change, the balance stays; a repeat opens no second', async () => {
+      const { t, party } = await settledLoad('avl-late-0001', 'v:intent-2');
+      const balance = await available(party);
+      const journalsBefore = await journalCount(t.id);
+      expect(balance).toBe(10_000n);
+      const late = svcOver(async () => vendor({ loadId: 'v:intent-2', status: 'failed', failureCode: 'RETURNED' }));
+      expect(await late.applyVendorLoad('v:intent-2', NOW)).toMatchObject({ id: t.id, state: 'settled' });
+      expect(await late.applyVendorLoad('v:intent-2', NOW)).toMatchObject({ id: t.id, state: 'settled' });
+      expect(await returnedCases(t.id)).toEqual([{ kind: 'load_returned_after_release', severity: 'high', status: 'open', payload: expect.objectContaining({ transferId: t.id, loadId: 'v:intent-2', amount: { minor: '10000', currency: 'USD' }, memberPartyId: party, failureCode: 'RETURNED' }) }]);
+      expect(await journalCount(t.id)).toBe(journalsBefore);
+      expect((await app.services.transfers.get(t.id))!.state).toBe('settled');
+      expect(await available(party)).toBe(balance);
+    });
+
+    it('a REFUNDED or CANCELLED read opens the same kind of case with that code; a resolved case is reopened by a later read, the decision kept in the payload', async () => {
+      const { t } = await settledLoad('avl-late-0002', 'v:intent-3');
+      const svc = (code: string) => svcOver(async () => vendor({ loadId: 'v:intent-3', status: 'failed', failureCode: code }));
+      await svc('REFUNDED').applyVendorLoad('v:intent-3', NOW);
+      expect(await returnedCases(t.id)).toMatchObject([{ status: 'open', payload: { failureCode: 'REFUNDED' } }]);
+      await db.query(`update ops.case set status = 'resolved' where dedupe_key = $1`, [`load-returned:${t.id}`]);
+      await svc('CANCELLED').applyVendorLoad('v:intent-3', NOW);
+      expect(await returnedCases(t.id)).toMatchObject([{ status: 'open', payload: { failureCode: 'CANCELLED', reopened: { was: 'resolved' } } }]);
+    });
+
+    it('a return BEFORE release still fails the load and opens no case; a failed read with no failure code is VENDOR_FAILED', async () => {
+      const t = await newTransfer('avl-early-001', 'v:intent-4');
+      const early = svcOver(async () => vendor({ loadId: 'v:intent-4', status: 'failed', failureCode: 'RETURNED' }));
+      expect(await early.applyVendorLoad('v:intent-4', NOW)).toMatchObject({ id: t.id, state: 'failed' });
+      expect(await returnedCases(t.id)).toEqual([]);
+      const { t: t2 } = await settledLoad('avl-late-0003', 'v:intent-5');
+      await svcOver(async () => vendor({ loadId: 'v:intent-5', status: 'failed' })).applyVendorLoad('v:intent-5', NOW);
+      expect(await returnedCases(t2.id)).toMatchObject([{ payload: { failureCode: 'VENDOR_FAILED' } }]);
+    });
   });
 });
 
@@ -1021,5 +1057,67 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
     expect(await journals('card-credit-flap01')).toBe(0);
     for (const x of await t.svc.stale(LATER, 0)) await t.svc.applyVendorLoad((await t.svc.vendorLoadOf(x.id))!, LATER);
     expect(await journals('card-credit-flap01')).toBe(1);
+  });
+
+  describe('the member account is checked again at the credit, and a return before the journal opens a case (T-0742)', () => {
+    const returnedCase = async (key: string) => (await db.query<{ kind: string; severity: string; status: string; payload: Record<string, unknown> }>(`select c.kind, c.severity, c.status, c.payload from ops.case c join ops.transfer t on c.dedupe_key = 'load-returned:' || t.id where t.idempotency_key = $1`, [key])).rows;
+
+    it('a wallet account frozen after the first load is not credited: no credit call, no journal, one ACCOUNT_FROZEN case; once it is open and the case resolved, the retry credits', async () => {
+      const t = await setup();
+      const s = app.services;
+      const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
+      const accounts = new FundingAccountSimulator();
+      const ensured = await accounts.ensureAccount({ partyId: t.party, firstName: 'Test', lastName: 'Member', email: 'gate@example.test', mobile: '+14155552001' }, `funding-account:${t.party}`);
+      if (!('accountRef' in ensured)) throw new Error('no account');
+      await db.query(`update ops.external_ref set external_id = $3 where entity_id = $1 and entity_type = 'funding_account' and provider = $2`, [t.party, provider, ensured.accountRef]);
+      const svc = new LoadService({ db, port: t.sim, credit: t.sim as Required<FundingSimulator>, fundingAccounts: accounts, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
+      accounts.setStatus(ensured.accountRef, 'frozen');
+      const key = 'card-frozen-0001';
+      expect((await svc.request(t.party, t.body, key, NOW)).state).not.toBe('settled');
+      expect(t.spy).not.toHaveBeenCalled();
+      expect(await journals(key)).toBe(0);
+      expect(await caseRows(key)).toMatchObject([{ status: 'open', payload: { reasonCode: 'ACCOUNT_FROZEN', attempt: 1 } }]);
+      accounts.setStatus(ensured.accountRef, 'open');
+      await db.query(`update ops.case set status = 'resolved' where dedupe_key = 'load-credit:' || $1`, [(await s.transfers.byKey(key))!.id]);
+      for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER);
+      expect(t.spy.mock.calls.map((c) => c[1])).toEqual([`${key}:credit:2`]);
+      expect(await journals(key)).toBe(1);
+    });
+
+    it('a return after the vendor credited the wallet but before our journal posted fails the load, reverses the hold only, and opens ONE high case; a repeat opens no second; no case when the vendor never credited', async () => {
+      const t = await setup();
+      const s = app.services;
+      const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
+      let returned = false;
+      let dieOnPost = true;
+      const port: FundingPort = { createLoad: (i, k) => t.sim.createLoad(i, k), getLoad: async (id) => { const l = await t.sim.getLoad(id); return returned ? { ...l, status: 'failed', failureCode: 'RETURNED' } : l; }, refund: (i, k) => t.sim.refund(i, k), getRefund: (id) => t.sim.getRefund(id), parseWebhook: (h, b) => t.sim.parseWebhook(h, b) };
+      const ledger = new Proxy(s.ledger, { get: (target, prop) => (prop === 'post' && dieOnPost ? async () => { dieOnPost = false; throw new Error('crash before the journal'); } : Reflect.get(target, prop, target)) }) as typeof s.ledger;
+      const svc = new LoadService({ db, port, credit: t.sim as Required<FundingSimulator>, ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
+      const key = 'card-credit-return1';
+      await expect(svc.request(t.party, t.body, key, NOW)).rejects.toThrow('crash before the journal');
+      const transfer = (await s.transfers.byKey(key))!;
+      expect(transfer.state).toBe('submitted');
+      expect(t.sim.creditCount((await svc.vendorLoadOf(transfer.id))!)).toBe(1);
+      expect(await journals(key)).toBe(0);
+
+      returned = true;
+      for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER);
+      for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER);
+      expect((await s.transfers.byKey(key))!.state).toBe('failed');
+      expect(await journals(key)).toBe(0);
+      expect(await available(t.party)).toBe(0n);
+      const rows = await returnedCase(key);
+      expect(rows).toEqual([{ kind: 'load_returned_after_release', severity: 'high', status: 'open', payload: expect.objectContaining({ transferId: transfer.id, amount: { minor: '10000', currency: 'USD' }, failureCode: 'RETURNED', reasonCode: 'RETURNED', stage: 'before_journal' }) }]);
+      expect(JSON.stringify(rows[0]!.payload)).not.toMatch(/@|\+\d{8}/);
+
+      // A load the vendor never credited (an ACH still processing there), reported returned, opens no case.
+      const ach = await t.sim.createLoad({ customerId: t.party, method: 'ach', amount: money(10_000n, 'USD'), paymentMethodId: 'pm_ok' }, 'never-credited-1');
+      const t2 = await svc.submit(await svc.begin({ payerPartyId: t.party, memberPartyId: t.party, method: 'ach', amount: money(10_000n, 'USD') }, 'never-credited-1', NOW), NOW);
+      await svc.link(t2, ach);
+      await svc.applyVendorLoad(ach.loadId, LATER);
+      expect((await s.transfers.byKey('never-credited-1'))!.state).toBe('failed');
+      expect(await returnedCase('never-credited-1')).toEqual([]);
+      expect(t.sim.creditCount(ach.loadId)).toBe(0);
+    });
   });
 });
