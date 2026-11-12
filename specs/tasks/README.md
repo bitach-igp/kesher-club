@@ -360,7 +360,7 @@
 | [T-0737](T-0737.md) | BIL | BLOCKED on owner F1-F7: a membership fee is deducted from the member's wallet balance (design card, to be re-cut) | REQ-BIL-003 | later |
 | [T-0738](T-0738.md) | WAL | The member's funding details: legal name, email and date of birth asked once, kept sealed, read when the funding account is made (owner I1-I4) | REQ-WAL-002 | later |
 | [T-0739](T-0739.md) | SETUP | Terraform and setup docs for Crowded funding: secret containers, plain values, webhook registration note | — | later |
-| [T-0740](T-0740.md) | WAL | A hosted load needs the member's funding account: details, ensureAccount, refs in ops.external_ref; a refused member cannot load | REQ-WAL-002 | later |
+| [T-0740](T-0740.md) | WAL | A hosted load needs the member's funding account: details, ensureAccount, refs in ops.external_ref; a refused member cannot load | REQ-WAL-002 | later (built, PR open; wired in T-0709 after T-0738) |
 | [T-0741](T-0741.md) | WAL | The Crowded funding adapter implements FundingCreditPort: release-funds when fund holding is on, then one book payment to the member's wallet account | REQ-WAL-003 | later |
 | [T-0742](T-0742.md) | WAL | A return after release opens a case instead of being dropped, and leaves the wallet alone | REQ-WAL-003 | later |
 | [T-0743](T-0743.md) | WAL | End-to-end self top-up against the Crowded fake: hosted load, payment event, credit, ACH hold and release, returns | REQ-WAL-002, REQ-WAL-003 | later |
