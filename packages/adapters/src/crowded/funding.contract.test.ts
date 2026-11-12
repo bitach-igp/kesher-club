@@ -9,13 +9,15 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { money } from '@kesher/domain';
-import { addBusinessDays, FundingError, FundingSimulator, type FundingPort, type Load } from '@kesher/ports';
+import { addBusinessDays, FundingError, FundingSimulator, isFundingCreditPort, type FundingCreditPort, type FundingPort, type Load } from '@kesher/ports';
 import { fundingContract } from '@kesher/ports/contracts';
+import { bookWireKey } from './book.ts';
 import { CrowdedClient } from './client.ts';
 import { FakeCrowded } from './fake-crowded.ts';
 import { InMemoryKeyLedger, type KeyLedger } from './institution-banking.ts';
 import { CrowdedFunding, type CrowdedFundingOptions } from './funding.ts';
 import { CrowdedMemberAccounts } from './member-accounts.ts';
+import { CrowdedMirror } from './mirror.ts';
 
 const TOKEN = 'crowded_test_token_not_a_secret';
 const BASE = 'https://sandbox.fake.invalid/api/v1';
@@ -655,5 +657,305 @@ describe('hardening follow-ups (T-0735, TST-INS-006)', () => {
     const md: Readonly<Record<string, string>> | undefined = paid.metadata;
     expect(md).toMatchObject({ intentLoadId: l.loadId });
     expect(Object.values(md!).every((v) => typeof v === 'string')).toBe(true);
+  });
+});
+
+// ---- the wallet credit (T-0741, TST-WAL-003): FUNDING CREDIT against the fake. Fake-only: fund holding is off in the sandbox (README q29). ----
+function creditHarness(fundHolding: boolean, over: { creditOpts?: Partial<NonNullable<CrowdedFundingOptions['credit']>> } = {}) {
+  const clock = { t: new Date('2026-11-03T09:00:00Z') };
+  const fake = new FakeCrowded({ token: TOKEN, pageSize: 2, now: () => clock.t });
+  const chapterId = fake.seedChapter();
+  const client = new CrowdedClient({ baseUrl: BASE, token: TOKEN, fetch: fake.fetch });
+  const mirror = new CrowdedMirror({ client, chapterId });
+  fake.fundHolding = fundHolding;
+  // With holding off the collected money is expected in the chapter's account already (README q35): the test puts it there.
+  if (!fundHolding) fake.setChecking(chapterId, 1_000_000n);
+  const h = harness({ fake, chapterId, clock, opts: { credit: { mirror, fundHolding, ...over.creditOpts } } });
+  const members = new CrowdedMemberAccounts({ client, chapterId, hmacKey: MAC_KEY, ledger: new InMemoryKeyLedger(), now: () => clock.t });
+  let seq = 0;
+  const member = async () => {
+    const n = ++seq;
+    const mobile = `+1415556${String(1000 + n)}`;
+    const e = await members.ensureAccount({ partyId: `m${n}`, firstName: 'Member', lastName: 'Test', email: `m${n}@example.test`, mobile, dateOfBirth: '1990-01-01' }, `ensure-member-${n}`);
+    if (!('accountRef' in e)) throw new Error('no account');
+    return { accountRef: e.accountRef, walletId: fake.walletId(fake.contactId(mobile)) };
+  };
+  let loads = 0;
+  type State = 'succeeded' | 'processing' | 'requires_action' | 'failed' | 'on_hold' | 'returned';
+  const loadIn = async (state: State, amt = amount): Promise<string> => {
+    const n = ++loads;
+    const l = await h.adapter.createLoad({ customerId: `cust${n}`, method: 'hosted', amount: amt, hosted }, `credit-load-${n}`);
+    const r = ref(h, l);
+    if (state === 'requires_action') return l.loadId;
+    if (state === 'succeeded') {
+      h.fake.payIntent(r, 'card');
+      return l.loadId;
+    }
+    return achIn(r, l.loadId, state);
+  };
+  const achIn = (r: string, loadId: string, state: 'processing' | 'failed' | 'on_hold' | 'returned'): string => {
+    const p = h.fake.payIntent(r, 'ach');
+    if (state === 'failed') h.fake.fail(p);
+    if (state === 'on_hold' || state === 'returned') h.fake.settle(p);
+    if (state === 'returned') h.fake.returnPayment(p);
+    return loadId;
+  };
+  const credit = h.adapter.creditWallet!;
+  const memos = (loadId: string) => fake.bookRows(chapterId).filter((b) => b.description.startsWith(`load-credit:${intentId(loadId)}:`));
+  const sent = (loadId: string) => memos(loadId).filter((b) => b.status === 'sent').length;
+  const bookPosts = () => fake.calls.filter((c) => c.method === 'POST' && c.path === `/chapters/${chapterId}/payments`);
+  return { ...h, mirror, member, loadIn, credit, memos, sent, bookPosts, fundHolding };
+}
+type CreditHarness = ReturnType<typeof creditHarness>;
+
+class CreditPort extends HostedPlusSim {
+  readonly c: CreditHarness;
+  constructor(c: CreditHarness) {
+    super(c);
+    this.c = c;
+  }
+  creditWallet: FundingCreditPort['creditWallet'] = (i, k) => this.c.credit(i, k);
+}
+
+for (const fundHolding of [true, false]) {
+  // The wire key the contract's first key derives (the mirror namespaces the leg key again): fixtures are one-shot by wire key.
+  const firstWire = bookWireKey('mirror:', bookWireKey('credit:', 'credit-key-1'));
+  let shared: { accountRef: string; unknownAccountRef: string } | undefined;
+  fundingContract(`crowded credit (fake, fundHolding ${String(fundHolding)})`, () => new CreditPort(creditHarness(fundHolding)), {
+    goodPaymentMethod: 'pm_card_ok',
+    declinedPaymentMethod: 'pm_declined',
+    outagePaymentMethod: 'pm_outage',
+    achPaymentMethod: 'pm_bank_ok',
+    succeededWebhook: async (port, id) => (port as HostedPlusSim).sim.webhookFor(id, 'succeeded'),
+    norefundPaymentMethod: 'pm_norefund',
+    hosted: true,
+    credit: {
+      // Each port is its own fake; the account is made lazily per port in `loadIn`, so these are placeholders replaced by `accountFor`.
+      get accountRef() {
+        return shared?.accountRef ?? 'a:pending';
+      },
+      unknownAccountRef: 'a:999999',
+      loadIn: async (port, state, amt) => {
+        const p = port as CreditPort;
+        const m = await p.c.member();
+        shared = { accountRef: m.accountRef, unknownAccountRef: 'a:999999' };
+        return p.c.loadIn(state, amt);
+      },
+      creditCount: (port, loadId) => (port as CreditPort).c.sent(loadId),
+      failNext: (port, code) => {
+        const f = (port as CreditPort).c.fake;
+        if (code === 'INSUFFICIENT_FUNDS') f.bookStatus(firstWire, 'Rejected');
+        else f.refuseBook(firstWire, code);
+      },
+      pendNext: (port) => {
+        const f = (port as CreditPort).c.fake;
+        f.bookStatus(firstWire, 'Pending');
+        f.autoSettlePendingBook = true;
+      },
+      outageNext: (port) => {
+        (port as CreditPort).c.fake.outageRequests = 1;
+      },
+    },
+  });
+}
+
+describe('CrowdedFunding wallet credit (T-0741, TST-WAL-003)', () => {
+  const key = 'wf-credit-0001:credit:1';
+  const money10k = { amount };
+  const input = (loadId: string, accountRef: string) => ({ loadId, accountRef, ...money10k });
+
+  it('fundHolding true: one release for the amount, then one book payment to the member; pool down, balance up; the memo is ours', async () => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    expect(c.fake.heldPool(c.chapterId)).toBe(10_000n);
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'credited' });
+    expect(c.fake.releaseRequests).toBe(1);
+    const rel = c.fake.calls.find((x) => x.path.endsWith('/release-funds'))!;
+    expect((rel.body as { data: Record<string, unknown> }).data['amount']).toBe(10_000);
+    expect(c.fake.heldPool(c.chapterId)).toBe(0n);
+    expect((await c.mirror.accountBalance(m.accountRef)).balance).toBe(10_000n);
+    const row = c.memos(loadId);
+    expect(row).toHaveLength(1);
+    expect(row[0]!.description).toMatch(/^load-credit:[A-Za-z0-9_-]+:a1$/);
+    expect(row[0]!.description.length).toBeLessThanOrEqual(80);
+    expect(row[0]!.description).not.toMatch(/Member|Test|example|\+1/);
+  });
+
+  it('fundHolding false: no release request at all, only the book payment', async () => {
+    const c = creditHarness(false);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'credited' });
+    expect(c.fake.releaseRequests).toBe(0);
+    expect(c.fake.calls.some((x) => x.path.endsWith('/release-funds') || x.path === '/collect-payments')).toBe(false);
+    expect((await c.mirror.accountBalance(m.accountRef)).balance).toBe(10_000n);
+    expect(c.sent(loadId)).toBe(1);
+  });
+
+  it('the same key twice makes one release and one book payment, and sends nothing the second time', async () => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    await c.credit(input(loadId, m.accountRef), key);
+    const before = c.fake.calls.length;
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'credited' });
+    expect(c.fake.calls.length).toBe(before);
+    expect(c.fake.releaseRequests).toBe(1);
+    expect(c.sent(loadId)).toBe(1);
+  });
+
+  it('a first call that died after the release is finished by the next call: no second release, one book payment', async () => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    c.fake.loseNextResponse(); // the release is processed, its answer is lost
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'pending' });
+    expect(c.fake.releaseCount(c.chapterId)).toBe(1);
+    expect(c.sent(loadId)).toBe(0);
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'credited' });
+    expect(c.fake.releaseRequests).toBe(1);
+    expect(c.fake.releaseCount(c.chapterId)).toBe(1);
+    expect(c.sent(loadId)).toBe(1);
+    // The release key is a UUID v4 of ours in its own namespace.
+    const rel = c.fake.calls.find((x) => x.path.endsWith('/release-funds'))!;
+    expect((rel.body as { data: { idempotencyKey: string } }).data.idempotencyKey).toBe(bookWireKey('credit:release:', key));
+  });
+
+  it('a release the vendor Rejects is refused with the port reason, nothing is booked, and the refusal is final for the key', async () => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    c.fake.rejectNextRelease('AccountFrozen');
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'refused', reasonCode: 'ACCOUNT_UNAVAILABLE' });
+    expect(c.bookPosts()).toHaveLength(0);
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'refused', reasonCode: 'ACCOUNT_UNAVAILABLE' });
+    expect(c.fake.releaseRequests).toBe(1);
+    // A NEW key makes a new attempt (its own memo) and credits.
+    expect(await c.credit(input(loadId, m.accountRef), 'wf-credit-0001:credit:2')).toEqual({ status: 'credited' });
+    expect(c.memos(loadId).map((b) => b.description)[0]).toMatch(/:a2$/);
+  });
+
+  it('a book payment refused for lack of funds at checking is refused INSUFFICIENT_FUNDS; its retry under a new key reads its own payment', async () => {
+    const c = creditHarness(false);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    c.fake.setChecking(c.chapterId, 0n);
+    expect(await c.credit(input(loadId, m.accountRef), 'wf-credit-0002:credit:1')).toEqual({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
+    c.fake.setChecking(c.chapterId, 50_000n);
+    expect(await c.credit(input(loadId, m.accountRef), 'wf-credit-0002:credit:2')).toEqual({ status: 'credited' });
+    expect(c.memos(loadId).map((b) => [b.description.split(':').at(-1), b.status])).toEqual([['a1', 'failed'], ['a2', 'sent']]);
+    expect(await c.credit(input(loadId, m.accountRef), 'wf-credit-0002:credit:2')).toEqual({ status: 'credited' });
+  });
+
+  it('a Pending book payment answers pending; another key for that load never books beside it; the same key credits once it settles', async () => {
+    const c = creditHarness(false);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    c.fake.bookStatus(bookWireKey('mirror:', bookWireKey('credit:', 'wf-credit-0003:credit:1')), 'Pending');
+    expect(await c.credit(input(loadId, m.accountRef), 'wf-credit-0003:credit:1')).toEqual({ status: 'pending' });
+    expect(await c.credit(input(loadId, m.accountRef), 'wf-credit-0003:credit:2')).toEqual({ status: 'pending' });
+    expect(c.bookPosts()).toHaveLength(1);
+    c.fake.settleBook(c.memos(loadId)[0]!.id);
+    expect(await c.credit(input(loadId, m.accountRef), 'wf-credit-0003:credit:1')).toEqual({ status: 'credited' });
+    expect(c.bookPosts()).toHaveLength(1);
+    expect(c.sent(loadId)).toBe(1);
+  });
+
+  it('a lost book answer is found again by its memo, never resent under a new key', async () => {
+    const c = creditHarness(false);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    c.fake.loseNextResponse();
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'pending' });
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'credited' });
+    expect(c.bookPosts()).toHaveLength(1);
+    expect(c.sent(loadId)).toBe(1);
+  });
+
+  it.each(['returned', 'failed', 'processing', 'on_hold'] as const)('a %s payment is refused NOT_SUCCEEDED with no money call', async (state) => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn(state);
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'refused', reasonCode: 'NOT_SUCCEEDED' });
+    expect(c.fake.releaseRequests).toBe(0);
+    expect(c.bookPosts()).toHaveLength(0);
+  });
+
+  it('release-funds answering 403 is PROVIDER_UNAVAILABLE with fixed text naming fund holding, nothing booked', async () => {
+    const c = creditHarness(true);
+    c.fake.fundHolding = false; // the sandbox as it is today
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    const e = await attempt(c.credit(input(loadId, m.accountRef), key));
+    expect(e).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect((e as Error).message).toMatch(/fund holding/i);
+    expect((e as Error).message).not.toMatch(/Held collection payments|403/);
+    expect(c.bookPosts()).toHaveLength(0);
+  });
+
+  it.each(['Frozen', 'Closed'] as const)('a %s member account is refused ACCOUNT_UNAVAILABLE before any money moves, a stored ref notwithstanding', async (status) => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    c.fake.setAccountStatus(m.walletId, status);
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'refused', reasonCode: 'ACCOUNT_UNAVAILABLE' });
+    expect(c.fake.releaseRequests).toBe(0);
+    expect(c.bookPosts()).toHaveLength(0);
+    expect(c.fake.heldPool(c.chapterId)).toBe(10_000n);
+  });
+
+  it('an account that froze between a release that was lost and the retry is refused, the book payment never sent', async () => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    c.fake.loseNextResponse();
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'pending' });
+    c.fake.setAccountStatus(m.walletId, 'Frozen');
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'refused', reasonCode: 'ACCOUNT_UNAVAILABLE' });
+    expect(c.bookPosts()).toHaveLength(0);
+  });
+
+  it('an unknown load is UNKNOWN_LOAD and a contact ref is VALIDATION_FAILED, each with no request, and neither is remembered', async () => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    const before = c.fake.calls.length;
+    await expect(c.credit(input(`crowded:${c.chapterId}:nope`, m.accountRef), key)).rejects.toMatchObject({ code: 'UNKNOWN_LOAD' });
+    await expect(c.credit(input(loadId, 'c:123'), key)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    await expect(c.credit(input(loadId, m.accountRef), 'short')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(c.fake.calls.length).toBe(before);
+    // The failed calls did not bind the key.
+    expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'credited' });
+  });
+
+  it('the book payment and the release have wire keys of their own, apart from a mirror leg of the same workflow id', async () => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    await c.credit(input(loadId, m.accountRef), key);
+    const wire = (c.bookPosts()[0]!.body as { data: { payments: { idempotencyKey: string }[] } }).data.payments[0]!.idempotencyKey;
+    expect(wire).toBe(bookWireKey('mirror:', bookWireKey('credit:', key)));
+    expect(wire).not.toBe(bookWireKey('mirror:', key));
+    expect(bookWireKey('credit:release:', key)).not.toBe(wire);
+    expect(bookWireKey('credit:release:', key)).not.toBe(bookWireKey('mirror:', key));
+  });
+
+  it('two calls at once on one key, and two keys at once on one load, credit once', async () => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    const rs = await Promise.all([c.credit(input(loadId, m.accountRef), key), c.credit(input(loadId, m.accountRef), key), c.credit(input(loadId, m.accountRef), 'wf-credit-0009:credit:1')]);
+    expect(rs.map((r) => r.status)).toEqual(['credited', 'credited', 'credited']);
+    expect(c.sent(loadId)).toBe(1);
+    expect(c.fake.releaseCount(c.chapterId)).toBe(1);
+  });
+
+  it('is a FundingCreditPort only when the credit option is given, and fundHolding has no default', () => {
+    const plain = harness();
+    expect(isFundingCreditPort(plain.adapter)).toBe(false);
+    expect(isFundingCreditPort(creditHarness(false).adapter)).toBe(true);
+    const mirror = new CrowdedMirror({ client: plain.client, chapterId: plain.chapterId });
+    expect(() => new CrowdedFunding({ client: plain.client, chapterId: plain.chapterId, hmacKey: MAC_KEY, achHoldDays: 3, redirectHosts: ['app.example'], credit: { mirror } as never })).toThrow(/fundHolding/);
   });
 });

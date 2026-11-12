@@ -144,3 +144,14 @@ export async function getBookPayment(client: CrowdedClient, chapterId: string, p
   const r = await client.get(`/chapters/${chapterId}/payments/${paymentId}`);
   return bookRow(r.data);
 }
+
+/**
+ * The chapter's open checking account id at Crowded, or undefined when it has none (T-0741: shared by `CrowdedMirror` and the wallet credit,
+ * so there is one copy of the rule). Client errors surface unchanged; each caller maps them to its own port's codes and keeps its own cache.
+ */
+export async function checkingAccountId(client: CrowdedClient, chapterId: string): Promise<string | undefined> {
+  for await (const a of client.list(`/chapters/${chapterId}/accounts`)) {
+    if (isRecord(a) && typeof a['product'] === 'string' && a['product'].toLowerCase() === 'checking' && typeof a['status'] === 'string' && a['status'].toLowerCase() === 'open') return str(a['id']);
+  }
+  return undefined;
+}

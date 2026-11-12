@@ -25,6 +25,13 @@
 // `refuseBook(key, code)`, `bookStatus(key, 'Rejected' | 'Pending')`, `loseBookAnswer(key)` (booked, the item says nothing usable);
 // `loseNextResponse()` books the next book request then drops the answer (a transport error); `rateLimited = true` answers every request
 // 429 before anything is processed; amounts past 2^53 - 1 travel as exact strings (JSON numbers cannot hold them).
+// Held collection funds and release-funds (T-0741, fake-only: the sandbox answers 403, README question 29): `fundHolding` (default false, as
+// the sandbox) gates `POST .../payments/release-funds`. The held pool is the net of the chapter's Succeeded hosted-collection payments less
+// what was released. A release is a POOLED amount: the fake marks the OLDEST Succeeded payments the released total covers as `isReleased`
+// (with `releasedAt`) on `GET /collect-payments`. This is the fake's model of a rule Crowded has not confirmed ("all held funds are
+// consolidated"), not a verified one. A release over the pool answers 201 `Rejected` / `InsufficientFunds`; the key is a UUID v4 and a
+// repeat of the same body replays the first answer. `loseNextResponse()` also drops the answer of the next release (it is processed).
+// `autoSettlePendingBook = true` settles a Pending book payment at the start of the second request after it (it then moves its money).
 import { createHash } from 'node:crypto';
 
 type Json = Record<string, unknown>;
@@ -35,7 +42,9 @@ interface Wallet { id: number; chapterId: string; contactId: number; status: 'Op
 /** A payment on a hosted-collection intent (T-0700). `amount` is gross: the net plus the fee when the payer covered it. */
 interface IntentPayment { id: string; method: 'Card' | 'Ach'; status: 'Pending' | 'Processing' | 'Succeeded' | 'Failed' | 'Returned' | 'Refunded' | 'Cancelled'; amount: bigint; fee: bigint; feeCovered: boolean; createdAt: Date; updatedAt: Date }
 /** A book payment (T-0719). `source` and `dest` are account ids as strings: the chapter checking account's id or a wallet's number. */
-interface BookPayment { id: string; chapterId: string; key: string; source: string; dest: string; amount: bigint; description: string; status: 'sent' | 'failed' | 'pending'; reasonCode?: string; createdAt: Date }
+interface BookPayment { id: string; chapterId: string; key: string; source: string; dest: string; amount: bigint; description: string; status: 'sent' | 'failed' | 'pending'; reasonCode?: string; createdAt: Date; settleAfter?: number }
+/** A release of held collection funds (T-0741). */
+interface Release { chapterId: string; amount: bigint; key: string; at: Date }
 interface BookFixture { refuse?: string; status?: 'Rejected' | 'Pending'; lose?: boolean }
 interface Intent { id: string; chapterId: string; collectionId: string; email: string; contactId?: number; amount: bigint; paid?: { id: string; at: Date }; payments: IntentPayment[]; successUrl?: string; failureUrl?: string; payerIp?: string }
 interface Payment { id: string; chapterId: string; method: 'ach'; status: 'pending' | 'processing' | 'sent' | 'returned' | 'canceled' | 'failed'; amount: bigint; counterpartyId: string; addenda: string; key: string; body: string }
@@ -82,6 +91,8 @@ export class FakeCrowded {
   private readonly payments: Payment[] = [];
   private readonly bookPayments: BookPayment[] = [];
   private readonly bookFixtures = new Map<string, BookFixture>();
+  private readonly releases: Release[] = [];
+  private releaseFixture: string | undefined;
   private dropNextResponse = false;
   private armDrop = false;
   private readonly ledger: { id: string; chapterId: string; accountId: string; direction: 'Credit' | 'Debit'; amount: bigint; title: string; at: Date; collectPaymentId?: string; counterpartyId?: string }[] = [];
@@ -114,6 +125,12 @@ export class FakeCrowded {
   ignoreOffset = false;
   /** The next wallet account creates answer a per-item `error: true` with this code (a 200, as the bulk call does). */
   accountProvisionError: 'PROVISION_FAILED' | 'CONTACT_NOT_FOUND' | undefined = undefined;
+  /** Fund holding is enabled for the partner (T-0741). Off, as in the sandbox: `release-funds` answers 403 and hosted collections release on their own. */
+  fundHolding = false;
+  /** Every request to `release-funds`, a refused or replayed one too (the 403 counts: the adapter must not send one when holding is off). */
+  releaseRequests = 0;
+  /** A Pending book payment settles at the start of the second request after the one that made it. */
+  autoSettlePendingBook = false;
 
   constructor(opts: FakeCrowdedOptions) {
     this.token = opts.token;
@@ -134,6 +151,7 @@ export class FakeCrowded {
         this.outageRequests--;
         return err(503, 'Unavailable');
       }
+      if (this.autoSettlePendingBook) this.settlePending();
       const res = this.route(method, path, query, (body as Json | undefined)?.['data']);
       if (this.dropNextResponse) {
         // The request was processed and the answer never arrived (a timeout, a reset connection).
@@ -335,13 +353,84 @@ export class FakeCrowded {
   loseBookAnswer(wireKey: string): void {
     this.bookFixtures.set(wireKey, { ...this.bookFixtures.get(wireKey), lose: true });
   }
-  /** The next book request is processed and its answer is dropped (a transport error for the caller). */
+  /** The next book or release request is processed and its answer is dropped (a transport error for the caller). */
   loseNextResponse(): void {
     this.armDrop = true;
+  }
+  /** The next release of held funds is answered `Rejected` with this reasonCode (persisted for its key, nothing moves). */
+  rejectNextRelease(reasonCode: string): void {
+    this.releaseFixture = reasonCode;
+  }
+  /** Held collection funds not yet released: the net of Succeeded hosted payments less the releases (T-0741). */
+  heldPool(chapterId: string): bigint {
+    return this.succeededNet(chapterId) - this.releasedTotal(chapterId);
+  }
+  /** What the chapter has released so far, and how many releases moved money. */
+  releasedTotal(chapterId: string): bigint {
+    return this.releases.filter((r) => r.chapterId === chapterId).reduce((n, r) => n + r.amount, 0n);
+  }
+  releaseCount(chapterId: string): number {
+    return this.releases.filter((r) => r.chapterId === chapterId).length;
+  }
+  /** A Pending book payment settles now: it moves its money, or fails when the source cannot pay. */
+  settleBook(paymentId: string): void {
+    const p = this.bookPayments.find((x) => x.id === paymentId);
+    if (!p || p.status !== 'pending') throw new Error('no pending book payment');
+    const ch = this.chapter(p.chapterId);
+    const src = this.bookAccount(ch, p.source);
+    const dst = this.bookAccount(ch, p.dest);
+    if (src === 'none' || src === 'other' || dst === 'none' || dst === 'other' || src.balance - src.hold < p.amount) {
+      p.status = 'failed';
+      p.reasonCode = 'InsufficientFunds';
+      return;
+    }
+    src.move(-p.amount);
+    dst.move(p.amount);
+    p.status = 'sent';
+    const at = this.now();
+    this.ledger.push({ id: this.id('tx'), chapterId: ch.id, accountId: p.source, direction: 'Debit', amount: p.amount, title: p.description, at, counterpartyId: p.dest });
+    this.ledger.push({ id: this.id('tx'), chapterId: ch.id, accountId: p.dest, direction: 'Credit', amount: p.amount, title: p.description, at, counterpartyId: p.source });
+  }
+  private settlePending(): void {
+    for (const p of this.bookPayments) if (p.status === 'pending' && p.settleAfter !== undefined && p.settleAfter < this.calls.length) this.settleBook(p.id);
+  }
+  /** The chapter's Succeeded hosted payments, oldest first, each with the net it adds to the held pool. */
+  private succeededPayments(chapterId: string): { p: IntentPayment; net: bigint }[] {
+    return this.intents
+      .filter((i) => i.chapterId === chapterId)
+      .flatMap((i) => i.payments)
+      .filter((p) => p.status === 'Succeeded')
+      .map((p) => ({ p, net: p.feeCovered ? p.amount - p.fee : p.amount }))
+      .sort((a, b) => a.p.createdAt.getTime() - b.p.createdAt.getTime());
+  }
+  private succeededNet(chapterId: string): bigint {
+    return this.succeededPayments(chapterId).reduce((n, x) => n + x.net, 0n);
+  }
+  /** Which payments the pooled releases cover, oldest first: the FAKE's model of an unverified rule (see the header). */
+  private releasedAt(chapterId: string): Map<string, Date> {
+    const out = new Map<string, Date>();
+    const rels = this.releases.filter((r) => r.chapterId === chapterId);
+    let cum = 0n;
+    for (const { p, net } of this.succeededPayments(chapterId)) {
+      cum += net;
+      let paid = 0n;
+      for (const r of rels) {
+        paid += r.amount;
+        if (paid >= cum) {
+          out.set(p.id, r.at);
+          break;
+        }
+      }
+    }
+    return out;
   }
   /** The book payments of a chapter, oldest first, as `{ id, status }`. */
   bookPaymentIds(chapterId: string): { id: string; status: 'sent' | 'failed' | 'pending' }[] {
     return this.bookPayments.filter((p) => p.chapterId === chapterId).map((p) => ({ id: p.id, status: p.status }));
+  }
+  /** The book payments of a chapter, oldest first, with their memo and amount (what a credit test counts). */
+  bookRows(chapterId: string): { id: string; status: 'sent' | 'failed' | 'pending'; description: string; amount: bigint; dest: string }[] {
+    return this.bookPayments.filter((p) => p.chapterId === chapterId).map((p) => ({ id: p.id, status: p.status, description: p.description, amount: p.amount, dest: p.dest }));
   }
   /** The chapter's checking account id (what a book payment names). */
   checkingId(chapterId: string): string {
@@ -456,10 +545,18 @@ export class FakeCrowded {
     }
     if (method === 'GET' && path === '/collect-payments') {
       const min = q['filter[createdAt][min]'] ? new Date(q['filter[createdAt][min]']) : undefined;
-      const rows = this.intents
-        .filter((i) => i.paid && i.chapterId === q['filter[chapterId]'] && (!min || i.paid.at >= min))
-        .map((i) => ({ id: i.paid!.id, method: 'Card', status: 'Succeeded', amount: wire(i.amount), fee: wire(this.collectFee.fee), feeCovered: this.collectFee.covered, createdAt: i.paid!.at.toISOString(), updatedAt: i.paid!.at.toISOString(), collectRequest: { id: i.collectionId }, intent: { id: i.id } }));
-      return this.page(rows, q);
+      const max = q['filter[createdAt][max]'] ? new Date(q['filter[createdAt][max]']) : undefined;
+      const chapterId = q['filter[chapterId]'];
+      const inWindow = (at: Date): boolean => (!min || at >= min) && (!max || at <= max);
+      // A payment made with `pay()` is credited to the chapter at once: released on its own.
+      const paid = this.intents
+        .filter((i) => i.paid && i.chapterId === chapterId && inWindow(i.paid.at))
+        .map((i) => ({ id: i.paid!.id, method: 'Card', status: 'Succeeded', amount: wire(i.amount), fee: wire(this.collectFee.fee), feeCovered: this.collectFee.covered, isReleased: true, releasedAt: i.paid!.at.toISOString(), createdAt: i.paid!.at.toISOString(), updatedAt: i.paid!.at.toISOString(), collectRequest: { id: i.collectionId }, intent: { id: i.id } }));
+      const released = chapterId ? this.releasedAt(chapterId) : new Map<string, Date>();
+      const hosted = this.intents
+        .filter((i) => i.chapterId === chapterId)
+        .flatMap((i) => i.payments.filter((p) => inWindow(p.createdAt)).map((p) => ({ id: p.id, method: p.method, status: p.status, amount: wire(p.amount), fee: wire(p.fee), feeCovered: p.feeCovered, isReleased: released.has(p.id), ...(released.has(p.id) ? { releasedAt: released.get(p.id)!.toISOString() } : {}), createdAt: p.createdAt.toISOString(), updatedAt: p.updatedAt.toISOString(), collectRequest: { id: i.collectionId }, intent: { id: i.id } })));
+      return this.page([...paid, ...hosted], q);
     }
     return err(404, 'No such route');
   }
@@ -573,6 +670,7 @@ export class FakeCrowded {
       const i = this.intents.find((x) => x.chapterId === ch.id && x.collectionId === m![1] && x.id === m![2]);
       return i ? ok(this.intentJson(i)) : err(404, 'Intent not found');
     }
+    if (method === 'POST' && rest === 'payments/release-funds') return this.releaseRoute(ch, d);
     if (method === 'POST' && rest === 'payments/quotes/ach') return ok({ type: 'ach', amount: d['amount'], ...(this.quoteWithoutFee ? {} : { fee: { feeType: 'flat', amount: wire(25n) } }), totalDebit: wire(cents(d['amount']) + 25n), quotedAt: this.now().toISOString() });
     if (method === 'POST' && rest === 'payments' && d['type'] === 'book') return this.bookRoute(ch, d);
     if (method === 'POST' && rest === 'payments') return this.originate(ch, d);
@@ -657,6 +755,32 @@ export class FakeCrowded {
   }
 
 
+  // ---- release-funds (T-0741) -----------------------------------------------------------------------------------
+
+  private releaseRoute(ch: Chapter, d: Json): Response {
+    this.releaseRequests++;
+    if (!this.fundHolding) return err(403, 'Held collection payments are not enabled', undefined, 'ForbiddenError');
+    if (!Number.isInteger(d['amount']) || (d['amount'] as number) <= 0) return err(400, 'amount must be a positive integer', 'VALIDATION_ERROR');
+    if (this.armDrop) {
+      this.armDrop = false;
+      this.dropNextResponse = true;
+    }
+    return this.keyed(d['idempotencyKey'], d, () => {
+      const amount = cents(d['amount']);
+      const checking = this.accountOf(ch.id);
+      const rejected = (reasonCode: string): Response => ok({ chapterId: ch.id, sourceAccountId: 'held', destinationAccountId: checking.id, amount: wire(amount), transactionId: this.id('rel'), status: 'Rejected', reason: reasonCode, reasonCode }, 201);
+      if (this.releaseFixture) {
+        const code = this.releaseFixture;
+        this.releaseFixture = undefined;
+        return rejected(code);
+      }
+      if (amount > this.heldPool(ch.id)) return rejected('InsufficientFunds');
+      this.releases.push({ chapterId: ch.id, amount, key: String(d['idempotencyKey']), at: this.now() });
+      this.credit(checking, amount, 'Release of held funds');
+      return ok({ chapterId: ch.id, sourceAccountId: 'held', destinationAccountId: checking.id, amount: wire(amount), transactionId: this.id('rel'), status: 'Sent' }, 201);
+    });
+  }
+
   // ---- book payments: the route (T-0719) ----------------------------------------------------------------------
 
   private bookJson(p: BookPayment): Json {
@@ -724,7 +848,11 @@ export class FakeCrowded {
       this.bookPayments.push(p);
       return p;
     };
-    if (fx?.status === 'Pending') return done(persist('pending'), false);
+    if (fx?.status === 'Pending') {
+      const pending = persist('pending');
+      pending.settleAfter = this.calls.length + 1; // the read of the payment that follows the create still sees it Pending
+      return done(pending, false);
+    }
     if (fx?.status === 'Rejected' || src.balance - src.hold < minor) return done(persist('failed', 'InsufficientFunds'), false);
 
     src.move(-minor);
