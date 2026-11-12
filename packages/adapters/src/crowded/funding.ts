@@ -102,6 +102,9 @@ interface PaymentView {
   settledAt: Date;
 }
 
+/** Laps of search, create and claim a key makes for its collection before it gives up. */
+const COLLECTION_LAPS = 3;
+
 /** The decoded name of one `name=value` query segment (an undecodable name is kept as it is). */
 function paramName(segment: string): string {
   const raw = segment.split('=')[0]!.replace(/\+/g, ' ');
@@ -266,23 +269,20 @@ export class CrowdedFunding implements FundingPort {
 
   /** The collection for this key: one Crowded already holds under the title and amount that no other key has claimed, else a new one. */
   private async collection(title: string, amount: Money, key: string): Promise<string> {
-    let found: string | undefined;
-    for await (const item of this.c.list(this.path('collections'), { search: title })) {
-      if (!isRecord(item) || item['title'] !== title || fromCents(item['requestedAmount']).minor !== amount.minor) continue;
-      const id = str(item['id']);
-      if (await this.claim(id, key)) {
-        found = id;
-        break;
+    // Bounded: each lap that loses a claim does so to another key that made progress, so a few laps always end it.
+    for (let lap = 0; lap < COLLECTION_LAPS; lap++) {
+      for await (const item of this.c.list(this.path('collections'), { search: title })) {
+        if (!isRecord(item) || item['title'] !== title || fromCents(item['requestedAmount']).minor !== amount.minor) continue;
+        const id = str(item['id']);
+        if (await this.claim(id, key)) return id;
       }
-    }
-    if (found === undefined) {
       const r = await this.c.post(this.path('collections'), { title, requestedAmount: toCents(amount) });
       if (!isRecord(r.data)) return fail('PROVIDER_UNAVAILABLE', 'The funding provider sent an unreadable collection');
-      found = str(r.data['id']);
+      const id = str(r.data['id']);
+      // Another key may have listed and claimed this one between our create and our claim: then it is theirs, and we look again.
+      if (await this.claim(id, key)) return id;
     }
-    const id = found;
-    await this.claim(id, key);
-    return id;
+    return fail('PROVIDER_UNAVAILABLE', 'The funding provider is not available');
   }
 
   /** Claims a collection for a key in one atomic step (the ledger's insert-if-absent): true when it is now this key's, false when another key holds it. */

@@ -610,6 +610,34 @@ describe('hardening follow-ups (T-0735, TST-INS-006)', () => {
     expect(new Set(intentPaths).size).toBe(2); // never two loads on one collection
   });
 
+  it('a key whose claim of its own fresh collection lost to another key looks again: no two loads on one collection', async () => {
+    // A creates X and is held before it can claim; B lists, finds X unclaimed and claims it; A must not carry on with X.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let held = false;
+    const wrap = (f: typeof globalThis.fetch): typeof globalThis.fetch => async (input, init) => {
+      const res = await f(input, init);
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (!held && (init?.method ?? 'GET') === 'POST' && /\/collections$/.test(url)) {
+        held = true;
+        await gate;
+      }
+      return res;
+    };
+    const h = harness({ wrap });
+    const keyA = `${'k'.repeat(60)}a`;
+    const keyB = `${'k'.repeat(60)}b`;
+    const a = start(h, keyA, {}, 'c1');
+    while (h.fake.count('collections') < 1) await new Promise((r) => setTimeout(r, 1));
+    const b = await start(h, keyB, {}, 'c2');
+    release();
+    const la = await a;
+    expect(la.loadId).not.toBe(b.loadId);
+    const intentPaths = h.fake.calls.filter((c) => c.method === 'POST' && /collections\/[^/]+\/intents$/.test(c.path)).map((c) => c.path);
+    expect(new Set(intentPaths).size).toBe(2);
+    expect(h.fake.count('collections')).toBe(2);
+  });
+
   it('strips intentId from a redirect by string: the other parameters keep their bytes', async () => {
     const h = harness();
     const l = await start(h, 'load-key-url-qs', { successUrl: 'https://app.example/ok?q=a%20b+c~d&k=1&intentId=evil&k=2&sp=x%2By' });

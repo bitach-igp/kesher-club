@@ -13,7 +13,8 @@
 //   sent, narrowed by the leg and bounded by `since` (a row older than `since` is skipped, the walk goes on). A refusal before persistence is never
 //   listed, so it reads `not_found`; a listed `Rejected` payment (failed, canceled, returned) reads as refused; Pending is `unknown`. Whether the
 //   vendor normalises or truncates a description is unknown: a miss is `not_found`, not proof that nothing booked. A list that stops paging
-//   (a page with no new id) ends the walk: with no match found that is PROVIDER_UNAVAILABLE, never `not_found`.
+//   (a page with no new id) or one longer than READBACK_MAX_PAGES ends the walk: with no match found that is PROVIDER_UNAVAILABLE, never `not_found`.
+//   `payments` is walked the same way (no newest-first assumption, same cap), so a window deeper than the cap fails whole.
 // - Failures: a request that provably never left (429, 401, 403, or a failure before any write) is PROVIDER_UNAVAILABLE; a 400 or 422 is the
 //   vendor refusing the whole request before processing (VALIDATION_FAILED); anything else after a write may have been sent (a timeout, a
 //   5xx, a reset connection, an answer we cannot read) is OUTCOME_UNKNOWN. Reads fail PROVIDER_UNAVAILABLE. No retries here.
@@ -50,6 +51,8 @@ export interface CrowdedMirrorOptions {
 
 /** The namespace of this adapter's wire keys: a mirror leg and another caller's booking of one workflow id derive different keys. */
 const MIRROR_KEY_PREFIX = 'mirror:';
+/** Pages of the book list one read walks at most (20 of the vendor's page size). A walk past it is cut, never `not_found`. */
+export const READBACK_MAX_PAGES = 20;
 const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
 const low = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
@@ -207,7 +210,7 @@ export class CrowdedMirror implements MirrorPort {
     const found = await this.read(async () => {
       const hits: MirrorLegResult[] = [];
       const state = { truncated: false };
-      for await (const row of listBookPayments(this.c, chapter, { state })) {
+      for await (const row of listBookPayments(this.c, chapter, { maxPages: READBACK_MAX_PAGES, state })) {
         // The order is the vendor's, not ours to rely on: a row older than `since` is skipped, never the end of the walk.
         if (input.since && date(row.createdAt) < input.since) continue;
         if (row.description !== input.memo) continue;
@@ -255,13 +258,13 @@ export class CrowdedMirror implements MirrorPort {
     const chapter = this.chapter(input.chapterRef);
     const checking = await this.checking(chapter);
     const lower = input.since && input.since > input.from ? input.since : input.from;
-    // Buffered whole: an outage on a later page throws before anything is yielded (no partial list). The vendor lists newest first.
+    // Buffered whole: an outage on a later page throws before anything is yielded (no partial list). The order is the vendor's: an old row is skipped, never the end of the walk, and the walk is capped.
     const rows = await this.read(async () => {
       const out: MirrorPayment[] = [];
       const state = { truncated: false };
-      for await (const row of listBookPayments(this.c, chapter, { state })) {
+      for await (const row of listBookPayments(this.c, chapter, { maxPages: READBACK_MAX_PAGES, state })) {
         const at = date(row.createdAt);
-        if (at < lower) break;
+        if (at < lower) continue;
         if (at >= input.to) continue;
         out.push({
           paymentRef: row.id,

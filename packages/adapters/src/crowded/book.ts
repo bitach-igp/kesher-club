@@ -101,14 +101,19 @@ export function bookRow(v: unknown): BookRow | undefined {
 
 /**
  * The chapter's book payments, as the vendor lists them (newest first), across pages. The list has no total, so it stops at the
- * first empty page, or at the first page that adds no id we have not seen (a vendor that ignores `offset` would otherwise be asked
+ * first empty page, at the caller's `maxPages`, or at the first page that adds no id we have not seen (a vendor that ignores `offset` would otherwise be asked
  * forever); then `state.truncated` is set, because the list may have more than we read. A row the list shows twice (a payment made
  * while we page pushes the older ones down) is yielded once. A row we cannot read is skipped: it cannot be one of ours.
  */
-export async function* listBookPayments(client: CrowdedClient, chapterId: string, opts: { pageSize?: number; state?: { truncated: boolean } } = {}): AsyncGenerator<BookRow> {
+export async function* listBookPayments(client: CrowdedClient, chapterId: string, opts: { pageSize?: number; maxPages?: number; state?: { truncated: boolean } } = {}): AsyncGenerator<BookRow> {
   const pageSize = opts.pageSize ?? 100;
   const seen = new Set<string>();
-  for (let offset = 0; ; ) {
+  for (let offset = 0, page = 0; ; page++) {
+    // The caller's page cap: stop before reading more, and say the list was cut.
+    if (opts.maxPages !== undefined && page >= opts.maxPages) {
+      if (opts.state) opts.state.truncated = true;
+      return;
+    }
     const r = await client.get(`/chapters/${chapterId}/payments`, { 'filter[method]': 'book', 'pagination[limit]': pageSize, 'pagination[offset]': offset });
     const raw = Array.isArray(r.data) ? r.data : isRecord(r.data) && Array.isArray(r.data['payments']) ? r.data['payments'] : [];
     let added = 0;

@@ -9,7 +9,7 @@ import { mirrorContract } from '@kesher/ports/contracts';
 import { bookWireKey, listBookPayments } from './book.ts';
 import { CrowdedClient } from './client.ts';
 import { FakeCrowded } from './fake-crowded.ts';
-import { CrowdedMirror } from './mirror.ts';
+import { CrowdedMirror, READBACK_MAX_PAGES } from './mirror.ts';
 
 const TOKEN = 'crowded_test_token_not_a_secret';
 const BASE = 'https://sandbox.fake.invalid/api/v1';
@@ -374,6 +374,30 @@ describe('readBack and the book list (T-0735, TST-WAL-003, TST-LED-003)', () => 
     // A match on the first page is still found; a miss that could hide behind the cut is not "not_found".
     expect(await h.mirror.readBack({ chapterRef: h.chapterId, memo: 'KC-key-new-0003' })).toMatchObject({ status: 'found' });
     await expect(h.mirror.readBack({ chapterRef: h.chapterId, memo: 'KC-nothing-here' })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+  });
+
+  it('scans a bounded number of pages: a match on page 24 is past the cap of 20, with or without since', async () => {
+    const h = harness();
+    const ref = await h.wallet('m1', 10_000_000n);
+    for (let i = 0; i < 48; i += 8) {
+      await h.mirror.bookBatch(Array.from({ length: 8 }, (_, j) => leg(`key-bulk-${String(i + j).padStart(4, '0')}`, ref, { direction: 'to_checking', amount: money(100n, 'USD') })), h.chapterId);
+    }
+    // 48 rows at 2 a page: the first booked is on page 24, the newest on page 1.
+    expect(await h.mirror.readBack({ chapterRef: h.chapterId, memo: 'KC-key-bulk-0047' })).toMatchObject({ status: 'found' });
+    expect(READBACK_MAX_PAGES).toBe(20);
+    for (const since of [undefined, new Date('2020-01-01T00:00:00Z')]) {
+      await expect(h.mirror.readBack({ chapterRef: h.chapterId, memo: 'KC-key-bulk-0000', ...(since ? { since } : {}) })).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    }
+    const gets = h.fake.calls.filter((c) => c.method === 'GET' && c.path.endsWith('/payments')).length;
+    expect(gets).toBeLessThan(3 * 21 + 3);
+    // The feed does not assume newest-first and is bounded the same way.
+    await expect(collect(h.mirror.payments({ chapterRef: h.chapterId, from: new Date('2026-01-01T00:00:00Z'), to: new Date('2027-01-01T00:00:00Z') }))).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+  });
+
+  it('payments does not stop at the first old row: an oldest-first list still yields the window', async () => {
+    const { h } = await twoPayments('oldest');
+    const rows = await collect(h.mirror.payments({ chapterRef: h.chapterId, from: hours(1), to: hours(5) }));
+    expect(rows.map((r) => r.memo).sort()).toEqual(['KC-key-new-0001', 'KC-key-new-0002', 'KC-key-new-0003']);
   });
 
   it('a list that ends on its own is not truncated', async () => {
