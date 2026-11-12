@@ -430,6 +430,8 @@ export class LoadService implements LoadActivities {
         if (posted.rows[0]) reversals.push(await this.d.ledger.reverse(posted.rows[0].id, `${key}:reversal`));
       }
     }
+    // A failure of this insert leaves the transfer unfailed: the next sweep retries the whole step, idempotently (reversals are keyed `{key}:reversal`).
+    // It is visible only as sweep lag or errors.
     if (mayHaveMoved) await this.openReturnedCase(current, mayHaveMoved, code, 'before_journal', now);
     try {
       return await this.d.transfers.apply(transfer.id, 'fail', now, { failureCode: code, reason: held ? 'returned during hold' : 'vendor' });
@@ -580,6 +582,8 @@ export class LoadService implements LoadActivities {
       }
       throw mapFundingError(e);
     }
+    // The FIRST outcome of an attempt wins: a second one violates unique (entity_type, entity_id, provider) and is dropped by `on conflict do nothing`.
+    // A `pending` that later turns credited or refused stays `pending`, which is conservative: it can only open a case, never hide one.
     await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditDoneType(attempt), transfer.id, this.d.provider, `${creditKey(transfer.idempotencyKey, attempt)}:${result.status}`]);
     if (result.status === 'credited') {
       this.credits += 1;
