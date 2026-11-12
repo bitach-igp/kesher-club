@@ -108,6 +108,10 @@ export class FakeCrowded {
   quoteWithoutFee = false;
   /** Sub-accounts the tenant may hold; a create past it answers 429 SubscriptionQuotaExceededError (before the key is looked at). */
   subAccountQuota: number | undefined = undefined;
+  /** The order `GET .../payments` lists book payments in: the vendor's newest first, oldest first, or alternating ends. */
+  bookListOrder: 'newest' | 'oldest' | 'interleaved' = 'newest';
+  /** A vendor that ignores `pagination[offset]` on the book list: every page is the first one. */
+  ignoreOffset = false;
   /** The next wallet account creates answer a per-item `error: true` with this code (a 200, as the bulk call does). */
   accountProvisionError: 'PROVISION_FAILED' | 'CONTACT_NOT_FOUND' | undefined = undefined;
 
@@ -662,10 +666,12 @@ export class FakeCrowded {
   /** `GET .../payments`: newest first, `filter[method]`, offset paging, no total (`meta.count` only). */
   private bookList(ch: Chapter, q: Record<string, string>): Response {
     const limit = Math.min(Number(q['pagination[limit]'] ?? 10), this.pageSize);
-    const offset = Number(q['pagination[offset]'] ?? 0);
+    const offset = this.ignoreOffset ? 0 : Number(q['pagination[offset]'] ?? 0);
     const method = q['filter[method]'];
     const rows = method && method !== 'book' ? [] : this.bookPayments.filter((p) => p.chapterId === ch.id && (!q['filter[status]'] || p.status === q['filter[status]']));
-    const page = [...rows].reverse().slice(offset, offset + limit);
+    const newest = [...rows].reverse();
+    const ordered = this.bookListOrder === 'oldest' ? [...rows] : this.bookListOrder === 'interleaved' ? newest.map((_, i) => (i % 2 === 0 ? newest[newest.length - 1 - Math.floor(i / 2)]! : newest[Math.floor(i / 2)]!)) : newest;
+    const page = ordered.slice(offset, offset + limit);
     return ok({ payments: page.map((p) => this.bookJson(p)) }, 200, { limit, offset, count: page.length });
   }
 

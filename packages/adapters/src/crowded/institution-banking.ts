@@ -51,6 +51,22 @@ import { achStatus, applicationStatus, collectedStatus, date, fromCents, isRecor
 export interface KeyLedger {
   get(key: string): Promise<{ body: string; result: unknown } | undefined>;
   put(key: string, entry: { body: string; result: unknown }): Promise<void>;
+  /**
+   * Insert if absent, atomically: true when this call stored the entry, false when one was already there (it is left as it was).
+   * A claim between concurrent callers needs it; a store that cannot offer it leaves this out and the caller falls back to a
+   * read then a write (T-0735).
+   */
+  putIfAbsent?(key: string, entry: { body: string; result: unknown }): Promise<boolean>;
+}
+
+/** A ledger whose every failure is `unavailable()` with fixed text (a storage error can carry a connection string or a row). */
+export function guardLedger(inner: KeyLedger, unavailable: () => never): KeyLedger {
+  const absent = inner.putIfAbsent?.bind(inner);
+  return {
+    get: (key) => inner.get(key).catch(unavailable),
+    put: (key, entry) => inner.put(key, entry).catch(unavailable),
+    ...(absent ? { putIfAbsent: (key: string, entry: { body: string; result: unknown }) => absent(key, entry).catch(unavailable) } : {}),
+  };
 }
 
 export class InMemoryKeyLedger implements KeyLedger {
@@ -60,6 +76,11 @@ export class InMemoryKeyLedger implements KeyLedger {
   }
   async put(key: string, entry: { body: string; result: unknown }) {
     this.m.set(key, entry);
+  }
+  async putIfAbsent(key: string, entry: { body: string; result: unknown }) {
+    if (this.m.has(key)) return false;
+    this.m.set(key, entry);
+    return true;
   }
 }
 
@@ -103,7 +124,9 @@ export class CrowdedInstitutionBankingAdapter implements InstitutionBankingPort 
   constructor(opts: CrowdedInstitutionBankingOptions) {
     this.o = opts;
     this.c = opts.client;
-    this.ledger = opts.ledger ?? new InMemoryKeyLedger();
+    this.ledger = guardLedger(opts.ledger ?? new InMemoryKeyLedger(), () => {
+      throw new InstitutionBankingError('PROVIDER_UNAVAILABLE', 'The ledger is not available');
+    });
   }
 
   // ---- plumbing -----------------------------------------------------------------------------------------------

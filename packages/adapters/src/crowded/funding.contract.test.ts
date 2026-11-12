@@ -267,7 +267,7 @@ describe('CrowdedFunding hosted loads (T-0700, TST-WAL-002, TST-WAL-003)', () =>
       h.fake.payIntent(ref(h, l), 'card');
       const r = await load(h, l.loadId);
       expect(r).toMatchObject({ status: 'succeeded', amount });
-      expect(r.metadata).toMatchObject({ fee: money(150n, 'USD'), feeCovered: true });
+      expect(r.metadata).toMatchObject({ feeMinor: '150', feeCovered: 'true' });
     });
 
     it('a chapter-absorbed fee leaves the amount as it is', async () => {
@@ -277,7 +277,7 @@ describe('CrowdedFunding hosted loads (T-0700, TST-WAL-002, TST-WAL-003)', () =>
       h.fake.payIntent(ref(h, l), 'card');
       const r = await load(h, l.loadId);
       expect(r).toMatchObject({ status: 'succeeded', amount });
-      expect(r.metadata).toMatchObject({ fee: money(150n, 'USD'), feeCovered: false });
+      expect(r.metadata).toMatchObject({ feeMinor: '150', feeCovered: 'false' });
     });
 
     it('a Succeeded payment whose net differs from the load is not guessed at: processing, and the load stays open', async () => {
@@ -592,5 +592,40 @@ describe('CrowdedFunding hosted loads (T-0700, TST-WAL-002, TST-WAL-003)', () =>
       ];
       for (const over of bad) expect(() => new CrowdedFunding({ ...base(), ...over }), JSON.stringify(Object.keys(over))).toThrow();
     });
+  });
+});
+
+describe('hardening follow-ups (T-0735, TST-INS-006)', () => {
+  it('two concurrent keys with one colliding title adopt an unclaimed collection once: one create, one found', async () => {
+    const h = harness();
+    const keyA = `${'k'.repeat(60)}a`;
+    const keyB = `${'k'.repeat(60)}b`;
+    const title = `Load ${keyA}`.slice(0, 50);
+    // A collection a lost answer left behind: right title and amount, claimed by no key.
+    await h.client.post(`/chapters/${h.chapterId}/collections`, { title, requestedAmount: Number(amount.minor) });
+    const [a, b] = await Promise.all([start(h, keyA, {}, 'c1'), start(h, keyB, {}, 'c2')]);
+    expect(a.loadId).not.toBe(b.loadId);
+    expect(h.fake.count('collections')).toBe(2); // the one that was there, and one create
+    const intentPaths = h.fake.calls.filter((c) => c.method === 'POST' && /collections\/[^/]+\/intents$/.test(c.path)).map((c) => c.path);
+    expect(new Set(intentPaths).size).toBe(2); // never two loads on one collection
+  });
+
+  it('strips intentId from a redirect by string: the other parameters keep their bytes', async () => {
+    const h = harness();
+    const l = await start(h, 'load-key-url-qs', { successUrl: 'https://app.example/ok?q=a%20b+c~d&k=1&intentId=evil&k=2&sp=x%2By' });
+    expect(h.fake.intentRequest(intentId(l.loadId)).successUrl).toBe('https://app.example/ok?q=a%20b+c~d&k=1&k=2&sp=x%2By&intentId={intentId}');
+    const only = await start(h, 'load-key-url-q2', { successUrl: 'https://app.example/ok?intentId=evil' });
+    expect(h.fake.intentRequest(intentId(only.loadId)).successUrl).toBe('https://app.example/ok?intentId={intentId}');
+  });
+
+  it('carries the payment and intent refs as string metadata on the port Load, and none before a payment exists', async () => {
+    const h = harness();
+    const l = await start(h);
+    expect((await h.adapter.getLoad(l.loadId)).metadata).toBeUndefined();
+    h.fake.payIntent(ref(h, l), 'card');
+    const paid = await h.adapter.getLoad(l.loadId);
+    const md: Readonly<Record<string, string>> | undefined = paid.metadata;
+    expect(md).toMatchObject({ intentLoadId: l.loadId });
+    expect(Object.values(md!).every((v) => typeof v === 'string')).toBe(true);
   });
 });

@@ -39,8 +39,12 @@ export class BookShapeError extends Error {
   }
 }
 
-/** Our idempotency key as the UUID v4 Crowded wants (the live API refuses any other version, T-0734). Stable per key. */
-export const bookWireKey = (key: string): string => uuidFromKey(`mirror:${key}`);
+/**
+ * Our idempotency key as the UUID v4 Crowded wants (the live API refuses any other version, T-0734). Stable per key. The `prefix` is
+ * the caller's namespace (`mirror:` for the mirror legs; the wallet credit passes its own), so one workflow id derives a different
+ * wire key for each caller; the keys are scoped to the chapter at Crowded and must not collide across callers.
+ */
+export const bookWireKey = (prefix: string, key: string): string => uuidFromKey(`${prefix}${key}`);
 
 const opt = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : typeof v === 'number' ? String(v) : undefined);
 
@@ -96,15 +100,18 @@ export function bookRow(v: unknown): BookRow | undefined {
 }
 
 /**
- * The chapter's book payments, newest first, across pages. The list has no total, so it stops at the first short or empty page. A
- * row the list shows twice (a payment made while we page pushes the older ones down) is yielded once. A row we cannot read is
- * skipped: it cannot be one of ours.
+ * The chapter's book payments, as the vendor lists them (newest first), across pages. The list has no total, so it stops at the
+ * first empty page, or at the first page that adds no id we have not seen (a vendor that ignores `offset` would otherwise be asked
+ * forever); then `state.truncated` is set, because the list may have more than we read. A row the list shows twice (a payment made
+ * while we page pushes the older ones down) is yielded once. A row we cannot read is skipped: it cannot be one of ours.
  */
-export async function* listBookPayments(client: CrowdedClient, chapterId: string, pageSize = 100): AsyncGenerator<BookRow> {
+export async function* listBookPayments(client: CrowdedClient, chapterId: string, opts: { pageSize?: number; state?: { truncated: boolean } } = {}): AsyncGenerator<BookRow> {
+  const pageSize = opts.pageSize ?? 100;
   const seen = new Set<string>();
   for (let offset = 0; ; ) {
     const r = await client.get(`/chapters/${chapterId}/payments`, { 'filter[method]': 'book', 'pagination[limit]': pageSize, 'pagination[offset]': offset });
     const raw = Array.isArray(r.data) ? r.data : isRecord(r.data) && Array.isArray(r.data['payments']) ? r.data['payments'] : [];
+    let added = 0;
     for (const x of raw) {
       let row: BookRow | undefined;
       try {
@@ -114,11 +121,17 @@ export async function* listBookPayments(client: CrowdedClient, chapterId: string
       }
       if (!row || seen.has(row.id)) continue;
       seen.add(row.id);
+      added++;
       yield row;
     }
     offset += raw.length;
     // Crowded may cap a page below what we asked for: only an empty page ends the scan, never a short one.
     if (raw.length === 0) return;
+    // A page of rows we have all seen: the vendor is not paging. Stop with what we have and say the list was cut.
+    if (added === 0) {
+      if (opts.state) opts.state.truncated = true;
+      return;
+    }
   }
 }
 

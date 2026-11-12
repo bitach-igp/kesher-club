@@ -293,3 +293,42 @@ describe('CrowdedMemberAccounts over the fake (T-0699)', () => {
     expect(await stored(MAC_KEY)).not.toBe(await stored(`${MAC_KEY}-other`));
   });
 });
+
+describe('ledger failures (T-0735, TST-INS-006)', () => {
+  const boom = () => new Error('db down postgres://secret@host/x');
+  /** A ledger that fails the chosen call (`get` or `put`) from the `after`th call of it on, while `armed`. */
+  const flaky = (broken: 'get' | 'put', after = 0) => {
+    const inner = new InMemoryKeyLedger();
+    const state = { armed: false, seen: 0 };
+    const trip = (op: 'get' | 'put'): boolean => op === broken && state.armed && state.seen++ >= after;
+    const ledger: KeyLedger = {
+      get: async (k) => (trip('get') ? Promise.reject(boom()) : inner.get(k)),
+      put: async (k, v) => (trip('put') ? Promise.reject(boom()) : inner.put(k, v)),
+    };
+    return { ledger, state };
+  };
+
+  it('a ledger that cannot be read or written is PROVIDER_UNAVAILABLE with fixed text, never a bare Error', async () => {
+    for (const broken of ['get', 'put'] as const) {
+      const { ledger, state } = flaky(broken);
+      const h = harness({ ledger });
+      state.armed = true;
+      const e = await h.adapter.ensureAccount(SARAH, 'key-ledger-0001').then(() => undefined, (x: unknown) => x);
+      expect(e, broken).toBeInstanceOf(FundingAccountError);
+      expect(e, broken).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+      expect((e as Error).message, broken).not.toMatch(/postgres|key-ledger-0001/);
+    }
+  });
+
+  it('a contact made before the ledger write failed is not made again on the replay', async () => {
+    const { ledger, state } = flaky('put');
+    const h = harness({ ledger });
+    state.armed = true;
+    await expect(h.adapter.ensureAccount(SARAH, 'key-ledger-0002')).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(h.fake.count('contacts')).toBe(1);
+    state.armed = false;
+    const r = await h.adapter.ensureAccount(SARAH, 'key-ledger-0002');
+    expect(r).toMatchObject({ status: 'open' });
+    expect([h.fake.count('contacts'), h.fake.count('accounts')]).toEqual([1, 1]);
+  });
+});
