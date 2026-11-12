@@ -39,7 +39,7 @@ import {
   type MirrorReadBack,
   type MirrorStoredLeg,
 } from '@kesher/ports';
-import { bookWireKey, BookShapeError, getBookPayment, listBookPayments, postBookPayments, type BookAnswer, type BookItem, type BookRow } from './book.ts';
+import { bookWireKey, BookShapeError, checkingAccountId, getBookPayment, listBookPayments, postBookPayments, type BookAnswer, type BookItem, type BookRow } from './book.ts';
 import { CrowdedApiError, type CrowdedClient } from './client.ts';
 import { date, fromCents, fundingRef, isRecord, parseFundingRef, str } from './map.ts';
 
@@ -91,16 +91,7 @@ export class CrowdedMirror implements MirrorPort {
   private async checking(chapterRef: string): Promise<string> {
     const have = this.checkingIds.get(chapterRef);
     if (have) return have;
-    const id = await this.read(async () => {
-      let open: string | undefined;
-      for await (const a of this.c.list(`/chapters/${chapterRef}/accounts`)) {
-        if (isRecord(a) && low(a['product']) === 'checking' && low(a['status']) === 'open') {
-          open = str(a['id']);
-          break;
-        }
-      }
-      return open;
-    }, true);
+    const id = await this.read(() => checkingAccountId(this.c, chapterRef), true);
     if (!id) throw new MirrorError('NOT_FOUND', 'The chapter has no open checking account');
     this.checkingIds.set(chapterRef, id);
     return id;

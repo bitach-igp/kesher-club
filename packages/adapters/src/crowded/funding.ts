@@ -35,7 +35,8 @@
 // line: the payer's address, an url, the token. Messages are fixed text; Crowded's own are not passed on.
 import { createHmac } from 'node:crypto';
 import { money, type Money } from '@kesher/domain';
-import { addBusinessDays, assertHttps, FundingError, isPublicIp, type FundingErrorCode, type FundingMethod, type FundingPort, type Load, type LoadStatus } from '@kesher/ports';
+import { addBusinessDays, assertHttps, FundingError, isPublicIp, type FundingCreditPort, type FundingErrorCode, type FundingMethod, type FundingPort, type Load, type LoadStatus, type MirrorPort } from '@kesher/ports';
+import { creditWallet, type CreditLoadView } from './credit.ts';
 import { CrowdedApiError, type CrowdedClient } from './client.ts';
 import { guardLedger, InMemoryKeyLedger, type KeyLedger } from './institution-banking.ts';
 import { fromCents, isRecord, parseFundingRef, parseRef, ref, str, toCents } from './map.ts';
@@ -57,6 +58,13 @@ export interface CrowdedFundingOptions {
   /** How long a payment page is offered, in milliseconds, stamped as `action.expiresAt` at creation. Left out when not set. */
   pageTtlMs?: number;
   now?: () => Date;
+  /**
+   * The wallet credit (T-0741, FundingCreditPort). Given, `creditWallet` exists, books through `mirror` (no second book client) and
+   * `fundHolding` picks the mode (true: release-funds then the book payment; false: the book payment only). There is NO default for
+   * `fundHolding`: whether Crowded holds our collected funds is README question 29, unanswered, and the credit is fake-only until it is.
+   * Left out, the adapter is not a FundingCreditPort and every other caller is unchanged.
+   */
+  credit?: { mirror: MirrorPort; fundHolding: boolean };
 }
 
 /** What a hosted load carries beyond the port's `Load`: the payment's own ref and the processing fee, once a payment exists. */
@@ -128,6 +136,10 @@ export class CrowdedFunding implements FundingPort {
   /** Calls in this process that are making a load, by key, so two at once make one collection. */
   private readonly inFlight = new Map<string, { mac: string; load: Promise<CrowdedLoad> }>();
 
+  /** Present only when the `credit` option was given (see `isFundingCreditPort`). */
+  readonly creditWallet?: FundingCreditPort['creditWallet'];
+  private readonly creditLocks = new Map<string, Promise<unknown>>();
+
   constructor(opts: CrowdedFundingOptions) {
     if (typeof opts.hmacKey !== 'string' || opts.hmacKey.length < 32) throw new Error('CrowdedFunding needs an hmacKey of at least 32 characters');
     if (typeof opts.chapterId !== 'string' || !ID.test(opts.chapterId)) throw new Error('CrowdedFunding needs the platform chapterId');
@@ -145,6 +157,23 @@ export class CrowdedFunding implements FundingPort {
     this.contactOf = opts.contactOf ?? (async (customerId) => customerId);
     this.ttl = opts.pageTtlMs;
     this.now = opts.now ?? (() => new Date());
+    if (opts.credit !== undefined) {
+      if (typeof opts.credit.fundHolding !== 'boolean' || typeof opts.credit.mirror?.bookBatch !== 'function') throw new Error('CrowdedFunding credit needs a mirror and fundHolding (true or false, no default)');
+      const deps = { client: this.c, chapterId: this.chapterId, mirror: opts.credit.mirror, fundHolding: opts.credit.fundHolding, loadPayment: (id: string) => this.creditView(id), ledger: this.ledger, locks: this.creditLocks };
+      this.creditWallet = (input, key) => creditWallet(deps, input, key);
+    }
+  }
+
+  /** What the credit needs of a load: its stable reference, status and amount, and the payment that stands for it (id and creation time). */
+  private async creditView(loadId: string): Promise<CreditLoadView> {
+    const known = await this.resolve(loadId);
+    const r = await this.call(() => this.c.get(this.path(`collections/${known.record.collectionId}/intents/${known.record.intentId}`)), { missing: 'UNKNOWN_LOAD' });
+    const load = await this.call(() => this.toLoad(loadId, known.record, r.data));
+    const paymentId = load.metadata ? parseRef(load.metadata.paymentLoadId, 3)[2] : undefined;
+    const raw = isRecord(r.data) && Array.isArray(r.data['payments']) ? r.data['payments'] : [];
+    const payments = await this.call(async () => raw.map((x) => this.payment(x)));
+    const p = paymentId === undefined ? undefined : payments.find((x) => x.id === paymentId);
+    return { loadRef: ref('crowded', this.chapterId, known.record.intentId), status: load.status, amount: load.amount, ...(p ? { paymentId: p.id, paymentAt: p.at } : {}) };
   }
 
   // ---- plumbing -----------------------------------------------------------------------------------------------

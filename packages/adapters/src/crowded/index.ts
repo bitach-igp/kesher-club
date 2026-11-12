@@ -7,4 +7,5 @@ export { ref as crowdedRef } from './map.ts';
 export { CrowdedMemberAccounts, type CrowdedMemberAccountsOptions, type CrowdedFundingTransaction } from './member-accounts.ts';
 export { CrowdedFunding, type CrowdedFundingOptions, type CrowdedLoad, type CrowdedLoadMetadata } from './funding.ts';
 export { CrowdedMirror, type CrowdedMirrorOptions } from './mirror.ts';
-export { bookWireKey } from './book.ts';
+export { bookWireKey, checkingAccountId } from './book.ts';
+export { creditWallet, type CreditDeps, type CreditLoadView } from './credit.ts';
