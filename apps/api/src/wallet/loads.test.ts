@@ -759,12 +759,48 @@ describe('applyVendorLoad: re-read the load, then move its transfer (T-0703)', (
     expect(meta.loadId).toBe('v:intent-1');
   });
 
-  it('a credited load the vendor now says failed is left alone (a return after release is T-0705)', async () => {
-    const t = await newTransfer('avl-late-0001', 'v:intent-2');
-    const ok = svcOver(async () => vendor({ loadId: 'v:intent-2', status: 'succeeded' }));
-    await ok.applyVendorLoad('v:intent-2', NOW);
-    const late = svcOver(async () => vendor({ loadId: 'v:intent-2', status: 'failed', failureCode: 'RETURNED' }));
-    expect(await late.applyVendorLoad('v:intent-2', NOW)).toMatchObject({ id: t.id, state: 'settled' });
+  describe('a return after release opens a case and moves nothing (T-0742, TST-WAL-003)', () => {
+    const returnedCases = async (transferId: string) => (await db.query<{ kind: string; severity: string; status: string; payload: Record<string, unknown> }>(`select kind, severity, status, payload from ops.case where dedupe_key = $1`, [`load-returned:${transferId}`])).rows;
+    const journalCount = async (transferId: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where transfer_id = $1`, [transferId])).rows[0]!.n;
+    const settledLoad = async (key: string, vendorId: string) => {
+      const t = await newTransfer(key, vendorId);
+      await svcOver(async () => vendor({ loadId: vendorId, status: 'succeeded' })).applyVendorLoad(vendorId, NOW);
+      return { t, party: t.toPartyId };
+    };
+
+    it('a settled load the vendor now reads RETURNED opens ONE high case with ids, amount and code; no journal, no state change, the balance stays; a repeat opens no second', async () => {
+      const { t, party } = await settledLoad('avl-late-0001', 'v:intent-2');
+      const balance = await available(party);
+      const journalsBefore = await journalCount(t.id);
+      expect(balance).toBe(10_000n);
+      const late = svcOver(async () => vendor({ loadId: 'v:intent-2', status: 'failed', failureCode: 'RETURNED' }));
+      expect(await late.applyVendorLoad('v:intent-2', NOW)).toMatchObject({ id: t.id, state: 'settled' });
+      expect(await late.applyVendorLoad('v:intent-2', NOW)).toMatchObject({ id: t.id, state: 'settled' });
+      expect(await returnedCases(t.id)).toEqual([{ kind: 'load_returned_after_release', severity: 'high', status: 'open', payload: expect.objectContaining({ transferId: t.id, loadId: 'v:intent-2', amount: { minor: '10000', currency: 'USD' }, memberPartyId: party, failureCode: 'RETURNED' }) }]);
+      expect(await journalCount(t.id)).toBe(journalsBefore);
+      expect((await app.services.transfers.get(t.id))!.state).toBe('settled');
+      expect(await available(party)).toBe(balance);
+    });
+
+    it('a REFUNDED or CANCELLED read opens the same kind of case with that code; a resolved case is reopened by a later read, the decision kept in the payload', async () => {
+      const { t } = await settledLoad('avl-late-0002', 'v:intent-3');
+      const svc = (code: string) => svcOver(async () => vendor({ loadId: 'v:intent-3', status: 'failed', failureCode: code }));
+      await svc('REFUNDED').applyVendorLoad('v:intent-3', NOW);
+      expect(await returnedCases(t.id)).toMatchObject([{ status: 'open', payload: { failureCode: 'REFUNDED' } }]);
+      await db.query(`update ops.case set status = 'resolved' where dedupe_key = $1`, [`load-returned:${t.id}`]);
+      await svc('CANCELLED').applyVendorLoad('v:intent-3', NOW);
+      expect(await returnedCases(t.id)).toMatchObject([{ status: 'open', payload: { failureCode: 'CANCELLED', reopened: { was: 'resolved' } } }]);
+    });
+
+    it('a return BEFORE release still fails the load and opens no case; a failed read with no failure code is VENDOR_FAILED', async () => {
+      const t = await newTransfer('avl-early-001', 'v:intent-4');
+      const early = svcOver(async () => vendor({ loadId: 'v:intent-4', status: 'failed', failureCode: 'RETURNED' }));
+      expect(await early.applyVendorLoad('v:intent-4', NOW)).toMatchObject({ id: t.id, state: 'failed' });
+      expect(await returnedCases(t.id)).toEqual([]);
+      const { t: t2 } = await settledLoad('avl-late-0003', 'v:intent-5');
+      await svcOver(async () => vendor({ loadId: 'v:intent-5', status: 'failed' })).applyVendorLoad('v:intent-5', NOW);
+      expect(await returnedCases(t2.id)).toMatchObject([{ payload: { failureCode: 'VENDOR_FAILED' } }]);
+    });
   });
 });
 
@@ -1021,5 +1057,163 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
     expect(await journals('card-credit-flap01')).toBe(0);
     for (const x of await t.svc.stale(LATER, 0)) await t.svc.applyVendorLoad((await t.svc.vendorLoadOf(x.id))!, LATER);
     expect(await journals('card-credit-flap01')).toBe(1);
+  });
+
+  describe('the member account is checked again at the credit, and a return before the journal opens a case (T-0742)', () => {
+    const returnedCase = async (key: string) => (await db.query<{ kind: string; severity: string; status: string; payload: Record<string, unknown> }>(`select c.kind, c.severity, c.status, c.payload from ops.case c join ops.transfer t on c.dedupe_key = 'load-returned:' || t.id where t.idempotency_key = $1`, [key])).rows;
+
+    it('a wallet account frozen after the first load is not credited: no credit call, no journal, one ACCOUNT_FROZEN case; once it is open and the case resolved, the retry credits', async () => {
+      const t = await setup();
+      const s = app.services;
+      const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
+      const accounts = new FundingAccountSimulator();
+      const ensured = await accounts.ensureAccount({ partyId: t.party, firstName: 'Test', lastName: 'Member', email: 'gate@example.test', mobile: '+14155552001' }, `funding-account:${t.party}`);
+      if (!('accountRef' in ensured)) throw new Error('no account');
+      await db.query(`update ops.external_ref set external_id = $3 where entity_id = $1 and entity_type = 'funding_account' and provider = $2`, [t.party, provider, ensured.accountRef]);
+      const svc = new LoadService({ db, port: t.sim, credit: t.sim as Required<FundingSimulator>, fundingAccounts: accounts, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
+      accounts.setStatus(ensured.accountRef, 'frozen');
+      const key = 'card-frozen-0001';
+      expect((await svc.request(t.party, t.body, key, NOW)).state).not.toBe('settled');
+      expect(t.spy).not.toHaveBeenCalled();
+      expect(await journals(key)).toBe(0);
+      expect(await caseRows(key)).toMatchObject([{ status: 'open', payload: { reasonCode: 'ACCOUNT_FROZEN', attempt: 1 } }]);
+      accounts.setStatus(ensured.accountRef, 'open');
+      await db.query(`update ops.case set status = 'resolved' where dedupe_key = 'load-credit:' || $1`, [(await s.transfers.byKey(key))!.id]);
+      for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER);
+      expect(t.spy.mock.calls.map((c) => c[1])).toEqual([`${key}:credit:2`]);
+      expect(await journals(key)).toBe(1);
+    });
+
+    it('a return after the vendor credited the wallet but before our journal posted fails the load, reverses the hold only, and opens ONE high case; a repeat opens no second; no case when the vendor never credited', async () => {
+      const t = await setup();
+      const s = app.services;
+      const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
+      let returned = false;
+      let dieOnPost = true;
+      const port: FundingPort = { createLoad: (i, k) => t.sim.createLoad(i, k), getLoad: async (id) => { const l = await t.sim.getLoad(id); return returned ? { ...l, status: 'failed', failureCode: 'RETURNED' } : l; }, refund: (i, k) => t.sim.refund(i, k), getRefund: (id) => t.sim.getRefund(id), parseWebhook: (h, b) => t.sim.parseWebhook(h, b) };
+      const ledger = new Proxy(s.ledger, { get: (target, prop) => (prop === 'post' && dieOnPost ? async () => { dieOnPost = false; throw new Error('crash before the journal'); } : Reflect.get(target, prop, target)) }) as typeof s.ledger;
+      const svc = new LoadService({ db, port, credit: t.sim as Required<FundingSimulator>, ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
+      const key = 'card-credit-return1';
+      await expect(svc.request(t.party, t.body, key, NOW)).rejects.toThrow('crash before the journal');
+      const transfer = (await s.transfers.byKey(key))!;
+      expect(transfer.state).toBe('submitted');
+      expect(t.sim.creditCount((await svc.vendorLoadOf(transfer.id))!)).toBe(1);
+      expect(await journals(key)).toBe(0);
+
+      returned = true;
+      for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER);
+      for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER);
+      expect((await s.transfers.byKey(key))!.state).toBe('failed');
+      expect(await journals(key)).toBe(0);
+      expect(await available(t.party)).toBe(0n);
+      const rows = await returnedCase(key);
+      expect(rows).toEqual([{ kind: 'load_returned_after_release', severity: 'high', status: 'open', payload: expect.objectContaining({ transferId: transfer.id, amount: { minor: '10000', currency: 'USD' }, failureCode: 'RETURNED', reasonCode: 'RETURNED', stage: 'before_journal' }) }]);
+      expect(JSON.stringify(rows[0]!.payload)).not.toMatch(/@|\+\d{8}/);
+    });
+
+    describe('a real credit step writes its outcome, and a later return reads it (T-0742)', () => {
+      const outcomes = async (key: string) => (await db.query<{ external_id: string }>(`select r.external_id from ops.external_ref r join ops.transfer t on r.entity_id = t.id where t.idempotency_key = $1 and r.entity_type like 'funding_credit_done:%' order by r.external_id`, [key])).rows.map((r) => r.external_id);
+      /** The service over a vendor whose reads can be flipped to a return, with an injectable failure of the outcome write. */
+      const build = async () => {
+        const t = await setup();
+        const s = app.services;
+        const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
+        const ctl = { returned: false, dieOnOutcome: false, dieOnPost: false };
+        const port: FundingPort = { createLoad: (i, k) => t.sim.createLoad(i, k), getLoad: async (id) => { const l = await t.sim.getLoad(id); return ctl.returned ? { ...l, status: 'failed', failureCode: 'RETURNED' } : l; }, refund: (i, k) => t.sim.refund(i, k), getRefund: (id) => t.sim.getRefund(id), parseWebhook: (h, b) => t.sim.parseWebhook(h, b) };
+        const flaky = new Proxy(db, { get: (target, prop) => (prop === 'query' ? (async (text: string, params?: readonly unknown[]) => { if (ctl.dieOnOutcome && String(params?.[0]).startsWith('funding_credit_done:')) { ctl.dieOnOutcome = false; throw new Error('outcome write failed'); } return (target.query as (t: string, p?: readonly unknown[]) => Promise<unknown>)(text, params); }) : Reflect.get(target, prop, target)) }) as typeof db;
+        const ledger = new Proxy(s.ledger, { get: (target, prop) => (prop === 'post' && ctl.dieOnPost ? async () => { ctl.dieOnPost = false; throw new Error('crash before the journal'); } : Reflect.get(target, prop, target)) }) as typeof s.ledger;
+        const svc = new LoadService({ db: flaky, port, credit: t.sim as Required<FundingSimulator>, ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
+        const sweep = async () => { for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER); };
+        return { ...t, svc, ctl, sweep, s };
+      };
+
+      it('(a) a refusal that opens no credit case (NOT_SUCCEEDED) writes a :refused outcome; a return then opens NO case', async () => {
+        const t = await build();
+        const key = 'real-refused-0001';
+        t.spy.mockResolvedValueOnce({ status: 'refused', reasonCode: 'NOT_SUCCEEDED' });
+        await t.svc.request(t.party, t.body, key, NOW);
+        expect(await outcomes(key)).toEqual([`${key}:credit:1:refused`]);
+        expect(await caseRows(key)).toEqual([]);
+        t.ctl.returned = true;
+        await t.sweep();
+        expect((await t.s.transfers.byKey(key))!.state).toBe('failed');
+        expect(await returnedCase(key)).toEqual([]);
+      });
+
+      it('(b) a pending credit writes a :pending outcome; a return then opens the case', async () => {
+        const t = await build();
+        const key = 'real-pending-0001';
+        t.sim.pendNext();
+        await t.svc.request(t.party, t.body, key, NOW);
+        expect(await outcomes(key)).toEqual([`${key}:credit:1:pending`]);
+        t.ctl.returned = true;
+        await t.sweep();
+        expect((await t.s.transfers.byKey(key))!.state).toBe('failed');
+        expect(await returnedCase(key)).toMatchObject([{ status: 'open', payload: { stage: 'before_journal' } }]);
+        expect(t.spy).toHaveBeenCalledTimes(1);
+      });
+
+      it('(c) the vendor credited and the outcome write failed: a return opens the case (crash window), and a healthy cycle instead replays the SAME key and writes the outcome', async () => {
+        const t = await build();
+        const key = 'real-window-0001';
+        t.ctl.dieOnOutcome = true;
+        await expect(t.svc.request(t.party, t.body, key, NOW)).rejects.toThrow('outcome write failed');
+        expect(await outcomes(key)).toEqual([]);
+        expect((await t.s.transfers.byKey(key))!.state).toBe('submitted');
+        expect(t.sim.creditCount((await t.svc.vendorLoadOf((await t.s.transfers.byKey(key))!.id))!)).toBe(1);
+        // A healthy next cycle: the same key, the outcome written, the one journal.
+        await t.sweep();
+        expect(t.spy.mock.calls.map((c) => c[1])).toEqual([`${key}:credit:1`, `${key}:credit:1`]);
+        expect(await outcomes(key)).toEqual([`${key}:credit:1:credited`]);
+        expect(await journals(key)).toBe(1);
+
+        // And the other order: the window, then the return.
+        const u = await build();
+        const key2 = 'real-window-0002';
+        u.ctl.dieOnOutcome = true;
+        await expect(u.svc.request(u.party, u.body, key2, NOW)).rejects.toThrow('outcome write failed');
+        u.ctl.returned = true;
+        await u.sweep();
+        expect((await u.s.transfers.byKey(key2))!.state).toBe('failed');
+        expect(await returnedCase(key2)).toMatchObject([{ status: 'open', payload: { stage: 'before_journal' } }]);
+        expect(u.spy).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('fail() reads only our own credit records and never calls the vendor credit', () => {
+      /** A returned ACH read over a transfer whose credit records we script: `markers` are the rows the credit step leaves. */
+      const returnedWith = async (tag: string, markers: { began?: boolean; outcome?: 'credited' | 'pending' | 'refused'; openCase?: boolean }) => {
+        const t = await setup();
+        const s = app.services;
+        const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
+        const port: FundingPort = { createLoad: (i, k) => t.sim.createLoad(i, k), getLoad: async (id) => ({ ...(await t.sim.getLoad(id)), status: 'failed', failureCode: 'RETURNED' }), refund: (i, k) => t.sim.refund(i, k), getRefund: (id) => t.sim.getRefund(id), parseWebhook: (h, b) => t.sim.parseWebhook(h, b) };
+        const svc = new LoadService({ db, port, credit: t.sim as Required<FundingSimulator>, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
+        const key = `ret-${tag}-0001`;
+        const ach = await t.sim.createLoad({ customerId: t.party, method: 'ach', amount: money(10_000n, 'USD'), paymentMethodId: 'pm_ok' }, key);
+        const tr = await svc.submit(await svc.begin({ payerPartyId: t.party, memberPartyId: t.party, method: 'ach', amount: money(10_000n, 'USD') }, key, NOW), NOW);
+        await svc.link(tr, ach);
+        const row = (type: string, ext: string) => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4)`, [type, tr.id, provider, ext]);
+        if (markers.began) await row('funding_credit:1', `${key}:credit:1`);
+        if (markers.outcome) await row('funding_credit_done:1', `${key}:credit:1:${markers.outcome}`);
+        if (markers.openCase) await db.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_credit_refused', $2, 'high', 'open', '{"attempt":1}', $3)`, [uuidv7(NOW), `load-credit:${tr.id}`, NOW]);
+        t.spy.mockClear();
+        const moved = await svc.applyVendorLoad(ach.loadId, LATER);
+        return { t, key, state: moved?.state, cases: (await returnedCase(key)).length, calls: t.spy.mock.calls.length };
+      };
+
+      it.each([
+        ['no marker', {}, 0],
+        ['a refused outcome', { began: true, outcome: 'refused' }, 0],
+        ['an open credit case', { began: true, outcome: 'credited', openCase: true }, 0],
+        ['a credited outcome', { began: true, outcome: 'credited' }, 1],
+        ['a pending outcome', { began: true, outcome: 'pending' }, 1],
+        ['a crash between the call and its outcome (marker, no outcome)', { began: true }, 1],
+      ] as const)('%s: the load fails, the vendor credit is never called, %i case(s)', async (name, markers, cases) => {
+        const r = await returnedWith(name.replace(/\W+/g, '').slice(0, 12), markers as never);
+        expect(r.state).toBe('failed');
+        expect(r.calls).toBe(0);
+        expect(r.cases).toBe(cases);
+      });
+    });
   });
 });
