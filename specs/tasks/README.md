@@ -364,4 +364,5 @@
 | [T-0741](T-0741.md) | WAL | The Crowded funding adapter implements FundingCreditPort: release-funds when fund holding is on, then one book payment to the member's wallet account | REQ-WAL-003 | later (built, PR open; fake-only until README q29 and q35 are answered) |
 | [T-0742](T-0742.md) | WAL | A return after release opens a case instead of being dropped, and leaves the wallet alone | REQ-WAL-003 | later |
 | [T-0743](T-0743.md) | WAL | End-to-end self top-up against the Crowded fake: hosted load, payment event, credit, ACH hold and release, returns | REQ-WAL-002, REQ-WAL-003 | later |
+| [T-0744](T-0744.md) | INS | Make the roster-import console test robust under CI load (5000ms timeout on one case) | REQ-INS-001 | later |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
