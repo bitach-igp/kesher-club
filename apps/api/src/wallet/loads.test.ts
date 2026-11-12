@@ -724,3 +724,46 @@ describe('a returned ACH debit through the real Stripe adapter (T-0539, F05)', (
   });
 });
 
+
+describe('applyVendorLoad: re-read the load, then move its transfer (T-0703)', () => {
+  const svcOver = (getLoad: FundingPort['getLoad']) => {
+    const s = app.services;
+    return new LoadService({ db, port: { getLoad } as unknown as FundingPort, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider: 'scripted' });
+  };
+  const vendor = (over: Partial<VendorLoad> & { metadata?: unknown }): VendorLoad => ({ loadId: 'v:1', method: 'hosted', status: 'processing', amount: money(10_000n, 'USD'), ...over }) as VendorLoad;
+  const newTransfer = async (key: string, vendorId: string) => {
+    const party = uuidv7(NOW);
+    await app.services.accounts.provisionMember(party);
+    const svc = svcOver(async () => vendor({}));
+    const t = await svc.submit(await svc.begin({ payerPartyId: party, memberPartyId: party, method: 'hosted', amount: money(10_000n, 'USD') }, key, NOW), NOW);
+    await svc.link(t, vendor({ loadId: vendorId }));
+    return t;
+  };
+
+  it('a load the vendor does not know, or no transfer owns, is ignored', async () => {
+    const unknown = svcOver(async () => Promise.reject(new FundingError('UNKNOWN_LOAD', 'Unknown load')));
+    expect(await unknown.applyVendorLoad('v:none', NOW)).toBeUndefined();
+    const unowned = svcOver(async () => vendor({ loadId: 'v:nobody', status: 'succeeded' }));
+    expect(await unowned.applyVendorLoad('v:nobody', NOW)).toBeUndefined();
+    await expect(svcOver(async () => Promise.reject(new FundingError('PROVIDER_UNAVAILABLE', 'down'))).applyVendorLoad('v:x', NOW)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+  });
+
+  it('a load asked for by one of its payments is found through the id the transfer is linked under, and is settled once, whatever the repeat', async () => {
+    const t = await newTransfer('avl-alias-0001', 'v:intent-1');
+    const svc = svcOver(async () => vendor({ loadId: 'v:payment-1', status: 'succeeded', metadata: { intentLoadId: 'v:intent-1' } }));
+    expect(await svc.applyVendorLoad('v:payment-1', NOW)).toMatchObject({ id: t.id, state: 'settled' });
+    expect(await svc.applyVendorLoad('v:payment-1', NOW)).toMatchObject({ id: t.id, state: 'settled' });
+    expect(await journals('avl-alias-0001')).toBe(1);
+    // The journal names the id the transfer is linked under, not the payment's.
+    const meta = (await db.query<{ metadata: { loadId: string } }>(`select metadata from ledger.journal where idempotency_key = $1`, [settleKey('avl-alias-0001')])).rows[0]!.metadata;
+    expect(meta.loadId).toBe('v:intent-1');
+  });
+
+  it('a credited load the vendor now says failed is left alone (a return after release is T-0705)', async () => {
+    const t = await newTransfer('avl-late-0001', 'v:intent-2');
+    const ok = svcOver(async () => vendor({ loadId: 'v:intent-2', status: 'succeeded' }));
+    await ok.applyVendorLoad('v:intent-2', NOW);
+    const late = svcOver(async () => vendor({ loadId: 'v:intent-2', status: 'failed', failureCode: 'RETURNED' }));
+    expect(await late.applyVendorLoad('v:intent-2', NOW)).toMatchObject({ id: t.id, state: 'settled' });
+  });
+});

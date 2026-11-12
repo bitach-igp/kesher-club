@@ -376,6 +376,32 @@ export class LoadService implements LoadActivities {
     const load: VendorLoad = { ...p.load, amount: fromWire(p.load.amount) };
     const transfer = await this.byVendorLoad(load.loadId);
     if (!transfer) return undefined;
+    return this.applyToTransfer(transfer, load, now);
+  }
+
+  /**
+   * A vendor that reports in batches (Crowded, T-0703): re-reads the load by its id through the port, finds the transfer it belongs to
+   * and moves it to where the vendor says the load stands now. The event that led here decides nothing, so a repeat, or two events in
+   * either order, change nothing more. A load no transfer owns, or one the vendor does not know, is ignored. A load the vendor now
+   * says failed after it was credited is not touched here (a return after release is a case for people, T-0705).
+   */
+  async applyVendorLoad(loadId: string, now: Date): Promise<Transfer | undefined> {
+    let vendor: VendorLoad;
+    try {
+      vendor = await this.d.port.getLoad(loadId);
+    } catch (e) {
+      if (e instanceof FundingError && e.code === 'UNKNOWN_LOAD') return undefined;
+      throw e;
+    }
+    // The load may be named by one of its payments; the transfer is linked under the id the load was made under.
+    const linked = (vendor as { metadata?: { intentLoadId?: unknown } }).metadata?.intentLoadId;
+    const transfer = (await this.byVendorLoad(vendor.loadId)) ?? (typeof linked === 'string' ? await this.byVendorLoad(linked) : undefined);
+    if (!transfer) return undefined;
+    if (transfer.state === 'settled' && vendor.status === 'failed') return transfer;
+    return this.applyToTransfer(transfer, { ...vendor, loadId: (await this.vendorLoadOf(transfer.id)) ?? vendor.loadId }, now);
+  }
+
+  private async applyToTransfer(transfer: Transfer, load: VendorLoad, now: Date): Promise<Transfer> {
     if (load.amount.minor !== transfer.amount.minor || load.amount.currency !== transfer.amount.currency) throw new DomainError('VALIDATION_FAILED', 'Webhook amount differs from the transfer');
     if (transfer.state === 'failed' || transfer.state === 'cancelled' || transfer.state === 'reversed') return transfer;
     return (await applyVendorState(this, transfer, load, transfer.idempotencyKey, now)).transfer;

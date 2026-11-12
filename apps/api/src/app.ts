@@ -132,6 +132,8 @@ export interface AppOptions {
   refuseFlagsOnSimulators?: boolean;
   /** What the US-banking cards do with the provider's current state after a Crowded event (T-0650, T-0652, T-0653). */
   crowdedHandlers?: CrowdedHandlers;
+  /** The platform member chapter at Crowded: its `collect.payment.*` events move hosted loads (T-0703; the registry and config wiring is T-0709). */
+  crowdedMemberChapterId?: string;
   /** The platform company's provider entity for institutions that bank under it (T-0650), set up and approved by ops. */
   usBankingPlatformEntityRef?: string;
   /** The provider's saved counterparty for Kesher's US collection account, for an institution's ACH funding (T-0653); set up by ops. */
@@ -201,8 +203,13 @@ function buildServices(o: AppOptions) {
   // Crowded sends batches signed over the raw bytes: its own route stores them; the router only replays the unprocessed ones.
   // An application event is re-read through the port and its current status reaches the US-banking link (T-0650).
   const usCollections = new UsCollections({ db: o.db, flags, audit, kyb: kybGate, registry: o.registry, usBanking });
-  const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), handlers: {
+  const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), ...(o.crowdedMemberChapterId ? { memberChapterId: o.crowdedMemberChapterId } : {}), handlers: {
       ...o.crowdedHandlers,
+      // A hosted load's payment: the funding port is re-read and the transfer it belongs to moves (T-0703).
+      funding: async (chapter, paymentRef, intentRef) => {
+        await loads.applyVendorLoad(intentRef ?? paymentRef, clock.now());
+        await o.crowdedHandlers?.funding?.(chapter, paymentRef, intentRef);
+      },
       application: async (ref, status) => {
         await usBanking.onProviderApplication(ref, status, clock.now());
         await o.crowdedHandlers?.application?.(ref, status);

@@ -22,12 +22,12 @@ const BASE = 'https://sandbox.fake.invalid/api/v1';
 const MAC_KEY = 'test-only-mac-key-not-a-secret-0123456789';
 const IP = '203.0.113.7';
 
-function harness(over: { ledger?: KeyLedger; fake?: FakeCrowded; chapterId?: string; clock?: { t: Date }; opts?: Partial<CrowdedFundingOptions> } = {}) {
+function harness(over: { ledger?: KeyLedger; fake?: FakeCrowded; chapterId?: string; clock?: { t: Date }; opts?: Partial<CrowdedFundingOptions>; wrap?: (f: typeof globalThis.fetch) => typeof globalThis.fetch } = {}) {
   const clock = over.clock ?? { t: new Date('2026-11-03T09:00:00Z') };
   const fake = over.fake ?? new FakeCrowded({ token: TOKEN, pageSize: 2, now: () => clock.t });
   const chapterId = over.chapterId ?? fake.seedChapter();
   const ledger = over.ledger ?? new InMemoryKeyLedger();
-  const client = new CrowdedClient({ baseUrl: BASE, token: TOKEN, fetch: fake.fetch });
+  const client = new CrowdedClient({ baseUrl: BASE, token: TOKEN, fetch: over.wrap ? over.wrap(fake.fetch) : fake.fetch });
   const members = new CrowdedMemberAccounts({ client, chapterId, hmacKey: MAC_KEY, ledger: new InMemoryKeyLedger(), now: () => clock.t });
   const mobiles = new Map<string, string>();
   const mobileOf = (customerId: string): string => {
@@ -118,7 +118,7 @@ describe('CrowdedFunding hosted loads (T-0700, TST-WAL-002, TST-WAL-003)', () =>
     const h = harness();
     await start(h);
     const before = collectionCalls(h).length;
-    for (const input of [{ ...{ customerId: 'c1', method: 'hosted' as const, amount: money(10_001n, 'USD'), hosted } }, { customerId: 'c2', method: 'hosted' as const, amount, hosted }, { customerId: 'c1', method: 'hosted' as const, amount, hosted: { ...hosted, payerIp: '198.51.100.9' } }]) {
+    for (const input of [{ ...{ customerId: 'c1', method: 'hosted' as const, amount: money(10_001n, 'USD'), hosted } }, { customerId: 'c2', method: 'hosted' as const, amount, hosted }, { customerId: 'c1', method: 'hosted' as const, amount, hosted: { ...hosted, successUrl: 'https://app.example/other' } }]) {
       expect(await attempt(h.adapter.createLoad(input, 'load-key-0001'))).toMatchObject({ code: 'VALIDATION_FAILED' });
     }
     expect(collectionCalls(h).length).toBe(before);
@@ -299,12 +299,12 @@ describe('CrowdedFunding hosted loads (T-0700, TST-WAL-002, TST-WAL-003)', () =>
       expect(h.fake.calls.length).toBe(0);
     });
 
-    it('refuses every method but hosted as UNSUPPORTED_METHOD, and refunds and webhooks until their cards', async () => {
+    it('refuses every method but hosted and refunds as UNSUPPORTED_METHOD, and every webhook as BAD_SIGNATURE', async () => {
       const h = harness();
       expect(await attempt(h.adapter.createLoad({ customerId: 'c1', method: 'card', amount, paymentMethodId: 'pm' }, 'load-key-card'))).toMatchObject({ code: 'UNSUPPORTED_METHOD' });
       expect(await attempt(h.adapter.refund({ loadId: 'crowded:x:y', amount }, 'refund-key-1'))).toMatchObject({ code: 'UNSUPPORTED_METHOD' });
       expect(await attempt(h.adapter.getRefund('r'))).toMatchObject({ code: 'UNSUPPORTED_METHOD' });
-      expect(await attempt(h.adapter.parseWebhook({}, '{}'))).toMatchObject({ code: 'UNSUPPORTED_METHOD' });
+      expect(await attempt(h.adapter.parseWebhook({}, '{}'))).toMatchObject({ code: 'BAD_SIGNATURE' });
       expect(h.fake.calls.length).toBe(0);
     });
 
@@ -463,7 +463,7 @@ describe('CrowdedFunding hosted loads (T-0700, TST-WAL-002, TST-WAL-003)', () =>
         errors.push((await attempt(start(h, 'load-key-e3'))) as Error);
         errors.push((await attempt(h.adapter.getLoad('crowded:x:y'))) as Error);
         await start(h, 'load-key-e4');
-        errors.push((await attempt(start(h, 'load-key-e4', { payerIp: '198.51.100.99' }))) as Error); // key reused
+        errors.push((await attempt(start(h, 'load-key-e4', { successUrl: 'https://app.example/198.51.100.99' }))) as Error); // key reused
         for (const e of errors) {
           expect(e).toBeInstanceOf(FundingError);
           const text = `${e.message} ${e.stack ?? ''} ${JSON.stringify(e)} ${String(e)}`;
@@ -473,6 +473,94 @@ describe('CrowdedFunding hosted loads (T-0700, TST-WAL-002, TST-WAL-003)', () =>
       } finally {
         for (const s of spies) s.mockRestore();
       }
+    });
+  });
+
+  describe('payments seen on an intent, the first-seen hold instant, ledger failures, the payer address (T-0703)', () => {
+    it('every payment seen on an intent names its load, not only the standing one', async () => {
+      const h = harness();
+      const l = await start(h);
+      const first = h.fake.payIntent(ref(h, l), 'ach');
+      h.fake.fail(first);
+      const second = h.fake.payIntent(ref(h, l), 'card');
+      const r = await h.adapter.getLoad(l.loadId);
+      expect(r).toMatchObject({ status: 'succeeded', metadata: { paymentLoadId: `crowded:${h.chapterId}:${second}` } });
+      // The failed first payment, which is not the standing one, still resolves to the same load, and to its state.
+      const viaFirst = await h.adapter.getLoad(`crowded:${h.chapterId}:${first}`);
+      expect(viaFirst).toMatchObject({ loadId: `crowded:${h.chapterId}:${first}`, status: 'succeeded' });
+      expect(viaFirst.metadata).toMatchObject({ intentLoadId: l.loadId });
+      expect(await h.adapter.getLoad(`crowded:${h.chapterId}:${second}`)).toMatchObject({ status: 'succeeded' });
+    });
+
+    it('a payment never seen on a read of its intent is UNKNOWN_LOAD with no request', async () => {
+      const h = harness();
+      const l = await start(h);
+      const p = h.fake.payIntent(ref(h, l), 'ach');
+      const before = h.fake.calls.length;
+      expect(await attempt(h.adapter.getLoad(`crowded:${h.chapterId}:${p}`))).toMatchObject({ code: 'UNKNOWN_LOAD' });
+      expect(h.fake.calls.length).toBe(before);
+    });
+
+    it('holdUntil is fixed at the first read that sees the success: a later change of the payment\'s updatedAt does not move it', async () => {
+      let drift = 0;
+      const wrap = (f: typeof globalThis.fetch): typeof globalThis.fetch => async (input, init) => {
+        const res = await f(input, init);
+        if (drift === 0 || !String(input).includes('/intents/')) return res;
+        const body = (await res.json()) as { data?: { payments?: { updatedAt: string }[] } };
+        for (const p of body.data?.payments ?? []) p.updatedAt = new Date(new Date(p.updatedAt).getTime() + drift).toISOString();
+        return new Response(JSON.stringify(body), { status: res.status, headers: { 'content-type': 'application/json' } });
+      };
+      const h = harness({ clock: { t: new Date('2026-11-05T09:30:00Z') }, wrap });
+      const l = await start(h);
+      h.fake.settle(h.fake.payIntent(ref(h, l), 'ach'));
+      const first = await h.adapter.getLoad(l.loadId);
+      expect(first.holdUntil).toBe('2026-11-10T09:30:00.000Z');
+      drift = 3 * 86_400_000;
+      h.clock.t = new Date(h.clock.t.getTime() + drift);
+      const later = await h.adapter.getLoad(l.loadId);
+      expect(later.holdUntil).toBe(first.holdUntil);
+      // A second adapter on the same ledger agrees.
+      const other = harness({ fake: h.fake, chapterId: h.chapterId, ledger: h.ledger, clock: h.clock, wrap });
+      expect((await other.adapter.getLoad(l.loadId)).holdUntil).toBe(first.holdUntil);
+    });
+
+    it('a ledger that cannot be read or written is PROVIDER_UNAVAILABLE, with fixed text', async () => {
+      for (const broken of ['get', 'put'] as const) {
+        const inner = new InMemoryKeyLedger();
+        let armed = false;
+        const ledger: KeyLedger = {
+          get: async (k) => (armed && broken === 'get' ? Promise.reject(new Error('db down postgres://secret@host/x')) : inner.get(k)),
+          put: async (k, v) => (armed && broken === 'put' ? Promise.reject(new Error('db down postgres://secret@host/x')) : inner.put(k, v)),
+        };
+        const h = harness({ ledger });
+        const l = await start(h);
+        h.fake.settle(h.fake.payIntent(ref(h, l), 'ach'));
+        armed = true;
+        for (const op of [() => start(h, 'load-key-0002'), () => h.adapter.getLoad(l.loadId)]) {
+          const e = await attempt(op());
+          expect(e, broken).toBeInstanceOf(FundingError);
+          expect(e, broken).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+          expect((e as Error).message).not.toContain('postgres');
+        }
+      }
+    });
+
+    it('a retry of one key from another payer address is the same load (the address is a connection attribute, not input); a non-public one is still refused', async () => {
+      const h = harness();
+      const a = await start(h);
+      const calls = h.fake.calls.length;
+      const b = await start(h, 'load-key-0001', { payerIp: '198.51.100.9' });
+      expect(b).toEqual(a);
+      expect(h.fake.count('intents')).toBe(1);
+      expect(h.fake.calls.length).toBe(calls + 1); // the one read of the intent
+      expect(await attempt(start(h, 'load-key-0001', { payerIp: '10.0.0.1' }))).toMatchObject({ code: 'VALIDATION_FAILED' });
+    });
+
+    it('parseWebhook is BAD_SIGNATURE even for a validly signed Crowded batch, and sends nothing', async () => {
+      const h = harness();
+      const signed = h.fake.webhook([{ eventType: 'collect.payment.succeeded', data: { paymentId: 'p1' }, chapterId: h.chapterId }]);
+      expect(await attempt(h.adapter.parseWebhook(signed.headers, signed.rawBody))).toMatchObject({ code: 'BAD_SIGNATURE' });
+      expect(h.fake.calls.length).toBe(0);
     });
   });
 

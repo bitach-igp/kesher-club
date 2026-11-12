@@ -1,7 +1,7 @@
 // Crowded webhook receiver (T-0649, REQ-INS-025): POST /webhooks/crowded (also /v1/webhooks/crowded), behind
 // institutions.usBanking. Crowded sends events in batches, signed over the raw bytes, at least once and in any order.
 //
-//   flag off                -> 404 FEATURE_OFF, nothing read or stored
+//   flags off               -> 404 FEATURE_OFF, nothing read or stored (the route is open when institutions.usBanking OR wallet.enabled is on)
 //   signature not valid     -> 401, one row in ops.inbound_rejected (a hash, never the body); claims no event id
 //   signature valid         -> every event in the batch is stored in ops.inbound_event as (crowded, eventId); a repeat is a
 //                              no-op; the answer is 200 straight away. Nothing is re-read here: the worker's webhook-replay
@@ -22,6 +22,8 @@ import type { WebhookVerifier } from './verify.ts';
 
 export const CROWDED_PROVIDER = 'crowded';
 export const CROWDED_FLAG = 'institutions.usBanking';
+/** A member-chapter payment event is a wallet load (T-0703); the route is open for it when this flag is on. */
+export const CROWDED_WALLET_FLAG = 'wallet.enabled';
 /** More events than this in one delivery is refused whole (nothing stored). */
 export const MAX_BATCH = 500;
 
@@ -33,6 +35,12 @@ export interface CrowdedHandlers {
   ach?(paymentRef: string, status: AchStatus): Promise<void>;
   /** A collection, payment, intent or refund event: this entity's collected payments changed, so read them with `collectPayments`. */
   collected?(entityRef: string): Promise<void>;
+  /**
+   * A `collect.payment.*` event of the platform member chapter (T-0703): a hosted load's payment. `paymentRef` is
+   * `crowded:<chapter>:<payment>`; `intentRef` is the same for the intent when the event names one. The handler re-reads the load
+   * through the funding port and moves the transfer; it never takes a status from the event.
+   */
+  funding?(chapterId: string, paymentRef: string, intentRef?: string): Promise<void>;
 }
 
 export interface CrowdedWebhookDeps {
@@ -43,6 +51,8 @@ export interface CrowdedWebhookDeps {
   /** Resolved when an event is processed, so an API without the capability still boots. */
   port: () => InstitutionBankingPort;
   handlers?: CrowdedHandlers;
+  /** The platform member chapter at Crowded, where hosted loads are collected (injected by T-0709). None: every payment event is an institution one. */
+  memberChapterId?: string;
 }
 
 /** The generic `/hooks/crowded` route must never accept a Crowded delivery: this verifier refuses everything. */
@@ -59,7 +69,7 @@ export class CrowdedWebhook {
 
   handler(): Handler {
     return route(async (req: HttpRequest) => {
-      if (!(await this.d.flags.isOn(CROWDED_FLAG))) throw new DomainError('FEATURE_OFF', 'US banking is not available');
+      if (!(await this.d.flags.isOn(CROWDED_FLAG)) && !(await this.d.flags.isOn(CROWDED_WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'US banking is not available');
       // The bytes as received are what is signed (the server keeps them; a caller with only the string gets its UTF-8). A
       // re-serialised body is not them, so there is no fallback to req.body. Nothing is parsed until the signature holds.
       const bytes = req.rawBytes ?? (typeof req.rawBody === 'string' ? Buffer.from(req.rawBody, 'utf8') : undefined);
@@ -89,6 +99,19 @@ export class CrowdedWebhook {
     const chapter = idOf(ctx['chapterId']) ?? idOf(data['chapterId']);
     if (!chapter) return; // nothing to re-read: stored, and that is all
     const h = this.d.handlers ?? {};
+    // A hosted load's payment: the platform member chapter's `collect.payment.*` events belong to the wallet, never to the institution path.
+    if (this.d.memberChapterId !== undefined && chapter === this.d.memberChapterId && /^collect\./.test(type)) {
+      if (!/^collect\.payment\./.test(type)) return; // collections, intents and refunds of the member chapter: stored and ignored
+      // Flag off: this throws, the row stays unprocessed and the replay job applies it once the wallet is on.
+      if (!(await this.d.flags.isOn(CROWDED_WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
+      const payment = idOf(data['paymentId']) ?? idOf(data['id']);
+      const intent = idOf(data['intentId']);
+      if (payment && h.funding) await h.funding(chapter, crowdedRef('crowded', chapter, payment), intent ? crowdedRef('crowded', chapter, intent) : undefined);
+      return;
+    }
+    // Everything else is the institution path. With only the wallet flag on, such an event is kept unprocessed until US banking is.
+    const institution = /^(finance\.application\.|finance\.ach_payment\.|collect\.(payment|collection|intent|refund)\.)/.test(type);
+    if (institution && !(await this.d.flags.isOn(CROWDED_FLAG))) throw new DomainError('FEATURE_OFF', 'US banking is not available');
     if (type.startsWith('finance.application.')) {
       if (h.application) await h.application(chapter, await this.d.port().applicationStatus(chapter));
     } else if (type.startsWith('finance.ach_payment.')) {
