@@ -252,6 +252,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CROWDED_SANDBOX_TOKEN: ${{ secrets.CROWDED_SANDBOX_TOKEN }}
       CROWDED_BASE_URL: ${{ secrets.CROWDED_BASE_URL }}
+      CROWDED_SANDBOX_CHAPTER_ID: ${{ secrets.CROWDED_SANDBOX_CHAPTER_ID }}
     steps:
       - id: gate
         name: Check the secrets
@@ -277,7 +278,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - if: steps.gate.outputs.run == 'true'
         name: Run the crowded sandbox suite
-        run: pnpm --filter @kesher/adapters exec vitest run src/crowded/sandbox.test.ts 
+        run: pnpm --filter @kesher/adapters exec vitest run src/crowded/sandbox.test.ts src/sandbox.contract.test.ts -t Crowded
       - if: failure()
         name: Open or update the issue
         env:

@@ -27,7 +27,7 @@ read. "Required" means the job skips unless all of them are set.
 | `twilio` | `SANDBOX_TWILIO_ACCOUNT_SID`, `SANDBOX_TWILIO_AUTH_TOKEN`, `SANDBOX_TWILIO_FROM`, `SANDBOX_TWILIO_TO` | | `NotifyPort contract: twilio sandbox` |
 | `postmark` | `SANDBOX_POSTMARK_SERVER_TOKEN`, `SANDBOX_POSTMARK_FROM`, `SANDBOX_POSTMARK_ALIAS`, `SANDBOX_POSTMARK_TO` | | `NotifyPort contract: postmark sandbox` |
 | `expo` | `SANDBOX_EXPO_PUSH_TOKEN` | `SANDBOX_EXPO_ACCESS_TOKEN` | `NotifyPort contract: expo sandbox` |
-| `crowded` | `CROWDED_SANDBOX_TOKEN` | `CROWDED_BASE_URL` (defaults to the sandbox host) | `packages/adapters/src/crowded/sandbox.test.ts` |
+| `crowded` | `CROWDED_SANDBOX_TOKEN` | `CROWDED_BASE_URL` (defaults to the sandbox host), `CROWDED_SANDBOX_CHAPTER_ID` (the sandbox platform chapter's id; without it the member-accounts block, T-0699, is skipped) | `packages/adapters/src/crowded/sandbox.test.ts` and `Crowded member accounts sandbox` in `packages/adapters/src/sandbox.contract.test.ts` |
 
 The workflow also uses the built-in `GITHUB_TOKEN` (to file issues); it is not something to add.
 
