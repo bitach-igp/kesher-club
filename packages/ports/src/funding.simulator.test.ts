@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { money } from '@kesher/domain';
+import { money, type Money } from '@kesher/domain';
 import { type AdvanceableClock, fixedClock } from './base.ts';
-import { FundingError, isHttpsUrl, isPublicIp } from './funding.ts';
+import { FundingError, isFundingCreditPort, isHttpsUrl, isPublicIp } from './funding.ts';
 import { fundingContract, fundingStatementContract } from './funding.contract.ts';
 import { addBusinessDays, FundingSimulator } from './funding.simulator.ts';
 
@@ -23,6 +23,52 @@ fundingStatementContract('simulator', () => new FundingSimulator(fixedClock()), 
   failListingFrom: (port, after) => {
     (port as FundingSimulator).outageAfterPages = after;
   },
+});
+
+let creditKey = 0;
+const nextKey = (tag: string): string => `K-${++creditKey}-${tag}`;
+const creditLoad = async (sim: FundingSimulator, state: 'succeeded' | 'processing' | 'requires_action' | 'failed' | 'on_hold', amount: Money): Promise<string> => {
+  if (state === 'succeeded') return (await sim.createLoad({ customerId: 'c', method: 'card', amount, paymentMethodId: 'pm_card_ok' }, nextKey('ok'))).loadId;
+  if (state === 'on_hold') return (await sim.createLoad({ customerId: 'c', method: 'ach', amount, paymentMethodId: 'pm_bank_ok' }, nextKey('ach'))).loadId;
+  const l = await sim.createLoad({ customerId: 'c', method: 'hosted', amount, hosted: { payerIp: '203.0.113.7', userConsented: true } }, nextKey('h'));
+  if (state === 'processing') sim.payHosted(l.loadId, 'ach');
+  if (state === 'failed') sim.failHosted(l.loadId, 'DECLINED');
+  return l.loadId;
+};
+
+fundingContract('simulator with credit', () => new FundingSimulator(fixedClock(), { credit: true }), {
+  goodPaymentMethod: 'pm_card_ok',
+  succeededWebhook: async (port, id) => (port as FundingSimulator).webhookFor(id, 'succeeded'),
+  hosted: true,
+  credit: {
+    accountRef: 'acct_member_1',
+    unknownAccountRef: 'acct_unknown',
+    loadIn: (port, state, amount) => creditLoad(port as FundingSimulator, state, amount),
+    creditCount: (port, loadId) => (port as FundingSimulator).creditCount(loadId),
+    failNext: (port, code) => (port as FundingSimulator).failNext(code),
+    pendNext: (port) => (port as FundingSimulator).pendNext(),
+    outageNext: (port) => (port as FundingSimulator).outageNext(),
+  },
+});
+
+describe('FundingSimulator credit capability (T-0704)', () => {
+  it('only a simulator built with { credit: true } has creditWallet', () => {
+    expect(isFundingCreditPort(new FundingSimulator())).toBe(false);
+    expect(isFundingCreditPort(new FundingSimulator(fixedClock()))).toBe(false);
+    expect(isFundingCreditPort(new FundingSimulator(fixedClock(), { credit: true }))).toBe(true);
+    expect(isFundingCreditPort(null)).toBe(false);
+  });
+
+  it('failNext wins over pendNext when both are armed; pendNext then applies to the next credit', async () => {
+    const sim = new FundingSimulator(fixedClock(), { credit: true });
+    const loadId = await creditLoad(sim, 'succeeded', money(10_000n, 'USD'));
+    const req = { loadId, accountRef: 'acct_member_1', amount: money(10_000n, 'USD') };
+    sim.pendNext();
+    sim.failNext('ACCOUNT_UNAVAILABLE');
+    expect(await sim.creditWallet!(req, 'credit-key-1')).toEqual({ status: 'refused', reasonCode: 'ACCOUNT_UNAVAILABLE' });
+    expect(await sim.creditWallet!(req, 'credit-key-2')).toEqual({ status: 'pending' });
+    expect(sim.creditCount(loadId)).toBe(0);
+  });
 });
 
 describe('FundingSimulator hosted load controls (T-0697, TST-WAL-002)', () => {

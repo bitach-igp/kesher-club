@@ -4,11 +4,17 @@
 // failed (REFUND_REFUSED), and "pm_slowrefund" as pending until `settleRefund(refundId)`.
 // `settle(loadId)` (control panel) puts a processing load on hold or clears a hold. A `hosted` load answers
 // requires_action with a payment_page action (https://pay.simulator.invalid/{loadId}); `payHosted(loadId, 'card'|'ach')`
-// and `failHosted(loadId, code)` play the payer.
+// and `failHosted(loadId, code)` play the payer. With `{ credit: true }` it also does the credit step (T-0704):
+// `creditWallet` credits a settled load once; accountRef "acct_unknown" is NOT_FOUND; the controls `failNext`, `pendNext`
+// and `outageNext` shape the next credit; `creditCount(loadId)` shows how many credits a load got. Without the option
+// there is no `creditWallet`, so `isFundingCreditPort` is false.
 import { toWire, fromWire } from '@kesher/domain';
 import type { Money } from '@kesher/domain';
 import { type Clock, fixedClock, IdempotencyStore, Sequence } from './base.ts';
-import { assertHttps, FundingError, isPublicIp, type FundingMethod, type FundingPort, type HostedLoadInput, type FundingStatementPort, type Load, type Refund, type SettledEntry, type SettledPage } from './funding.ts';
+import { assertHttps, FundingError, isPublicIp, type CreditResult, type FundingCreditPort, type FundingMethod, type FundingPort, type HostedLoadInput, type FundingStatementPort, type Load, type Refund, type SettledEntry, type SettledPage } from './funding.ts';
+
+/** Internal signal: a credit answered pending, which the idempotency store must not remember as final. */
+class PendingCredit extends Error {}
 
 const ACH_HOLD_BUSINESS_DAYS = 3;
 /** How long a simulated payment page stays open. */
@@ -26,7 +32,7 @@ export function addBusinessDays(from: Date, days: number): Date {
   return d;
 }
 
-export class FundingSimulator implements FundingPort, FundingStatementPort {
+export class FundingSimulator implements FundingPort, FundingStatementPort, Partial<FundingCreditPort> {
   private readonly loads = new Map<string, Load>();
   private readonly idem = new IdempotencyStore<Load>();
   private readonly events = new Map<string, { eventId: string; load: Load }>();
@@ -44,8 +50,77 @@ export class FundingSimulator implements FundingPort, FundingStatementPort {
   outageAfterPages: number | undefined;
 
   readonly clock: Clock;
-  constructor(clock: Clock = fixedClock()) {
+  /** Set only with `{ credit: true }`; `creditWallet` is removed from the instance otherwise. */
+  declare creditWallet?: (input: { loadId: string; accountRef: string; amount: Money }, idempotencyKey: string) => Promise<CreditResult>;
+  private readonly credits = new Map<string, number>();
+  private readonly creditIdem = new IdempotencyStore<CreditResult>();
+  private readonly pendingKeys = new Set<string>();
+  private nextCreditFailure: string | undefined;
+  private nextCreditPends = false;
+  private nextCreditOutage = false;
+
+  constructor(clock: Clock = fixedClock(), opts: { credit?: boolean } = {}) {
     this.clock = clock;
+    if (opts.credit) this.creditWallet = (input, key) => this.credit(input, key);
+  }
+
+  /** Control-panel hook: the next credit (a call that would move money) is refused with this code, final for its key. */
+  failNext(reasonCode: string): void {
+    this.nextCreditFailure = reasonCode;
+  }
+
+  /** Control-panel hook: the next credit answers `pending`; the same key later answers `credited`. */
+  pendNext(): void {
+    this.nextCreditPends = true;
+  }
+
+  /** Control-panel hook: the next credit call is PROVIDER_UNAVAILABLE with nothing moved. */
+  outageNext(): void {
+    this.nextCreditOutage = true;
+  }
+
+  /** How many credits the load got (never more than one). */
+  creditCount(loadId: string): number {
+    return this.credits.get(loadId) ?? 0;
+  }
+
+  private async credit(input: { loadId: string; accountRef: string; amount: Money }, key: string): Promise<CreditResult> {
+    // The key is bound to its first call: a replay answers that call's result whatever the input (the vendor's rule), so
+    // everything, validation included, runs inside the store. Only final answers are remembered; a throw or `pending` is not.
+    return this.creditIdem.run(key, async () => {
+      if (input.amount.currency !== 'USD') throw new FundingError('VALIDATION_FAILED', 'A credit is in USD');
+      if (input.amount.minor <= 0n) throw new FundingError('VALIDATION_FAILED', 'Amount must be positive');
+      if (typeof input.accountRef !== 'string' || input.accountRef === '' || input.accountRef.startsWith('c:')) throw new FundingError('VALIDATION_FAILED', 'accountRef is not a member wallet account');
+      const load = this.must(input.loadId);
+      if (input.amount.minor !== load.amount.minor) throw new FundingError('VALIDATION_FAILED', 'Credit amount differs from the load');
+      if (load.status !== 'succeeded') return { status: 'refused', reasonCode: 'NOT_SUCCEEDED' };
+      if (input.accountRef === 'acct_unknown') return { status: 'refused', reasonCode: 'NOT_FOUND' };
+      if (this.creditCount(load.loadId) > 0) return { status: 'credited' };
+      if (this.nextCreditOutage) {
+        this.nextCreditOutage = false;
+        throw new FundingError('PROVIDER_UNAVAILABLE', 'Simulated funding outage');
+      }
+      if (this.pendingKeys.has(key)) {
+        this.pendingKeys.delete(key);
+      } else {
+        // Precedence when both are armed: failNext wins and is consumed; pendNext stays armed for the next credit.
+        if (this.nextCreditFailure !== undefined) {
+          const reasonCode = this.nextCreditFailure;
+          this.nextCreditFailure = undefined;
+          return { status: 'refused', reasonCode };
+        }
+        if (this.nextCreditPends) {
+          this.nextCreditPends = false;
+          this.pendingKeys.add(key);
+          throw new PendingCredit();
+        }
+      }
+      this.credits.set(load.loadId, this.creditCount(load.loadId) + 1);
+      return { status: 'credited' };
+    }).catch((e: unknown) => {
+      if (e instanceof PendingCredit) return { status: 'pending' as const };
+      throw e;
+    });
   }
 
   async createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string; hosted?: HostedLoadInput; metadata?: Readonly<Record<string, string>> }, idempotencyKey: string): Promise<Load> {
