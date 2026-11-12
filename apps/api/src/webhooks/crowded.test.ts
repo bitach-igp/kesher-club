@@ -1,8 +1,10 @@
 // TST-INS-025 (T-0649, REQ-INS-025): the Crowded webhook receiver. A signature over the raw bytes; the same payload re-serialised
 // fails; a missing or sha1= header fails; a batch of three with one duplicate stores two; flag off answers 404; an older event
 // after a newer one leaves the state the re-read returned; an unknown event type is stored and ignored; either rotation secret works.
+// TST-WAL-003 (T-0703, REQ-WAL-002, REQ-WAL-003): hosted-load payment events of the member chapter move the load, replay-safe.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { computeCrowdedSignature, CrowdedClient, CrowdedInstitutionBankingAdapter, FakeCrowded } from '@kesher/adapters';
+import { computeCrowdedSignature, CrowdedClient, CrowdedFunding, CrowdedInstitutionBankingAdapter, CrowdedMemberAccounts, FakeCrowded } from '@kesher/adapters';
+import { money, uuidv7 } from '@kesher/domain';
 import type { AchStatus, ApplicationStatus, InstitutionBankingPort } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
@@ -11,6 +13,7 @@ import { StaticFlags } from '../billing/capabilities.ts';
 import type { AddressInfo } from 'node:net';
 import { createServer, dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import { holdKey, settleKey, type LoadInput } from '../wallet/loads.ts';
 import { CrowdedWebhook, type CrowdedHandlers } from './crowded.ts';
 import { InboundEventStore } from './store.ts';
 
@@ -216,5 +219,256 @@ describe('processing: events are hints, the provider is re-read', () => {
     const crowded = new CrowdedWebhook({ store, flags: new StaticFlags(undefined, { [FLAG]: true }), secrets: () => [SECRET], port: () => ({ applicationStatus: async () => 'approved' }) as unknown as InstitutionBankingPort, handlers: { application: async () => Promise.reject(new Error('db down')) } });
     const { event: stored } = await store.record({ provider: 'crowded', eventId: 'fail-1', signatureOk: true, payload: event('fail-1', 'finance.application.approved'), receivedAt: now });
     await expect(crowded.process(stored)).rejects.toThrow('db down');
+  });
+});
+
+describe('member-chapter payment events move a hosted load (T-0703, TST-WAL-003)', () => {
+  const MEMBER_CHAPTER = 'memberch';
+  const T = new Date('2026-11-03T10:00:00Z'); // a Tuesday: three business days end Friday 2026-11-06
+  const TOKEN = 'crowded_test_token_not_a_secret';
+  const MAC_KEY = 'test-only-mac-key-not-a-secret-0123456789';
+  let fake: FakeCrowded;
+  let chapter: string;
+  let walletApp: App;
+  let walletOff: App;
+  let mobiles = 0;
+
+  const pay = (a: App, body: string, headers: Record<string, string> = signed(body)) => dispatch(a, { method: 'POST', url: '/v1/webhooks/crowded', headers, rawBody: body, now: T });
+  const replay = (a: App) => a.services.webhooks.replay({ provider: 'crowded', now: T });
+  let ev = 0;
+  const paymentEvent = (type: string, paymentId: string, intentId: string, chapterId = chapter) => event(`hl-${++ev}-${type}`, type, chapterId, { paymentId, intentId, collectionId: 'col1', status: type.split('.').pop() });
+  /** Delivers a signed batch and lets the replay job process it, as the worker does. */
+  const deliver = async (a: App, ...events: ReturnType<typeof event>[]) => {
+    const body = batch(...events);
+    const r = await pay(a, body);
+    await replay(a);
+    return r;
+  };
+
+  async function startLoad(key: string, minor = 10_000n) {
+    const s = walletApp.services;
+    const party = uuidv7(T);
+    await s.accounts.provisionMember(party);
+    const amount = money(minor, 'USD');
+    const input: LoadInput = { payerPartyId: party, memberPartyId: party, method: 'hosted', amount };
+    const t = await s.loads.submit(await s.loads.begin(input, key, T), T);
+    const adapterLoad = await adapter.createLoad({ customerId: party, method: 'hosted', amount, hosted: { payerIp: '203.0.113.7', userConsented: true } }, key);
+    await s.loads.link(t, adapterLoad);
+    const intentId = adapterLoad.loadId.split(':')[2]!;
+    return { party, transfer: t, intentId, intentRef: `${chapter}:-:${intentId}` };
+  }
+  const stateOf = async (id: string) => (await walletApp.services.transfers.get(id))!;
+  const journals = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [key])).rows[0]!.n;
+
+  let adapter: CrowdedFunding;
+  beforeAll(async () => {
+    fake = new FakeCrowded({ token: TOKEN, now: () => T });
+    chapter = fake.seedChapter();
+    const client = new CrowdedClient({ baseUrl: 'https://sandbox.fake.invalid/api/v1', token: TOKEN, fetch: fake.fetch });
+    const members = new CrowdedMemberAccounts({ client, chapterId: chapter, hmacKey: MAC_KEY, now: () => T });
+    const contactOf = async (customerId: string) => (await members.ensureAccount({ partyId: customerId, firstName: 'Payer', lastName: 'Test', email: `${customerId}@example.test`, mobile: `+1415555${String(2000 + mobiles++)}` }, `ensure-${customerId}`)).contactRef;
+    adapter = new CrowdedFunding({ client, chapterId: chapter, hmacKey: MAC_KEY, achHoldDays: 3, redirectHosts: ['app.example'], contactOf, now: () => T });
+    const host = new SimulatorHost();
+    host.registry.register('funding', 'crowded', () => adapter);
+    host.registry.bind({ capability: 'funding', market: 'US', provider: 'crowded', mode: 'sim' });
+    const base = { db, registry: host.registry, market: 'US' as const, signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => T, crowdedWebhookSecrets: [SECRET], crowdedMemberChapterId: chapter };
+    // Only the wallet flag: the route is open for member-chapter events although US banking is off.
+    walletApp = createApp({ ...base, flags: new StaticFlags(undefined, { 'wallet.enabled': true }) });
+    walletOff = createApp({ ...base, flags: new StaticFlags(undefined, { [FLAG]: true }) });
+  }, 60_000);
+
+  it('a batch of processing then succeeded for a bank-transfer payment holds the load once, with holdUntil set; the same batch twice and the other order change nothing more', async () => {
+    const l = await startLoad('hl-ach-0001');
+    const p = fake.payIntent(l.intentRef, 'ach');
+    fake.process(p);
+    fake.settle(p);
+    const first = await deliver(walletApp, paymentEvent('collect.payment.processing', p, l.intentId), paymentEvent('collect.payment.succeeded', p, l.intentId));
+    expect(first.status).toBe(200);
+    const held = await stateOf(l.transfer.id);
+    expect(held).toMatchObject({ state: 'pending_hold' });
+    expect(held.holdReleasesAt?.slice(0, 10)).toBe('2026-11-06');
+    expect(await journals(holdKey('hl-ach-0001'))).toBe(1);
+    expect(await journals(settleKey('hl-ach-0001'))).toBe(0);
+
+    // The identical bytes again: every event id is a duplicate.
+    const body = batch(...[paymentEvent('collect.payment.processing', p, l.intentId)]);
+    await pay(walletApp, body);
+    const again = await pay(walletApp, body);
+    expect(again.body).toEqual({ received: 1, stored: 0, duplicates: 1 });
+    // The two events in the other order, with new ids: both re-read the same current state.
+    await deliver(walletApp, paymentEvent('collect.payment.succeeded', p, l.intentId), paymentEvent('collect.payment.processing', p, l.intentId));
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'pending_hold' });
+    expect(await journals(holdKey('hl-ach-0001'))).toBe(1);
+    expect((await walletApp.services.accounts.purses(l.party)).find((x) => x.currency === 'USD')!.available.minor).toBe(0n);
+  });
+
+  it('a first event that names only the payment, never seen on a read, still finds its load through the intent the event names', async () => {
+    const l = await startLoad('hl-ach-0002');
+    const p = fake.payIntent(l.intentRef, 'ach');
+    fake.settle(p);
+    await deliver(walletApp, paymentEvent('collect.payment.succeeded', p, l.intentId));
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'pending_hold' });
+  });
+
+  it('collect.payment.returned while held fails the load and reverses the hold journal once', async () => {
+    const l = await startLoad('hl-ach-0003');
+    const p = fake.payIntent(l.intentRef, 'ach');
+    fake.settle(p);
+    await deliver(walletApp, paymentEvent('collect.payment.succeeded', p, l.intentId));
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'pending_hold' });
+    fake.returnPayment(p);
+    await deliver(walletApp, paymentEvent('collect.payment.returned', p, l.intentId));
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'failed', failureCode: 'RETURNED' });
+    expect(await journals(`${holdKey('hl-ach-0003')}:reversal`)).toBe(1);
+    await deliver(walletApp, paymentEvent('collect.payment.returned', p, l.intentId));
+    expect(await journals(`${holdKey('hl-ach-0003')}:reversal`)).toBe(1);
+    expect((await walletApp.services.accounts.purses(l.party)).find((x) => x.currency === 'USD')!.available.minor).toBe(0n);
+  });
+
+  it('a collect.payment.failed event for a payment the re-read shows Succeeded changes nothing: the read decides', async () => {
+    const l = await startLoad('hl-ach-0004');
+    const p = fake.payIntent(l.intentRef, 'ach');
+    fake.settle(p);
+    await deliver(walletApp, paymentEvent('collect.payment.failed', p, l.intentId));
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'pending_hold' });
+    await deliver(walletApp, paymentEvent('collect.payment.failed', p, l.intentId));
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'pending_hold' });
+    expect(await journals(`${holdKey('hl-ach-0004')}:reversal`)).toBe(0);
+  });
+
+  it('a card Succeeded settles through the settle path: one journal keyed {workflowId}:settle, and the wallet is credited once', async () => {
+    const l = await startLoad('hl-card-0001');
+    fake.payIntent(l.intentRef, 'card');
+    const intent = await adapter.getLoad(`crowded:${chapter}:${l.intentId}`);
+    const p = (intent.metadata as { paymentLoadId: string }).paymentLoadId.split(':')[2]!;
+    await deliver(walletApp, paymentEvent('collect.payment.succeeded', p, l.intentId));
+    await deliver(walletApp, paymentEvent('collect.payment.succeeded', p, l.intentId));
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'settled' });
+    expect(await journals(settleKey('hl-card-0001'))).toBe(1);
+    expect((await walletApp.services.accounts.purses(l.party)).find((x) => x.currency === 'USD')!.available.minor).toBe(10_000n);
+  });
+
+  it('an event that names the payment alone is found through the payment mapping once a read has seen it', async () => {
+    const l = await startLoad('hl-card-0002');
+    fake.payIntent(l.intentRef, 'card');
+    const p = ((await adapter.getLoad(`crowded:${chapter}:${l.intentId}`)).metadata as { paymentLoadId: string }).paymentLoadId.split(':')[2]!;
+    await deliver(walletApp, event(`hl-pay-only-${++ev}`, 'collect.payment.succeeded', chapter, { paymentId: p }));
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'settled' });
+  });
+
+  it('a payment whose amount differs from the transfer is refused with VALIDATION_FAILED and applies nothing', async () => {
+    const l = await startLoad('hl-amount-01');
+    fake.payIntent(l.intentRef, 'card');
+    await db.query(`update ops.transfer set amount_minor = 5000 where id = $1`, [l.transfer.id]);
+    await expect(walletApp.services.loads.applyVendorLoad(`crowded:${chapter}:${l.intentId}`, T)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    const p = ((await adapter.getLoad(`crowded:${chapter}:${l.intentId}`)).metadata as { paymentLoadId: string }).paymentLoadId.split(':')[2]!;
+    await deliver(walletApp, paymentEvent('collect.payment.succeeded', p, l.intentId));
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'submitted' });
+    expect(await journals(settleKey('hl-amount-01'))).toBe(0);
+    const row = (await db.query<{ processed_at: unknown; error: string }>(`select processed_at, error from ops.inbound_event where event_id = $1`, [`hl-${ev}-collect.payment.succeeded`])).rows[0]!;
+    expect(row.processed_at).toBeNull();
+    expect(row.error).toContain('amount differs');
+  });
+
+  it('an event for a payment no load owns is stored and ignored', async () => {
+    const r = await deliver(walletApp, paymentEvent('collect.payment.succeeded', 'cp-nobody', 'int-nobody'), paymentEvent('collect.payment.succeeded', 'cp-nobody-2', 'a/b'));
+    expect(r.status).toBe(200);
+    const rows = (await db.query<{ processed_at: unknown; error: string | null }>(`select processed_at, error from ops.inbound_event where event_id like 'hl-%collect.payment.succeeded' and payload->'data'->>'paymentId' like 'cp-nobody%'`)).rows;
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.processed_at).not.toBeNull();
+      expect(row.error).toBeNull();
+    }
+  });
+
+  it('a bad signature answers 401 with one ops.inbound_rejected row and applies nothing', async () => {
+    const l = await startLoad('hl-badsig-01');
+    const p = fake.payIntent(l.intentRef, 'card');
+    const body = batch(paymentEvent('collect.payment.succeeded', p, l.intentId));
+    const before = await count('inbound_rejected');
+    const r = await pay(walletApp, body, signed(body, 'some_other_secret_0123456789abcdef0123'));
+    expect(r.status).toBe(401);
+    expect(await count('inbound_rejected')).toBe(before + 1);
+    await replay(walletApp);
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'submitted' });
+    // The rejected row holds a hash, never the bytes or an id from the body.
+    const row = (await db.query<{ payload: unknown }>(`select payload from ops.inbound_rejected where provider = 'crowded' order by received_at desc, id desc limit 1`)).rows[0]!;
+    expect(JSON.stringify(row.payload)).not.toContain(l.intentId);
+  });
+
+  it('/hooks/funding refuses a validly signed Crowded batch and applies nothing', async () => {
+    const l = await startLoad('hl-hooks-01');
+    const p = fake.payIntent(l.intentRef, 'card');
+    const body = batch(paymentEvent('collect.payment.succeeded', p, l.intentId));
+    const r = await dispatch(walletApp, { method: 'POST', url: '/v1/hooks/funding', headers: signed(body), rawBody: body, now: T });
+    expect(r.status).toBeGreaterThanOrEqual(400);
+    await replay(walletApp);
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'submitted' });
+    expect((await db.query(`select 1 from ops.inbound_event where provider = 'funding' and signature_ok`)).rows).toHaveLength(0);
+  });
+
+  it('with the wallet flag off a member-chapter event is stored and left unprocessed; once the flag is on, replay applies it once', async () => {
+    const l = await startLoad('hl-flag-0001');
+    const p = fake.payIntent(l.intentRef, 'card');
+    const e = paymentEvent('collect.payment.succeeded', p, l.intentId);
+    expect((await deliver(walletOff, e)).status).toBe(200);
+    const row = async () => (await db.query<{ processed_at: unknown; error: string | null }>(`select processed_at, error from ops.inbound_event where event_id = $1`, [e.eventId])).rows[0]!;
+    expect((await row()).processed_at).toBeNull();
+    expect((await row()).error).toContain('wallet');
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'submitted' });
+    await replay(walletApp);
+    await replay(walletApp);
+    expect((await row()).processed_at).not.toBeNull();
+    expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'settled' });
+    expect(await journals(settleKey('hl-flag-0001'))).toBe(1);
+  });
+
+  it('with only the wallet flag on, the route is open and an institution event is kept unprocessed until US banking is on', async () => {
+    const e = event(`hl-inst-${++ev}`, 'collect.payment.succeeded', 'someotherchapter', { paymentId: 'x1' });
+    expect((await deliver(walletApp, e)).status).toBe(200);
+    const row = (await db.query<{ processed_at: unknown; error: string | null }>(`select processed_at, error from ops.inbound_event where event_id = $1`, [e.eventId])).rows[0]!;
+    expect(row.processed_at).toBeNull();
+    expect(row.error).toContain('US banking');
+  });
+
+  it('with both flags off the route is 404 FEATURE_OFF', async () => {
+    const none = createApp({ db, registry: new SimulatorHost().registry, market: 'US', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => T, flags: new StaticFlags(), crowdedWebhookSecrets: [SECRET] });
+    const body = batch(event('hl-none-1', 'collect.payment.succeeded', chapter));
+    expect((await pay(none, body)).status).toBe(404);
+  });
+
+  describe('routing by chapter', () => {
+    function rig(handlers: CrowdedHandlers, flags = new StaticFlags(undefined, { [FLAG]: true, 'wallet.enabled': true })) {
+      const store = new InboundEventStore(db);
+      const crowded = new CrowdedWebhook({ store, flags, secrets: () => [SECRET], port: () => ({}) as InstitutionBankingPort, handlers, memberChapterId: MEMBER_CHAPTER });
+      return async (e: ReturnType<typeof event>) => {
+        const { event: stored } = await store.record({ provider: 'crowded', eventId: e.eventId, signatureOk: true, payload: e, receivedAt: now });
+        await crowded.process(stored);
+      };
+    }
+
+    it('collect.payment.* of the member chapter goes to funding with the payment and intent refs; any other chapter keeps going to collected; other collect events of the member chapter are ignored', async () => {
+      const funding = vi.fn(async () => undefined);
+      const collected = vi.fn(async () => undefined);
+      const feed = rig({ funding, collected });
+      await feed(event('rt-1', 'collect.payment.processing', MEMBER_CHAPTER, { paymentId: 'p1', intentId: 'i1' }));
+      await feed(event('rt-2', 'collect.payment.succeeded', MEMBER_CHAPTER, { id: 'p2' }));
+      await feed(event('rt-3', 'collect.payment.succeeded', 'ch9', { paymentId: 'p3' }));
+      await feed(event('rt-4', 'collect.intent.created', MEMBER_CHAPTER, { intentId: 'i1' }));
+      await feed(event('rt-5', 'collect.payment.succeeded', MEMBER_CHAPTER, {}));
+      expect(funding.mock.calls).toEqual([
+        [MEMBER_CHAPTER, `crowded:${MEMBER_CHAPTER}:p1`, `crowded:${MEMBER_CHAPTER}:i1`],
+        [MEMBER_CHAPTER, `crowded:${MEMBER_CHAPTER}:p2`, undefined],
+      ]);
+      expect(collected.mock.calls).toEqual([['ch9']]);
+    });
+
+    it('an id that is not a plain id never reaches the funding handler as a path', async () => {
+      const funding = vi.fn(async () => undefined);
+      const feed = rig({ funding });
+      await feed(event('rt-6', 'collect.payment.succeeded', MEMBER_CHAPTER, { paymentId: '../x', intentId: 'a?b' }));
+      // The refs are opaque strings to the handler; the adapter refuses anything that is not a plain id (UNKNOWN_LOAD, no request).
+      expect(funding).toHaveBeenCalledTimes(1);
+    });
   });
 });

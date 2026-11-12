@@ -1,6 +1,6 @@
 // CrowdedFunding (T-0700, REQ-WAL-002, REQ-WAL-003, ADR-018 A3/A4/A8): the hosted-load method of FundingPort over Crowded's
 // collections and intents. A separate class from the institution adapter (its port is untouched); it reuses `CrowdedClient`
-// and the `KeyLedger`. Hosted only: every other method, and refunds and webhooks (T-0706, T-0703), answer UNSUPPORTED_METHOD.
+// and the `KeyLedger`. Hosted only: every other method and refunds (T-0706) answer UNSUPPORTED_METHOD; webhooks answer BAD_SIGNATURE (T-0703).
 // Flag: none of its own (the registry wiring is T-0709).
 //
 // How the port's promises are kept on an API that gives less:
@@ -65,6 +65,8 @@ export interface CrowdedLoadMetadata {
   paymentLoadId: string;
   fee?: Money;
   feeCovered?: boolean;
+  /** The load as its intent names it: `crowded:<chapter>:<intent>`, the id a load was made under (a caller that asked by a payment id finds its own load with it). */
+  intentLoadId: string;
 }
 export type CrowdedLoad = Load & { metadata?: CrowdedLoadMetadata };
 
@@ -97,6 +99,15 @@ interface PaymentView {
   settledAt: Date;
 }
 
+/** A ledger whose every failure is PROVIDER_UNAVAILABLE with fixed text (a storage error can carry a connection string or a row). */
+function guarded(inner: KeyLedger): KeyLedger {
+  const unavailable = (): never => fail('PROVIDER_UNAVAILABLE', 'The funding provider is not available');
+  return {
+    get: (key) => inner.get(key).catch(unavailable),
+    put: (key, entry) => inner.put(key, entry).catch(unavailable),
+  };
+}
+
 export class CrowdedFunding implements FundingPort {
   private readonly c: CrowdedClient;
   private readonly chapterId: string;
@@ -121,7 +132,7 @@ export class CrowdedFunding implements FundingPort {
     this.c = opts.client;
     this.chapterId = opts.chapterId;
     this.key = opts.hmacKey;
-    this.ledger = opts.ledger ?? new InMemoryKeyLedger();
+    this.ledger = guarded(opts.ledger ?? new InMemoryKeyLedger());
     this.holdDays = opts.achHoldDays;
     this.hosts = new Set(opts.redirectHosts);
     this.contactOf = opts.contactOf ?? (async (customerId) => customerId);
@@ -176,7 +187,8 @@ export class CrowdedFunding implements FundingPort {
   async createLoad(input: Parameters<FundingPort['createLoad']>[0], idempotencyKey: string): Promise<CrowdedLoad> {
     if (input.method !== 'hosted') return fail('UNSUPPORTED_METHOD', 'Crowded loads are hosted only');
     const v = this.validate(input, idempotencyKey);
-    const mac = this.mac('load', v.customerId, v.amount.toString(), v.payerIp, v.successUrl ?? '', v.failureUrl ?? '');
+    // The payer's address is validated but not bound: it is the connection's, so a retry of one key from another network is the same load.
+    const mac = this.mac('load', v.customerId, v.amount.toString(), v.successUrl ?? '', v.failureUrl ?? '');
     const running = this.inFlight.get(idempotencyKey);
     if (running) {
       if (running.mac !== mac) return fail('VALIDATION_FAILED', 'The idempotency key was used with different input');
@@ -322,10 +334,14 @@ export class CrowdedFunding implements FundingPort {
       return base({ method: 'hosted', status: 'requires_action', action: { type: 'payment_page', url: this.pageUrl(data['paymentUrl']), ...(record.expiresAt ? { expiresAt: record.expiresAt } : {}) } });
     }
 
-    // Remember the payment's own id for this load, so a webhook that names it can be read back (T-0703).
+    // Remember EVERY payment seen on the intent for this load (a failed first attempt too), so a webhook that names any of them
+    // can be read back (T-0703). The one that stands for the load is the one named in the metadata.
+    for (const x of payments) {
+      const key = `load:payment:${ref('crowded', this.chapterId, x.id)}`;
+      if (!(await this.ledger.get(key))) await this.ledger.put(key, { body: '', result: intentLoadId });
+    }
     const paymentLoadId = ref('crowded', this.chapterId, p.id);
-    await this.ledger.put(`load:payment:${paymentLoadId}`, { body: '', result: intentLoadId });
-    const metadata: CrowdedLoadMetadata = { paymentLoadId, ...(p.fee ? { fee: p.fee, feeCovered: p.feeCovered } : {}) };
+    const metadata: CrowdedLoadMetadata = { paymentLoadId, intentLoadId, ...(p.fee ? { fee: p.fee, feeCovered: p.feeCovered } : {}) };
     const method: FundingMethod = p.method === 'other' ? 'hosted' : p.method;
     const out = (over: { status: LoadStatus; holdUntil?: string; failureCode?: string }): CrowdedLoad => base({ method, ...over, metadata });
 
@@ -337,7 +353,7 @@ export class CrowdedFunding implements FundingPort {
         // The net is what the member intended: the amount less the fee where the payer covered it on top. Anything else is not guessed at.
         const net = p.feeCovered && p.fee ? p.amount.minor - p.fee.minor : p.amount.minor;
         if (net !== amount.minor || p.method === 'other') return out({ status: 'processing' });
-        if (p.method === 'ach') return out({ status: 'on_hold', holdUntil: addBusinessDays(p.settledAt, this.holdDays).toISOString() });
+        if (p.method === 'ach') return out({ status: 'on_hold', holdUntil: addBusinessDays(await this.firstSeenSuccess(p), this.holdDays).toISOString() });
         return out({ status: 'succeeded' });
       }
       case 'returned':
@@ -348,6 +364,19 @@ export class CrowdedFunding implements FundingPort {
       case 'cancelled':
         return out({ status: 'failed', ...(intentStatus === 'returned' ? { failureCode: 'RETURNED' } : {}) });
     }
+  }
+
+  /**
+   * The instant this payment was first seen Succeeded, kept per payment: Crowded's own `updatedAt` moves on later edits, and a hold
+   * that moved with it would drift. The first read to see the success fixes it; every later read, from any process on the ledger, answers it.
+   */
+  private async firstSeenSuccess(p: PaymentView): Promise<Date> {
+    const key = `load:succeeded:${p.id}`;
+    const seen = await this.ledger.get(key);
+    const at = typeof seen?.result === 'string' ? new Date(seen.result) : undefined;
+    if (at && !Number.isNaN(at.getTime())) return at;
+    await this.ledger.put(key, { body: '', result: p.settledAt.toISOString() });
+    return p.settledAt;
   }
 
   private payment(raw: unknown): PaymentView {
@@ -370,5 +399,10 @@ export class CrowdedFunding implements FundingPort {
 
   getRefund: FundingPort['getRefund'] = () => Promise.reject(new FundingError('UNSUPPORTED_METHOD', 'Refunds of Crowded loads are not built yet'));
 
-  parseWebhook: FundingPort['parseWebhook'] = () => Promise.reject(new FundingError('UNSUPPORTED_METHOD', 'Crowded webhooks are not built yet'));
+  /**
+   * Fail secure (T-0703): Crowded sends BATCHES, which do not fit a port that parses one event, and a payment's state is only
+   * ever taken from a re-read. So this accepts nothing: a Crowded delivery on `/hooks/funding` is refused and recorded, and only
+   * `/webhooks/crowded` (batch, HMAC over the raw bytes, a handler that re-reads) accepts it.
+   */
+  parseWebhook: FundingPort['parseWebhook'] = () => Promise.reject(new FundingError('BAD_SIGNATURE', 'Crowded deliveries go to /webhooks/crowded'));
 }
