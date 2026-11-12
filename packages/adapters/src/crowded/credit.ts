@@ -28,8 +28,9 @@
 //   must read `open` at the vendor, else the credit is refused ACCOUNT_UNAVAILABLE and nothing moves (a ref the vendor does not know is
 //   refused NOT_FOUND). It is checked again on a resumed call that has not booked yet; once the book payment has been sent it is not.
 //   If it froze after a release, the released money stays in the chapter's account.
-// - Only a load that reads `succeeded` is credited. A load on hold (an ACH within its hold, and as `CrowdedFunding.getLoad` answers it
-//   every time today) is refused NOT_SUCCEEDED: the port says money on hold is never credited. The caller owns the hold date (T-0705).
+// - Only a load that reads `succeeded` is credited. A load on hold (an ACH before its hold date) is refused NOT_SUCCEEDED: the port says
+//   money on hold is never credited. `CrowdedFunding.getLoad` reads an ACH `succeeded` once its hold date has passed (T-0745), so
+//   the caller (T-0705) credits it after that date and not before.
 // - Errors: fixed text, never vendor text, a name, a mobile or an url.
 import { money, type Money } from '@kesher/domain';
 import { FundingError, MirrorError, type CreditResult, type LoadStatus, type MirrorLeg, type MirrorLegResult, type MirrorPort } from '@kesher/ports';
@@ -314,9 +315,10 @@ async function release(deps: CreditDeps, key: string, a: Attempt, view: CreditLo
     data = (await deps.client.post(`/chapters/${deps.chapterId}/payments/release-funds`, { amount: Number(a.amount), idempotencyKey: bookWireKey('credit:release:', key) })).data;
   } catch (e) {
     if (e instanceof CrowdedApiError) {
-      if (e.status === 403) return fail('PROVIDER_UNAVAILABLE', 'Fund holding is not enabled for the funding provider, so the held funds cannot be released');
-      if (e.isAuth || e.status === 429) return unavailable();
-      if (e.status === 400 || e.status === 422) return refused('PAYMENT_FAILED');
+      // Only the "not enabled" 403 names fund holding; any other 403, a 401 and a 429 are the plain outage answer. A 400 or 422 is a
+      // request problem of ours, not a verdict on the member's credit: it is never a final refusal, which would burn the key.
+      if (e.status === 403 && /not enabled/i.test(e.message)) return fail('PROVIDER_UNAVAILABLE', 'Fund holding is not enabled for the funding provider, so the held funds cannot be released');
+      if (e.isAuth || e.status === 429 || e.status === 400 || e.status === 422) return unavailable();
       return pending;
     }
     // A transport failure or anything unforeseen after the request may have left: the outcome is unknown.

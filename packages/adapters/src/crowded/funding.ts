@@ -402,7 +402,12 @@ export class CrowdedFunding implements FundingPort {
         // The net is what the member intended: the amount less the fee where the payer covered it on top. Anything else is not guessed at.
         const net = p.feeCovered && p.fee ? p.amount.minor - p.fee.minor : p.amount.minor;
         if (net !== amount.minor || p.method === 'other') return out({ status: 'processing' });
-        if (p.method === 'ach') return out({ status: 'on_hold', holdUntil: addBusinessDays(await this.firstSeenSuccess(p), this.holdDays).toISOString() });
+        if (p.method === 'ach') {
+          // On hold until the hold date, then settled: the same convention as the plain simulator, and what the credit (T-0704) and the release sweep (T-0705) need.
+          // The date comes from the stored first-seen success, so every process agrees on it; at or after it the load reads `succeeded` with no holdUntil.
+          const holdUntil = addBusinessDays(await this.firstSeenSuccess(p), this.holdDays);
+          return holdUntil.getTime() <= this.now().getTime() ? out({ status: 'succeeded' }) : out({ status: 'on_hold', holdUntil: holdUntil.toISOString() });
+        }
         return out({ status: 'succeeded' });
       }
       case 'returned':
