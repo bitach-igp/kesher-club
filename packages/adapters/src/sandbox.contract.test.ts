@@ -15,6 +15,8 @@ import { StripeFundingAdapter } from './stripe/funding.ts';
 import { signStripePayload } from './stripe/signature.ts';
 import { CrowdedClient, SANDBOX_BASE_URL } from './crowded/client.ts';
 import { CrowdedMemberAccounts } from './crowded/member-accounts.ts';
+import { CrowdedMirror } from './crowded/mirror.ts';
+import { money } from '@kesher/domain';
 import { TwilioNotifyAdapter } from './twilio/twilio.ts';
 
 const env = (name: string): string | undefined => {
@@ -122,5 +124,42 @@ describe.skipIf(!(enabled && crowded.token && crowded.chapterId))('Crowded membe
     const r = first as { accountRef: string };
     const view = await adapter.account(r.accountRef);
     expect(typeof view.balance.minor).toBe('bigint');
+  });
+});
+
+// Crowded mirror (T-0719): books one cent from checking to a fresh member wallet and back, and replays the key. Needs the sandbox token
+// (CROWDED_SANDBOX_TOKEN, as above; the card's CROWDED_API_TOKEN is not a wired secret) and the platform chapter (CROWDED_SANDBOX_CHAPTER_ID), a chapter with checking money.
+// It prints the HTTP statuses it saw (counts only, no body) so they can be recorded in docs/setup/sandbox-contracts.md by the desktop
+// handoff; nothing is written here. The member is made up and stays in the sandbox.
+const mirrorToken = crowded.token;
+describe.skipIf(!(enabled && mirrorToken && crowded.chapterId))('Crowded mirror sandbox', () => {
+  it('books one cent to the member and back, and a replay of the key books nothing more', async () => {
+    const seen: string[] = [];
+    const spyFetch: typeof globalThis.fetch = async (input, init) => {
+      const res = await globalThis.fetch(input, init);
+      const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url).pathname.replace(/^.*\/api\/v1\/chapters\/[^/]+/, '');
+      seen.push(`${init?.method ?? 'GET'} ${path.replace(/\d+/g, 'N')} ${res.status}`);
+      return res;
+    };
+    const client = new CrowdedClient({ baseUrl: crowded.baseUrl, token: mirrorToken!, fetch: spyFetch });
+    const unique = `${Date.now()}${randomInt(1000, 9999)}`;
+    const accounts = new CrowdedMemberAccounts({ client, chapterId: crowded.chapterId!, hmacKey: randomBytes(32).toString('hex') });
+    const member = await accounts.ensureAccount({ partyId: `mirror-${unique}`, firstName: 'Sandbox', lastName: 'Mirror', email: `mirror-${unique}@example.test`, mobile: `+1415555${String(randomInt(0, 10000)).padStart(4, '0')}` }, `mirror-ensure-${unique}`);
+    const accountRef = (member as { accountRef: string }).accountRef;
+    const mirror = new CrowdedMirror({ client, chapterId: crowded.chapterId! });
+    const one = money(1n, 'USD');
+    const out = { direction: 'from_checking' as const, accountRef, amount: one, memo: `KC-sandbox-${unique}-out`, idempotencyKey: `sandbox-out-${unique}` };
+    const back = { direction: 'to_checking' as const, accountRef, amount: one, memo: `KC-sandbox-${unique}-back`, idempotencyKey: `sandbox-back-${unique}` };
+    const [a] = await mirror.bookBatch([out], crowded.chapterId!);
+    expect(a?.status).toBe('booked');
+    expect((await mirror.accountBalance(accountRef)).balance).toBe(1n);
+    const [b] = await mirror.bookBatch([back], crowded.chapterId!);
+    expect(b?.status).toBe('booked');
+    expect((await mirror.accountBalance(accountRef)).balance).toBe(0n);
+    const [again] = await mirror.bookBatch([out], crowded.chapterId!);
+    expect(again).toEqual(a);
+    expect((await mirror.accountBalance(accountRef)).balance).toBe(0n);
+    expect(await mirror.readBack({ chapterRef: crowded.chapterId!, memo: out.memo })).toMatchObject({ status: 'found', result: { status: 'booked', paymentRef: a?.paymentRef } });
+    console.info(`crowded mirror sandbox statuses: ${seen.filter((x) => x.startsWith('POST') && x.includes('/payments')).join('; ')}`);
   });
 });

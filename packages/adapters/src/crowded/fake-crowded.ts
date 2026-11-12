@@ -15,6 +15,16 @@
 // (an entry created Failed, with an id), `frozen@example.test` (a Frozen account) and `outage@example.test` (the whole request
 // answers 503) stand in for the bank's decisions. An account create is a bulk call with a body `idempotencyKey`, and a contact
 // that already has the product answers `accountCreated: false`. Wallet accounts show an unmasked account number, as the real list does.
+// Book payments (T-0719, the live sandbox probe of 2026-11-11): `POST /chapters/{id}/payments` with `type: book` is bulk, continue-on-error,
+// always 201, one item per payment: `status: success | failed`, `paymentId`, `paymentStatus: Sent | Pending | Rejected`, `errorCode`.
+// The key is a UUID v4 scoped to the chapter; a reused key answers the FIRST payment whatever the new body says (`duplicateKeys = 'error'`
+// answers `DUPLICATE_PAYMENT` instead, as the docs list). A refusal before persistence (NOT_FOUND, VALIDATION_ERROR, ACCOUNT_UNAVAILABLE)
+// is a failed item with no id and is never listed; an overdraw is PERSISTED: `Rejected` / `InsufficientFunds`, listed as `failed`. Items run
+// in order, so a later leg can spend what an earlier one created. The list (`GET .../payments`) is newest first and carries no total.
+// The chapter and account transaction feeds carry two rows per booked payment (`counterparty.accountId`). Fixtures, one-shot by wire key:
+// `refuseBook(key, code)`, `bookStatus(key, 'Rejected' | 'Pending')`, `loseBookAnswer(key)` (booked, the item says nothing usable);
+// `loseNextResponse()` books the next book request then drops the answer (a transport error); `rateLimited = true` answers every request
+// 429 before anything is processed; amounts past 2^53 - 1 travel as exact strings (JSON numbers cannot hold them).
 import { createHash } from 'node:crypto';
 
 type Json = Record<string, unknown>;
@@ -24,6 +34,9 @@ interface Contact { id: number; chapterId: string; firstName: string; lastName: 
 interface Wallet { id: number; chapterId: string; contactId: number; status: 'Open' | 'Frozen' | 'Closed'; accountNumber: string; balance: bigint; hold: bigint; createdAt: Date }
 /** A payment on a hosted-collection intent (T-0700). `amount` is gross: the net plus the fee when the payer covered it. */
 interface IntentPayment { id: string; method: 'Card' | 'Ach'; status: 'Pending' | 'Processing' | 'Succeeded' | 'Failed' | 'Returned' | 'Refunded' | 'Cancelled'; amount: bigint; fee: bigint; feeCovered: boolean; createdAt: Date; updatedAt: Date }
+/** A book payment (T-0719). `source` and `dest` are account ids as strings: the chapter checking account's id or a wallet's number. */
+interface BookPayment { id: string; chapterId: string; key: string; source: string; dest: string; amount: bigint; description: string; status: 'sent' | 'failed' | 'pending'; reasonCode?: string; createdAt: Date }
+interface BookFixture { refuse?: string; status?: 'Rejected' | 'Pending'; lose?: boolean }
 interface Intent { id: string; chapterId: string; collectionId: string; email: string; contactId?: number; amount: bigint; paid?: { id: string; at: Date }; payments: IntentPayment[]; successUrl?: string; failureUrl?: string; payerIp?: string }
 interface Payment { id: string; chapterId: string; method: 'ach'; status: 'pending' | 'processing' | 'sent' | 'returned' | 'canceled' | 'failed'; amount: bigint; counterpartyId: string; addenda: string; key: string; body: string }
 
@@ -35,7 +48,8 @@ export interface FakeCrowdedOptions {
 }
 
 /** Crowded's JSON carries cents as numbers; the fake keeps bigint and converts only here. */
-const wire = (m: bigint): number => Number(m);
+const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+const wire = (m: bigint): number | string => (m > SAFE || m < -SAFE ? m.toString() : Number(m));
 const cents = (v: unknown): bigint => BigInt(Number(v));
 const ok = (data: unknown, status = 200, meta?: Json): Response => new Response(JSON.stringify({ data, ...(meta ? { meta } : {}) }), { status, headers: { 'content-type': 'application/json' } });
 /** The live API's rule (sandbox, 2026-11-11, T-0734): a body `idempotencyKey` is a strict UUID v4; a version-5 key is a 400. */
@@ -50,6 +64,10 @@ export class FakeCrowded {
   readonly calls: { method: string; path: string; query: Record<string, string>; body: unknown }[] = [];
   /** The next N requests answer 503. */
   outageRequests = 0;
+  /** Every request answers 429 before anything is processed (the gateway refuses: nothing was booked). */
+  rateLimited = false;
+  /** What a reused book-payment key answers: the FIRST payment (as observed), or a failed `DUPLICATE_PAYMENT` item (as documented). */
+  duplicateKeys: 'replay' | 'error' = 'replay';
   readonly secret = 'sha256=fake';
 
   private readonly token: string;
@@ -62,7 +80,11 @@ export class FakeCrowded {
   private readonly collections: { id: string; chapterId: string; title: string; requestedAmount: bigint }[] = [];
   private readonly intents: Intent[] = [];
   private readonly payments: Payment[] = [];
-  private readonly ledger: { id: string; chapterId: string; accountId: string; direction: 'Credit' | 'Debit'; amount: bigint; title: string; at: Date; collectPaymentId?: string }[] = [];
+  private readonly bookPayments: BookPayment[] = [];
+  private readonly bookFixtures = new Map<string, BookFixture>();
+  private dropNextResponse = false;
+  private armDrop = false;
+  private readonly ledger: { id: string; chapterId: string; accountId: string; direction: 'Credit' | 'Debit'; amount: bigint; title: string; at: Date; collectPaymentId?: string; counterpartyId?: string }[] = [];
   private readonly contacts: Contact[] = [];
   private readonly wallets: Wallet[] = [];
   private contactSeq = 0;
@@ -103,11 +125,18 @@ export class FakeCrowded {
       this.calls.push({ method, path, query, body });
       const auth = new Headers(init?.headers).get('authorization');
       if (auth !== `Bearer ${this.token}`) return err(401, 'Unauthorized');
+      if (this.rateLimited) return err(429, 'Too many requests');
       if (this.outageRequests > 0) {
         this.outageRequests--;
         return err(503, 'Unavailable');
       }
-      return this.route(method, path, query, (body as Json | undefined)?.['data']);
+      const res = this.route(method, path, query, (body as Json | undefined)?.['data']);
+      if (this.dropNextResponse) {
+        // The request was processed and the answer never arrived (a timeout, a reset connection).
+        this.dropNextResponse = false;
+        throw new TypeError('fetch failed');
+      }
+      return res;
     };
   }
 
@@ -287,6 +316,33 @@ export class FakeCrowded {
   walletNumber(id: number): string {
     return this.wallet(id).accountNumber;
   }
+
+  // ---- book payments (T-0719) ---------------------------------------------------------------------------------
+
+  /** The wire key (a UUID v4) is answered with a failed item with this error code once sent. Nothing is persisted (a `Rejected` payment is `bookStatus`). */
+  refuseBook(wireKey: string, code: string): void {
+    this.bookFixtures.set(wireKey, { ...this.bookFixtures.get(wireKey), refuse: code });
+  }
+  /** The wire key's payment is answered `Rejected` (persisted, nothing moves) or `Pending` (persisted, nothing moves yet). */
+  bookStatus(wireKey: string, status: 'Rejected' | 'Pending'): void {
+    this.bookFixtures.set(wireKey, { ...this.bookFixtures.get(wireKey), status });
+  }
+  /** The wire key's payment is booked and its item answers with neither a payment id nor a payment status. */
+  loseBookAnswer(wireKey: string): void {
+    this.bookFixtures.set(wireKey, { ...this.bookFixtures.get(wireKey), lose: true });
+  }
+  /** The next book request is processed and its answer is dropped (a transport error for the caller). */
+  loseNextResponse(): void {
+    this.armDrop = true;
+  }
+  /** The book payments of a chapter, oldest first, as `{ id, status }`. */
+  bookPaymentIds(chapterId: string): { id: string; status: 'sent' | 'failed' | 'pending' }[] {
+    return this.bookPayments.filter((p) => p.chapterId === chapterId).map((p) => ({ id: p.id, status: p.status }));
+  }
+  /** The chapter's checking account id (what a book payment names). */
+  checkingId(chapterId: string): string {
+    return this.accountOf(chapterId).id;
+  }
   private contactByMobile(mobile: string): Contact {
     const c = this.contacts.find((x) => x.mobile === mobile);
     if (!c) throw new Error('no such contact');
@@ -441,7 +497,7 @@ export class FakeCrowded {
       const max = q['filter[createdAt][max]'] ? new Date(q['filter[createdAt][max]']) : undefined;
       const rows = this.ledger
         .filter((t) => t.chapterId === ch.id && t.accountId === accountId && (!min || t.at >= min) && (!max || t.at <= max))
-        .map((t) => ({ id: t.id, accountId: t.accountId, type: 'bookTransaction', direction: t.direction, amount: wire(t.amount), title: t.title, createdAt: t.at.toISOString(), ...(t.collectPaymentId ? { collectPaymentId: t.collectPaymentId } : {}) }));
+        .map((t) => ({ id: t.id, accountId: t.accountId, type: 'bookTransaction', direction: t.direction, amount: wire(t.amount), title: t.title, createdAt: t.at.toISOString(), ...(t.collectPaymentId ? { collectPaymentId: t.collectPaymentId } : {}), ...(t.counterpartyId ? { counterparty: { accountId: t.counterpartyId } } : {}) }));
       return this.page(rows, q);
     }
     if (method === 'POST' && rest === 'subaccounts') {
@@ -514,7 +570,12 @@ export class FakeCrowded {
       return i ? ok(this.intentJson(i)) : err(404, 'Intent not found');
     }
     if (method === 'POST' && rest === 'payments/quotes/ach') return ok({ type: 'ach', amount: d['amount'], ...(this.quoteWithoutFee ? {} : { fee: { feeType: 'flat', amount: wire(25n) } }), totalDebit: wire(cents(d['amount']) + 25n), quotedAt: this.now().toISOString() });
+    if (method === 'POST' && rest === 'payments' && d['type'] === 'book') return this.bookRoute(ch, d);
     if (method === 'POST' && rest === 'payments') return this.originate(ch, d);
+    if (method === 'GET' && rest === 'payments') return this.bookList(ch, q);
+    if ((m = rest.match(/^payments\/([^/]+)$/)) && method === 'GET' && this.bookPayments.some((x) => x.chapterId === ch.id && x.id === m![1])) {
+      return ok(this.bookJson(this.bookPayments.find((x) => x.chapterId === ch.id && x.id === m![1])!));
+    }
     if ((m = rest.match(/^payments\/([^/]+)(\/cancel)?$/))) {
       const p = this.payments.find((x) => x.chapterId === ch.id && x.id === m![1]);
       if (!p) return err(404, 'Payment not found');
@@ -529,7 +590,7 @@ export class FakeCrowded {
     if (method === 'GET' && rest === 'transactions') {
       const min = q['filter[createdAt][min]'] ? new Date(q['filter[createdAt][min]']) : undefined;
       const max = q['filter[createdAt][max]'] ? new Date(q['filter[createdAt][max]']) : undefined;
-      const rows = this.ledger.filter((t) => t.chapterId === ch.id && (!min || t.at >= min) && (!max || t.at <= max)).map((t) => ({ id: t.id, accountId: t.accountId, type: 'achTransaction', direction: t.direction, amount: wire(t.amount), title: t.title, createdAt: t.at.toISOString() }));
+      const rows = this.ledger.filter((t) => t.chapterId === ch.id && (!min || t.at >= min) && (!max || t.at <= max)).map((t) => ({ id: t.id, accountId: t.accountId, type: t.counterpartyId ? 'bookTransaction' : 'achTransaction', direction: t.direction, amount: wire(t.amount), title: t.title, createdAt: t.at.toISOString(), ...(t.counterpartyId ? { counterparty: { accountId: t.counterpartyId } } : {}) }));
       return this.page(rows, q);
     }
     return err(404, 'No such route');
@@ -589,6 +650,84 @@ export class FakeCrowded {
       const failedCount = r.filter((x) => x['error'] === true).length;
       return ok({ totalProcessed: r.length, successCount: r.length - failedCount, failedCount, results: r });
     });
+  }
+
+
+  // ---- book payments: the route (T-0719) ----------------------------------------------------------------------
+
+  private bookJson(p: BookPayment): Json {
+    return { id: p.id, method: 'book', status: p.status, amount: wire(p.amount), description: p.description, accounts: { sourceAccountId: p.source, destinationAccountId: p.dest }, ...(p.reasonCode ? { reasonCode: p.reasonCode } : {}), fee: null, createdAt: p.createdAt.toISOString() };
+  }
+
+  /** `GET .../payments`: newest first, `filter[method]`, offset paging, no total (`meta.count` only). */
+  private bookList(ch: Chapter, q: Record<string, string>): Response {
+    const limit = Math.min(Number(q['pagination[limit]'] ?? 10), this.pageSize);
+    const offset = Number(q['pagination[offset]'] ?? 0);
+    const method = q['filter[method]'];
+    const rows = method && method !== 'book' ? [] : this.bookPayments.filter((p) => p.chapterId === ch.id && (!q['filter[status]'] || p.status === q['filter[status]']));
+    const page = [...rows].reverse().slice(offset, offset + limit);
+    return ok({ payments: page.map((p) => this.bookJson(p)) }, 200, { limit, offset, count: page.length });
+  }
+
+  /** The account an id names in this chapter: the checking account or a wallet. `other` when it exists in another chapter, `none` when nowhere. */
+  private bookAccount(ch: Chapter, id: string): { kind: 'checking' | 'wallet'; balance: bigint; hold: bigint; status: string; move: (delta: bigint) => void } | 'other' | 'none' {
+    const chk = this.accounts.find((a) => a.id === id);
+    if (chk) return chk.chapterId !== ch.id ? 'other' : { kind: 'checking', balance: chk.balance, hold: 0n, status: 'Open', move: (delta) => void (chk.balance += delta) };
+    const w = this.wallets.find((x) => String(x.id) === id);
+    if (!w) return 'none';
+    return w.chapterId !== ch.id ? 'other' : { kind: 'wallet', balance: w.balance, hold: w.hold, status: w.status, move: (delta) => void (w.balance += delta) };
+  }
+
+  private bookRoute(ch: Chapter, d: Json): Response {
+    const items = Array.isArray(d['payments']) ? (d['payments'] as Json[]) : [];
+    if (items.length < 1 || items.length > 10) return err(400, 'Between 1 and 10 payments', 'VALIDATION_ERROR');
+    if (items.some((it) => !isV4Key(it['idempotencyKey']))) return err(400, V4_MESSAGE, undefined, 'ValidationError');
+    if (this.armDrop) {
+      this.armDrop = false;
+      this.dropNextResponse = true;
+    }
+    const results = items.map((it, index): Json => this.bookOne(ch, it, index));
+    const failedCount = results.filter((r) => r['status'] === 'failed').length;
+    return ok({ chapterId: ch.id, totalProcessed: results.length, successCount: results.length - failedCount, failedCount, results }, 201);
+  }
+
+  private bookOne(ch: Chapter, it: Json, index: number): Json {
+    const key = String(it['idempotencyKey']);
+    const fail = (errorCode: string): Json => ({ index, status: 'failed', error: errorCode.replaceAll('_', ' ').toLowerCase(), errorCode });
+    const done = (p: BookPayment, lose: boolean): Json => (lose ? { index, status: 'success' } : { index, status: 'success', paymentId: p.id, paymentStatus: p.status === 'sent' ? 'Sent' : p.status === 'pending' ? 'Pending' : 'Rejected', ...(p.reasonCode ? { reasonCode: p.reasonCode } : {}) });
+    // The key is scoped to the chapter: the same key in another chapter is another payment.
+    const prior = this.bookPayments.find((p) => p.chapterId === ch.id && p.key === key);
+    if (prior) return this.duplicateKeys === 'error' ? fail('DUPLICATE_PAYMENT') : done(prior, false);
+    const fx = this.bookFixtures.get(key);
+    if (fx) this.bookFixtures.delete(key);
+
+    const amount = it['amount'];
+    const description = it['description'];
+    const src = this.bookAccount(ch, String(it['sourceAccountId']));
+    const dst = this.bookAccount(ch, String(it['destinationAccountId']));
+    if (src === 'none' || dst === 'none') return fail('NOT_FOUND');
+    if (src === 'other' || dst === 'other') return fail('VALIDATION_ERROR');
+    if (!Number.isInteger(amount) || (amount as number) <= 0 || typeof description !== 'string' || description === '' || description.length > 80) return fail('VALIDATION_ERROR');
+    if ((src.kind === 'checking') === (dst.kind === 'checking')) return fail('VALIDATION_ERROR');
+    if (src.status !== 'Open' || dst.status !== 'Open') return fail('ACCOUNT_UNAVAILABLE');
+    if (fx?.refuse) return fail(fx.refuse);
+
+    const minor = cents(amount);
+    const persist = (status: BookPayment['status'], reasonCode?: string): BookPayment => {
+      const p: BookPayment = { id: this.id('bp'), chapterId: ch.id, key, source: String(it['sourceAccountId']), dest: String(it['destinationAccountId']), amount: minor, description, status, ...(reasonCode ? { reasonCode } : {}), createdAt: this.now() };
+      this.bookPayments.push(p);
+      return p;
+    };
+    if (fx?.status === 'Pending') return done(persist('pending'), false);
+    if (fx?.status === 'Rejected' || src.balance - src.hold < minor) return done(persist('failed', 'InsufficientFunds'), false);
+
+    src.move(-minor);
+    dst.move(minor);
+    const p = persist('sent');
+    const at = this.now();
+    this.ledger.push({ id: this.id('tx'), chapterId: ch.id, accountId: p.source, direction: 'Debit', amount: minor, title: description, at, counterpartyId: p.dest });
+    this.ledger.push({ id: this.id('tx'), chapterId: ch.id, accountId: p.dest, direction: 'Credit', amount: minor, title: description, at, counterpartyId: p.source });
+    return done(p, fx?.lose === true);
   }
 
   private originate(ch: Chapter, d: Json): Response {

@@ -21,3 +21,4 @@ export * from './events.contract.ts';
 export * from './agent-gateway.contract.ts';
 export * from './il-payinit.contract.ts';
 export * from './institution-banking.contract.ts';
+export * from './mirror.contract.ts';

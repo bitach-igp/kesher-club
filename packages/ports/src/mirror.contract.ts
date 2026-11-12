@@ -3,9 +3,11 @@
 //   in order, each echoing the leg the vendor holds; ILS, zero, negative amounts, an empty or oversize batch, an empty
 //   memo, a short key or a key or memo repeated inside the batch refuse the whole batch (VALIDATION_FAILED) before the provider;
 // - books a key once: a replay answers `booked` with the same paymentRef and the FIRST leg, even when the new body differs;
-// - refuses one leg without stopping the others (continue-on-error), with a code from the closed set. A refusal the vendor
-//   persists (a Rejected overdraw) has a paymentRef, is listed as failed and is found by memo; a refusal before
-//   persistence (validation, unknown or unavailable account) has no paymentRef, is never listed and reads not_found;
+// - refuses one leg without stopping the others (continue-on-error), with a code from the closed set. The live probe
+//   (2026-11-11) proves two cases only: a Rejected wallet overdraw is persisted (a paymentRef, listed as failed, found by memo)
+//   and a validation refusal of a wallet-to-wallet leg is not (no paymentRef, never listed, reads not_found). For every other
+//   refusal (NOT_FOUND, ACCOUNT_UNAVAILABLE, PAYMENT_FAILED, a checking-side overdraw) the vendor is unproven, so the suite
+//   asserts agreement only: a paymentRef means listed as failed and found by memo; none means neither;
 // - refuses a memo over 80 printable ASCII characters (the vendor never sees it);
 // - finds a leg by chapter and memo without moving anything (the vendor has no lookup by key), so a lost answer is
 //   recovered by memo before any resend; two payments with one memo are `ambiguous`;
@@ -15,7 +17,7 @@
 //   paymentRef bookBatch returned and the account movements, each exactly once across pages.
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
-import { type MirrorAccountStatus, type MirrorLeg, type MirrorMovement, type MirrorPayment, type MirrorPort, type MirrorReasonCode } from './mirror.ts';
+import { type MirrorAccountStatus, type MirrorLeg, type MirrorLegResult, type MirrorMovement, type MirrorPayment, type MirrorPort, type MirrorReasonCode } from './mirror.ts';
 
 export interface MirrorContractOptions<P extends MirrorPort> {
   /** The chapter whose checking account is on one side of every leg. */
@@ -47,6 +49,23 @@ export function mirrorContract<P extends MirrorPort>(name: string, make: () => P
     return port;
   };
   const bal = async (port: P, ref = 'acct_m1') => (await port.accountBalance(ref)).balance;
+  const listed = async (port: P): Promise<MirrorPayment[]> => {
+    const rows: MirrorPayment[] = [];
+    for await (const p of port.payments({ chapterRef, from: FROM, to: TO })) rows.push(p);
+    return rows;
+  };
+  // A refusal the vendor is not proven to persist: with a paymentRef it is listed as failed and found by memo, without one it is neither.
+  const agrees = async (port: P, result: MirrorLegResult | undefined, memo: string): Promise<void> => {
+    const rows = (await listed(port)).filter((p) => p.memo === memo);
+    const read = await port.readBack({ chapterRef, memo });
+    if (result?.paymentRef) {
+      expect(rows.map((p) => [p.paymentRef, p.status])).toEqual([[result.paymentRef, 'failed']]);
+      expect(read).toMatchObject({ status: 'found', result: { status: 'refused', paymentRef: result.paymentRef } });
+    } else {
+      expect(rows).toEqual([]);
+      expect(read).toEqual({ status: 'not_found' });
+    }
+  };
 
   describe(`MirrorPort contract: ${name}`, () => {
     it('books a leg each way, echoes the stored leg and moves both balances in bigint', async () => {
@@ -156,35 +175,26 @@ export function mirrorContract<P extends MirrorPort>(name: string, make: () => P
       expect(await bal(port)).toBe(3_500n);
       expect(await port.accountBalance('acct_m2')).toMatchObject({ status: 'frozen' });
       expect(await port.accountBalance('acct_m3')).toMatchObject({ status: 'closed' });
-      // Refused before persistence (unavailable, unknown): no payment, nothing to read back or list.
-      for (const k of ['key-leg-0002', 'key-leg-0003', 'key-leg-0005']) {
-        expect(res.find((r) => r.leg?.memo === `KC-${k}`)).toBeUndefined();
-        expect(await port.readBack({ chapterRef, memo: `KC-${k}` })).toEqual({ status: 'not_found' });
-      }
-      expect(res[1]?.paymentRef).toBeUndefined();
-      expect(res[2]?.paymentRef).toBeUndefined();
-      const listed: string[] = [];
-      for await (const p of port.payments({ chapterRef, from: FROM, to: TO })) listed.push(p.memo);
-      expect(listed.sort()).toEqual(['KC-key-leg-0001', 'KC-key-leg-0004', 'KC-key-leg-0006']);
-      // A persisted refusal (the overdraw) has a payment and is final for its key: a replay answers the same refusal.
+      // The wallet overdraw is the probed persisted case; the other refusals are unproven, so each must agree with the vendor's own list.
       expect(res[0]?.paymentRef).toBeTruthy();
+      for (const [i, k] of [[0, 'key-leg-0001'], [1, 'key-leg-0002'], [2, 'key-leg-0003'], [3, 'key-leg-0004'], [4, 'key-leg-0005']] as const) await agrees(port, res[i], `KC-${k}`);
+      expect((await listed(port)).map((p) => p.memo).includes('KC-key-leg-0006')).toBe(true);
+      // A persisted refusal (the overdraw) is final for its key: a replay answers the same refusal.
       const [again] = await port.bookBatch([leg('key-leg-0001', { direction: 'to_checking', amount: money(5_000n, 'USD') })], chapterRef);
       expect(again).toMatchObject({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
     });
 
-    it('a persisted refusal (PAYMENT_FAILED) has a payment, is listed as failed and is found by memo; an unpersisted one (VALIDATION_ERROR) is none of these', async () => {
+    it('a PAYMENT_FAILED refusal agrees with the vendor list, and a VALIDATION_ERROR one (the probed unpersisted case) is never listed or found', async () => {
       const port = await seeded();
       opts.refuse(port, 'key-leg-0001', 'PAYMENT_FAILED');
       opts.refuse(port, 'key-leg-0002', 'VALIDATION_ERROR');
-      const [persisted, unpersisted] = await port.bookBatch([leg('key-leg-0001'), leg('key-leg-0002')], chapterRef);
-      expect(persisted).toMatchObject({ status: 'refused', reasonCode: 'PAYMENT_FAILED' });
-      expect(persisted?.paymentRef).toBeTruthy();
+      const [failed, unpersisted] = await port.bookBatch([leg('key-leg-0001'), leg('key-leg-0002')], chapterRef);
+      expect(failed).toMatchObject({ status: 'refused', reasonCode: 'PAYMENT_FAILED' });
       expect(unpersisted).toMatchObject({ status: 'refused', reasonCode: 'VALIDATION_ERROR' });
-      expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0001' })).toMatchObject({ status: 'found', result: { status: 'refused', reasonCode: 'PAYMENT_FAILED', paymentRef: persisted?.paymentRef } });
+      await agrees(port, failed, 'KC-key-leg-0001');
+      expect(unpersisted?.paymentRef).toBeUndefined();
       expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0002' })).toEqual({ status: 'not_found' });
-      const listed: MirrorPayment[] = [];
-      for await (const p of port.payments({ chapterRef, from: FROM, to: TO })) listed.push(p);
-      expect(listed.map((p) => [p.paymentRef, p.status])).toEqual([[persisted?.paymentRef, 'failed']]);
+      expect((await listed(port)).map((p) => p.memo)).not.toContain('KC-key-leg-0002');
       expect(await bal(port)).toBe(10_000n);
     });
 
@@ -197,7 +207,8 @@ export function mirrorContract<P extends MirrorPort>(name: string, make: () => P
       expect(rejected?.paymentRef).toBeTruthy();
       expect(pending?.status).toBe('unknown');
       expect(await bal(port)).toBe(10_000n);
-      expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0001' })).toMatchObject({ status: 'found', result: { status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS', paymentRef: rejected?.paymentRef } });
+      // The vendor's list may carry no reason for a failed payment, so a read-back answers a reason from the closed set, not necessarily the item's.
+      expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0001' })).toMatchObject({ status: 'found', result: { status: 'refused', reasonCode: expect.stringMatching(/^(INSUFFICIENT_FUNDS|PAYMENT_FAILED)$/), paymentRef: rejected?.paymentRef } });
       expect(await port.readBack({ chapterRef, memo: 'KC-key-leg-0002' })).toMatchObject({ status: 'found', result: { status: 'unknown' } });
       const listed: MirrorPayment[] = [];
       for await (const p of port.payments({ chapterRef, from: FROM, to: TO })) listed.push(p);
@@ -236,8 +247,9 @@ export function mirrorContract<P extends MirrorPort>(name: string, make: () => P
     });
 
     it('a refused leg retried under a new key and the same memo is ambiguous, with both candidates to act on; a new memo is not', async () => {
-      const port = await seeded(10_000n, 1_000n);
-      const [refused] = await port.bookBatch([leg('key-leg-0001', { amount: money(5_000n, 'USD') })], chapterRef); // overdraws checking
+      const port = await seeded();
+      opts.vendorStatus(port, 'key-leg-0001', 'Rejected'); // the probed persisted refusal
+      const [refused] = await port.bookBatch([leg('key-leg-0001', { amount: money(5_000n, 'USD') })], chapterRef);
       expect(refused).toMatchObject({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
       await port.bookBatch([leg('key-leg-0002', { memo: 'KC-key-leg-0001', amount: money(500n, 'USD') })], chapterRef);
       const read = await port.readBack({ chapterRef, memo: 'KC-key-leg-0001' });
@@ -272,7 +284,7 @@ export function mirrorContract<P extends MirrorPort>(name: string, make: () => P
       const legs = Array.from({ length: 5 }, (_, i) => leg(`key-leg-${String(i).padStart(4, '0')}`, { amount: money(BigInt(100 + i), 'USD'), direction: i % 2 ? 'to_checking' : 'from_checking' }));
       const res = await port.bookBatch(legs, chapterRef);
       await port.bookBatch(legs.slice(0, 2), chapterRef); // a replay adds nothing
-      opts.refuse(port, 'key-leg-0009', 'PAYMENT_FAILED');
+      opts.vendorStatus(port, 'key-leg-0009', 'Rejected');
       const [failed] = await port.bookBatch([leg('key-leg-0009')], chapterRef);
       const rows: MirrorPayment[] = [];
       for await (const p of port.payments({ chapterRef, from: FROM, to: TO })) rows.push(p);
