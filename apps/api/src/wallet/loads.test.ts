@@ -7,7 +7,7 @@
 // vendor is asked. Over the funding simulator and PGlite with a real passkey and step-up.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
-import { FundingError, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
+import { FundingAccountError, FundingAccountSimulator, FundingError, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
@@ -765,5 +765,142 @@ describe('applyVendorLoad: re-read the load, then move its transfer (T-0703)', (
     await ok.applyVendorLoad('v:intent-2', NOW);
     const late = svcOver(async () => vendor({ loadId: 'v:intent-2', status: 'failed', failureCode: 'RETURNED' }));
     expect(await late.applyVendorLoad('v:intent-2', NOW)).toMatchObject({ id: t.id, state: 'settled' });
+  });
+});
+
+describe('a hosted load needs the member\'s funding account (T-0740, TST-WAL-002)', () => {
+  type Details = { firstName: string; lastName: string; email: string; mobile: string; dateOfBirth?: string };
+  let n = 0;
+  /** One vendor for the block: its contact refs are unique per provider in ops.external_ref. */
+  const accounts = new FundingAccountSimulator();
+  /** A fresh payer each time, so the vendor's party-and-mobile rules never cross between cases. Fake details, never a real person's. */
+  const setup = (over: { email?: string; details?: boolean } = {}) => {
+    const s = app.services;
+    n += 1;
+    const party = uuidv7(NOW);
+    const ensure = vi.spyOn(accounts, 'ensureAccount');
+    ensure.mockReset();
+    const sim = host.simulators.funding;
+    const seen: Parameters<FundingPort['createLoad']>[0][] = [];
+    const port: FundingPort = {
+      async createLoad(input, key) {
+        seen.push(input);
+        return sim.createLoad({ ...input, method: 'card', paymentMethodId: 'pm_ok' }, key);
+      },
+      getLoad: (id) => sim.getLoad(id),
+      refund: (input, key) => sim.refund(input, key),
+      getRefund: (id) => sim.getRefund(id),
+      parseWebhook: (headers, rawBody) => sim.parseWebhook(headers, rawBody),
+    };
+    const stored: Details = { firstName: 'Test', lastName: 'Member', email: over.email ?? `member${n}@example.test`, mobile: `+1415555${String(1000 + n).padStart(4, '0')}` };
+    const details = { read: vi.fn(async (): Promise<Details | undefined> => (over.details === false ? undefined : stored)) };
+    const deps = { db, port, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: new StaticFlags(undefined, { 'wallet.enabled': true }), provider: 'simulator-funding' };
+    const svc = new LoadService({ ...deps, fundingAccounts: accounts, details });
+    return { party, svc, accounts, ensure, details, seen, stored, port };
+  };
+  const hostedBody = (party: string) => ({ memberPartyId: party, amount: USD_100, method: 'hosted' });
+  const refs = async (party: string) => (await db.query<{ entity_type: string; provider: string; external_id: string }>(`select entity_type, provider, external_id from ops.external_ref where entity_id = $1 order by entity_type`, [party])).rows;
+  const transfersOf = async (party: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ops.transfer where from_party_id = $1`, [party])).rows[0]!.n;
+  const cases = async (party: string) => (await db.query<{ kind: string; payload: unknown }>(`select kind, payload from ops.case where dedupe_key = $1`, [`funding-account:${party}`])).rows;
+
+  it('no stored details: 422 VALIDATION_FAILED with detailsRequired, before any vendor call and with no transfer', async () => {
+    const t = setup({ details: false });
+    await expect(t.svc.request(t.party, hostedBody(t.party), 'hosted-nodetails-1', NOW)).rejects.toMatchObject({ code: 'VALIDATION_FAILED', extra: { detailsRequired: true } });
+    expect(t.ensure).not.toHaveBeenCalled();
+    expect(t.seen).toHaveLength(0);
+    expect(await transfersOf(t.party)).toBe(0);
+    expect(await refs(t.party)).toEqual([]);
+  });
+
+  it('with details: ensureAccount once under funding-account:{partyId}, both refs written, and the pull carries the contact ref', async () => {
+    const t = setup();
+    const view = await t.svc.request(t.party, hostedBody(t.party), 'hosted-first-001', NOW);
+    expect(view.state).toBe('settled'); // the scripted vendor answers a card here; the hosted request fields are T-0714
+    expect(t.ensure).toHaveBeenCalledTimes(1);
+    expect(t.ensure.mock.calls[0]![1]).toBe(`funding-account:${t.party}`);
+    expect(t.ensure.mock.calls[0]![0]).toMatchObject({ partyId: t.party, firstName: 'Test', mobile: t.stored.mobile });
+    const rows = await refs(t.party);
+    expect(rows.map((r) => [r.entity_type, r.provider])).toEqual([['funding_account', 'simulator-funding'], ['funding_contact', 'simulator-funding']]);
+    const contact = rows.find((r) => r.entity_type === 'funding_contact')!.external_id;
+    expect(t.seen[0]!.customerId).toBe(contact);
+    expect(t.seen[0]!.customerId).not.toBe(t.party);
+    expect(JSON.stringify(view)).not.toContain(rows.find((r) => r.entity_type === 'funding_account')!.external_id);
+    expect(JSON.stringify(view)).not.toContain(contact);
+  });
+
+  it('the second hosted load makes no ensureAccount call and reads no details: the rows are read first', async () => {
+    const t = setup();
+    await t.svc.request(t.party, hostedBody(t.party), 'hosted-twice-001', NOW);
+    t.ensure.mockClear();
+    t.details.read.mockClear();
+    await t.svc.request(t.party, hostedBody(t.party), 'hosted-twice-002', NOW);
+    expect(t.ensure).not.toHaveBeenCalled();
+    expect(t.details.read).not.toHaveBeenCalled();
+    expect(await refs(t.party)).toHaveLength(2);
+    expect(t.seen[1]!.customerId).toBe(t.seen[0]!.customerId);
+  });
+
+  it.each(['rejected', 'archived', 'frozen'])('a %s member is refused with FEATURE_OFF naming the status, nothing created, before the transfer begins', async (status) => {
+    const t = setup({ email: `${status}@example.test` });
+    const err = await t.svc.request(t.party, hostedBody(t.party), `hosted-${status}-01`, NOW).catch((e: unknown) => e as Error);
+    expect(err).toMatchObject({ code: 'FEATURE_OFF' });
+    const text = JSON.stringify([(err as Error).message, (err as { extra?: unknown }).extra]);
+    expect(text).toContain(status);
+    expect(text).not.toContain(t.stored.mobile);
+    expect(text).not.toContain('Member');
+    expect(t.seen).toHaveLength(0);
+    expect(await transfersOf(t.party)).toBe(0);
+    expect(await refs(t.party)).toEqual([]);
+  });
+
+  it('a closed account is refused the same way', async () => {
+    const t = setup();
+    t.ensure.mockResolvedValueOnce({ contactRef: 'c:9', accountRef: 'a:9', status: 'closed' });
+    await expect(t.svc.request(t.party, hostedBody(t.party), 'hosted-closed-01', NOW)).rejects.toMatchObject({ code: 'FEATURE_OFF', message: expect.stringContaining('closed') });
+    expect(await refs(t.party)).toEqual([]);
+  });
+
+  it.each(['DUPLICATE_MOBILE', 'PARTY_CONFLICT'] as const)('%s is 409 IDEMPOTENCY_CONFLICT with a fixed message and one case for people', async (code) => {
+    const t = setup();
+    t.ensure.mockRejectedValue(new FundingAccountError(code, `vendor text with ${t.stored.mobile}`));
+    for (const k of ['hosted-conflict-a1', 'hosted-conflict-a2']) {
+      const err = await t.svc.request(t.party, hostedBody(t.party), k, NOW).catch((e: unknown) => e as Error);
+      expect(err).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+      expect((err as Error).message).not.toContain(t.stored.mobile);
+    }
+    const rows = await cases(t.party);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.kind).toBe('load_account_conflict');
+    expect(JSON.stringify(rows[0]!.payload)).not.toContain(t.stored.mobile);
+    expect(JSON.stringify(rows[0]!.payload)).not.toContain('Member');
+    expect(await refs(t.party)).toEqual([]);
+    expect(await transfersOf(t.party)).toBe(0);
+  });
+
+  it('a vendor outage is PROVIDER_UNAVAILABLE and nothing is created', async () => {
+    const t = setup({ email: 'outage@example.test' });
+    await expect(t.svc.request(t.party, hostedBody(t.party), 'hosted-outage-01', NOW)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect(await refs(t.party)).toEqual([]);
+    expect(await transfersOf(t.party)).toBe(0);
+    expect(t.seen).toHaveLength(0);
+  });
+
+  it('a hosted load for another member is FORBIDDEN, and without the account dependencies the hosted path is FEATURE_OFF', async () => {
+    const t = setup();
+    const other = uuidv7(NOW);
+    await expect(t.svc.request(t.party, hostedBody(other), 'hosted-other-001', NOW)).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    expect(t.ensure).not.toHaveBeenCalled();
+    const s = app.services;
+    const bare = new LoadService({ db, port: t.port, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: new StaticFlags(undefined, { 'wallet.enabled': true }), provider: 'simulator-funding' });
+    await expect(bare.request(t.party, hostedBody(t.party), 'hosted-bare-0001', NOW)).rejects.toMatchObject({ code: 'FEATURE_OFF' });
+    expect(await transfersOf(t.party)).toBe(0);
+  });
+
+  it('every other method passes the party id as the customer, with no account call', async () => {
+    const t = setup();
+    await t.svc.request(t.party, { memberPartyId: t.party, amount: USD_100, method: 'apple_pay', paymentMethodId: 'pm_ok' }, 'hosted-apple-0001', NOW);
+    expect(t.seen[0]!.customerId).toBe(t.party);
+    expect(t.ensure).not.toHaveBeenCalled();
+    expect(t.details.read).not.toHaveBeenCalled();
   });
 });

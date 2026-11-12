@@ -24,7 +24,7 @@
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
 import { applyBps, DomainError, fromWire, money, sub, toWire, uuidv7, type Currency, type Money, type Posting } from '@kesher/domain';
-import { applyRate, FundingError, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
+import { applyRate, FundingAccountError, FundingError, type FundingAccountPort, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import type { Database } from '../db.ts';
@@ -174,7 +174,25 @@ interface Deps {
   rates?: Pick<RateService, 'rateFor'>;
   /** The purse owner's plan markup in basis points (FxService.markupFor); conversions need it beside the rates. */
   markups?: { markupFor(partyId: string): Promise<bigint> };
+  /** The funding binding's account capability (T-0740). With `details`, a hosted load makes the payer's contact and wallet account first; without either, the hosted method answers FEATURE_OFF. (Named apart from `accounts`, the ledger's.) */
+  fundingAccounts?: FundingAccountPort;
+  /** The member's own funding details (T-0738's reader); `undefined` when none were given. Personal data: never logged, thrown or stored by this class. */
+  details?: { read(partyId: string): Promise<FundingDetails | undefined> };
 }
+
+export interface FundingDetails {
+  firstName: string;
+  lastName: string;
+  email: string;
+  /** E.164. */
+  mobile: string;
+  dateOfBirth?: string;
+}
+
+/** The idempotency key of a member's funding account at the vendor: stable per party, so a retry is the same account. */
+export const fundingAccountKey = (partyId: string): string => `funding-account:${partyId}`;
+const FUNDING_REF_TYPES = ['funding_contact', 'funding_account'] as const;
+const BLOCKED_ACCOUNT_STATUSES = ['rejected', 'archived', 'frozen', 'closed'];
 
 export class LoadService implements LoadActivities {
   private readonly d: Deps;
@@ -192,6 +210,8 @@ export class LoadService implements LoadActivities {
   async request(payerPartyId: string, body: unknown, key: string, now: Date): Promise<LoadView> {
     if (!(await this.d.flags.isOn(WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
     const input = await this.parse(payerPartyId, body);
+    // The account gate runs before the transfer begins: a refused member leaves nothing behind.
+    if (input.method === 'hosted') await this.ensureFundingAccount(input.payerPartyId, now);
     const run = await runLoad(this, input, key, now);
     return this.view(run);
   }
@@ -213,11 +233,53 @@ export class LoadService implements LoadActivities {
   }
 
   async pull(input: LoadInput, workflowId: string): Promise<VendorLoad> {
+    // A hosted load is paid by the payer's contact at the vendor (`c:<id>`), not by our party id; every other method keeps the party id.
+    const customerId = input.method === 'hosted' ? await this.contactRef(input.payerPartyId) : input.payerPartyId;
     try {
-      return await this.d.port.createLoad({ customerId: input.payerPartyId, method: input.method, amount: input.amount, ...(input.paymentMethodId ? { paymentMethodId: input.paymentMethodId } : {}) }, workflowId);
+      return await this.d.port.createLoad({ customerId, method: input.method, amount: input.amount, ...(input.paymentMethodId ? { paymentMethodId: input.paymentMethodId } : {}) }, workflowId);
     } catch (e) {
       if (e instanceof FundingError && e.code === 'DECLINED') throw e;
       throw mapFundingError(e);
+    }
+  }
+
+  private async contactRef(partyId: string): Promise<string> {
+    const r = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'funding_contact' and entity_id = $1 and provider = $2`, [partyId, this.d.provider]);
+    if (!r.rows[0]) throw new DomainError('FEATURE_OFF', 'Your funding account is not set up yet');
+    return r.rows[0].external_id;
+  }
+
+  /**
+   * The payer's contact and wallet account at the vendor, made once (T-0740, ADR-018 A1/A2). The refs in ops.external_ref are read first, so
+   * the second hosted load asks nobody; otherwise the details are read, `ensureAccount` runs under `funding-account:{partyId}`, and both
+   * refs are written. The vendor is the KYC authority: a rejected, archived, frozen or closed answer refuses the load, naming the status only.
+   */
+  private async ensureFundingAccount(partyId: string, now: Date): Promise<void> {
+    const { fundingAccounts, details } = this.d;
+    if (!fundingAccounts || !details) throw new DomainError('FEATURE_OFF', 'Hosted loads are not enabled yet');
+    const have = await this.d.db.query<{ entity_type: string }>(`select entity_type from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [partyId, this.d.provider, [...FUNDING_REF_TYPES]]);
+    if (FUNDING_REF_TYPES.every((t) => have.rows.some((r) => r.entity_type === t))) return;
+    const d = await details.read(partyId);
+    if (!d) throw new DomainError('VALIDATION_FAILED', 'Your funding details are needed first', { detailsRequired: true });
+    let ensured;
+    try {
+      ensured = await fundingAccounts.ensureAccount({ partyId, firstName: d.firstName, lastName: d.lastName, email: d.email, mobile: d.mobile, ...(d.dateOfBirth ? { dateOfBirth: d.dateOfBirth } : {}) }, fundingAccountKey(partyId));
+    } catch (e) {
+      if (!(e instanceof FundingAccountError)) throw e;
+      if (e.code === 'PROVIDER_UNAVAILABLE') throw new DomainError('PROVIDER_UNAVAILABLE', 'Funding is temporarily unavailable; try again with the same key');
+      if (e.code === 'DUPLICATE_MOBILE' || e.code === 'PARTY_CONFLICT' || e.code === 'IDEMPOTENCY_CONFLICT') {
+        // For people: the case carries the party and the code, never a name, number or vendor text.
+        await this.d.db.query(
+          `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_account_conflict', $2, 'medium', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
+          [uuidv7(now), fundingAccountKey(partyId), { partyId, code: e.code }, now],
+        );
+        throw new DomainError('IDEMPOTENCY_CONFLICT', 'Your funding account could not be set up; support has been told');
+      }
+      throw new DomainError('VALIDATION_FAILED', 'Your funding details were not accepted', { detailsRequired: true });
+    }
+    if (!('accountRef' in ensured) || BLOCKED_ACCOUNT_STATUSES.includes(ensured.status)) throw new DomainError('FEATURE_OFF', `Your funding account is ${ensured.status}`);
+    for (const [type, ref] of [['funding_contact', ensured.contactRef], ['funding_account', ensured.accountRef]] as const) {
+      await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [type, partyId, this.d.provider, ref]);
     }
   }
 
@@ -540,8 +602,12 @@ export class LoadService implements LoadActivities {
     const b = (body ?? {}) as { memberPartyId?: unknown; amount?: unknown; method?: unknown; paymentMethodId?: unknown; purseCurrency?: unknown };
     if (typeof b.memberPartyId !== 'string' || !b.memberPartyId) throw new DomainError('VALIDATION_FAILED', 'memberPartyId is required');
     if (b.method === 'ach' && !(await this.d.flags.isOn(ACH_FLAG))) throw new DomainError('FEATURE_OFF', 'Bank loads are not enabled yet');
-    if (b.method === 'rtp') throw new DomainError('FEATURE_OFF', 'Instant bank loads are not enabled yet');
-    if (typeof b.method !== 'string' || (b.method !== 'ach' && !LOAD_METHODS.includes(b.method as FundingMethod))) throw new DomainError('VALIDATION_FAILED', `method must be one of ${[...LOAD_METHODS, 'ach'].join(', ')}`);
+    // `hosted` is accepted only here, behind the account gate; its request fields and consent are T-0714.
+    if (b.method === 'hosted') {
+      if (b.memberPartyId !== payerPartyId) throw new DomainError('FORBIDDEN', 'You can load your own purse with a hosted payment');
+      if (!this.d.fundingAccounts || !this.d.details) throw new DomainError('FEATURE_OFF', 'Hosted loads are not enabled yet');
+    } else if (b.method === 'rtp') throw new DomainError('FEATURE_OFF', 'Instant bank loads are not enabled yet');
+    if (typeof b.method !== 'string' || (b.method !== 'ach' && b.method !== 'hosted' && !LOAD_METHODS.includes(b.method as FundingMethod))) throw new DomainError('VALIDATION_FAILED', `method must be one of ${[...LOAD_METHODS, 'ach'].join(', ')}`);
     let amount: Money;
     try {
       amount = fromWire(b.amount as { minor: string; currency: string });
