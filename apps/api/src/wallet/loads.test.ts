@@ -1109,15 +1109,42 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
       const rows = await returnedCase(key);
       expect(rows).toEqual([{ kind: 'load_returned_after_release', severity: 'high', status: 'open', payload: expect.objectContaining({ transferId: transfer.id, amount: { minor: '10000', currency: 'USD' }, failureCode: 'RETURNED', reasonCode: 'RETURNED', stage: 'before_journal' }) }]);
       expect(JSON.stringify(rows[0]!.payload)).not.toMatch(/@|\+\d{8}/);
+    });
 
-      // A load the vendor never credited (an ACH still processing there), reported returned, opens no case.
-      const ach = await t.sim.createLoad({ customerId: t.party, method: 'ach', amount: money(10_000n, 'USD'), paymentMethodId: 'pm_ok' }, 'never-credited-1');
-      const t2 = await svc.submit(await svc.begin({ payerPartyId: t.party, memberPartyId: t.party, method: 'ach', amount: money(10_000n, 'USD') }, 'never-credited-1', NOW), NOW);
-      await svc.link(t2, ach);
-      await svc.applyVendorLoad(ach.loadId, LATER);
-      expect((await s.transfers.byKey('never-credited-1'))!.state).toBe('failed');
-      expect(await returnedCase('never-credited-1')).toEqual([]);
-      expect(t.sim.creditCount(ach.loadId)).toBe(0);
+    describe('fail() reads only our own credit records and never calls the vendor credit', () => {
+      /** A returned ACH read over a transfer whose credit records we script: `markers` are the rows the credit step leaves. */
+      const returnedWith = async (tag: string, markers: { began?: boolean; outcome?: 'credited' | 'pending' | 'refused'; openCase?: boolean }) => {
+        const t = await setup();
+        const s = app.services;
+        const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
+        const port: FundingPort = { createLoad: (i, k) => t.sim.createLoad(i, k), getLoad: async (id) => ({ ...(await t.sim.getLoad(id)), status: 'failed', failureCode: 'RETURNED' }), refund: (i, k) => t.sim.refund(i, k), getRefund: (id) => t.sim.getRefund(id), parseWebhook: (h, b) => t.sim.parseWebhook(h, b) };
+        const svc = new LoadService({ db, port, credit: t.sim as Required<FundingSimulator>, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
+        const key = `ret-${tag}-0001`;
+        const ach = await t.sim.createLoad({ customerId: t.party, method: 'ach', amount: money(10_000n, 'USD'), paymentMethodId: 'pm_ok' }, key);
+        const tr = await svc.submit(await svc.begin({ payerPartyId: t.party, memberPartyId: t.party, method: 'ach', amount: money(10_000n, 'USD') }, key, NOW), NOW);
+        await svc.link(tr, ach);
+        const row = (type: string, ext: string) => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4)`, [type, tr.id, provider, ext]);
+        if (markers.began) await row('funding_credit:1', `${key}:credit:1`);
+        if (markers.outcome) await row('funding_credit_done:1', `${key}:credit:1:${markers.outcome}`);
+        if (markers.openCase) await db.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_credit_refused', $2, 'high', 'open', '{"attempt":1}', $3)`, [uuidv7(NOW), `load-credit:${tr.id}`, NOW]);
+        t.spy.mockClear();
+        const moved = await svc.applyVendorLoad(ach.loadId, LATER);
+        return { t, key, state: moved?.state, cases: (await returnedCase(key)).length, calls: t.spy.mock.calls.length };
+      };
+
+      it.each([
+        ['no marker', {}, 0],
+        ['a refused outcome', { began: true, outcome: 'refused' }, 0],
+        ['an open credit case', { began: true, outcome: 'credited', openCase: true }, 0],
+        ['a credited outcome', { began: true, outcome: 'credited' }, 1],
+        ['a pending outcome', { began: true, outcome: 'pending' }, 1],
+        ['a crash between the call and its outcome (marker, no outcome)', { began: true }, 1],
+      ] as const)('%s: the load fails, the vendor credit is never called, %i case(s)', async (name, markers, cases) => {
+        const r = await returnedWith(name.replace(/\W+/g, '').slice(0, 12), markers as never);
+        expect(r.state).toBe('failed');
+        expect(r.calls).toBe(0);
+        expect(r.cases).toBe(cases);
+      });
     });
   });
 });
