@@ -203,11 +203,74 @@ describe('CrowdedFunding hosted loads (T-0700, TST-WAL-002, TST-WAL-003)', () =>
       expect(r.holdUntil).toBe('2026-11-10T09:30:00.000Z');
     });
 
-    it('the hold days come from the option and a zero hold is the success instant', async () => {
-      const h = harness({ opts: { achHoldDays: 0 } });
+    it('the hold days come from the option; a zero hold is the success instant, so the load reads succeeded at once (T-0745)', async () => {
+      const h = harness({ opts: { achHoldDays: 1 } });
       const l = await start(h);
       h.fake.settle(h.fake.payIntent(ref(h, l), 'ach'));
-      expect((await load(h, l.loadId)).holdUntil).toBe(h.clock.t.toISOString());
+      expect((await load(h, l.loadId)).holdUntil).toBe(addBusinessDays(h.clock.t, 1).toISOString());
+      const z = harness({ opts: { achHoldDays: 0 } });
+      const zl = await start(z);
+      z.fake.settle(z.fake.payIntent(ref(z, zl), 'ach'));
+      const r = await load(z, zl.loadId);
+      expect(r.status).toBe('succeeded');
+      expect(r.holdUntil).toBeUndefined();
+    });
+
+    describe('an ACH read after its hold date is succeeded (T-0745)', () => {
+      const held = async (h: Harness) => {
+        const l = await start(h);
+        const p = h.fake.payIntent(ref(h, l), 'ach');
+        h.fake.settle(p);
+        return { l, p };
+      };
+
+      it('before the hold date it is on_hold with holdUntil; at the date and after it is succeeded with no holdUntil', async () => {
+        const h = harness({ clock: { t: new Date('2026-11-05T09:30:00Z') } });
+        const { l } = await held(h);
+        expect(await load(h, l.loadId)).toMatchObject({ status: 'on_hold', holdUntil: '2026-11-10T09:30:00.000Z' });
+        h.clock.t = new Date('2026-11-10T09:29:59.999Z');
+        expect((await load(h, l.loadId)).status).toBe('on_hold');
+        h.clock.t = new Date('2026-11-10T09:30:00.000Z');
+        const at = await load(h, l.loadId);
+        expect(at).toMatchObject({ status: 'succeeded', method: 'ach', amount });
+        expect(at.holdUntil).toBeUndefined();
+        h.clock.t = new Date('2026-11-20T00:00:00.000Z');
+        expect(await load(h, l.loadId)).toMatchObject({ status: 'succeeded' });
+      });
+
+      it('two adapters sharing a ledger agree on the date, whoever read the success first', async () => {
+        const h = harness({ clock: { t: new Date('2026-11-05T09:30:00Z') } });
+        const { l } = await held(h);
+        expect((await load(h, l.loadId)).holdUntil).toBe('2026-11-10T09:30:00.000Z'); // first read fixes the success instant
+        const other = harness({ fake: h.fake, chapterId: h.chapterId, ledger: h.ledger, clock: h.clock });
+        h.clock.t = new Date('2026-11-10T09:30:00Z');
+        expect((await other.adapter.getLoad(l.loadId)).status).toBe('succeeded');
+        expect((await h.adapter.getLoad(l.loadId)).status).toBe('succeeded');
+        h.clock.t = new Date('2026-11-10T09:29:00Z');
+        expect((await other.adapter.getLoad(l.loadId)).status).toBe('on_hold');
+      });
+
+      it('a payment returned after the hold date is failed RETURNED, as before', async () => {
+        const h = harness({ clock: { t: new Date('2026-11-05T09:30:00Z') } });
+        const { l, p } = await held(h);
+        await load(h, l.loadId);
+        h.clock.t = new Date('2026-11-12T09:30:00Z');
+        expect((await load(h, l.loadId)).status).toBe('succeeded');
+        h.fake.returnPayment(p);
+        expect(await load(h, l.loadId)).toMatchObject({ status: 'failed', failureCode: 'RETURNED' });
+      });
+
+      it('a card load is succeeded before and after any date, with no holdUntil', async () => {
+        const h = harness({ clock: { t: new Date('2026-11-05T09:30:00Z') } });
+        const l = await start(h);
+        h.fake.payIntent(ref(h, l), 'card');
+        for (const day of ['2026-11-05T09:30:00Z', '2026-12-05T09:30:00Z']) {
+          h.clock.t = new Date(day);
+          const r = await load(h, l.loadId);
+          expect(r.status).toBe('succeeded');
+          expect(r.holdUntil).toBeUndefined();
+        }
+      });
     });
 
     it('Failed and Cancelled are failed', async () => {
@@ -661,7 +724,7 @@ describe('hardening follow-ups (T-0735, TST-INS-006)', () => {
 });
 
 // ---- the wallet credit (T-0741, TST-WAL-003): FUNDING CREDIT against the fake. Fake-only: fund holding is off in the sandbox (README q29). ----
-function creditHarness(fundHolding: boolean, over: { creditOpts?: Partial<NonNullable<CrowdedFundingOptions['credit']>> } = {}) {
+function creditHarness(fundHolding: boolean, over: { creditOpts?: Partial<NonNullable<CrowdedFundingOptions['credit']>>; wrap?: (f: typeof globalThis.fetch) => typeof globalThis.fetch } = {}) {
   const clock = { t: new Date('2026-11-03T09:00:00Z') };
   const fake = new FakeCrowded({ token: TOKEN, pageSize: 2, now: () => clock.t });
   const chapterId = fake.seedChapter();
@@ -670,7 +733,7 @@ function creditHarness(fundHolding: boolean, over: { creditOpts?: Partial<NonNul
   fake.fundHolding = fundHolding;
   // With holding off the collected money is expected in the chapter's account already (README q35): the test puts it there.
   if (!fundHolding) fake.setChecking(chapterId, 1_000_000n);
-  const h = harness({ fake, chapterId, clock, opts: { credit: { mirror, fundHolding, ...over.creditOpts } } });
+  const h = harness({ fake, chapterId, clock, ...(over.wrap ? { wrap: over.wrap } : {}), opts: { credit: { mirror, fundHolding, ...over.creditOpts } } });
   const members = new CrowdedMemberAccounts({ client, chapterId, hmacKey: MAC_KEY, ledger: new InMemoryKeyLedger(), now: () => clock.t });
   let seq = 0;
   const member = async () => {
@@ -880,6 +943,40 @@ describe('CrowdedFunding wallet credit (T-0741, TST-WAL-003)', () => {
     expect(await c.credit(input(loadId, m.accountRef), key)).toEqual({ status: 'refused', reasonCode: 'NOT_SUCCEEDED' });
     expect(c.fake.releaseRequests).toBe(0);
     expect(c.bookPosts()).toHaveLength(0);
+  });
+
+  it('an ACH load is NOT_SUCCEEDED before its hold date and creditable after it (T-0745)', async () => {
+    const c = creditHarness(true);
+    const m = await c.member();
+    const loadId = await c.loadIn('on_hold');
+    expect(await c.credit(input(loadId, m.accountRef), 'wf-ach-hold-1:credit:1')).toEqual({ status: 'refused', reasonCode: 'NOT_SUCCEEDED' });
+    expect(c.fake.releaseRequests).toBe(0);
+    c.clock.t = new Date(c.clock.t.getTime() + 10 * 86_400_000);
+    // The refusal is final for its key; the next attempt has the next key.
+    expect(await c.credit(input(loadId, m.accountRef), 'wf-ach-hold-1:credit:2')).toEqual({ status: 'credited' });
+    expect(c.fake.releaseRequests).toBe(1);
+    expect((await c.mirror.accountBalance(m.accountRef)).balance).toBe(10_000n);
+    expect(c.sent(loadId)).toBe(1);
+  });
+
+  const releaseAnswer = (status: number, message: string) => (f: typeof globalThis.fetch): typeof globalThis.fetch => async (url, init) =>
+    String(url).endsWith('/release-funds') ? new Response(JSON.stringify({ statusCode: status, message }), { status, headers: { 'content-type': 'application/json' } }) : f(url, init);
+
+  it.each([
+    [403, 'Forbidden for this token'],
+    [401, 'Unauthorized'],
+    [400, 'amount invalid'],
+    [422, 'unprocessable'],
+  ] as const)('release-funds answering %i (%s) is plain PROVIDER_UNAVAILABLE, not a final refusal and not the fund-holding text', async (status, message) => {
+    const c = creditHarness(true, { wrap: releaseAnswer(status, message) });
+    const m = await c.member();
+    const loadId = await c.loadIn('succeeded');
+    const e = await attempt(c.credit(input(loadId, m.accountRef), key));
+    expect(e).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+    expect((e as Error).message).not.toMatch(/fund holding/i);
+    expect(c.bookPosts()).toHaveLength(0);
+    // The key is not burned: it is asked again and still reaches the release.
+    expect(await attempt(c.credit(input(loadId, m.accountRef), key))).toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
   });
 
   it('release-funds answering 403 is PROVIDER_UNAVAILABLE with fixed text naming fund holding, nothing booked', async () => {

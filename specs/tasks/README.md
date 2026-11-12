@@ -365,4 +365,5 @@
 | [T-0742](T-0742.md) | WAL | A return after release opens a case instead of being dropped, and leaves the wallet alone | REQ-WAL-003 | later |
 | [T-0743](T-0743.md) | WAL | End-to-end self top-up against the Crowded fake: hosted load, payment event, credit, ACH hold and release, returns | REQ-WAL-002, REQ-WAL-003 | later |
 | [T-0744](T-0744.md) | INS | Make the roster-import console test robust under CI load (5000ms timeout on one case) | REQ-INS-001 | later |
+| [T-0745](T-0745.md) | WAL | An ACH load reads `succeeded` once its hold date has passed, so the credit and the release sweep can finish it (fix to T-0741) | REQ-WAL-003 | fix (built, PR open) |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
