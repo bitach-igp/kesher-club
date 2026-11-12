@@ -14,6 +14,9 @@ export interface ReleaseReport {
   ranAt: string;
   attempted: number;
   released: number;
+  /** Vendor credits answered `credited` and refused during the run (T-0705); both 0 for a vendor with no credit step. */
+  credited: number;
+  refused: number;
   errors: { transferId: string; error: string }[];
   /** How many times the run asked the vendor about a held load (T-0681), so the cost of the sweep is visible. */
   vendorReads: number;
@@ -38,8 +41,10 @@ export class ReleaseHoldsJob {
 
   async run(): Promise<ReleaseReport> {
     const now = this.clock();
-    const report: ReleaseReport = { ranAt: now.toISOString(), attempted: 0, released: 0, errors: [], vendorReads: 0, lagMs: 0, withinSla: true };
+    const report: ReleaseReport = { ranAt: now.toISOString(), attempted: 0, released: 0, credited: 0, refused: 0, errors: [], vendorReads: 0, lagMs: 0, withinSla: true };
     const readsBefore = this.loads.vendorReads;
+    const creditedBefore = this.loads.creditedCount;
+    const refusedBefore = this.loads.refusedCount;
     const due = (await this.transfers.expiredHolds(now)).filter(releasable);
     for (const t of due) {
       report.attempted += 1;
@@ -51,6 +56,8 @@ export class ReleaseHoldsJob {
         report.errors.push({ transferId: t.id, error: (e as Error).message.slice(0, 200) });
       }
     }
+    report.credited = this.loads.creditedCount - creditedBefore;
+    report.refused = this.loads.refusedCount - refusedBefore;
     report.vendorReads = this.loads.vendorReads - readsBefore;
     const left = (await this.transfers.expiredHolds(now)).filter(releasable);
     report.lagMs = left.reduce((max, t) => Math.max(max, now.getTime() - Date.parse(t.holdReleasesAt!)), 0);
