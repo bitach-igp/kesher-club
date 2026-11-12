@@ -25,10 +25,12 @@ fundingStatementContract('simulator', () => new FundingSimulator(fixedClock()), 
   },
 });
 
+let creditKey = 0;
+const nextKey = (tag: string): string => `K-${++creditKey}-${tag}`;
 const creditLoad = async (sim: FundingSimulator, state: 'succeeded' | 'processing' | 'requires_action' | 'failed' | 'on_hold', amount: Money): Promise<string> => {
-  if (state === 'succeeded') return (await sim.createLoad({ customerId: 'c', method: 'card', amount, paymentMethodId: 'pm_card_ok' }, `K-${Math.random()}-ok`)).loadId;
-  if (state === 'on_hold') return (await sim.createLoad({ customerId: 'c', method: 'ach', amount, paymentMethodId: 'pm_bank_ok' }, `K-${Math.random()}-ach`)).loadId;
-  const l = await sim.createLoad({ customerId: 'c', method: 'hosted', amount, hosted: { payerIp: '203.0.113.7', userConsented: true } }, `K-${Math.random()}-h`);
+  if (state === 'succeeded') return (await sim.createLoad({ customerId: 'c', method: 'card', amount, paymentMethodId: 'pm_card_ok' }, nextKey('ok'))).loadId;
+  if (state === 'on_hold') return (await sim.createLoad({ customerId: 'c', method: 'ach', amount, paymentMethodId: 'pm_bank_ok' }, nextKey('ach'))).loadId;
+  const l = await sim.createLoad({ customerId: 'c', method: 'hosted', amount, hosted: { payerIp: '203.0.113.7', userConsented: true } }, nextKey('h'));
   if (state === 'processing') sim.payHosted(l.loadId, 'ach');
   if (state === 'failed') sim.failHosted(l.loadId, 'DECLINED');
   return l.loadId;
@@ -55,6 +57,17 @@ describe('FundingSimulator credit capability (T-0704)', () => {
     expect(isFundingCreditPort(new FundingSimulator(fixedClock()))).toBe(false);
     expect(isFundingCreditPort(new FundingSimulator(fixedClock(), { credit: true }))).toBe(true);
     expect(isFundingCreditPort(null)).toBe(false);
+  });
+
+  it('failNext wins over pendNext when both are armed; pendNext then applies to the next credit', async () => {
+    const sim = new FundingSimulator(fixedClock(), { credit: true });
+    const loadId = await creditLoad(sim, 'succeeded', money(10_000n, 'USD'));
+    const req = { loadId, accountRef: 'acct_member_1', amount: money(10_000n, 'USD') };
+    sim.pendNext();
+    sim.failNext('ACCOUNT_UNAVAILABLE');
+    expect(await sim.creditWallet!(req, 'credit-key-1')).toEqual({ status: 'refused', reasonCode: 'ACCOUNT_UNAVAILABLE' });
+    expect(await sim.creditWallet!(req, 'credit-key-2')).toEqual({ status: 'pending' });
+    expect(sim.creditCount(loadId)).toBe(0);
   });
 });
 

@@ -198,6 +198,9 @@ export interface CreditResult {
  * nothing more. A refusal is final for its key (the vendor's is), so a retry after a refusal needs a NEW key. Unknown outcome is
  * `pending`: retry with the SAME key, never a new one. `PROVIDER_UNAVAILABLE` means nothing moved and the call is safe to resend.
  * `amount` must be the load's own amount in USD, else `VALIDATION_FAILED`; an unknown `loadId` is `UNKNOWN_LOAD`.
+ * A key is bound to its FIRST call: the same key with another load, account or amount replays the first answer (the vendor's
+ * rule), so callers use one key per workflow step (`{wf}:credit:{n}`), never one key for two loads. A load that is not
+ * `succeeded` (on hold included) is refused `NOT_SUCCEEDED`: money still on hold is never credited.
  */
 export interface FundingCreditPort {
   creditWallet(input: { loadId: string; accountRef: string; amount: Money }, idempotencyKey: string): Promise<CreditResult>;

@@ -85,12 +85,14 @@ export class FundingSimulator implements FundingPort, FundingStatementPort, Part
   }
 
   private async credit(input: { loadId: string; accountRef: string; amount: Money }, key: string): Promise<CreditResult> {
-    if (input.amount.currency !== 'USD') throw new FundingError('VALIDATION_FAILED', 'A credit is in USD');
-    if (input.amount.minor <= 0n) throw new FundingError('VALIDATION_FAILED', 'Amount must be positive');
-    if (typeof input.accountRef !== 'string' || input.accountRef === '') throw new FundingError('VALIDATION_FAILED', 'accountRef is required');
-    const load = this.must(input.loadId);
-    if (input.amount.minor !== load.amount.minor || input.amount.currency !== load.amount.currency) throw new FundingError('VALIDATION_FAILED', 'Credit amount differs from the load');
+    // The key is bound to its first call: a replay answers that call's result whatever the input (the vendor's rule), so
+    // everything, validation included, runs inside the store. Only final answers are remembered; a throw or `pending` is not.
     return this.creditIdem.run(key, async () => {
+      if (input.amount.currency !== 'USD') throw new FundingError('VALIDATION_FAILED', 'A credit is in USD');
+      if (input.amount.minor <= 0n) throw new FundingError('VALIDATION_FAILED', 'Amount must be positive');
+      if (typeof input.accountRef !== 'string' || input.accountRef === '' || input.accountRef.startsWith('c:')) throw new FundingError('VALIDATION_FAILED', 'accountRef is not a member wallet account');
+      const load = this.must(input.loadId);
+      if (input.amount.minor !== load.amount.minor) throw new FundingError('VALIDATION_FAILED', 'Credit amount differs from the load');
       if (load.status !== 'succeeded') return { status: 'refused', reasonCode: 'NOT_SUCCEEDED' };
       if (input.accountRef === 'acct_unknown') return { status: 'refused', reasonCode: 'NOT_FOUND' };
       if (this.creditCount(load.loadId) > 0) return { status: 'credited' };
@@ -101,6 +103,7 @@ export class FundingSimulator implements FundingPort, FundingStatementPort, Part
       if (this.pendingKeys.has(key)) {
         this.pendingKeys.delete(key);
       } else {
+        // Precedence when both are armed: failNext wins and is consumed; pendNext stays armed for the next credit.
         if (this.nextCreditFailure !== undefined) {
           const reasonCode = this.nextCreditFailure;
           this.nextCreditFailure = undefined;
@@ -112,14 +115,13 @@ export class FundingSimulator implements FundingPort, FundingStatementPort, Part
           throw new PendingCredit();
         }
       }
-      this.credits.set(load.loadId, 1);
+      this.credits.set(load.loadId, this.creditCount(load.loadId) + 1);
       return { status: 'credited' };
     }).catch((e: unknown) => {
       if (e instanceof PendingCredit) return { status: 'pending' as const };
       throw e;
     });
   }
-
 
   async createLoad(input: { customerId: string; method: FundingMethod; amount: Money; paymentMethodId?: string; hosted?: HostedLoadInput; metadata?: Readonly<Record<string, string>> }, idempotencyKey: string): Promise<Load> {
     if (input.paymentMethodId === 'pm_outage') throw new FundingError('PROVIDER_UNAVAILABLE', 'Simulated funding outage');

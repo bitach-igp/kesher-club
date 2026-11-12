@@ -208,13 +208,33 @@ export function fundingContract(name: string, make: () => FundingPort, opts: Fun
           expect(credit.creditCount(port, loadId)).toBe(1);
         });
 
-        it('an amount other than the load, or a currency other than USD, is VALIDATION_FAILED with nothing credited', async () => {
+        it.each([
+          ['another amount', usd(9_999n)],
+          ['another currency, same minor amount', money(10_000n, 'ILS')],
+          ['zero', usd(0n)],
+          ['negative', usd(-10_000n)],
+        ])('%s is VALIDATION_FAILED with nothing credited', async (_name, amount) => {
           const { port, credit: c, loadId } = await setup();
-          await expect(c.creditWallet(input(loadId, { amount: usd(9_999n) }), 'credit-key-1')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
-          await expect(c.creditWallet(input(loadId, { amount: money(10_000n, 'ILS') }), 'credit-key-2')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+          await expect(c.creditWallet(input(loadId, { amount }), 'credit-key-1')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
           expect(credit.creditCount(port, loadId)).toBe(0);
         });
 
+        it('a chapter-account reference (c: prefix) is VALIDATION_FAILED with nothing credited', async () => {
+          const { port, credit: c, loadId } = await setup();
+          await expect(c.creditWallet(input(loadId, { accountRef: 'c:acct_member_1' }), 'credit-key-1')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+          expect(credit.creditCount(port, loadId)).toBe(0);
+        });
+
+        it('a key is bound to its first call: the same key on another load replays the first answer and credits nothing', async () => {
+          const { port, credit: c, loadId } = await setup();
+          const other = await credit.loadIn(port, 'succeeded', usd(10_000n));
+          await c.creditWallet(input(loadId), 'credit-key-1');
+          expect(await c.creditWallet(input(other, { accountRef: credit.unknownAccountRef }), 'credit-key-1')).toEqual({ status: 'credited' });
+          expect(credit.creditCount(port, other)).toBe(0);
+          expect(credit.creditCount(port, loadId)).toBe(1);
+        });
+
+        // LoadStatus has no `returned`; an adapter's fake may add one and test it itself (T-0741).
         it.each(['processing', 'requires_action', 'failed', 'on_hold'] as const)('a %s load is refused NOT_SUCCEEDED and nothing moves', async (state) => {
           const { port, credit: c, loadId } = await setup(state);
           expect(await c.creditWallet(input(loadId), 'credit-key-1')).toEqual({ status: 'refused', reasonCode: 'NOT_SUCCEEDED' });
