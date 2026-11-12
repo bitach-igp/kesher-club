@@ -1,7 +1,7 @@
 // FundingPort contract (TST-WAL-002/003 at the port layer).
 import { describe, expect, it } from 'vitest';
-import { money } from '@kesher/domain';
-import { FundingError, isHttpsUrl, type FundingPort, type FundingStatementPort, type SettledEntry } from './funding.ts';
+import { money, type Money } from '@kesher/domain';
+import { FundingError, isFundingCreditPort, isHttpsUrl, type FundingCreditPort, type FundingPort, type FundingStatementPort, type SettledEntry } from './funding.ts';
 import type { AdvanceableClock } from './base.ts';
 
 export interface FundingContractOptions {
@@ -14,6 +14,22 @@ export interface FundingContractOptions {
   norefundPaymentMethod?: string;
   /** The adapter supports the hosted (payment-page) method; default false, so adapters that do not run unchanged. */
   hosted?: boolean;
+  /** The adapter does the credit step (T-0704); the block runs only when this is passed. */
+  credit?: FundingCreditControls;
+}
+
+/** What the credit block needs from an implementation: fixtures and a view of what moved. All take the port `make()` built. */
+export interface FundingCreditControls {
+  /** An account the vendor knows, and one it does not. */
+  accountRef: string;
+  unknownAccountRef: string;
+  /** A load in the given state at the vendor; `succeeded` is a settled USD load of `amount`. */
+  loadIn: (port: FundingPort, state: 'succeeded' | 'processing' | 'requires_action' | 'failed' | 'on_hold', amount: Money) => Promise<string>;
+  /** How many credits the load got at the vendor. */
+  creditCount: (port: FundingPort, loadId: string) => number;
+  failNext: (port: FundingPort, reasonCode: string) => void;
+  pendNext: (port: FundingPort) => void;
+  outageNext: (port: FundingPort) => void;
 }
 
 export function fundingContract(name: string, make: () => FundingPort, opts: FundingContractOptions): void {
@@ -161,6 +177,92 @@ export function fundingContract(name: string, make: () => FundingPort, opts: Fun
         expect(r.failureCode).toBeTruthy();
       });
     }
+    const credit = opts.credit;
+    if (credit) {
+      describe('credit step (T-0704)', () => {
+        const usd = (minor: bigint) => money(minor, 'USD');
+        const setup = async (state: Parameters<FundingCreditControls['loadIn']>[1] = 'succeeded') => {
+          const port = make();
+          if (!isFundingCreditPort(port)) throw new Error('the factory did not give a FundingCreditPort');
+          return { port, credit: port as FundingPort & FundingCreditPort, loadId: await credit.loadIn(port, state, usd(10_000n)) };
+        };
+        const input = (loadId: string, extra: { amount?: Money; accountRef?: string } = {}) => ({ loadId, accountRef: extra.accountRef ?? credit.accountRef, amount: extra.amount ?? usd(10_000n) });
+
+        it('credits a settled load once', async () => {
+          const { port, credit: c, loadId } = await setup();
+          expect(await c.creditWallet(input(loadId), 'credit-key-1')).toEqual({ status: 'credited' });
+          expect(credit.creditCount(port, loadId)).toBe(1);
+        });
+
+        it('the same key twice answers credited and shows one credit', async () => {
+          const { port, credit: c, loadId } = await setup();
+          await c.creditWallet(input(loadId), 'credit-key-1');
+          expect(await c.creditWallet(input(loadId), 'credit-key-1')).toEqual({ status: 'credited' });
+          expect(credit.creditCount(port, loadId)).toBe(1);
+        });
+
+        it('a different key for a load already credited answers credited and makes no second credit', async () => {
+          const { port, credit: c, loadId } = await setup();
+          await c.creditWallet(input(loadId), 'credit-key-1');
+          expect(await c.creditWallet(input(loadId), 'credit-key-2')).toEqual({ status: 'credited' });
+          expect(credit.creditCount(port, loadId)).toBe(1);
+        });
+
+        it('an amount other than the load, or a currency other than USD, is VALIDATION_FAILED with nothing credited', async () => {
+          const { port, credit: c, loadId } = await setup();
+          await expect(c.creditWallet(input(loadId, { amount: usd(9_999n) }), 'credit-key-1')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+          await expect(c.creditWallet(input(loadId, { amount: money(10_000n, 'ILS') }), 'credit-key-2')).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+          expect(credit.creditCount(port, loadId)).toBe(0);
+        });
+
+        it.each(['processing', 'requires_action', 'failed', 'on_hold'] as const)('a %s load is refused NOT_SUCCEEDED and nothing moves', async (state) => {
+          const { port, credit: c, loadId } = await setup(state);
+          expect(await c.creditWallet(input(loadId), 'credit-key-1')).toEqual({ status: 'refused', reasonCode: 'NOT_SUCCEEDED' });
+          expect(credit.creditCount(port, loadId)).toBe(0);
+        });
+
+        it('an unknown loadId is UNKNOWN_LOAD', async () => {
+          const { credit: c } = await setup();
+          await expect(c.creditWallet(input('no-such-load'), 'credit-key-1')).rejects.toMatchObject({ code: 'UNKNOWN_LOAD' });
+        });
+
+        it('an accountRef the vendor does not know is refused NOT_FOUND', async () => {
+          const { port, credit: c, loadId } = await setup();
+          expect(await c.creditWallet(input(loadId, { accountRef: credit.unknownAccountRef }), 'credit-key-1')).toEqual({ status: 'refused', reasonCode: 'NOT_FOUND' });
+          expect(credit.creditCount(port, loadId)).toBe(0);
+        });
+
+        it('a refusal is final for its key; a later call with a NEW key credits', async () => {
+          const { port, credit: c, loadId } = await setup();
+          credit.failNext(port, 'INSUFFICIENT_FUNDS');
+          expect(await c.creditWallet(input(loadId), 'credit-key-1')).toEqual({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
+          expect(await c.creditWallet(input(loadId), 'credit-key-1')).toEqual({ status: 'refused', reasonCode: 'INSUFFICIENT_FUNDS' });
+          expect(credit.creditCount(port, loadId)).toBe(0);
+          expect(await c.creditWallet(input(loadId), 'credit-key-2')).toEqual({ status: 'credited' });
+          expect(credit.creditCount(port, loadId)).toBe(1);
+        });
+
+        it('a pending answer is settled by the SAME key later, with one credit', async () => {
+          const { port, credit: c, loadId } = await setup();
+          credit.pendNext(port);
+          expect(await c.creditWallet(input(loadId), 'credit-key-1')).toEqual({ status: 'pending' });
+          expect(credit.creditCount(port, loadId)).toBe(0);
+          expect(await c.creditWallet(input(loadId), 'credit-key-1')).toEqual({ status: 'credited' });
+          expect(await c.creditWallet(input(loadId), 'credit-key-1')).toEqual({ status: 'credited' });
+          expect(credit.creditCount(port, loadId)).toBe(1);
+        });
+
+        it('an outage is PROVIDER_UNAVAILABLE, moves nothing and is safe to resend', async () => {
+          const { port, credit: c, loadId } = await setup();
+          credit.outageNext(port);
+          await expect(c.creditWallet(input(loadId), 'credit-key-1')).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+          expect(credit.creditCount(port, loadId)).toBe(0);
+          expect(await c.creditWallet(input(loadId), 'credit-key-1')).toEqual({ status: 'credited' });
+          expect(credit.creditCount(port, loadId)).toBe(1);
+        });
+      });
+    }
+
   });
 }
 

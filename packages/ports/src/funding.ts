@@ -176,6 +176,39 @@ export interface FundingStatementPort {
   listSettled(input: { from: string; to: string; cursor?: string; limit?: number }): Promise<SettledPage>;
 }
 
+/** The result of moving a settled load's money into the member's wallet account at the vendor (T-0704). */
+export type CreditStatus = 'credited' | 'pending' | 'refused';
+
+export interface CreditResult {
+  status: CreditStatus;
+  /**
+   * Set when `refused`: a short closed string chosen by the port, never vendor text. `NOT_SUCCEEDED`, `NOT_FOUND`,
+   * `INSUFFICIENT_FUNDS`, `ACCOUNT_UNAVAILABLE` or `PAYMENT_FAILED`; a `string` so an adapter can add one. The caller only logs and cases it.
+   */
+  reasonCode?: string;
+}
+
+/**
+ * The credit step of a hosted load (REQ-WAL-003, ADR-018 A4/M1/M3): after the load settled at the vendor, move its money into the
+ * member's wallet account. An optional capability of the `funding` binding, found by `isFundingCreditPort` (as `FundingStatementPort`
+ * and `MirrorPort` are), so it has no registry capability or flag of its own. Only the load id, the account reference, the amount and the
+ * key cross the port: no name, mobile or memo (the adapter makes its own memo).
+ *
+ * The credit is per load: the key only makes a replay safe, a different key for a load already credited answers `credited` and moves
+ * nothing more. A refusal is final for its key (the vendor's is), so a retry after a refusal needs a NEW key. Unknown outcome is
+ * `pending`: retry with the SAME key, never a new one. `PROVIDER_UNAVAILABLE` means nothing moved and the call is safe to resend.
+ * `amount` must be the load's own amount in USD, else `VALIDATION_FAILED`; an unknown `loadId` is `UNKNOWN_LOAD`.
+ */
+export interface FundingCreditPort {
+  creditWallet(input: { loadId: string; accountRef: string; amount: Money }, idempotencyKey: string): Promise<CreditResult>;
+}
+
+/** True when the port a binding hands back also does the credit step (an optional capability, found by its method). */
+export function isFundingCreditPort(port: unknown): port is FundingCreditPort {
+  if (typeof port !== 'object' || port === null) return false;
+  return typeof (port as Record<string, unknown>)['creditWallet'] === 'function';
+}
+
 export type FundingErrorCode = 'UNSUPPORTED_METHOD' | 'UNKNOWN_LOAD' | 'UNKNOWN_REFUND' | 'DECLINED' | 'BAD_SIGNATURE' | 'VALIDATION_FAILED' | 'PROVIDER_UNAVAILABLE';
 
 export class FundingError extends Error {
