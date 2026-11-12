@@ -24,7 +24,7 @@
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
 import { applyBps, DomainError, fromWire, money, sub, toWire, uuidv7, type Currency, type Money, type Posting } from '@kesher/domain';
-import { applyRate, FundingAccountError, FundingError, type FundingAccountPort, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
+import { applyRate, FundingAccountError, FundingError, type FundingAccountPort, type FundingCreditPort, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import type { Database } from '../db.ts';
@@ -159,6 +159,9 @@ export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
 export const holdKey = (workflowId: string): string => `${workflowId}:hold`;
 const unknownLoadKey = (transferId: string): string => `load-unknown:${transferId}`;
 export const releaseKey = (workflowId: string): string => `${workflowId}:release`;
+/** The vendor credit's key (T-0705): a refusal is final for its key at the vendor, so a retry after one is the next `n`. */
+export const creditKey = (workflowId: string, n: number): string => `${workflowId}:credit:${n}`;
+const creditCaseKey = (transferId: string): string => `load-credit:${transferId}`;
 
 interface Deps {
   db: Database;
@@ -178,6 +181,8 @@ interface Deps {
   fundingAccounts?: FundingAccountPort;
   /** The member's own funding details (T-0738's reader); `undefined` when none were given. Personal data: never logged, thrown or stored by this class. */
   details?: { read(partyId: string): Promise<FundingDetails | undefined> };
+  /** The funding binding's credit capability (T-0705, found by `isFundingCreditPort`). Without it a load posts the journals it always posted. */
+  credit?: FundingCreditPort;
 }
 
 export interface FundingDetails {
@@ -197,8 +202,19 @@ const BLOCKED_ACCOUNT_STATUSES = ['rejected', 'archived', 'frozen', 'closed'];
 export class LoadService implements LoadActivities {
   private readonly d: Deps;
   private reads = 0;
+  private credits = 0;
+  private refusals = 0;
   constructor(d: Deps) {
     this.d = d;
+  }
+
+  /** How many vendor credits answered `credited` in this process, and how many were refused (a new refusal, not a load a case already holds); a sweep reports the difference (T-0705). */
+  get creditedCount(): number {
+    return this.credits;
+  }
+
+  get refusedCount(): number {
+    return this.refusals;
   }
 
   /** How many times this process has asked the vendor about a held load (the release step); a sweep reports the difference over its run (T-0681). */
@@ -290,6 +306,8 @@ export class LoadService implements LoadActivities {
   async settle(transfer: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Transfer> {
     // A held load, or a release that began and did not finish, settles through the release: its own journal, never a second credit.
     if (transfer.state === 'pending_hold' || transfer.state === 'pending') return this.release(transfer, now);
+    // The vendor moves the money into the member's wallet account first; the journal follows only once it says `credited` (T-0705).
+    if (!(await this.creditStep(transfer, load, now))) return transfer;
     const journal = await this.d.ledger.post({
       idempotencyKey: settleKey(workflowId),
       kind: journalKind(transfer, LOAD_JOURNAL_KIND),
@@ -331,10 +349,12 @@ export class LoadService implements LoadActivities {
     // cycle tries again. Releasing blind would credit money that was never collected.
     // (A load with no vendor link, a statement deposit, is never held, so it never gets here without one.)
     const loadId = await this.vendorLoadOf(transfer.id);
+    let vendor: VendorLoad | undefined;
     if (loadId) {
       // A load the vendor does not know is a case for people, opened once; it is not asked about again until they act (T-0547).
       if (await this.unknownLoadOpen(transfer.id)) return transfer;
-      let vendor: VendorLoad;
+      // A refused credit waits for people the same way: not asked again while its case is open (T-0705).
+      if (this.d.credit && (await this.creditCase(transfer.id)).open) return transfer;
       this.reads += 1;
       try {
         vendor = await this.d.port.getLoad(loadId);
@@ -355,6 +375,8 @@ export class LoadService implements LoadActivities {
     if (fresh?.state !== 'pending_hold' && fresh?.state !== 'pending') throw new DomainError('IDEMPOTENCY_CONFLICT', 'The load is no longer held');
     if ((await this.d.db.query(`select 1 from ledger.journal where idempotency_key = $1`, [`${holdKey(workflowId)}:reversal`])).rows[0]) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The hold was already reversed');
     // The hold already converted: the release moves the credited amount within the purse currency.
+    // The credit comes before the journal; a `pending` release (its journal already posted) was credited then and is only finished.
+    if (fresh.state === 'pending_hold' && !(await this.creditStep(transfer, vendor, now))) return transfer;
     const { minor, currency } = credited(transfer);
     const pending = await this.destination(transfer, 'pending', currency);
     const wallet = await this.destination(transfer, 'wallet', currency);
@@ -495,6 +517,56 @@ export class LoadService implements LoadActivities {
   /** True while a case people have not decided exists for a held load the vendor does not know; a resolved or dismissed one lets it be asked again. */
   async unknownLoadOpen(transferId: string): Promise<boolean> {
     return Boolean((await this.d.db.query(`select 1 from ops.case where dedupe_key = $1 and status in ('open', 'investigating')`, [unknownLoadKey(transferId)])).rows[0]);
+  }
+
+  private async creditCase(transferId: string): Promise<{ open: boolean; attempt: number }> {
+    const r = await this.d.db.query<{ status: string; payload: { attempt?: number } }>(`select status, payload from ops.case where dedupe_key = $1`, [creditCaseKey(transferId)]);
+    const row = r.rows[0];
+    return { open: row?.status === 'open' || row?.status === 'investigating', attempt: row ? (row.payload.attempt ?? 1) : 0 };
+  }
+
+  /**
+   * The vendor credit before the journal (T-0705, ADR-018 A4/M1). True when the journal may post: no credit port (the journals every
+   * other vendor posts), or the vendor answered `credited`. False leaves the load where it is and posts nothing: `pending` (a load the
+   * vendor still holds, or an answer not final yet) is retried by the next sweep with the SAME key, a refusal opens one `load_credit_refused`
+   * case and stops until people resolve it, and the retry after that takes the next key `{wf}:credit:{n}`, `n` read from the case.
+   * A thrown outage leaves everything as it was. The credit is per load at the vendor, so a crash after it and before the journal
+   * calls it again, is answered `credited`, and the one journal follows.
+   */
+  private async creditStep(transfer: Transfer, vendor: VendorLoad | undefined, now: Date): Promise<boolean> {
+    const port = this.d.credit;
+    if (!port || transfer.kind !== 'load' || !vendor) return true;
+    const found = await this.creditCase(transfer.id);
+    if (found.open) return false;
+    // Not `succeeded` (an ACH the vendor still holds, even past our hold date when its clock lags ours): nothing to credit yet, no case.
+    if (vendor.status !== 'succeeded') return false;
+    const attempt = found.attempt + 1;
+    const ref = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'funding_account' and entity_id = $1 and provider = $2`, [transfer.fromPartyId, this.d.provider]);
+    const accountRef = ref.rows[0]?.external_id;
+    if (!accountRef) {
+      await this.openCreditCase(transfer, vendor.loadId, 'NO_ACCOUNT', attempt, now);
+      return false;
+    }
+    const result = await port.creditWallet({ loadId: vendor.loadId, accountRef, amount: transfer.amount }, creditKey(transfer.idempotencyKey, attempt));
+    if (result.status === 'credited') {
+      this.credits += 1;
+      return true;
+    }
+    if (result.status === 'refused') await this.openCreditCase(transfer, vendor.loadId, result.reasonCode ?? 'REFUSED', attempt, now);
+    return false;
+  }
+
+  private async openCreditCase(transfer: Transfer, loadId: string, reasonCode: string, attempt: number, now: Date): Promise<void> {
+    this.refusals += 1;
+    await this.d.db.query(
+      // A resolved or dismissed case is reopened by the next refusal (the earlier decision is kept in the payload); an open one is left alone.
+      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_credit_refused', $2, 'high', 'open', $3, $4)
+       on conflict (dedupe_key) do update set status = 'open', resolved_at = null, resolved_by = null, resolution = null,
+         disposition = null, decided_by = null, decided_at = null, decision_note = null, assigned_to = null, assigned_at = null,
+         payload = excluded.payload || jsonb_build_object('reopened', jsonb_build_object('at', excluded.opened_at, 'was', ops.case.status, 'resolution', ops.case.resolution))
+       where ops.case.status in ('resolved', 'dismissed')`,
+      [uuidv7(now), creditCaseKey(transfer.id), { transferId: transfer.id, loadId, amount: { minor: transfer.amount.minor.toString(), currency: transfer.amount.currency }, reasonCode, attempt }, now],
+    );
   }
 
   private async openUnknownLoadCase(transfer: Transfer, loadId: string, now: Date): Promise<void> {

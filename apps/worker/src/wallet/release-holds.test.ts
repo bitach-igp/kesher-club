@@ -3,7 +3,7 @@
 // before Thursday and on Thursday moves it to the wallet exactly once, however often it runs. An ACH
 // return during the hold reverses the hold and settles nothing. A US institution's ACH pull (T-0617) is held
 // in its own hold account and released into its own account the same way.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { BillingSimulator, FundingError, FundingSimulator, fixedClock } from '@kesher/ports';
 import { StaticFlags } from '@kesher/api/billing/capabilities';
@@ -421,5 +421,165 @@ describe('TST-WAL-003', () => {
     expect(second).toMatchObject({ attempted: 1, released: 1, errors: [], lagMs: 0, withinSla: true });
     expect(await purse(a)).toEqual({ available: 1_000n, holds: 0n, settled: 1_000n });
     loads.release = original;
+  });
+});
+
+// T-0705, TST-WAL-003: the vendor credit comes before the release journal. Over the credit-capable funding simulator.
+describe('the credit before the release journal (T-0705)', () => {
+  let csim: FundingSimulator;
+  let cledger: PostgresLedger;
+  let cloads: LoadService;
+  let cjob: ReleaseHoldsJob;
+  let spy: MockInstance<Required<FundingSimulator>['creditWallet']>;
+
+  beforeAll(() => {
+    cledger = new PostgresLedger(db);
+    csim = new FundingSimulator(fixedClock(MONDAY.toISOString()), { credit: true });
+    cloads = new LoadService({ db, port: csim, credit: csim as Required<FundingSimulator>, ledger: cledger, accounts, transfers, memberships: new MembershipService(db, new PlanService(db), new BillingSimulator()), flags: new StaticFlags(undefined, { 'wallet.enabled': true, 'funding.ach': true }), provider: 'simulator-credit' });
+    cjob = new ReleaseHoldsJob(transfers, cloads, () => now);
+    spy = vi.spyOn(csim as Required<FundingSimulator>, 'creditWallet');
+  });
+
+  /** A held Monday ACH load for a fresh member (with a funding account ref unless told not to), the vendor id and the key. */
+  const held = async (opts: { account?: boolean } = {}) => {
+    const party = uuidv7(MONDAY);
+    const key = `ach-credit-${party}`;
+    now = MONDAY;
+    if (opts.account !== false) await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_account', $1, 'simulator-credit', $2)`, [party, `a:${party}`]);
+    const run = await runLoad(cloads, ach(party, 12_000n), key, now);
+    const loadId = (await cloads.vendorLoadOf(run.transfer.id))!;
+    return { party, key, loadId, id: run.transfer.id };
+  };
+  const caseOf = async (id: string) => (await db.query<{ status: string; payload: { attempt: number; reasonCode: string; loadId: string; transferId: string; amount: { minor: string } } }>(`select status, payload from ops.case where dedupe_key = $1`, [`load-credit:${id}`])).rows;
+  const keysUsed = () => spy.mock.calls.map((c) => c[1] as string);
+
+  it('a hold the vendor still reports on_hold after our date is pending: no call, no case, no journal; once it reads succeeded it credits once, then one release journal', async () => {
+    const t = await held();
+    spy.mockClear();
+    now = THURSDAY; // our clock says due; the vendor's still says on_hold
+    expect(await cjob.run()).toMatchObject({ attempted: 1, released: 0, credited: 0, refused: 0, errors: [] });
+    expect(spy).not.toHaveBeenCalled();
+    expect(await caseOf(t.id)).toEqual([]);
+    expect(await journals(releaseKey(t.key))).toBe(0);
+    expect((await transfers.get(t.id))!.state).toBe('pending_hold');
+
+    csim.settle(t.loadId);
+    expect(await cjob.run()).toMatchObject({ attempted: 1, released: 1, credited: 1, refused: 0, errors: [] });
+    expect(keysUsed()).toEqual([`${t.key}:credit:1`]);
+    expect(csim.creditCount(t.loadId)).toBe(1);
+    expect(await journals(releaseKey(t.key))).toBe(1);
+    expect(await purse(t.party)).toEqual({ available: 12_000n, holds: 0n, settled: 12_000n });
+    expect(await cjob.run()).toMatchObject({ attempted: 0, credited: 0 });
+  });
+
+  it('a crash between the credit and the journal is finished by the next sweep: the credit is asked again, answered credited, and ONE journal posts', async () => {
+    const t = await held();
+    csim.settle(t.loadId);
+    now = THURSDAY;
+    spy.mockClear();
+    const post = vi.spyOn(cledger, 'post').mockRejectedValueOnce(new Error('crash'));
+    expect(await cjob.run()).toMatchObject({ released: 0, credited: 1, errors: [{ transferId: t.id, error: 'crash' }] });
+    post.mockRestore();
+    expect(await journals(releaseKey(t.key))).toBe(0);
+    expect(await cjob.run()).toMatchObject({ released: 1, credited: 1, errors: [] });
+    expect(keysUsed()).toEqual([`${t.key}:credit:1`, `${t.key}:credit:1`]);
+    expect(csim.creditCount(t.loadId)).toBe(1);
+    expect(await journals(releaseKey(t.key))).toBe(1);
+  });
+
+  it('a pending answer posts nothing and the next cycle retries the SAME key; an outage is an error, nothing moved, the same key again', async () => {
+    const t = await held();
+    csim.settle(t.loadId);
+    now = THURSDAY;
+    spy.mockClear();
+    csim.pendNext();
+    expect(await cjob.run()).toMatchObject({ released: 0, credited: 0, refused: 0, errors: [] });
+    expect(await journals(releaseKey(t.key))).toBe(0);
+    expect(await caseOf(t.id)).toEqual([]);
+    csim.outageNext();
+    const outage = await cjob.run();
+    expect(outage.errors).toHaveLength(1);
+    expect(outage.released).toBe(0);
+    expect(await cjob.run()).toMatchObject({ released: 1, credited: 1, errors: [] });
+    expect(new Set(keysUsed())).toEqual(new Set([`${t.key}:credit:1`]));
+    expect(csim.creditCount(t.loadId)).toBe(1);
+    expect(await journals(releaseKey(t.key))).toBe(1);
+  });
+
+  it('a refusal opens ONE load_credit_refused case, posts nothing, is not asked again while open; resolving it retries under :credit:2 and one journal follows; a second refusal reopens the same case', async () => {
+    const t = await held();
+    csim.settle(t.loadId);
+    now = THURSDAY;
+    spy.mockClear();
+    csim.failNext('ACCOUNT_UNAVAILABLE');
+    expect(await cjob.run()).toMatchObject({ released: 0, credited: 0, refused: 1, errors: [] });
+    const [c1, ...rest] = await caseOf(t.id);
+    expect(rest).toEqual([]);
+    expect(c1).toMatchObject({ status: 'open', payload: { transferId: t.id, loadId: t.loadId, amount: { minor: '12000' }, reasonCode: 'ACCOUNT_UNAVAILABLE', attempt: 1 } });
+    expect((await db.query<{ kind: string; severity: string }>(`select kind, severity from ops.case where dedupe_key = $1`, [`load-credit:${t.id}`])).rows[0]).toEqual({ kind: 'load_credit_refused', severity: 'high' });
+    expect((await transfers.get(t.id))!.state).toBe('pending_hold');
+    expect(await journals(releaseKey(t.key))).toBe(0);
+
+    // Open: neither the vendor's credit nor its load read is asked again.
+    spy.mockClear();
+    const reads = cloads.vendorReads;
+    expect(await cjob.run()).toMatchObject({ released: 0, credited: 0, refused: 0 });
+    expect(spy).not.toHaveBeenCalled();
+    expect(cloads.vendorReads).toBe(reads);
+    await db.query(`update ops.case set status = 'investigating' where dedupe_key = $1`, [`load-credit:${t.id}`]);
+    await cjob.run();
+    expect(spy).not.toHaveBeenCalled();
+
+    // Resolved and refused again: the next key, the same case reopened with attempt 2.
+    await db.query(`update ops.case set status = 'resolved' where dedupe_key = $1`, [`load-credit:${t.id}`]);
+    csim.failNext('ACCOUNT_UNAVAILABLE');
+    expect(await cjob.run()).toMatchObject({ refused: 1 });
+    expect(keysUsed()).toEqual([`${t.key}:credit:2`]);
+    const again = await caseOf(t.id);
+    expect(again).toHaveLength(1);
+    expect(again[0]).toMatchObject({ status: 'open', payload: { attempt: 2 } });
+
+    // Resolved again: attempt 3 credits, one journal.
+    await db.query(`update ops.case set status = 'dismissed' where dedupe_key = $1`, [`load-credit:${t.id}`]);
+    expect(await cjob.run()).toMatchObject({ released: 1, credited: 1, refused: 0 });
+    expect(keysUsed()).toEqual([`${t.key}:credit:2`, `${t.key}:credit:3`]);
+    expect(csim.creditCount(t.loadId)).toBe(1);
+    expect(await journals(releaseKey(t.key))).toBe(1);
+    expect(await purse(t.party)).toEqual({ available: 12_000n, holds: 0n, settled: 12_000n });
+  });
+
+  it('a refusal then a resolve then a credit: the retry uses :credit:2 and credits', async () => {
+    const t = await held();
+    csim.settle(t.loadId);
+    now = THURSDAY;
+    spy.mockClear();
+    csim.failNext('INSUFFICIENT_FUNDS');
+    await cjob.run();
+    await db.query(`update ops.case set status = 'resolved' where dedupe_key = $1`, [`load-credit:${t.id}`]);
+    expect(await cjob.run()).toMatchObject({ released: 1, credited: 1 });
+    expect(keysUsed()).toEqual([`${t.key}:credit:1`, `${t.key}:credit:2`]);
+    expect(await journals(releaseKey(t.key))).toBe(1);
+  });
+
+  it('a hosted load with no funding account ref is refused NO_ACCOUNT in the same case, with no vendor call', async () => {
+    const t = await held({ account: false });
+    csim.settle(t.loadId);
+    now = THURSDAY;
+    spy.mockClear();
+    expect(await cjob.run()).toMatchObject({ released: 0, refused: 1, errors: [] });
+    expect(spy).not.toHaveBeenCalled();
+    expect(await caseOf(t.id)).toMatchObject([{ status: 'open', payload: { reasonCode: 'NO_ACCOUNT', attempt: 1 } }]);
+    expect(await journals(releaseKey(t.key))).toBe(0);
+  });
+
+  it('a vendor return during the hold is failed, never credited', async () => {
+    const t = await held();
+    const w = csim.webhookFor(t.loadId, 'failed');
+    await csim.parseWebhook(w.headers, w.rawBody);
+    now = THURSDAY;
+    spy.mockClear();
+    expect(await cjob.run()).toMatchObject({ released: 0, credited: 0, refused: 0 });
+    expect(spy).not.toHaveBeenCalled();
+    expect((await transfers.get(t.id))!.state).toBe('failed');
   });
 });

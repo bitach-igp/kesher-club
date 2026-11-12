@@ -7,7 +7,7 @@
 // vendor is asked. Over the funding simulator and PGlite with a real passkey and step-up.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
-import { FundingAccountError, FundingAccountSimulator, FundingError, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
+import { FundingAccountError, FundingAccountSimulator, FundingError, FundingSimulator, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
@@ -902,5 +902,75 @@ describe('a hosted load needs the member\'s funding account (T-0740, TST-WAL-002
     expect(t.seen[0]!.customerId).toBe(t.party);
     expect(t.ensure).not.toHaveBeenCalled();
     expect(t.details.read).not.toHaveBeenCalled();
+  });
+});
+
+describe('a card load credits the vendor wallet before its journal (T-0705, TST-WAL-003)', () => {
+  /** After the rows' own updated_at (set by the database clock), so the sweep finds them. */
+  const LATER = new Date('2100-01-01T00:00:00Z');
+  let nth = 0;
+  const setup = async () => {
+    const s = app.services;
+    // One provider name per vendor instance: each simulator numbers its loads from 1, and the link is unique per provider.
+    nth += 1;
+    const provider = `simulator-credit-${nth}`;
+    const sim = new FundingSimulator(fixedClock(NOW.toISOString()), { credit: true });
+    const svc = new LoadService({ db, port: sim, credit: sim as Required<FundingSimulator>, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
+    const party = uuidv7(NOW);
+    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_account', $1, $3, $2)`, [party, `a:${party}`, provider]);
+    const spy = vi.spyOn(sim as Required<FundingSimulator>, 'creditWallet');
+    const body = { memberPartyId: party, amount: USD_100, method: 'card', paymentMethodId: 'pm_ok' };
+    return { sim, svc, party, spy, body };
+  };
+  const caseRows = async (key: string) => (await db.query<{ status: string; payload: { attempt: number; reasonCode: string } }>(`select c.status, c.payload from ops.case c join ops.transfer t on c.dedupe_key = 'load-credit:' || t.id where t.idempotency_key = $1`, [key])).rows;
+
+  it('credits first, then posts the single settle journal; a replay credits and posts nothing more', async () => {
+    const t = await setup();
+    const key = 'card-credit-0001';
+    const view = await t.svc.request(t.party, t.body, key, NOW);
+    expect(view.state).toBe('settled');
+    expect(t.spy).toHaveBeenCalledTimes(1);
+    expect(t.spy.mock.calls[0]![1]).toBe(`${key}:credit:1`);
+    expect(t.spy.mock.calls[0]![0]).toMatchObject({ accountRef: `a:${t.party}`, amount: money(10_000n, 'USD') });
+    expect(await journals(key)).toBe(1);
+    await t.svc.request(t.party, t.body, key, NOW);
+    expect(t.spy).toHaveBeenCalledTimes(1);
+    expect(await journals(key)).toBe(1);
+  });
+
+  it('a refusal posts no journal, leaves the load submitted and opens one case; resolving it retries with :credit:2', async () => {
+    const t = await setup();
+    const key = 'card-credit-refuse';
+    t.sim.failNext('ACCOUNT_UNAVAILABLE');
+    const view = await t.svc.request(t.party, t.body, key, NOW);
+    expect(view.state).not.toBe('settled');
+    expect(await journals(key)).toBe(0);
+    expect((await app.services.transfers.byKey(key))!.state).toBe('submitted');
+    expect(await caseRows(key)).toMatchObject([{ status: 'open', payload: { reasonCode: 'ACCOUNT_UNAVAILABLE', attempt: 1 } }]);
+
+    // While open the sweep does not credit again.
+    const stale = await t.svc.stale(LATER, 0);
+    for (const x of stale) await t.svc.applyVendorLoad((await t.svc.vendorLoadOf(x.id))!, LATER);
+    expect(t.spy).toHaveBeenCalledTimes(1);
+
+    await db.query(`update ops.case set status = 'resolved' where dedupe_key = 'load-credit:' || $1`, [(await app.services.transfers.byKey(key))!.id]);
+    for (const x of await t.svc.stale(LATER, 0)) await t.svc.applyVendorLoad((await t.svc.vendorLoadOf(x.id))!, LATER);
+    expect(t.spy.mock.calls.map((c) => c[1])).toEqual([`${key}:credit:1`, `${key}:credit:2`]);
+    expect((await app.services.transfers.byKey(key))!.state).toBe('settled');
+    expect(await journals(key)).toBe(1);
+    expect(await caseRows(key)).toHaveLength(1);
+  });
+
+  it('a pending credit posts nothing and the retry uses the same key; a vendor without the credit step posts as before', async () => {
+    const t = await setup();
+    t.sim.pendNext();
+    const key = 'card-credit-pending';
+    await t.svc.request(t.party, t.body, key, NOW);
+    expect(await journals(key)).toBe(0);
+    expect(await caseRows(key)).toEqual([]);
+    for (const x of await t.svc.stale(LATER, 0)) await t.svc.applyVendorLoad((await t.svc.vendorLoadOf(x.id))!, LATER);
+    expect(t.spy.mock.calls.map((c) => c[1])).toEqual([`${key}:credit:1`, `${key}:credit:1`]);
+    expect(await journals(key)).toBe(1);
+    expect((await app.services.transfers.byKey(key))!.state).toBe('settled');
   });
 });
