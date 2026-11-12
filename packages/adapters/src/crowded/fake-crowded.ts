@@ -22,6 +22,9 @@ interface Chapter { id: string; name: string; organizationId: string; parent?: s
 interface Account { id: string; chapterId: string; accountNumber: string; balance: bigint }
 interface Contact { id: number; chapterId: string; firstName: string; lastName: string; mobile: string; email: string; dateOfBirth: string | null; status: 'Active' | 'Failed' | 'Archived'; createdAt: Date }
 interface Wallet { id: number; chapterId: string; contactId: number; status: 'Open' | 'Frozen' | 'Closed'; accountNumber: string; balance: bigint; hold: bigint; createdAt: Date }
+/** A payment on a hosted-collection intent (T-0700). `amount` is gross: the net plus the fee when the payer covered it. */
+interface IntentPayment { id: string; method: 'Card' | 'Ach'; status: 'Pending' | 'Processing' | 'Succeeded' | 'Failed' | 'Returned' | 'Refunded' | 'Cancelled'; amount: bigint; fee: bigint; feeCovered: boolean; createdAt: Date; updatedAt: Date }
+interface Intent { id: string; chapterId: string; collectionId: string; email: string; contactId?: number; amount: bigint; paid?: { id: string; at: Date }; payments: IntentPayment[]; successUrl?: string; failureUrl?: string; payerIp?: string }
 interface Payment { id: string; chapterId: string; method: 'ach'; status: 'pending' | 'processing' | 'sent' | 'returned' | 'canceled' | 'failed'; amount: bigint; counterpartyId: string; addenda: string; key: string; body: string }
 
 export interface FakeCrowdedOptions {
@@ -57,7 +60,7 @@ export class FakeCrowded {
   private readonly chapters: Chapter[] = [];
   private readonly accounts: Account[] = [];
   private readonly collections: { id: string; chapterId: string; title: string; requestedAmount: bigint }[] = [];
-  private readonly intents: { id: string; chapterId: string; collectionId: string; email: string; amount: bigint; paid?: { id: string; at: Date } }[] = [];
+  private readonly intents: Intent[] = [];
   private readonly payments: Payment[] = [];
   private readonly ledger: { id: string; chapterId: string; accountId: string; direction: 'Credit' | 'Debit'; amount: bigint; title: string; at: Date; collectPaymentId?: string }[] = [];
   private readonly contacts: Contact[] = [];
@@ -75,6 +78,10 @@ export class FakeCrowded {
    * original payment, as Crowded documents.
    */
   inFlightAchCalls = 0;
+  /** The next N intent creates answer 503 before anything is made (a collection made just before stays). */
+  failIntents = 0;
+  /** The host the hosted payment pages are on; a test sets another scheme to see a bad page refused. */
+  paymentUrlBase = 'https://pay.fake.invalid';
   /** Quotes carry no fee (a malformed quote). */
   quoteWithoutFee = false;
   /** Sub-accounts the tenant may hold; a create past it answers 429 SubscriptionQuotaExceededError (before the key is looked at). */
@@ -131,6 +138,80 @@ export class FakeCrowded {
     this.credit(this.accountOf(i.chapterId), i.amount, `Collected ${i.paid.id}`);
     return this.webhook([{ eventType: 'collect.payment.succeeded', data: { id: i.paid.id }, chapterId: i.chapterId }]);
   }
+
+  // ---- hosted collection payments (T-0700): the payment lifecycle is fake-only, the sandbox cannot drive it ----------------
+
+  /** The payer pays an intent on the hosted page: a card succeeds at once, a bank transfer starts Pending. Returns the payment id. `amount` overrides the gross (a net that does not fit). */
+  payIntent(intentRef: string, method: 'card' | 'ach', over: { amount?: bigint } = {}): string {
+    const i = this.intentOf(intentRef);
+    const at = this.now();
+    const fee = this.collectFee.fee;
+    const p: IntentPayment = { id: this.id('cp'), method: method === 'card' ? 'Card' : 'Ach', status: method === 'card' ? 'Succeeded' : 'Pending', amount: over.amount ?? i.amount + (this.collectFee.covered ? fee : 0n), fee, feeCovered: this.collectFee.covered, createdAt: at, updatedAt: at };
+    i.payments.push(p);
+    return p.id;
+  }
+  /** A bank transfer moves to Processing. */
+  process(paymentId: string): void {
+    this.move(paymentId, ['Pending'], 'Processing');
+  }
+  /** A bank transfer settles: Succeeded, stamped now. */
+  settle(paymentId: string): void {
+    this.move(paymentId, ['Pending', 'Processing'], 'Succeeded');
+  }
+  fail(paymentId: string): void {
+    this.move(paymentId, ['Pending', 'Processing'], 'Failed');
+  }
+  /** The bank returns a settled transfer, after it showed Succeeded. */
+  returnPayment(paymentId: string): void {
+    this.move(paymentId, ['Succeeded'], 'Returned');
+  }
+  cancel(paymentId: string): void {
+    this.move(paymentId, ['Pending', 'Processing'], 'Cancelled');
+  }
+  /** A card payment is refunded. */
+  refundCard(paymentId: string): void {
+    const p = this.paymentOf(paymentId);
+    if (p.method !== 'Card') throw new Error('only a card can be refunded');
+    this.move(paymentId, ['Succeeded'], 'Refunded');
+  }
+  private paymentOf(id: string): IntentPayment {
+    const p = this.intents.flatMap((i) => i.payments).find((x) => x.id === id);
+    if (!p) throw new Error('unknown payment');
+    return p;
+  }
+  private move(id: string, from: IntentPayment['status'][], to: IntentPayment['status']): void {
+    const p = this.paymentOf(id);
+    if (!from.includes(p.status)) throw new Error(`a ${p.status} payment cannot become ${to}`);
+    p.status = to;
+    p.updatedAt = this.now();
+  }
+  private intentOf(intentRef: string): Intent {
+    const [chapterId, , intentId] = intentRef.split(':');
+    const i = this.intents.find((x) => x.chapterId === chapterId && x.id === intentId);
+    if (!i) throw new Error('unknown intent');
+    return i;
+  }
+  /** What the intent was created with: the contact, the payer's address and the redirect urls as sent (for assertions). */
+  intentRequest(intentId: string): { contactId: number | undefined; payerIp: string | undefined; successUrl: string | undefined; failureUrl: string | undefined } {
+    const i = this.intents.find((x) => x.id === intentId);
+    if (!i) throw new Error('unknown intent');
+    return { contactId: i.contactId, payerIp: i.payerIp, successUrl: i.successUrl, failureUrl: i.failureUrl };
+  }
+  private intentJson(i: Intent): Json {
+    const live = i.payments;
+    const status = live.some((p) => p.status === 'Succeeded') || i.paid ? 'Paid' : live.some((p) => p.status === 'Pending' || p.status === 'Processing') ? 'Pending' : live.at(-1)?.status === 'Returned' ? 'Returned' : live.at(-1)?.status === 'Cancelled' ? 'Cancelled' : live.length === 0 ? 'Pending' : 'Not Paid';
+    return {
+      id: i.id,
+      requestedAmount: wire(i.amount),
+      status,
+      paymentUrl: `${this.paymentUrlBase}/${i.id}`,
+      ...(i.contactId === undefined ? {} : { contactId: i.contactId }),
+      ...(i.successUrl ? { successUrl: i.successUrl } : {}),
+      ...(i.failureUrl ? { failureUrl: i.failureUrl } : {}),
+      payments: live.map((p) => ({ id: p.id, uid: p.id, method: p.method, amount: wire(p.amount), fee: wire(p.fee), feeCovered: p.feeCovered, status: p.status, incompleteReason: null, createdAt: p.createdAt.toISOString(), updatedAt: p.updatedAt.toISOString() })),
+    };
+  }
+
   /** pending -> processing -> sent. */
   advanceAch(paymentRef: string): void {
     const p = this.payments.find((x) => `${x.chapterId}:${x.id}` === paymentRef);
@@ -145,8 +226,9 @@ export class FakeCrowded {
   accountNumber(chapterId: string): string {
     return this.accountOf(chapterId).accountNumber;
   }
-  count(kind: 'organizations' | 'chapters' | 'collections' | 'payments' | 'contacts' | 'accounts'): number {
+  count(kind: 'organizations' | 'chapters' | 'collections' | 'payments' | 'contacts' | 'accounts' | 'intents'): number {
     if (kind === 'accounts') return this.wallets.length; // wallet accounts; a chapter's checking account is not counted
+    if (kind === 'intents') return this.intents.length;
     return this[kind === 'organizations' ? 'orgs' : kind].length;
   }
 
@@ -411,14 +493,25 @@ export class FakeCrowded {
       const col = this.collections.find((x) => x.chapterId === ch.id && x.id === m![1]);
       if (!col) return err(404, 'Collection not found');
       if (d['userConsented'] !== true || !d['payerIp']) return err(400, 'Consent and payer IP are required', 'VALIDATION_ERROR');
-      let i = this.intents.find((x) => x.collectionId === col.id && x.email === d['email']);
+      if (this.failIntents > 0) {
+        this.failIntents--;
+        return err(503, 'Unavailable');
+      }
+      const contact = d['contactId'] === undefined ? undefined : this.contacts.find((c) => c.chapterId === ch.id && String(c.id) === String(d['contactId']));
+      if (d['contactId'] !== undefined && !contact) return err(404, 'Contact not found');
+      const email = contact ? contact.email : String(d['email']);
+      let i = this.intents.find((x) => x.collectionId === col.id && x.email === email);
       const created = !i;
       i ??= (() => {
-        const n = { id: this.id('int'), chapterId: ch.id, collectionId: col.id, email: String(d['email']), amount: cents(d['requestedAmount']) };
+        const n: Intent = { id: this.id('int'), chapterId: ch.id, collectionId: col.id, email, ...(contact ? { contactId: contact.id } : {}), amount: cents(d['requestedAmount']), payments: [], payerIp: String(d['payerIp']), ...(typeof d['successUrl'] === 'string' ? { successUrl: d['successUrl'] } : {}), ...(typeof d['failureUrl'] === 'string' ? { failureUrl: d['failureUrl'] } : {}) };
         this.intents.push(n);
         return n;
       })();
-      return ok({ id: i.id, requestedAmount: wire(i.amount), status: i.paid ? 'Paid' : 'Pending', paymentUrl: `https://pay.fake.invalid/${i.id}` }, created ? 201 : 200);
+      return ok(this.intentJson(i), created ? 201 : 200);
+    }
+    if ((m = rest.match(/^collections\/([^/]+)\/intents\/([^/]+)$/)) && method === 'GET') {
+      const i = this.intents.find((x) => x.chapterId === ch.id && x.collectionId === m![1] && x.id === m![2]);
+      return i ? ok(this.intentJson(i)) : err(404, 'Intent not found');
     }
     if (method === 'POST' && rest === 'payments/quotes/ach') return ok({ type: 'ach', amount: d['amount'], ...(this.quoteWithoutFee ? {} : { fee: { feeType: 'flat', amount: wire(25n) } }), totalDebit: wire(cents(d['amount']) + 25n), quotedAt: this.now().toISOString() });
     if (method === 'POST' && rest === 'payments') return this.originate(ch, d);
