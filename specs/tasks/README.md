@@ -367,4 +367,6 @@
 | [T-0744](T-0744.md) | INS | Make the roster-import console test robust under CI load (5000ms timeout on one case) | REQ-INS-001 | later |
 | [T-0745](T-0745.md) | WAL | An ACH load reads `succeeded` once its hold date has passed, so the credit and the release sweep can finish it (fix to T-0741) | REQ-WAL-003 | fix (built, PR open) |
 | [T-0746](T-0746.md) | WAL | Runbook for the `load_credit_refused` case and the stuck-submitted load alert | REQ-WAL-002, REQ-WAL-003 | later |
+| [T-0747](T-0747.md) | SETUP | Rename scope: the product name Kesher becomes Zuz (Züz), customer-facing copy and docs first; identifiers are a separate owner decision (scoping card, not build-ready) | — | later |
+| [T-0748](T-0748.md) | INS | An `updateContact` verb (Crowded contact PATCH) on the member-accounts adapter and FundingAccountPort so a rejected member can re-apply (scoping card, not build-ready) | REQ-INS-022 | later |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
