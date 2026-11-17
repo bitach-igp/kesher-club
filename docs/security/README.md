@@ -37,6 +37,7 @@ earlier -86w9-cpqp-85rv).
 |---|---|---|---|
 | GHSA-vfj7-8cjw-p6xm | `braces`, through Metro's file watching | Build tooling on the developer's machine | T-0002 |
 | GHSA-mrhx-c7xc-m3w5 (high, memory exhaustion validating oversized collections) | `zod` 3.25.76, through `@expo/cli` 58.x (the latest still declares `zod ^3.25.76`); no 3.x release is patched | It validates the CLI's own config and manifests on the developer's machine. The app and the API use `zod` 4.6.7, which is patched | 2026-10-30, accepted by Zvi |
+| GHSA-fc5q-39xc-vjpf (high, ReDoS through single-branch repeated extglobs) | `picomatch` <=4.0.7, through `.>typescript-eslint>@typescript-eslint/typescript-estree>tinyglobby>picomatch` and `apps/mobile>expo>@expo/cli>@expo/metro-file-map>jest-worker>jest-util>picomatch`; no patched version is published | Development tooling only: never bundled into production code and never run on untrusted input. Exploiting it needs an attacker-controlled glob pattern. Revisit when a patched release is published (check by 2026-11-17 and then again whenever the lockfile changes) | 2026-11-17 |
 
 ## Rules the code already enforces
 
