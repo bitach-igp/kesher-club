@@ -377,7 +377,7 @@
 | [T-0754](T-0754.md) | INS | The Crowded adapter creates a member sub-account under the nonprofit, against the fake and the gated sandbox suite | REQ-INS-022 | later (option 2, BUILD-READY on the fake; live waits on Crowded) |
 | [T-0755](T-0755.md) | WAL | The Crowded funding adapter makes a hosted load inside the member's sub-account chapter | REQ-WAL-002, REQ-WAL-003 | later (option 2, WAITING on Crowded) |
 | [T-0756](T-0756.md) | WAL | The credit step for a sub-account: release the held funds in the member's chapter, no book payment from checking | REQ-WAL-003 | later (option 2, WAITING on Crowded) |
-| [T-0757](T-0757.md) | WAL | Payment events find their load by sub-account, not by one platform member chapter | REQ-WAL-003 | later (option 2, BUILD-READY) |
+| [T-0757](T-0757.md) | WAL | Payment events find their load by sub-account, not by one platform member chapter | REQ-WAL-003 | later (option 2, built, PR open) |
 | [T-0758](T-0758.md) | WAL | SCOPING: a parent pays for a child as a donation to the nonprofit credited to the child's sub-account | REQ-WAL-002 | later (option 2, WAITING on Crowded and counsel) |
 | [T-0759](T-0759.md) | SETUP | Counsel brief for option 2: exempt purposes, private benefit, donations, closure and fees | — | later (option 2, WAITING on counsel) |
 | [T-0760](T-0760.md) | CRD | SCOPING: a card on a member's sub-account | REQ-CRD-003 | later (option 2, WAITING on Crowded and D3) |

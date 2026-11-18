@@ -14,7 +14,8 @@ import type { AddressInfo } from 'node:net';
 import { createServer, dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { holdKey, settleKey, type LoadInput } from '../wallet/loads.ts';
-import { CrowdedWebhook, type CrowdedHandlers } from './crowded.ts';
+import { OWNER_FAILED_CASE, ownerCaseKey } from '../wallet/sub-accounts.ts';
+import { CrowdedWebhook, subAccountChapters, type CrowdedHandlers } from './crowded.ts';
 import { InboundEventStore } from './store.ts';
 
 const SECRET = 'crowded_endpoint_secret_0123456789abcdef';
@@ -437,6 +438,108 @@ describe('member-chapter payment events move a hosted load (T-0703, TST-WAL-003)
     expect((await pay(none, body)).status).toBe(404);
   });
 
+  describe('sub-account chapters (T-0757, TST-WAL-003)', () => {
+    // No platform member chapter configured: a chapter is a member's when it has a funding_subaccount ref.
+    let subApp: App;
+    let subOff: App;
+    beforeAll(async () => {
+      const host = new SimulatorHost();
+      host.registry.register('funding', 'crowded', () => adapter);
+      host.registry.bind({ capability: 'funding', market: 'US', provider: 'crowded', mode: 'sim' });
+      const base = { db, registry: host.registry, market: 'US' as const, signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => T, crowdedWebhookSecrets: [SECRET] };
+      subApp = createApp({ ...base, flags: new StaticFlags(undefined, { 'wallet.enabled': true }) });
+      subOff = createApp({ ...base, flags: new StaticFlags(undefined, { [FLAG]: true }) });
+    }, 60_000);
+    const ref = (type: string, party: string, externalId: string) => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, 'crowded', $3)`, [type, party, externalId]);
+    const rowOf = async (eventId: string) => (await db.query<{ processed_at: unknown; error: string | null }>(`select processed_at, error from ops.inbound_event where event_id = $1`, [eventId])).rows[0]!;
+
+    it('a collect.payment.succeeded of a chapter with a funding_subaccount ref moves the load once; the same batch twice and a re-delivery change nothing more', async () => {
+      await ref('funding_subaccount', uuidv7(T), `s:${chapter}`);
+      const l = await startLoad('sa-card-0001');
+      fake.payIntent(l.intentRef, 'card');
+      const p = (((await adapter.getLoad(`crowded:${chapter}:${l.intentId}`)).metadata as { paymentLoadId: string }).paymentLoadId).split(':')[2]!;
+      const e = paymentEvent('collect.payment.succeeded', p, l.intentId);
+      expect((await deliver(subApp, e)).status).toBe(200);
+      expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'settled' });
+      expect(await journals(settleKey('sa-card-0001'))).toBe(1);
+      const again = await deliver(subApp, e);
+      expect(again.body).toEqual({ received: 1, stored: 0, duplicates: 1 });
+      await deliver(subApp, paymentEvent('collect.payment.succeeded', p, l.intentId));
+      await replay(subApp);
+      expect(await journals(settleKey('sa-card-0001'))).toBe(1);
+      expect((await subApp.services.accounts.purses(l.party)).find((x) => x.currency === 'USD')!.available.minor).toBe(10_000n);
+    });
+
+    it('a chapter with no ref is not a member chapter: its payment event takes the institution path and moves no load', async () => {
+      const l = await startLoad('sa-noref-0001');
+      const p = fake.payIntent(l.intentRef, 'card');
+      const e = paymentEvent('collect.payment.succeeded', p, l.intentId, 'nonprofit-ch');
+      await deliver(subApp, e);
+      expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'submitted' });
+      expect((await rowOf(e.eventId)).error).toContain('US banking');
+    });
+
+    it('one member\'s events never reach another member\'s load: B\'s chapter naming A\'s intent moves nothing', async () => {
+      await ref('funding_subaccount', uuidv7(T), 's:member-b');
+      const a = await startLoad('sa-cross-0001');
+      const p = fake.payIntent(a.intentRef, 'card');
+      const e = paymentEvent('collect.payment.succeeded', p, a.intentId, 'member-b');
+      await deliver(subApp, e);
+      expect(await stateOf(a.transfer.id)).toMatchObject({ state: 'submitted' });
+      expect(await journals(settleKey('sa-cross-0001'))).toBe(0);
+    });
+
+    it('with the wallet flag off a sub-account event is stored and left unprocessed; replay applies it once the wallet is on', async () => {
+      const l = await startLoad('sa-flag-0001');
+      const p = fake.payIntent(l.intentRef, 'card');
+      const e = paymentEvent('collect.payment.succeeded', p, l.intentId);
+      expect((await deliver(subOff, e)).status).toBe(200);
+      expect((await rowOf(e.eventId)).processed_at).toBeNull();
+      expect((await rowOf(e.eventId)).error).toContain('wallet');
+      expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'submitted' });
+      await replay(subApp);
+      await replay(subApp);
+      expect((await rowOf(e.eventId)).processed_at).not.toBeNull();
+      expect(await stateOf(l.transfer.id)).toMatchObject({ state: 'settled' });
+      expect(await journals(settleKey('sa-flag-0001'))).toBe(1);
+    });
+  });
+
+  describe('subAccountChapters: the ops.external_ref lookup', () => {
+    const lookup = () => subAccountChapters(db, 'crowded');
+    const ref = (type: string, party: string, externalId: string, provider = 'crowded') => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4)`, [type, party, provider, externalId]);
+
+    it('matches s:<chapter> and s:<chapter>:<account> on the chapter boundary only, for the funding provider only', async () => {
+      await ref('funding_subaccount', uuidv7(T), 's:lk-one');
+      await ref('funding_subaccount', uuidv7(T), 's:lk-two:acct9');
+      await ref('funding_subaccount', uuidv7(T), 's:lk-other', 'someone-else');
+      await ref('funding_account', uuidv7(T), 's:lk-acctonly:a1');
+      const l = lookup();
+      expect(await l.isMemberChapter('lk-one')).toBe(true);
+      expect(await l.isMemberChapter('lk-two')).toBe(true);
+      expect(await l.isMemberChapter('lk-on')).toBe(false);
+      expect(await l.isMemberChapter('lk-one:x')).toBe(false);
+      expect(await l.isMemberChapter('lk-other')).toBe(false);
+      expect(await l.isMemberChapter('lk-acctonly')).toBe(false);
+      expect(await l.isMemberChapter('lk_ne')).toBe(false);
+      expect(await l.isMemberChapter('%')).toBe(false);
+    });
+
+    it('ownerFailed is true only for a sub-account whose owner failed, and opens the one case for staff (and no second)', async () => {
+      const bad = uuidv7(T);
+      const fine = uuidv7(T);
+      await ref('funding_subaccount', bad, 's:lk-bad');
+      await ref('funding_subaccount_owner', bad, `o:${bad}:failed`);
+      await ref('funding_subaccount', fine, 's:lk-fine');
+      const l = lookup();
+      expect(await l.ownerFailed('lk-fine', T)).toBe(false);
+      expect(await l.ownerFailed('lk-bad', T)).toBe(true);
+      expect(await l.ownerFailed('lk-bad', T)).toBe(true);
+      expect((await db.query(`select 1 from ops.case where dedupe_key = $1 and kind = $2`, [ownerCaseKey(bad), OWNER_FAILED_CASE])).rows).toHaveLength(1);
+      expect((await db.query(`select 1 from ops.case where dedupe_key = $1`, [ownerCaseKey(fine)])).rows).toHaveLength(0);
+    });
+  });
+
   describe('routing by chapter', () => {
     function rig(handlers: CrowdedHandlers, flags = new StaticFlags(undefined, { [FLAG]: true, 'wallet.enabled': true })) {
       const store = new InboundEventStore(db);
@@ -469,6 +572,73 @@ describe('member-chapter payment events move a hosted load (T-0703, TST-WAL-003)
       await feed(event('rt-6', 'collect.payment.succeeded', MEMBER_CHAPTER, { paymentId: '../x', intentId: 'a?b' }));
       // The refs are opaque strings to the handler; the adapter refuses anything that is not a plain id (UNKNOWN_LOAD, no request).
       expect(funding).toHaveBeenCalledTimes(1);
+    });
+
+    describe('sub-account dispatch (T-0757)', () => {
+      function sub(handlers: CrowdedHandlers, extra: Partial<ConstructorParameters<typeof CrowdedWebhook>[0]>, flags = new StaticFlags(undefined, { [FLAG]: true, 'wallet.enabled': true })) {
+        const store = new InboundEventStore(db);
+        const crowded = new CrowdedWebhook({ store, flags, secrets: () => [SECRET], port: () => ({}) as InstitutionBankingPort, handlers, ...extra });
+        return async (e: ReturnType<typeof event>) => {
+          const { event: stored } = await store.record({ provider: 'crowded', eventId: e.eventId, signatureOk: true, payload: e, receivedAt: now });
+          await crowded.process(stored);
+        };
+      }
+
+      it('a chapter the lookup knows goes to funding with its own refs; others keep going to collected; non-payment collect events of a member are ignored; the platform member chapter still works', async () => {
+        const funding = vi.fn(async () => undefined);
+        const collected = vi.fn(async () => undefined);
+        const feed = sub({ funding, collected }, { memberChapterId: MEMBER_CHAPTER, isMemberChapter: async (c) => c === 'subA' || c === 'subB' });
+        await feed(event('sd-1', 'collect.payment.succeeded', 'subA', { paymentId: 'p1', intentId: 'i1' }));
+        await feed(event('sd-2', 'collect.payment.succeeded', 'subB', { paymentId: 'p2', intentId: 'i1' }));
+        await feed(event('sd-3', 'collect.payment.succeeded', 'nonprofit', { paymentId: 'p3' }));
+        await feed(event('sd-4', 'collect.intent.created', 'subA', { intentId: 'i1' }));
+        await feed(event('sd-5', 'collect.payment.failed', MEMBER_CHAPTER, { paymentId: 'p5' }));
+        expect(funding.mock.calls).toEqual([
+          ['subA', 'crowded:subA:p1', 'crowded:subA:i1'],
+          ['subB', 'crowded:subB:p2', 'crowded:subB:i1'], // B's event names an intent id A also has: the ref is B's, never A's
+          [MEMBER_CHAPTER, `crowded:${MEMBER_CHAPTER}:p5`, undefined],
+        ]);
+        expect(collected.mock.calls).toEqual([['nonprofit']]);
+      });
+
+      it('without a lookup only the platform member chapter is a member chapter', async () => {
+        const funding = vi.fn(async () => undefined);
+        const collected = vi.fn(async () => undefined);
+        const feed = sub({ funding, collected }, { memberChapterId: MEMBER_CHAPTER });
+        await feed(event('sd-6', 'collect.payment.succeeded', 'subA', { paymentId: 'p1' }));
+        expect(funding).not.toHaveBeenCalled();
+        expect(collected.mock.calls).toEqual([['subA']]);
+      });
+
+      it('the lookup runs once per distinct chapter for a burst of events, and again after the cache window', async () => {
+        const lookup = vi.fn(async (c: string) => c !== 'plain');
+        const feed = sub({ funding: async () => undefined, collected: async () => undefined }, { isMemberChapter: lookup });
+        const spy = vi.spyOn(Date, 'now');
+        const t0 = 1_800_000_000_000;
+        spy.mockReturnValue(t0);
+        for (let i = 0; i < 4; i += 1) await feed(event(`sd-7-${i}`, 'collect.payment.succeeded', 'subA', { paymentId: `p${i}` }));
+        await feed(event('sd-7-x', 'collect.payment.succeeded', 'plain', { paymentId: 'px' }));
+        await feed(event('sd-7-y', 'collect.payment.succeeded', 'plain', { paymentId: 'py' }));
+        expect(lookup.mock.calls.map((c) => c[0])).toEqual(['subA', 'plain']);
+        spy.mockReturnValue(t0 + 60_000);
+        await feed(event('sd-7-z', 'collect.payment.succeeded', 'subA', { paymentId: 'pz' }));
+        expect(lookup).toHaveBeenCalledTimes(3);
+        spy.mockRestore();
+      });
+
+      it('a sub-account whose owner failed is not credited: funding is not called', async () => {
+        const funding = vi.fn(async () => undefined);
+        const ownerFailed = vi.fn(async (c: string) => c === 'subBad');
+        const feed = sub({ funding }, { isMemberChapter: async () => true, ownerFailed });
+        await feed(event('sd-8', 'collect.payment.succeeded', 'subBad', { paymentId: 'p1', intentId: 'i1' }));
+        await feed(event('sd-9', 'collect.payment.succeeded', 'subOk', { paymentId: 'p2', intentId: 'i2' }));
+        expect(funding.mock.calls).toEqual([['subOk', 'crowded:subOk:p2', 'crowded:subOk:i2']]);
+      });
+
+      it('with the wallet flag off a sub-account event throws FEATURE_OFF so replay applies it later', async () => {
+        const feed = sub({ funding: async () => undefined }, { isMemberChapter: async () => true }, new StaticFlags(undefined, { [FLAG]: true }));
+        await expect(feed(event('sd-10', 'collect.payment.succeeded', 'subA', { paymentId: 'p1' }))).rejects.toMatchObject({ code: 'FEATURE_OFF' });
+      });
     });
   });
 });

@@ -13,9 +13,11 @@
 // both re-read the same current state. Event bodies are untrusted text: stored as JSON, never interpreted.
 import { createHash } from 'node:crypto';
 import { crowdedHeaderValue, crowdedRef, CROWDED_SIGNATURE_HEADER, verifyCrowdedSignature } from '@kesher/adapters';
-import { DomainError } from '@kesher/domain';
+import { DomainError, uuidv7 } from '@kesher/domain';
 import type { AchStatus, ApplicationStatus, InstitutionBankingPort } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
+import type { Database } from '../db.ts';
+import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF, SUBACCOUNT_REF } from '../wallet/sub-accounts.ts';
 import { HttpError, ok, route, type Handler, type HttpRequest } from '../http.ts';
 import type { InboundEvent, InboundEventStore } from './store.ts';
 import type { WebhookVerifier } from './verify.ts';
@@ -53,6 +55,46 @@ export interface CrowdedWebhookDeps {
   handlers?: CrowdedHandlers;
   /** The platform member chapter at Crowded, where hosted loads are collected (injected by T-0709). None: every payment event is an institution one. */
   memberChapterId?: string;
+  /**
+   * Is this chapter a member's sub-account of ours (T-0757)? Answered from ops.external_ref (`subAccountChapters`). Absent: only
+   * `memberChapterId` is a member chapter. The answer is cached for `CHAPTER_CACHE_MS`, so a burst of events costs one query per chapter.
+   */
+  isMemberChapter?(chapterId: string): Promise<boolean>;
+  /**
+   * True when the sub-account's owner failed (T-0752 note): its payments are not credited blindly. The funding handler is skipped; the
+   * lookup has opened (or found) the one case for staff, and the sweep through `getLoad` still sees the load once the owner is fixed.
+   */
+  ownerFailed?(chapterId: string): Promise<boolean>;
+}
+
+/** How long a chapter's answer is kept: long enough for one replay pass over a batch, short enough that a new sub-account is seen at once. */
+export const CHAPTER_CACHE_MS = 10_000;
+
+/**
+ * The `ops.external_ref` side of the sub-account dispatch (T-0757). A chapter is a member's when a `funding_subaccount` ref of the
+ * funding provider reads `s:<chapter>` or `s:<chapter>:<account>`; the match is on the chapter boundary, so `s:ab1` is not chapter `ab`,
+ * and a chapter with no ref (the nonprofit's own included) is not a member chapter. No pattern matching: the chapter id is compared as text.
+ */
+export function subAccountChapters(db: Database, provider: string): { isMemberChapter(chapterId: string): Promise<boolean>; ownerFailed(chapterId: string, now: Date): Promise<boolean> } {
+  const match = `r.entity_type = $1 and r.provider = $2 and (r.external_id = 's:' || $3::text or left(r.external_id, length($3::text) + 3) = 's:' || $3::text || ':')`;
+  return {
+    async isMemberChapter(chapterId) {
+      const r = await db.query(`select 1 from ops.external_ref r where ${match} limit 1`, [SUBACCOUNT_REF, provider, chapterId]);
+      return r.rows.length > 0;
+    },
+    async ownerFailed(chapterId, now) {
+      const r = await db.query<{ party: string }>(
+        `select r.entity_id::text as party from ops.external_ref r where ${match}
+           and exists (select 1 from ops.external_ref o where o.entity_type = $4 and o.entity_id = r.entity_id and o.provider = $2 and o.external_id = 'o:' || r.entity_id::text || ':failed') limit 1`,
+        [SUBACCOUNT_REF, provider, chapterId, SUBACCOUNT_OWNER_REF],
+      );
+      const party = r.rows[0]?.party;
+      if (party === undefined) return false;
+      // The same case T-0752 opened when the owner failed (same dedupe key): nothing new if it is there, one for staff if it is not.
+      await db.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, $2, $3, 'medium', 'open', $4, $5) on conflict (dedupe_key) do nothing`, [uuidv7(now), OWNER_FAILED_CASE, ownerCaseKey(party), { partyId: party }, now]);
+      return true;
+    },
+  };
 }
 
 /** The generic `/hooks/crowded` route must never accept a Crowded delivery: this verifier refuses everything. */
@@ -63,6 +105,7 @@ const idOf = (v: unknown): string | undefined => (typeof v === 'string' && v !==
 
 export class CrowdedWebhook {
   private readonly d: CrowdedWebhookDeps;
+  private readonly members = new Map<string, { member: boolean; at: number }>();
   constructor(deps: CrowdedWebhookDeps) {
     this.d = deps;
   }
@@ -90,6 +133,20 @@ export class CrowdedWebhook {
     });
   }
 
+  /** The platform member chapter, or a chapter the lookup knows as a member's sub-account (cached per chapter for a short window). */
+  private async isMemberChapter(chapter: string): Promise<boolean> {
+    if (this.d.memberChapterId !== undefined && chapter === this.d.memberChapterId) return true;
+    const lookup = this.d.isMemberChapter;
+    if (!lookup) return false;
+    const at = Date.now();
+    const hit = this.members.get(chapter);
+    if (hit && at - hit.at < CHAPTER_CACHE_MS && at >= hit.at) return hit.member;
+    const member = await lookup.call(this.d, chapter);
+    if (this.members.size >= 1000) this.members.clear();
+    this.members.set(chapter, { member, at });
+    return member;
+  }
+
   /** Re-reads the object the event is about and hands the provider's current state to its card. Throws are recorded and retried by replay. */
   async process(event: InboundEvent): Promise<void> {
     const e = isRecord(event.payload) ? event.payload : {};
@@ -99,11 +156,14 @@ export class CrowdedWebhook {
     const chapter = idOf(ctx['chapterId']) ?? idOf(data['chapterId']);
     if (!chapter) return; // nothing to re-read: stored, and that is all
     const h = this.d.handlers ?? {};
-    // A hosted load's payment: the platform member chapter's `collect.payment.*` events belong to the wallet, never to the institution path.
-    if (this.d.memberChapterId !== undefined && chapter === this.d.memberChapterId && /^collect\./.test(type)) {
+    // A hosted load's payment: a member chapter's `collect.payment.*` events (the platform member chapter, or a member's own sub-account
+    // chapter, T-0757) belong to the wallet, never to the institution path. The refs are built from the event's own chapter, so one
+    // member's event can only name that member's loads.
+    if (/^collect\./.test(type) && (await this.isMemberChapter(chapter))) {
       if (!/^collect\.payment\./.test(type)) return; // collections, intents and refunds of the member chapter: stored and ignored
       // Flag off: this throws, the row stays unprocessed and the replay job applies it once the wallet is on.
       if (!(await this.d.flags.isOn(CROWDED_WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
+      if (this.d.ownerFailed && (await this.d.ownerFailed(chapter))) return; // never credited blindly (T-0752 note): staff have the case
       const payment = idOf(data['paymentId']) ?? idOf(data['id']);
       const intent = idOf(data['intentId']);
       if (payment && h.funding) await h.funding(chapter, crowdedRef('crowded', chapter, payment), intent ? crowdedRef('crowded', chapter, intent) : undefined);
