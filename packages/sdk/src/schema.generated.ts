@@ -2808,6 +2808,30 @@ export interface paths {
         readonly patch: operations["updateDisplayName"];
         readonly trace?: never;
     };
+    readonly "/me/funding-details": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The member's own funding details
+         * @description REQ-WAL-002 (T-0738). Bearer only; only the caller's own are ever readable. 404 NOT_FOUND until the member has stored some. The owner contact of the member's sub-account, or an invitation email only. Every value is sealed at rest.
+         */
+        readonly get: operations["getFundingDetails"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        /**
+         * Set (or replace) the member's funding details
+         * @description REQ-WAL-002 (T-0738). Bearer only; it moves no money and needs no KYC. Send either the owner contact (`firstName`, `lastName`, `email`, optional `dateOfBirth`) or `inviteEmail` alone, never both. Names are NFC-normalised, trimmed, 1 to 80 characters with no control characters; the email is at most 254 characters; `dateOfBirth` is a real date from 1900 to today. Anything else answers VALIDATION_FAILED with `field` and never echoes the value. A second call replaces the first.
+         */
+        readonly patch: operations["updateFundingDetails"];
+        readonly trace?: never;
+    };
     readonly "/me/institution": {
         readonly parameters: {
             readonly query?: never;
@@ -4088,6 +4112,17 @@ export interface components {
             /** @enum {string} */
             readonly status: "open" | "accepted" | "expired" | "cancelled";
             readonly termMonths: number;
+        };
+        /** @description Personal data, readable only by its owner. Either the owner contact or `inviteEmail`. */
+        readonly FundingDetails: {
+            /** Format: date */
+            readonly dateOfBirth?: string;
+            readonly email?: string;
+            readonly firstName?: string;
+            readonly inviteEmail?: string;
+            readonly lastName?: string;
+            /** Format: date-time */
+            readonly updatedAt: string;
         };
         readonly FxConversion: {
             readonly conversionId: string;
@@ -9844,6 +9879,60 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["DisplayName"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getFundingDetails: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The caller's details */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FundingDetails"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly updateFundingDetails: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    /** Format: date */
+                    readonly dateOfBirth?: string;
+                    readonly email?: string;
+                    readonly firstName?: string;
+                    /** @description Instead of the owner fields, the sub-account owner is invited by email */
+                    readonly inviteEmail?: string;
+                    readonly lastName?: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The details as stored */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FundingDetails"];
                 };
             };
             readonly default: components["responses"]["Problem"];
