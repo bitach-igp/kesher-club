@@ -1,9 +1,9 @@
 // The exempt-purpose guard (T-0752, REQ-WAL-002, ADR-018 "Decision, 2026-11-18"). TST-WAL-002: a member sub-account is opened only for a
 // stated purpose from a configured list (no default), behind `wallet.subAccounts`, for an eligible member with owner details or an
 // invitation, once per member and purpose. Over the MemberSubAccountSimulator and PGlite; the port is spied on to count calls.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DomainError, uuidv7 } from '@kesher/domain';
-import { MemberSubAccountSimulator, type EnsureSubAccountInput } from '@kesher/ports';
+import { MemberSubAccountError, MemberSubAccountSimulator, type EnsureSubAccountInput } from '@kesher/ports';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { purposeHash, SubAccountService, type OwnerDetailsReader, type SubAccountOwnerDetails } from './sub-accounts.ts';
@@ -248,19 +248,104 @@ describe('SubAccountService.open (T-0752)', () => {
     expect((await cases(id)).rows).toHaveLength(1);
   });
 
-  it('lets a port error through without personal data (T-0753 maps the codes)', async () => {
-    const { service, sim } = build({ details: { owner: { ...OWNER, email: 'outage@example.test', firstName: 'Zelda' } } });
-    sim.setQuota(100);
-    const e = await service.open({ partyId: uuidv7(), purpose: PURPOSE }, NOW).then(() => undefined, (x: unknown) => x as Error);
-    expect(e?.name).toBe('MemberSubAccountError');
-    expect(e!.message).not.toContain('Zelda');
-    expect(e!.message).not.toContain('outage@example.test');
-  });
-
   it('never puts a name, mobile or email into a thrown message when the details are refused', async () => {
     const { service } = build({ details: { owner: { ...OWNER, firstName: 'Zelda', email: 'bad-email' } } });
     const e = await service.open({ partyId: uuidv7(), purpose: PURPOSE }, NOW).then(() => undefined, (x: unknown) => x as Error);
     expect(e).toBeDefined();
     for (const pii of ['Zelda', '+14155550123', 'bad-email']) expect(e!.message + JSON.stringify((e as DomainError).extra ?? {})).not.toContain(pii);
+  });
+});
+
+const quotaCase = () => db.query<{ kind: string; severity: string; status: string; payload: Record<string, unknown>; opened_at: Date }>(`select kind, severity, status, payload, opened_at from ops.case where dedupe_key = 'subaccount-quota'`);
+const resolveQuotaCase = () => db.query(`update ops.case set status = 'resolved', resolved_at = $1, resolution = 'quota raised' where dedupe_key = 'subaccount-quota'`, [NOW]);
+
+describe('a full sub-account quota (T-0753)', () => {
+  // The file's one simulator keeps vendor refs unique (ops.external_ref is keyed on them); each test fills it and the hook empties the quota.
+  const full = () => {
+    shared.setQuota(0);
+    return shared;
+  };
+  afterEach(() => shared.setQuota(Number.POSITIVE_INFINITY));
+
+  it('answers 503 PROVIDER_UNAVAILABLE with reason subaccount_quota, calls the port once, writes no ref and opens ONE high case', async () => {
+    await db.query(`delete from ops.case where dedupe_key = 'subaccount-quota'`);
+    const id = uuidv7();
+    const { service, sim } = build({ details: { owner: { ...OWNER, firstName: 'Zelda', email: 'quota@example.test' } } });
+    full();
+    const e = await refused(service.open({ partyId: id, purpose: PURPOSE }, NOW));
+    expect(e.code).toBe('PROVIDER_UNAVAILABLE');
+    expect(e.extra).toMatchObject({ reason: 'subaccount_quota' });
+    expect(sim.calls).toHaveLength(1);
+    expect((await refs(id)).rows).toHaveLength(0);
+    const c = await quotaCase();
+    expect(c.rows).toHaveLength(1);
+    expect(c.rows[0]).toMatchObject({ kind: 'subaccount_quota_full', severity: 'high', status: 'open', payload: { refused: 1 } });
+    // Fixed text, no vendor words and nothing personal anywhere in the error or the case.
+    const text = e.message + JSON.stringify(e.extra ?? {}) + JSON.stringify(c.rows[0]!.payload);
+    for (const leak of ['Zelda', 'quota@example.test', id, 'limit has been reached', 'QUOTA_EXCEEDED']) expect(text).not.toContain(leak);
+  });
+
+  it('a second refused member updates the same case (count 2) and opens no other', async () => {
+    await db.query(`delete from ops.case where dedupe_key = 'subaccount-quota'`);
+    const { service, sim } = build();
+    full();
+    await refused(service.open({ partyId: uuidv7(), purpose: PURPOSE }, NOW));
+    await refused(service.open({ partyId: uuidv7(), purpose: PURPOSE }, new Date(NOW.getTime() + 60_000)));
+    const c = await quotaCase();
+    expect(c.rows).toHaveLength(1);
+    expect(c.rows[0]!.payload).toEqual({ refused: 2 });
+    expect(c.rows[0]!.opened_at.toISOString()).toBe(NOW.toISOString());
+    expect(sim.calls).toHaveLength(2);
+  });
+
+  it('still answers the refs of a member who already has a sub-account: the rows are read first and the port is not called', async () => {
+    const id = uuidv7();
+    const { service, sim } = build();
+    const first = await service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    sim.setQuota(0);
+    sim.calls = [];
+    const again = await service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    expect(again).toMatchObject({ created: false, subAccountRef: first.subAccountRef, accountRef: first.accountRef });
+    expect(sim.calls).toHaveLength(0);
+  });
+
+  it('after ops raises the quota and resolves the case, the next open succeeds with the same key and ONE sub-account exists', async () => {
+    await db.query(`delete from ops.case where dedupe_key = 'subaccount-quota'`);
+    const id = uuidv7();
+    const { service, sim } = build();
+    full();
+    await refused(service.open({ partyId: id, purpose: PURPOSE }, NOW));
+    sim.setQuota(Number.POSITIVE_INFINITY);
+    await resolveQuotaCase();
+    const r = await service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    expect(r.created).toBe(true);
+    expect(sim.idemKeys[1]).toBe(sim.idemKeys[0]);
+    expect((await refs(id)).rows.filter((x) => x.entity_type === 'funding_subaccount')).toHaveLength(1);
+    expect((await service.open({ partyId: id, purpose: PURPOSE }, NOW)).created).toBe(false);
+    expect(sim.calls).toHaveLength(2);
+  });
+
+  it('a later refusal after the case was resolved reopens it with a fresh count', async () => {
+    await db.query(`delete from ops.case where dedupe_key = 'subaccount-quota'`);
+    const { service } = build();
+    full();
+    await refused(service.open({ partyId: uuidv7(), purpose: PURPOSE }, NOW));
+    await resolveQuotaCase();
+    const later = new Date(NOW.getTime() + 3_600_000);
+    await refused(service.open({ partyId: uuidv7(), purpose: PURPOSE }, later));
+    const c = await quotaCase();
+    expect(c.rows).toHaveLength(1);
+    expect(c.rows[0]).toMatchObject({ status: 'open', payload: { refused: 1 } });
+    expect(c.rows[0]!.opened_at.toISOString()).toBe(later.toISOString());
+  });
+
+  it('other port errors still propagate unchanged and open no quota case', async () => {
+    await db.query(`delete from ops.case where dedupe_key = 'subaccount-quota'`);
+    const port = new SpySim();
+    port.ensureSubAccount = () => Promise.reject(new MemberSubAccountError('PROVIDER_UNAVAILABLE', 'The provider is unavailable'));
+    const { service } = build({ port });
+    const e = await service.open({ partyId: uuidv7(), purpose: PURPOSE }, NOW).then(() => undefined, (x: unknown) => x as Error);
+    expect(e?.name).toBe('MemberSubAccountError');
+    expect((await quotaCase()).rows).toHaveLength(0);
   });
 });
