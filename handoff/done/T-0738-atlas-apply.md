@@ -13,3 +13,14 @@ Steps (from repo root, PowerShell on Windows unless stated):
 10. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with identity at 7 migrations. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`. Step 7 prints `UPDATE 1` (the email-only shape). Step 8 fails with a check violation on `member_funding_details_shape` (a first name without a last name). Step 9 fails with `permission denied for table member_funding_details`.
 Report back: the console output of steps 4 to 9.
+
+## Result
+PASS, 2026-11-18 19:07 (Asia/Jerusalem), desktop checker on runner worktree at 5e4010f, Docker 29.9.2 (Docker Desktop was not running; started it, no settings changed), postgres:16.
+- Step 3: roles.sql applied (ALTER ROLE ...).
+- Step 4: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent; atlas_identity.atlas_schema_revisions holds 0001..0007 (identity at 7).
+- Step 5: `No migration files to execute`, all 9 schemas `ok`.
+- Step 6: `INSERT 0 1`.
+- Step 7: `UPDATE 1` (email-only shape).
+- Step 8: `ERROR: new row for relation "member_funding_details" violates check constraint "member_funding_details_shape"` (first name without last name), exit 1.
+- Step 9: `ERROR: permission denied for table member_funding_details`, exit 1; the row is still there (1 row, first_name null).
+- Step 10: container removed.
