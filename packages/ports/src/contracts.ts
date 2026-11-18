@@ -7,6 +7,7 @@ export * from './kyc.contract.ts';
 export * from './billing.contract.ts';
 export * from './funding.contract.ts';
 export * from './funding-account.contract.ts';
+export * from './member-sub-account.contract.ts';
 export * from './bank.contract.ts';
 export * from './card-issuing.contract.ts';
 export * from './wallet-provisioning.contract.ts';
