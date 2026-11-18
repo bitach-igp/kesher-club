@@ -130,9 +130,9 @@ describe.skipIf(!(enabled && crowded.token && crowded.chapterId))('Crowded membe
 
 // Crowded member sub-accounts (T-0754): one sub-account under the nonprofit chapter and a second call that creates nothing. SKIPPED by default
 // and until a nonprofit full customer exists in the sandbox (Thursday's questions A and D, README 60 and 63). Needs the sandbox token and that
-// chapter's id (CROWDED_SANDBOX_NONPROFIT_CHAPTER_ID) with SANDBOX_CONTRACTS=1. It makes a real sub-account that stays in the sandbox (there is
+// chapter's id in CROWDED_SANDBOX_CHAPTER_ID (the one secret wired for a Crowded chapter: no new workflow secret) with SANDBOX_CONTRACTS=1. It makes a real sub-account that stays in the sandbox (there is
 // no delete route) and counts against the tier limit; the party id, names, email and mobile are made up and unique per run.
-const nonprofitChapterId = env('CROWDED_SANDBOX_NONPROFIT_CHAPTER_ID');
+const nonprofitChapterId = crowded.chapterId;
 describe.skipIf(!(enabled && crowded.token && nonprofitChapterId))('Crowded member sub-accounts sandbox', () => {
   it('creates one sub-account, and a second call with another key creates nothing', async () => {
     const posts: string[] = [];
