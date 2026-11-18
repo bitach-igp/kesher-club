@@ -118,6 +118,29 @@ describe('SERVICE_ROLE (T-0063)', () => {
   });
 });
 
+describe('CROWDED_NONPROFIT_CHAPTER_ID (T-0751)', () => {
+  it('is optional with no default, in both processes, whatever the flag or provider', () => {
+    expect(loadApiConfig(env).CROWDED_NONPROFIT_CHAPTER_ID).toBeUndefined();
+    expect(loadApiConfig({ ...env, ...crowded }).CROWDED_NONPROFIT_CHAPTER_ID).toBeUndefined();
+    expect(loadWorkerConfig(env).CROWDED_NONPROFIT_CHAPTER_ID).toBeUndefined();
+  });
+
+  it('takes a Crowded id (letters, digits, underscore, hyphen)', () => {
+    for (const id of ['ch_8f3A-21', '123456', 'abc']) {
+      expect(loadApiConfig({ ...env, CROWDED_NONPROFIT_CHAPTER_ID: id }).CROWDED_NONPROFIT_CHAPTER_ID).toBe(id);
+      expect(loadWorkerConfig({ ...env, CROWDED_NONPROFIT_CHAPTER_ID: id }).CROWDED_NONPROFIT_CHAPTER_ID).toBe(id);
+    }
+  });
+
+  it('refuses a malformed id, naming the key and never the value', () => {
+    for (const bad of ['has space', 'a/b', 'ch#1', '../x']) {
+      const e = thrown(() => loadApiConfig({ ...env, CROWDED_NONPROFIT_CHAPTER_ID: bad }));
+      expect(e.invalid.join()).toMatch(/CROWDED_NONPROFIT_CHAPTER_ID/);
+      expect(JSON.stringify(e.invalid) + e.message).not.toContain(bad);
+    }
+  });
+});
+
 describe('Crowded banking override (T-0659)', () => {
   it('defaults to the simulator and needs no Crowded key', () => {
     const c = loadApiConfig(env);

@@ -231,6 +231,13 @@
     "turnOnTrigger": "Meta verification + templates approved"
   },
   {
+    "key": "wallet.subAccounts",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Member wallets as Crowded sub-accounts under the nonprofit chapter (ADR-018 option 2)",
+    "turnOnTrigger": "nonprofit is a full Crowded customer; counsel has answered T-0759"
+  },
+  {
     "key": "wallet.pass",
     "defaultProd": false,
     "owner": "Kathleen",
