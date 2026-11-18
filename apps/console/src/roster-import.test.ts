@@ -84,16 +84,6 @@ describe('T-0640 I05 import roster', () => {
     expect(prepare('Name,Name,Email\nA,B,a@b.co', { memberName: 'Name', funderEmail: 'Email' })).toEqual({ ok: false, key: 'import.map.duplicate' });
     expect(prepare('Name,Email\n', { memberName: 'Name', funderEmail: 'Email' })).toEqual({ ok: false, key: 'import.file.empty' });
     expect(prepare('', { memberName: 'Name', funderEmail: 'Email' })).toEqual({ ok: false, key: 'import.file.empty' });
-    expect(prepare(`Name,Email\n${'A,a@b.co\n'.repeat(130_000)}`, { memberName: 'Name', funderEmail: 'Email' })).toEqual({ ok: false, key: 'import.file.large' });
-    // The limit is on the JSON-encoded request, where each newline costs two bytes: this file is under the limit raw
-    // (855 KB) but not as sent (950 KB), and a server action would refuse it.
-    const rows = (n: number) => `Name,Email\n${'A,a@b.co\n'.repeat(n)}`;
-    expect(new TextEncoder().encode(rows(95_000)).length).toBeLessThan(900_000);
-    expect(prepare(rows(95_000), { memberName: 'Name', funderEmail: 'Email' })).toEqual({ ok: false, key: 'import.file.large' });
-    expect(prepare(rows(80_000), { memberName: 'Name', funderEmail: 'Email' }).ok).toBe(true);
-    // Quotes count double as well.
-    expect(prepare(`Name,Email\n${'"A ""x""",a@b.co\n'.repeat(60_000)}`, { memberName: 'Name', funderEmail: 'Email' })).toEqual({ ok: false, key: 'import.file.large' });
-
     const calls: string[] = [];
     const call = async (_b: RosterImportRequest, key: string): Promise<Result<RosterImportResult>> => {
       calls.push(key);
@@ -109,6 +99,25 @@ describe('T-0640 I05 import roster', () => {
     expect(again.outcome).toEqual({ kind: 'refused', key: 'import.map.name' });
     expect(again.attempt).toBe(last);
     expect(calls).toEqual([]);
+  });
+
+  // The size-limit cases parse several hundred thousand rows between them. They shared one case with the refusals
+  // above and, under CI load, the sum passed vitest's 5000ms; each has its own budget now, with the same assertions.
+  it('a file over the size limit is refused before the call', () => {
+    const map = { memberName: 'Name', funderEmail: 'Email' };
+    expect(prepare(`Name,Email\n${'A,a@b.co\n'.repeat(130_000)}`, map)).toEqual({ ok: false, key: 'import.file.large' });
+    // The limit is on the JSON-encoded request, where each newline costs two bytes: this file is under the limit raw
+    // (855 KB) but not as sent (950 KB), and a server action would refuse it.
+    const big = `Name,Email\n${'A,a@b.co\n'.repeat(95_000)}`;
+    expect(new TextEncoder().encode(big).length).toBeLessThan(900_000);
+    expect(prepare(big, map)).toEqual({ ok: false, key: 'import.file.large' });
+  });
+
+  it('a file whose encoded request fits is accepted, and quotes count double', () => {
+    const map = { memberName: 'Name', funderEmail: 'Email' };
+    expect(prepare(`Name,Email\n${'A,a@b.co\n'.repeat(80_000)}`, map).ok).toBe(true);
+    // Quotes count double as well.
+    expect(prepare(`Name,Email\n${'"A ""x""",a@b.co\n'.repeat(60_000)}`, map)).toEqual({ ok: false, key: 'import.file.large' });
   });
 
   it('the dry run sends the normalized CSV, only the mapped columns, and commit=false; Commit sends commit=true', async () => {

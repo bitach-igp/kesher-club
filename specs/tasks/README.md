@@ -364,7 +364,7 @@
 | [T-0741](T-0741.md) | WAL | The Crowded funding adapter implements FundingCreditPort: release-funds when fund holding is on, then one book payment to the member's wallet account | REQ-WAL-003 | later (built, PR open; fake-only until README q29 and q35 are answered) |
 | [T-0742](T-0742.md) | WAL | A return after release opens a case instead of being dropped, and leaves the wallet alone | REQ-WAL-003 | later |
 | [T-0743](T-0743.md) | WAL | End-to-end self top-up against the Crowded fake: hosted load, payment event, credit, ACH hold and release, returns | REQ-WAL-002, REQ-WAL-003 | later · option 2: re-scope, last of the chain |
-| [T-0744](T-0744.md) | INS | Make the roster-import console test robust under CI load (5000ms timeout on one case) | REQ-INS-001 | later |
+| [T-0744](T-0744.md) | INS | Make the roster-import console test robust under CI load (5000ms timeout on one case) | REQ-INS-001 | later (built, PR open) |
 | [T-0745](T-0745.md) | WAL | An ACH load reads `succeeded` once its hold date has passed, so the credit and the release sweep can finish it (fix to T-0741) | REQ-WAL-003 | fix (built, PR open) |
 | [T-0746](T-0746.md) | WAL | Runbook for the `load_credit_refused` case and the stuck-submitted load alert | REQ-WAL-002, REQ-WAL-003 | later |
 | [T-0747](T-0747.md) | SETUP | Rename scope: the product name Kesher becomes Zuz (Züz), customer-facing copy and docs first; identifiers are a separate owner decision (scoping card, not build-ready) | — | later |
