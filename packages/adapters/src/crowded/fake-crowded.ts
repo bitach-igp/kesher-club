@@ -9,6 +9,9 @@
 // the first sub-account; `subAccountQuota = n` makes a create past n sub-accounts answer 429, checked before the key; the
 // chapter list finds sub-accounts by `search` and never says whose they are, `GET /chapters/{id}` carries the parent as
 // `masterChapterId` (checked against the live sandbox 2026-11-11), and only the create response has `parentChapterId`.
+// Member sub-accounts (T-0754): the create takes exactly one of `owner` and `email`; the fixture emails `ownerfail@example.test` (owner Failed, the
+// sub-account still made), `frozen@example.test` (deposit account Frozen) and `outage@example.test` (503, nothing made) apply on the create;
+// `setSubAccountStatus` and `holdSubAccount` move a sub-account's deposit account; deposit accounts carry a status and a hold.
 // Member contacts and wallet accounts (T-0699): contact ids and wallet account ids are NUMBERS from two separate counters, so the
 // contact 1 and the account 1 exist side by side (an adapter that confuses the two id spaces is caught). A contact create has no
 // idempotency key; a duplicate mobile in the chapter is a Failed entry with no id; the fixture emails `rejected@example.test`
@@ -35,8 +38,8 @@
 import { createHash } from 'node:crypto';
 
 type Json = Record<string, unknown>;
-interface Chapter { id: string; name: string; organizationId: string; parent?: string; application?: 'FormInProgress' | 'Approved' | 'Denied' | 'AwaitingDocuments' }
-interface Account { id: string; chapterId: string; accountNumber: string; balance: bigint }
+interface Chapter { id: string; name: string; organizationId: string; parent?: string; ownerStatus?: 'Active' | 'Invited' | 'Failed'; application?: 'FormInProgress' | 'Approved' | 'Denied' | 'AwaitingDocuments' }
+interface Account { id: string; chapterId: string; accountNumber: string; balance: bigint; status: 'Open' | 'Frozen' | 'Closed'; hold: bigint }
 interface Contact { id: number; chapterId: string; firstName: string; lastName: string; mobile: string; email: string; dateOfBirth: string | null; status: 'Active' | 'Failed' | 'Archived'; createdAt: Date }
 interface Wallet { id: number; chapterId: string; contactId: number; status: 'Open' | 'Frozen' | 'Closed'; accountNumber: string; balance: bigint; hold: bigint; createdAt: Date }
 /** A payment on a hosted-collection intent (T-0700). `amount` is gross: the net plus the fee when the payer covered it. */
@@ -450,6 +453,14 @@ export class FakeCrowded {
     w.balance += direction === 'Credit' ? minor : -minor;
     this.ledger.push({ id: this.id('tx'), chapterId: w.chapterId, accountId: String(w.id), direction, amount: minor, title, at: this.now(), ...(collectPaymentId ? { collectPaymentId } : {}) });
   }
+  /** The bank freezes or closes a sub-account's deposit account (T-0754). */
+  setSubAccountStatus(chapterId: string, status: 'Open' | 'Frozen' | 'Closed'): void {
+    this.accountOf(chapterId).status = status;
+  }
+  /** A hold on a sub-account's deposit account (not above its balance). */
+  holdSubAccount(chapterId: string, minor: bigint): void {
+    this.accountOf(chapterId).hold = minor;
+  }
   /** Sub-accounts (chapters with a parent) created so far. */
   subAccountCount(): number {
     return this.chapters.filter((c) => c.parent).length;
@@ -472,7 +483,7 @@ export class FakeCrowded {
   private openAccount(chapterId: string): Account {
     const have = this.accounts.find((a) => a.chapterId === chapterId);
     if (have) return have;
-    const a = { id: this.id('acct'), chapterId, accountNumber: `0001${String(this.n).padStart(8, '0')}`, balance: 0n };
+    const a = { id: this.id('acct'), chapterId, accountNumber: `0001${String(this.n).padStart(8, '0')}`, balance: 0n, status: 'Open' as const, hold: 0n };
     this.accounts.push(a);
     return a;
   }
@@ -529,13 +540,13 @@ export class FakeCrowded {
     }
     if (method === 'GET' && path === '/chapters') {
       const rows = this.chapters.filter((c) => (!q['search'] || c.name.includes(q['search'])) && (!q['filter[organizationId]'] || c.organizationId === q['filter[organizationId]']));
-      return this.page(rows.map(({ parent: _parent, ...c }) => c), q);
+      return this.page(rows.map(({ parent: _parent, ownerStatus: _owner, ...c }) => c), q);
     }
     if (method === 'GET' && (m = path.match(/^\/chapters\/([^/]+)$/))) {
       const c = this.chapters.find((x) => x.id === m![1]);
       if (!c) return err(404, 'Chapter not found', undefined, 'NotExistError');
-      const { parent, ...rest } = c;
-      return ok({ ...rest, status: 'Active', isMasterSubAccount: false, isMasterSubEntity: false, ...(parent ? { masterChapterId: parent } : {}) });
+      const { parent, ownerStatus, ...rest } = c;
+      return ok({ ...rest, status: 'Active', isMasterSubAccount: false, isMasterSubEntity: false, ...(parent ? { masterChapterId: parent } : {}), ...(ownerStatus ? { ownerStatus } : {}) });
     }
 
     if ((m = path.match(/^\/chapters\/([^/]+)\/(.*)$/))) {
@@ -571,7 +582,7 @@ export class FakeCrowded {
     if (method === 'GET' && rest === 'applications') return ch.application ? ok({ status: ch.application === 'FormInProgress' ? 'FormInProgress' : ch.application }) : err(400, 'No application', 'VALIDATION_ERROR');
     if (method === 'GET' && rest === 'accounts') {
       const a = ch.application === 'Approved' || ch.parent ? this.accounts.filter((x) => x.chapterId === ch.id) : [];
-      const checking = a.map((x) => ({ id: x.id, name: 'Checking', status: 'Open', accountNumber: x.accountNumber, routingNumber: '084106768', currency: 'USD', balance: wire(x.balance), hold: wire(0n), available: wire(x.balance), product: 'checking' }));
+      const checking = a.map((x) => ({ id: x.id, name: 'Checking', status: x.status, accountNumber: x.accountNumber, routingNumber: '084106768', currency: 'USD', balance: wire(x.balance), hold: wire(x.hold), available: wire(x.balance - x.hold), product: 'checking' }));
       return this.page([...checking, ...this.wallets.filter((w) => w.chapterId === ch.id).map((w) => this.walletJson(w))], q);
     }
     if (method === 'POST' && rest === 'contacts') return this.createContacts(ch, data);
@@ -589,7 +600,7 @@ export class FakeCrowded {
       const w = this.wallets.find((x) => x.chapterId === ch.id && String(x.id) === m![1]);
       if (w) return ok(this.walletJson(w));
       const c = this.accounts.find((x) => x.chapterId === ch.id && x.id === m![1]);
-      return c ? ok({ id: c.id, name: 'Checking', status: 'Open', accountNumber: c.accountNumber, routingNumber: '084106768', currency: 'USD', balance: wire(c.balance), hold: wire(0n), available: wire(c.balance), product: 'checking' }) : err(404, 'Account not found', undefined, 'NotExistError');
+      return c ? ok({ id: c.id, name: 'Checking', status: c.status, accountNumber: c.accountNumber, routingNumber: '084106768', currency: 'USD', balance: wire(c.balance), hold: wire(c.hold), available: wire(c.balance - c.hold), product: 'checking' }) : err(404, 'Account not found', undefined, 'NotExistError');
     }
     if ((m = rest.match(/^accounts\/([^/]+)\/transactions$/)) && method === 'GET') {
       const accountId = m[1]!;
@@ -603,17 +614,25 @@ export class FakeCrowded {
     }
     if (method === 'POST' && rest === 'subaccounts') {
       if (ch.application !== 'Approved') return err(400, 'Parent has no account', 'VALIDATION_ERROR');
-      if (!d['email'] && !d['owner']) return err(400, 'owner or email required', 'VALIDATION_ERROR');
+      // Exactly one of `owner` and `email` (T-0754). The fixture emails stand in for the bank (member sub-accounts): `outage@example.test`
+      // answers 503 and makes nothing, `ownerfail@example.test` makes the sub-account with the owner Failed, `frozen@example.test` makes it
+      // with its deposit account Frozen. The owner's status is the fake's own shape (`ownerStatus`), not a verified vendor field.
+      const owner = typeof d['owner'] === 'object' && d['owner'] !== null && !Array.isArray(d['owner']) ? (d['owner'] as Json) : undefined;
+      if (!d['email'] === !owner) return err(400, 'exactly one of owner or email is required', 'VALIDATION_ERROR');
+      if (owner && !['firstName', 'lastName', 'email', 'mobile'].every((k) => typeof owner[k] === 'string' && owner[k] !== '')) return err(400, 'owner needs a name, an email and a mobile', 'VALIDATION_ERROR');
+      const contactEmail = String(owner ? owner['email'] : d['email']).toLowerCase();
+      if (contactEmail === 'outage@example.test') return err(503, 'Unavailable');
       // The live shape (2026-11-10): the quota is checked before the key; a key seen before answers 500, whatever the body.
       if (this.subAccountQuota !== undefined && this.subAccountCount() >= this.subAccountQuota) return err(429, 'Limit has already been reached', undefined, 'SubscriptionQuotaExceededError');
       const key = String(d['idempotencyKey']);
       if (!isV4Key(key)) return err(400, V4_MESSAGE, undefined, 'ValidationError');
       if (this.subKeys.has(key)) return err(500, 'Internal server error', undefined, 'InternalServerErrorException');
       this.subKeys.add(key);
-      const sub: Chapter = { id: this.id('ch'), name: String(d['name']), organizationId: ch.organizationId, parent: ch.id };
+      const sub: Chapter = { id: this.id('ch'), name: String(d['name']), organizationId: ch.organizationId, parent: ch.id, ownerStatus: !owner ? 'Invited' : contactEmail === 'ownerfail@example.test' ? 'Failed' : 'Active' };
       this.chapters.push(sub);
-      this.openAccount(sub.id);
-      return ok({ id: sub.id, name: sub.name, parentChapterId: ch.id, status: 'Active', createdAt: this.now().toISOString() }, 201);
+      if (contactEmail === 'frozen@example.test') this.openAccount(sub.id).status = 'Frozen';
+      else this.openAccount(sub.id);
+      return ok({ id: sub.id, name: sub.name, parentChapterId: ch.id, status: 'Active', ownerStatus: sub.ownerStatus, createdAt: this.now().toISOString() }, 201);
     }
     if (method === 'POST' && rest === 'subaccounts/fund') {
       const items = Array.isArray(data) ? (data as Json[]) : [];
