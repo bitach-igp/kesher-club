@@ -15,10 +15,14 @@
 // wrong purpose's refs. A failed owner also leaves `funding_subaccount_owner` (`o:{party}:failed`) for load and credit paths to read.
 // The refs are the service's answer, never an HTTP response body.
 // An owner the vendor refused still returns the sub-account and opens one case for staff, with the party id and nothing personal.
-// Port errors (QUOTA_EXCEEDED and the rest) propagate unchanged; T-0753 maps them. Nothing here logs, and no error carries personal data.
+// A full quota (T-0753): the port's QUOTA_EXCEEDED is ONE call, never retried, and answers 503 PROVIDER_UNAVAILABLE with extra.reason
+// `subaccount_quota` and fixed text (no new error code, the closed set stays closed; the vendor's words never leave). It writes no ref and
+// opens ONE high `ops.case` (dedupe `subaccount-quota`) whose payload is the count of refusals since it opened; a later refusal bumps that
+// count, and one that comes after ops resolved the case reopens it with a count of 1. The count is refusals, not distinct members
+// (the case holds no party id on purpose). Other port errors propagate unchanged. Nothing here logs, and no error carries personal data.
 import { createHash } from 'node:crypto';
 import { DomainError, uuidv7 } from '@kesher/domain';
-import { isMemberSubAccountPort, type MemberSubAccountStatus, type SubAccountOwner, type SubAccountOwnerStatus } from '@kesher/ports';
+import { isMemberSubAccountPort, MemberSubAccountError, type MemberSubAccountStatus, type SubAccountOwner, type SubAccountOwnerStatus } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 
@@ -26,6 +30,8 @@ export const SUB_ACCOUNTS_FLAG = 'wallet.subAccounts';
 export const SUBACCOUNT_REF = 'funding_subaccount';
 export const SUBACCOUNT_ACCOUNT_REF = 'funding_account';
 export const OWNER_FAILED_CASE = 'subaccount_owner_failed';
+export const QUOTA_FULL_CASE = 'subaccount_quota_full';
+export const QUOTA_CASE_KEY = 'subaccount-quota';
 
 /** What T-0738's reader gives: the owner contact, or an email to invite instead. Never both. */
 export type SubAccountOwnerDetails = { owner: SubAccountOwner; inviteEmail?: undefined } | { inviteEmail: string; owner?: undefined };
@@ -102,7 +108,14 @@ export class SubAccountService {
     const d = await this.d.details.read(partyId);
     if (!d || (!d.owner && !d.inviteEmail)) throw new DomainError('VALIDATION_FAILED', 'Owner details or an invitation email are needed first', { detailsRequired: true });
 
-    const ensured = await port.ensureSubAccount({ partyId, purpose, ...(d.owner ? { owner: d.owner } : { inviteEmail: d.inviteEmail! }) }, subAccountKey(partyId, purpose));
+    let ensured;
+    try {
+      ensured = await port.ensureSubAccount({ partyId, purpose, ...(d.owner ? { owner: d.owner } : { inviteEmail: d.inviteEmail! }) }, subAccountKey(partyId, purpose));
+    } catch (e) {
+      if (!(e instanceof MemberSubAccountError) || e.code !== 'QUOTA_EXCEEDED') throw e;
+      await this.recordQuotaRefusal(now);
+      throw new DomainError('PROVIDER_UNAVAILABLE', 'Opening new accounts is paused for now. Please try again later.', { reason: 'subaccount_quota' });
+    }
     if (BLOCKED.includes(ensured.status)) throw new DomainError('FEATURE_OFF', `Your sub-account is ${ensured.status}`);
 
     // One transaction: the refs, the purpose marker, the owner-failed marker and its case stand or fall together.
@@ -119,5 +132,21 @@ export class SubAccountService {
       }
     });
     return { subAccountRef: ensured.subAccountRef, accountRef: ensured.accountRef, created: true, status: ensured.status, ownerStatus: ensured.ownerStatus };
+  }
+
+  /** One case for the whole outage: open it, count another refusal on it while it is open, or reopen it once ops has resolved it. */
+  private async recordQuotaRefusal(now: Date): Promise<void> {
+    const live = `ops.case.status in ('open', 'investigating')`;
+    await this.d.db.query(
+      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, $2, $3, 'high', 'open', '{"refused": 1}', $4)
+       on conflict (dedupe_key) do update set
+         payload = case when ${live} then jsonb_build_object('refused', coalesce((ops.case.payload->>'refused')::int, 0) + 1) else '{"refused": 1}'::jsonb end,
+         opened_at = case when ${live} then ops.case.opened_at else excluded.opened_at end,
+         status = case when ${live} then ops.case.status else 'open' end,
+         resolved_at = case when ${live} then ops.case.resolved_at else null end,
+         resolved_by = case when ${live} then ops.case.resolved_by else null end,
+         resolution = case when ${live} then ops.case.resolution else null end`,
+      [uuidv7(now), QUOTA_FULL_CASE, QUOTA_CASE_KEY, now],
+    );
   }
 }

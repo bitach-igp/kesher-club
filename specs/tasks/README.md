@@ -373,7 +373,7 @@
 | [T-0750](T-0750.md) | WAL | MemberSubAccountPort: ensure a member's sub-account under the nonprofit, with simulator and contract suite | REQ-WAL-002 | later (option 2, built, PR open) |
 | [T-0751](T-0751.md) | SETUP | The nonprofit chapter is configuration, and sub-accounts sit behind a flag that is off by default | REQ-WAL-002 | later (option 2, BUILT narrower: config key + flag; boot assertion moved to T-0709) |
 | [T-0752](T-0752.md) | WAL | The exempt-purpose guard: a member sub-account is opened only for a stated purpose, behind the flag, through one service | REQ-WAL-002 | later (option 2, built, PR open; owner-details reader and `eligible` are injected until T-0738 lands) |
-| [T-0753](T-0753.md) | WAL | A full sub-account quota is a clean refusal and one case, never a retry loop | REQ-WAL-002 | later (option 2, BUILD-READY) |
+| [T-0753](T-0753.md) | WAL | A full sub-account quota is a clean refusal and one case, never a retry loop | REQ-WAL-002 | later (option 2, built, PR open) |
 | [T-0754](T-0754.md) | INS | The Crowded adapter creates a member sub-account under the nonprofit, against the fake and the gated sandbox suite | REQ-INS-022 | later (option 2, BUILD-READY on the fake; live waits on Crowded) |
 | [T-0755](T-0755.md) | WAL | The Crowded funding adapter makes a hosted load inside the member's sub-account chapter | REQ-WAL-002, REQ-WAL-003 | later (option 2, WAITING on Crowded) |
 | [T-0756](T-0756.md) | WAL | The credit step for a sub-account: release the held funds in the member's chapter, no book payment from checking | REQ-WAL-003 | later (option 2, WAITING on Crowded) |
