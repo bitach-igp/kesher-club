@@ -103,7 +103,7 @@ import { ApprovalService } from './approvals/service.ts';
 import { AuditService } from './audit/service.ts';
 import { simulatorFlagViolations } from './config.ts';
 import { FlagService } from './flags/service.ts';
-import { CROWDED_PROVIDER, CrowdedWebhook, refuseAllVerifier, type CrowdedHandlers } from './webhooks/crowded.ts';
+import { CROWDED_PROVIDER, CrowdedWebhook, refuseAllVerifier, subAccountChapters, type CrowdedHandlers, type CrowdedWebhookDeps } from './webhooks/crowded.ts';
 import { INTENT_STATES, IntentService, type IntentStatus } from './intents/service.ts';
 import { WebhookRouter } from './webhooks/handler.ts';
 import { InboundEventStore } from './webhooks/store.ts';
@@ -203,7 +203,12 @@ function buildServices(o: AppOptions) {
   // Crowded sends batches signed over the raw bytes: its own route stores them; the router only replays the unprocessed ones.
   // An application event is re-read through the port and its current status reaches the US-banking link (T-0650).
   const usCollections = new UsCollections({ db: o.db, flags, audit, kyb: kybGate, registry: o.registry, usBanking });
-  const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), ...(o.crowdedMemberChapterId ? { memberChapterId: o.crowdedMemberChapterId } : {}), handlers: {
+  // A member's own sub-account is a Crowded chapter of its own: payment events find the wallet by the funding_subaccount refs (T-0757).
+  const crowdedChapterLookup = (): Pick<CrowdedWebhookDeps, 'isMemberChapter' | 'ownerFailed'> => {
+    const refs = subAccountChapters(o.db, o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator');
+    return { isMemberChapter: refs.isMemberChapter, ownerFailed: (chapter) => refs.ownerFailed(chapter, clock.now()) };
+  };
+  const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), ...(o.crowdedMemberChapterId ? { memberChapterId: o.crowdedMemberChapterId } : {}), ...crowdedChapterLookup(), handlers: {
       ...o.crowdedHandlers,
       // A hosted load's payment: the funding port is re-read and the transfer it belongs to moves (T-0703).
       funding: async (chapter, paymentRef, intentRef) => {
