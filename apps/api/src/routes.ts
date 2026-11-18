@@ -43,6 +43,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/oauth/requests/{id}/deny', operationId: 'denyAgentConsent' },
   { method: 'GET', path: '/me/display-name', operationId: 'getDisplayName' },
   { method: 'PATCH', path: '/me/display-name', operationId: 'updateDisplayName' },
+  { method: 'GET', path: '/me/funding-details', operationId: 'getFundingDetails' },
+  { method: 'PATCH', path: '/me/funding-details', operationId: 'updateFundingDetails' },
   { method: 'GET', path: '/households/{id}', operationId: 'getHousehold' },
   { method: 'GET', path: '/households/{id}/members/{partyId}', operationId: 'getHouseholdMember' },
   { method: 'GET', path: '/memberships', operationId: 'listMemberships' },
