@@ -333,41 +333,52 @@
 | [T-0703](T-0703.md) | WAL | Crowded payment events move a hosted load: re-read, then hold, credit or fail, replay-safe | REQ-WAL-002, REQ-WAL-003 | later |
 | [T-0704](T-0704.md) | WAL | FundingCreditPort: the port step that moves a settled load's money into the member's vendor wallet account, with simulator and contract block | REQ-WAL-003 | later |
 | [T-0705](T-0705.md) | WAL | A load credits the vendor wallet before its journal (card settle and ACH release); a refused credit is a case with a numbered retry | REQ-WAL-003 | later |
-| [T-0706](T-0706.md) | WAL | A closure refund of a load Crowded cannot refund goes to a case, not to a refund call | REQ-WAL-005 | later |
-| [T-0707](T-0707.md) | LED | The nightly partner reconciliation can read Crowded's collect payments as the funding statement | REQ-LED-004 | later |
-| [T-0708](T-0708.md) | LED | A nightly same-day balance proof: each member's ledger wallet plus pending equals their Crowded balance, and a difference is a break | REQ-LED-004 | later |
-| [T-0709](T-0709.md) | WAL | PROVIDER_FUNDING can be `crowded`: config keys, one composite funding binding, memberChapterId into both processes, production-guard tests | REQ-WAL-002 | later |
-| [T-0714](T-0714.md) | WAL | POST /loads accepts a hosted method, answers with the payment-page action, and a load can be read back | REQ-WAL-002, REQ-WAL-003 | later |
-| [T-0715](T-0715.md) | WAL | Add money opens the Crowded payment page and shows the load as pending until the vendor says it settled (needs a design) | REQ-WAL-002, REQ-WAL-003 | later |
+| [T-0706](T-0706.md) | WAL | A closure refund of a load Crowded cannot refund goes to a case, not to a refund call | REQ-WAL-005 | later · option 2: re-scope, non-card closure blocked on counsel |
+| [T-0707](T-0707.md) | LED | The nightly partner reconciliation can read Crowded's collect payments as the funding statement | REQ-LED-004 | later · option 2: re-scope (per chapter), held |
+| [T-0708](T-0708.md) | LED | A nightly same-day balance proof: each member's ledger wallet plus pending equals their Crowded balance, and a difference is a break | REQ-LED-004 | later · option 2: re-scope (sub-account balances), held |
+| [T-0709](T-0709.md) | WAL | PROVIDER_FUNDING can be `crowded`: config keys, one composite funding binding, memberChapterId into both processes, production-guard tests | REQ-WAL-002 | later · option 2: re-scope, waits on Crowded and counsel |
+| [T-0714](T-0714.md) | WAL | POST /loads accepts a hosted method, answers with the payment-page action, and a load can be read back | REQ-WAL-002, REQ-WAL-003 | later · option 2: re-scope, waits on counsel wording |
+| [T-0715](T-0715.md) | WAL | Add money opens the Crowded payment page and shows the load as pending until the vendor says it settled (needs a design) | REQ-WAL-002, REQ-WAL-003 | later · option 2: re-scope, waits (design, counsel) |
 | [T-0716](T-0716.md) | LED | PostgresLedger takes two optional in-transaction hooks: before a journal posts and after it is inserted | REQ-LED-001, REQ-LED-003 | later |
 | [T-0717](T-0717.md) | WAL | The mirror queue: a table written with the journal, idempotent enqueue, claim with backoff and a dead-letter state, and the `wallet.mirror` flag | REQ-LED-004, REQ-WAL-002 | later |
-| [T-0718](T-0718.md) | WAL | MirrorPort: book a USD amount between a member's vendor account and checking, read it back by key, list movements; simulator and contract | REQ-WAL-002, REQ-LED-004 | later |
-| [T-0719](T-0719.md) | WAL | The Crowded adapter implements MirrorPort with Book Payment, against the fake and the gated sandbox suite | REQ-WAL-002, REQ-LED-004 | later |
+| [T-0718](T-0718.md) | WAL | MirrorPort: book a USD amount between a member's vendor account and checking, read it back by key, list movements; simulator and contract | REQ-WAL-002, REQ-LED-004 | later · option 2: re-scope (cross-chapter legs), held |
+| [T-0719](T-0719.md) | WAL | The Crowded adapter implements MirrorPort with Book Payment, against the fake and the gated sandbox suite | REQ-WAL-002, REQ-LED-004 | later · option 2: re-scope (cross-chapter legs), held |
 | [T-0721](T-0721.md) | WAL | The mirror planner: from a journal's postings to the Crowded legs by net member delta, USD only, every journal kind classified | REQ-LED-004, REQ-WAL-002, REQ-PAY-001 | later |
 | [T-0722](T-0722.md) | WAL | The mirror drain: books queued legs at Crowded in order, retries with backoff, reads back an unknown outcome, opens a case when a leg dies | REQ-LED-004, REQ-WAL-002 | later |
-| [T-0723](T-0723.md) | PAY | A send between mirrored members checks both Crowded accounts first, and a send whose second leg is permanently refused is compensated | REQ-PAY-001, REQ-PAY-003, REQ-PAY-005 | later |
+| [T-0723](T-0723.md) | PAY | A send between mirrored members checks both Crowded accounts first, and a send whose second leg is permanently refused is compensated | REQ-PAY-001, REQ-PAY-003, REQ-PAY-005 | later · option 2: blocked on counsel, held |
 | [T-0724](T-0724.md) | WAL | The unmirrored-exposure cap: per member and total, no default, fail closed with PROVIDER_UNAVAILABLE for journals that start a movement | REQ-LED-004, REQ-WAL-002 | later |
-| [T-0725](T-0725.md) | CRD | A card clearing is mirrored as one leg to checking; a stand-in overdraw is a case; the cap declines an authorisation | REQ-CRD-003, REQ-CRD-004 | later |
+| [T-0725](T-0725.md) | CRD | A card clearing is mirrored as one leg to checking; a stand-in overdraw is a case; the cap declines an authorisation | REQ-CRD-003, REQ-CRD-004 | later · option 2: blocked on D3 and Crowded, held |
 | [T-0726](T-0726.md) | CRD | BLOCKED on D3 and ADR-006: if Crowded issues the cards, ingest their authorisations and transactions into the ledger | REQ-CRD-003, REQ-CRD-004 | later |
-| [T-0727](T-0727.md) | INS | A linked institution's fee and allowance legs go through the member chapter's checking account, because Kesher's collection counterparty points at it | REQ-INS-003, REQ-INS-006 | later |
+| [T-0727](T-0727.md) | INS | A linked institution's fee and allowance legs go through the member chapter's checking account, because Kesher's collection counterparty points at it | REQ-INS-003, REQ-INS-006 | later · option 2: re-scope (child counterparty), waits |
 | [T-0728](T-0728.md) | WAL | The mirror drain books up to ten independent legs in one Crowded request, never a pair together | REQ-LED-004, REQ-WAL-002 | later |
-| [T-0729](T-0729.md) | WAL | The checking-account float: expected balance from the ledger, an intraday check against Crowded, a case when it runs short | REQ-LED-004, REQ-WAL-003 | later |
+| [T-0729](T-0729.md) | WAL | The checking-account float: expected balance from the ledger, an intraday check against Crowded, a case when it runs short | REQ-LED-004, REQ-WAL-003 | later · option 2: re-scope (nonprofit float), held |
 | [T-0732](T-0732.md) | LED | The same-day coverage proof: every journal touching a mirrored account has its legs settled at Crowded by the cutoff, or a case opens | REQ-LED-004 | later |
-| [T-0733](T-0733.md) | WAL | BLOCKED on D2: an ACH load credits the wallet at once up to the member's instant-access limit, from platform float, with a reserve | REQ-WAL-003, REQ-WAL-002 | later |
+| [T-0733](T-0733.md) | WAL | BLOCKED on D2: an ACH load credits the wallet at once up to the member's instant-access limit, from platform float, with a reserve | REQ-WAL-003, REQ-WAL-002 | later · option 2: also blocked on counsel |
 | [T-0734](T-0734.md) | INS | Crowded idempotency keys are UUID v4, as the live API requires; the fake refuses any other version | REQ-INS-024 | fix |
 | [T-0735](T-0735.md) | WAL | Crowded adapter hardening: ledger-failure wrapping, atomic title claim, query-string and IPv6 range fixes, readBack and listBookPayments bounds, bookWireKey prefix, typed Load metadata | REQ-WAL-002, REQ-LED-004 | later |
 | [T-0736](T-0736.md) | SETUP | BLOCKED on owner W1-W4: production boots with Crowded funding while membership billing is waived (the three Stripe billing flags default off) | — | later |
-| [T-0737](T-0737.md) | BIL | BLOCKED on owner F1-F7: a membership fee is deducted from the member's wallet balance (design card, to be re-cut) | REQ-BIL-003 | later |
-| [T-0738](T-0738.md) | WAL | The member's funding details: legal name, email and date of birth asked once, kept sealed, read when the funding account is made (owner I1-I4) | REQ-WAL-002 | later |
-| [T-0739](T-0739.md) | SETUP | Terraform and setup docs for Crowded funding: secret containers, plain values, webhook registration note | — | later |
-| [T-0740](T-0740.md) | WAL | A hosted load needs the member's funding account: details, ensureAccount, refs in ops.external_ref; a refused member cannot load | REQ-WAL-002 | later (built, PR open; wired in T-0709 after T-0738) |
+| [T-0737](T-0737.md) | BIL | BLOCKED on owner F1-F7: a membership fee is deducted from the member's wallet balance (design card, to be re-cut) | REQ-BIL-003 | later · option 2: blocked on direct-debit answer and counsel |
+| [T-0738](T-0738.md) | WAL | The member's funding details: legal name, email and date of birth asked once, kept sealed, read when the funding account is made (owner I1-I4) | REQ-WAL-002 | later · option 2: re-scope (sub-account owner contact), BUILD-READY |
+| [T-0739](T-0739.md) | SETUP | Terraform and setup docs for Crowded funding: secret containers, plain values, webhook registration note | — | later · option 2: re-scope (nonprofit chapter value) |
+| [T-0740](T-0740.md) | WAL | A hosted load needs the member's funding account: details, ensureAccount, refs in ops.external_ref; a refused member cannot load | REQ-WAL-002 | later (built, PR open; wired in T-0709 after T-0738) · option 2: re-scope (calls T-0752), waits |
 | [T-0741](T-0741.md) | WAL | The Crowded funding adapter implements FundingCreditPort: release-funds when fund holding is on, then one book payment to the member's wallet account | REQ-WAL-003 | later (built, PR open; fake-only until README q29 and q35 are answered) |
 | [T-0742](T-0742.md) | WAL | A return after release opens a case instead of being dropped, and leaves the wallet alone | REQ-WAL-003 | later |
-| [T-0743](T-0743.md) | WAL | End-to-end self top-up against the Crowded fake: hosted load, payment event, credit, ACH hold and release, returns | REQ-WAL-002, REQ-WAL-003 | later |
+| [T-0743](T-0743.md) | WAL | End-to-end self top-up against the Crowded fake: hosted load, payment event, credit, ACH hold and release, returns | REQ-WAL-002, REQ-WAL-003 | later · option 2: re-scope, last of the chain |
 | [T-0744](T-0744.md) | INS | Make the roster-import console test robust under CI load (5000ms timeout on one case) | REQ-INS-001 | later |
 | [T-0745](T-0745.md) | WAL | An ACH load reads `succeeded` once its hold date has passed, so the credit and the release sweep can finish it (fix to T-0741) | REQ-WAL-003 | fix (built, PR open) |
 | [T-0746](T-0746.md) | WAL | Runbook for the `load_credit_refused` case and the stuck-submitted load alert | REQ-WAL-002, REQ-WAL-003 | later |
 | [T-0747](T-0747.md) | SETUP | Rename scope: the product name Kesher becomes Zuz (Züz), customer-facing copy and docs first; identifiers are a separate owner decision (scoping card, not build-ready) | — | later |
-| [T-0748](T-0748.md) | INS | An `updateContact` verb (Crowded contact PATCH) on the member-accounts adapter and FundingAccountPort so a rejected member can re-apply (scoping card, not build-ready) | REQ-INS-022 | later |
+| [T-0748](T-0748.md) | INS | An `updateContact` verb (Crowded contact PATCH) on the member-accounts adapter and FundingAccountPort so a rejected member can re-apply (scoping card, not build-ready) | REQ-INS-022 | later · option 2: re-scope (owner), scoping |
 | [T-0749](T-0749.md) | SETUP | Research Crowded's API fields and the direct-debit authorization for the platform's own fees (research, scoping card, not build-ready) | — | later |
+| [T-0750](T-0750.md) | WAL | MemberSubAccountPort: ensure a member's sub-account under the nonprofit, with simulator and contract suite | REQ-WAL-002 | later (option 2, BUILD-READY) |
+| [T-0751](T-0751.md) | SETUP | The nonprofit chapter is configuration, and sub-accounts sit behind a flag that is off by default | REQ-WAL-002 | later (option 2, BUILD-READY) |
+| [T-0752](T-0752.md) | WAL | The exempt-purpose guard: a member sub-account is opened only for a stated purpose, behind the flag, through one service | REQ-WAL-002 | later (option 2, BUILD-READY) |
+| [T-0753](T-0753.md) | WAL | A full sub-account quota is a clean refusal and one case, never a retry loop | REQ-WAL-002 | later (option 2, BUILD-READY) |
+| [T-0754](T-0754.md) | INS | The Crowded adapter creates a member sub-account under the nonprofit, against the fake and the gated sandbox suite | REQ-INS-022 | later (option 2, BUILD-READY on the fake; live waits on Crowded) |
+| [T-0755](T-0755.md) | WAL | The Crowded funding adapter makes a hosted load inside the member's sub-account chapter | REQ-WAL-002, REQ-WAL-003 | later (option 2, WAITING on Crowded) |
+| [T-0756](T-0756.md) | WAL | The credit step for a sub-account: release the held funds in the member's chapter, no book payment from checking | REQ-WAL-003 | later (option 2, WAITING on Crowded) |
+| [T-0757](T-0757.md) | WAL | Payment events find their load by sub-account, not by one platform member chapter | REQ-WAL-003 | later (option 2, BUILD-READY) |
+| [T-0758](T-0758.md) | WAL | SCOPING: a parent pays for a child as a donation to the nonprofit credited to the child's sub-account | REQ-WAL-002 | later (option 2, WAITING on Crowded and counsel) |
+| [T-0759](T-0759.md) | SETUP | Counsel brief for option 2: exempt purposes, private benefit, donations, closure and fees | — | later (option 2, WAITING on counsel) |
+| [T-0760](T-0760.md) | CRD | SCOPING: a card on a member's sub-account | REQ-CRD-003 | later (option 2, WAITING on Crowded and D3) |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
