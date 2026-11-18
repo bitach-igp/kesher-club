@@ -50,3 +50,5 @@ export * from './il-payinit.simulator.ts';
 export * from './notify.preferences.ts';
 export * from './funding-account.ts';
 export * from './funding-account.simulator.ts';
+export * from './member-sub-account.ts';
+export * from './member-sub-account.simulator.ts';
