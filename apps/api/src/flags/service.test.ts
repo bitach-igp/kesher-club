@@ -31,7 +31,7 @@ describe('FlagService (REQ-ADM-002)', () => {
     expect((await flags.list()).find((f) => f.key === 'wallet.enabled')).toMatchObject({ value: false, default: false, owner: 'Ezra', money: true });
   });
 
-  it('wallet.subAccounts (T-0751) is off by default, is a money flag, and has an owner and a turn-on trigger', async () => {
+  it('wallet.subAccounts (T-0751) is off by default, is a money flag, and has an owner', async () => {
     expect(await flags.isOn('wallet.subAccounts')).toBe(false);
     expect(isMoneyFlag('wallet.subAccounts')).toBe(true);
     const row = (await flags.list()).find((f) => f.key === 'wallet.subAccounts');

@@ -45,7 +45,7 @@ describe('API and worker config (T-0020)', () => {
 
   it('the worker needs everything but the port', () => {
     const { PORT: _port, ...workerEnv } = env;
-    expect(loadWorkerConfig(env).MARKET).toBe('IL');
+    expect(loadWorkerConfig(workerEnv).MARKET).toBe('IL');
     expect(thrown(() => loadApiConfig(workerEnv)).missing).toEqual(['PORT']);
   });
 
