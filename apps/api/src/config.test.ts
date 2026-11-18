@@ -45,7 +45,7 @@ describe('API and worker config (T-0020)', () => {
 
   it('the worker needs everything but the port', () => {
     const { PORT: _port, ...workerEnv } = env;
-    expect(loadWorkerConfig(workerEnv).MARKET).toBe('IL');
+    expect(loadWorkerConfig(env).MARKET).toBe('IL');
     expect(thrown(() => loadApiConfig(workerEnv)).missing).toEqual(['PORT']);
   });
 
@@ -115,6 +115,29 @@ describe('SERVICE_ROLE (T-0063)', () => {
 
   it('the worker, which Terraform also gives SERVICE_ROLE=worker, ignores it', () => {
     expect(() => loadWorkerConfig({ ...env, SERVICE_ROLE: 'worker' })).not.toThrow();
+  });
+});
+
+describe('CROWDED_NONPROFIT_CHAPTER_ID (T-0751)', () => {
+  it('is optional with no default, in both processes, whatever the flag or provider', () => {
+    expect(loadApiConfig(env).CROWDED_NONPROFIT_CHAPTER_ID).toBeUndefined();
+    expect(loadApiConfig({ ...env, ...crowded }).CROWDED_NONPROFIT_CHAPTER_ID).toBeUndefined();
+    expect(loadWorkerConfig(env).CROWDED_NONPROFIT_CHAPTER_ID).toBeUndefined();
+  });
+
+  it('takes a Crowded id (letters, digits, underscore, hyphen)', () => {
+    for (const id of ['ch_8f3A-21', '123456', 'abc']) {
+      expect(loadApiConfig({ ...env, CROWDED_NONPROFIT_CHAPTER_ID: id }).CROWDED_NONPROFIT_CHAPTER_ID).toBe(id);
+      expect(loadWorkerConfig({ ...env, CROWDED_NONPROFIT_CHAPTER_ID: id }).CROWDED_NONPROFIT_CHAPTER_ID).toBe(id);
+    }
+  });
+
+  it('refuses a malformed id, naming the key and never the value', () => {
+    for (const bad of ['has space', 'a/b', 'ch#1', '../x']) {
+      const e = thrown(() => loadApiConfig({ ...env, CROWDED_NONPROFIT_CHAPTER_ID: bad }));
+      expect(e.invalid.join()).toMatch(/CROWDED_NONPROFIT_CHAPTER_ID/);
+      expect(JSON.stringify(e.invalid) + e.message).not.toContain(bad);
+    }
   });
 });
 
