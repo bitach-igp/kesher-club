@@ -67,7 +67,7 @@ const sent = (call: { body: unknown } | undefined) => ((call?.body as { data?: R
 const attempt = (p: Promise<unknown>) => p.then((v) => v, (e: unknown) => e);
 
 /** A fetch that lets the fake process a sub-account create and then loses the answer (`'network'`) or spoils it (`500`). */
-const losing = (how: 'network' | 500) => (inner: typeof globalThis.fetch): typeof globalThis.fetch => {
+const losing = (how: 'network' | 409 | 500) => (inner: typeof globalThis.fetch): typeof globalThis.fetch => {
   let armed = true;
   return async (input, init) => {
     const res = await inner(input, init);
@@ -120,6 +120,26 @@ describe('CrowdedMemberSubAccounts over the fake (T-0754)', () => {
     expect(posts(h.fake)).toHaveLength(1);
     expect(h.fake.subAccountCount()).toBe(1);
     expect(a.ownerStatus).toBe('invited');
+  });
+
+  it('a create that ends in a 409 after the vendor made it is found by name: that one is returned and no duplicate is made', async () => {
+    const h = harness({ wrap: losing(409) });
+    const a = await h.adapter.ensureSubAccount(withOwner('p-1'), 'lost-key-0003');
+    expect(posts(h.fake)).toHaveLength(1);
+    expect(h.fake.subAccountCount()).toBe(1);
+    expect(h.fake.names('chapters').filter((n) => n === 'Member p-1')).toHaveLength(1);
+    expect(a.subAccountRef).toMatch(/^s:/);
+  });
+
+  it('a reused key whose create never reached the vendor is IDEMPOTENCY_CONFLICT with no POST (no quota probe)', async () => {
+    const h = harness();
+    await h.adapter.ensureSubAccount(withOwner('p-1'), 'noprobe-key-0001');
+    await h.adapter.ensureSubAccount(withOwner('p-1'), 'noprobe-key-0002'); // a replay under a new key: nothing posted for it
+    const before = posts(h.fake).length;
+    const r = await attempt(h.adapter.ensureSubAccount(withOwner('p-2', { email: 'dana@example.test', mobile: '+14155550124' }), 'noprobe-key-0002'));
+    expect(r).toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    expect(posts(h.fake)).toHaveLength(before);
+    expect(h.fake.subAccountCount()).toBe(1);
   });
 
   it('an orphan from a lost response is adopted by a retry that has lost its ledger, with the vendor owner status, and nothing is posted', async () => {

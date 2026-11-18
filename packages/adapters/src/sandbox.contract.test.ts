@@ -128,12 +128,13 @@ describe.skipIf(!(enabled && crowded.token && crowded.chapterId))('Crowded membe
   });
 });
 
-// Crowded member sub-accounts (T-0754): one sub-account under the nonprofit chapter and a second call that creates nothing. SKIPPED by default
-// and until a nonprofit full customer exists in the sandbox (Thursday's questions A and D, README 60 and 63). Needs the sandbox token and that
-// chapter's id in CROWDED_SANDBOX_CHAPTER_ID (the one secret wired for a Crowded chapter: no new workflow secret) with SANDBOX_CONTRACTS=1. It makes a real sub-account that stays in the sandbox (there is
-// no delete route) and counts against the tier limit; the party id, names, email and mobile are made up and unique per run.
-const nonprofitChapterId = crowded.chapterId;
-describe.skipIf(!(enabled && crowded.token && nonprofitChapterId))('Crowded member sub-accounts sandbox', () => {
+// Crowded member sub-accounts (T-0754): one sub-account under the nonprofit chapter and a second call that creates nothing. ALWAYS SKIPPED until a
+// nonprofit full customer exists in the sandbox (Thursday's questions A and D, README 60 and 63). No env gate: the live workflow already sets
+// SANDBOX_CONTRACTS, CROWDED_SANDBOX_TOKEN and CROWDED_SANDBOX_CHAPTER_ID, and that chapter is the PLATFORM chapter, so a gate on them would make a
+// real, undeletable, tier-limited sub-account there. To run it by hand, change `describe.skip` to `describe` and point CROWDED_SANDBOX_CHAPTER_ID
+// at the nonprofit chapter. The party id, names, email and mobile are made up and unique per run.
+const nonprofitChapterId = crowded.chapterId ?? 'unset';
+describe.skip('Crowded member sub-accounts sandbox', () => {
   it('creates one sub-account, and a second call with another key creates nothing', async () => {
     const posts: string[] = [];
     const spyFetch: typeof globalThis.fetch = (input, init) => {
@@ -141,7 +142,7 @@ describe.skipIf(!(enabled && crowded.token && nonprofitChapterId))('Crowded memb
       return globalThis.fetch(input, init);
     };
     const hmacKey = randomBytes(32).toString('hex');
-    const build = () => new CrowdedMemberSubAccounts({ client: new CrowdedClient({ baseUrl: crowded.baseUrl, token: crowded.token!, fetch: spyFetch }), parentChapterId: nonprofitChapterId!, hmacKey });
+    const build = () => new CrowdedMemberSubAccounts({ client: new CrowdedClient({ baseUrl: crowded.baseUrl, token: crowded.token!, fetch: spyFetch }), parentChapterId: nonprofitChapterId, hmacKey });
     const unique = `${Date.now()}${randomInt(1000, 9999)}`;
     const input = { partyId: `sandbox-${unique}`, purpose: 'Sandbox check', inviteEmail: `sandbox-${unique}@example.test` };
     const adapter = build();
