@@ -370,7 +370,7 @@
 | [T-0747](T-0747.md) | SETUP | Rename scope: the product name Kesher becomes Zuz (Züz), customer-facing copy and docs first; identifiers are a separate owner decision (scoping card, not build-ready) | — | later |
 | [T-0748](T-0748.md) | INS | An `updateContact` verb (Crowded contact PATCH) on the member-accounts adapter and FundingAccountPort so a rejected member can re-apply (scoping card, not build-ready) | REQ-INS-022 | later · option 2: re-scope (owner), scoping |
 | [T-0749](T-0749.md) | SETUP | Research Crowded's API fields and the direct-debit authorization for the platform's own fees (research, scoping card, not build-ready) | — | later |
-| [T-0750](T-0750.md) | WAL | MemberSubAccountPort: ensure a member's sub-account under the nonprofit, with simulator and contract suite | REQ-WAL-002 | later (option 2, BUILD-READY) |
+| [T-0750](T-0750.md) | WAL | MemberSubAccountPort: ensure a member's sub-account under the nonprofit, with simulator and contract suite | REQ-WAL-002 | later (option 2, built, PR open) |
 | [T-0751](T-0751.md) | SETUP | The nonprofit chapter is configuration, and sub-accounts sit behind a flag that is off by default | REQ-WAL-002 | later (option 2, BUILD-READY) |
 | [T-0752](T-0752.md) | WAL | The exempt-purpose guard: a member sub-account is opened only for a stated purpose, behind the flag, through one service | REQ-WAL-002 | later (option 2, BUILD-READY) |
 | [T-0753](T-0753.md) | WAL | A full sub-account quota is a clean refusal and one case, never a retry loop | REQ-WAL-002 | later (option 2, BUILD-READY) |

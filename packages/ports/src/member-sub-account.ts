@@ -8,6 +8,8 @@
 // A sub-account takes exactly one of an `owner` (the person who will run it) or an `inviteEmail`. An owner the vendor refuses
 // does not fail the sub-account: it comes back `ownerStatus: 'failed'` and the sub-account is still made and `open`. The port
 // never decides whether a purpose is exempt (T-0752's guard, counsel's list T-0759); it only refuses an empty one.
+// The simulator's fixtures (ownerfail, frozen, outage) apply on the first create only, and it never models a vendor-side refusal of a
+// repeated owner mobile: a real refusal arrives as `ownerStatus: 'failed'`. Refs are exactly `s:<chapter>` and `s:<chapter>:<account>`.
 // Personal data (name, email, mobile, date of birth) is passed through and never logged or put in an error message.
 import type { Money } from '@kesher/domain';
 

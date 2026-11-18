@@ -4,6 +4,9 @@ import { money } from '@kesher/domain';
 import type { Money } from '@kesher/domain';
 import { MemberSubAccountError, type EnsureSubAccountInput, type MemberSubAccountPort, type MemberSubAccountStatus, type SubAccountOwner } from './member-sub-account.ts';
 
+// Fixtures (`ownerFailEmail`, `frozenEmail`, `outageEmail`) apply on the FIRST create only: a replay or a second key for an existing
+// party and purpose answers the stored sub-account (with its current status) whatever email it carries. The simulator never models
+// a vendor-side refusal of a repeated owner mobile; a real refusal arrives as `ownerStatus: 'failed'` with the sub-account made.
 export interface MemberSubAccountContractOptions {
   /** An owner or invitation email the vendor refuses: `ownerStatus: 'failed'`, the sub-account still made and open. */
   ownerFailEmail: string;
@@ -183,6 +186,44 @@ export function memberSubAccountContract(name: string, make: () => MemberSubAcco
       const a = await port.ensureSubAccount(withOwner('p-1'), 'ensure-key-0001');
       await expect(port.subAccount('no-such-account')).rejects.toMatchObject({ code: 'UNKNOWN_ACCOUNT' });
       await expect(port.subAccount(a.accountRef)).rejects.toMatchObject({ code: 'UNKNOWN_ACCOUNT' });
+    });
+
+    it('answers UNKNOWN_ACCOUNT for any ref that is not exactly a sub-account ref, with no side effects', async () => {
+      const port = make();
+      const a = await port.ensureSubAccount(withOwner('p-1'), 'ensure-key-0001');
+      opts.controls.credit(port, a.subAccountRef, usd(500n));
+      const bad = ['', 'c:ch_000001', 'a:ac_000001', 's:../x', 's:', 's:ch_000001:ac_000001:extra', 's:ch 1', `${a.subAccountRef}\n`, ` ${a.subAccountRef}`, `s:${'x'.repeat(10_240)}`, `${a.subAccountRef}:`];
+      for (const ref of bad) await expect(port.subAccount(ref), ref.slice(0, 20)).rejects.toMatchObject({ code: 'UNKNOWN_ACCOUNT' });
+      expect((await port.subAccount(a.subAccountRef)).balance).toEqual(usd(500n));
+      expect((await port.ensureSubAccount(withOwner('p-1'), 'ensure-key-0002'))).toEqual(a);
+    });
+
+    it('refuses oversize partyId, purpose, names and emails with VALIDATION_FAILED (partyId is capped at 128: the vendor name `Member {partyId}` has a 255 maximum)', async () => {
+      const port = make();
+      const big = (n: number) => 'x'.repeat(n);
+      const bad: Array<[string, EnsureSubAccountInput]> = [
+        ['partyId', withOwner(big(129))],
+        ['purpose', withOwner('p-1', {}, big(201))],
+        ['firstName', withOwner('p-1', { firstName: big(101) })],
+        ['lastName', withOwner('p-1', { lastName: big(101) })],
+        ['owner email', withOwner('p-1', { email: `${big(250)}@example.test` })],
+        ['inviteEmail', invite('p-1', `${big(250)}@example.test`)],
+      ];
+      for (const [i, [what, input]] of bad.entries()) {
+        await expect(port.ensureSubAccount(input, `big-input-${String(i).padStart(4, '0')}`), what).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+      }
+      // the largest allowed values still work, and the refused calls claimed nothing
+      const ok = await port.ensureSubAccount(withOwner(big(128), { firstName: big(100), lastName: big(100) }, big(200)), 'big-input-0000');
+      expect(ok.status).toBe('open');
+    });
+
+    it('is safe under concurrency: two same-key same-input calls agree; two same-key different-input calls give one success and one IDEMPOTENCY_CONFLICT', async () => {
+      const port = make();
+      const [x, y] = await Promise.all([port.ensureSubAccount(withOwner('p-1'), 'race-key-0001'), port.ensureSubAccount(withOwner('p-1'), 'race-key-0001')]);
+      expect(y).toEqual(x);
+      const rs = await Promise.all([port.ensureSubAccount(withOwner('p-2', other), 'race-key-0002'), port.ensureSubAccount(withOwner('p-3', { email: 'third@example.test', mobile: '+14155550125' }), 'race-key-0002')].map(attempt));
+      expect(rs.filter((r) => r instanceof MemberSubAccountError && r.code === 'IDEMPOTENCY_CONFLICT')).toHaveLength(1);
+      expect(rs.filter((r) => !(r instanceof Error))).toHaveLength(1);
     });
 
     it('never puts the mobile, email, name or date of birth in an error (message, stack, JSON or string form) or a log line', async () => {

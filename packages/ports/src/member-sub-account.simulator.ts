@@ -2,7 +2,7 @@
 // email: `ownerfail@example.test` -> the owner is refused (ownerStatus failed) but the sub-account is made and open,
 // `frozen@example.test` -> a frozen sub-account, `outage@example.test` -> PROVIDER_UNAVAILABLE. Refs mimic Crowded's:
 // `s:<chapter>` and `s:<chapter>:<account>`. Each key is bound to a hash of its input; personal data is kept only as hashes,
-// never in clear or in an error. Controls (the vendor's side, for tests): setQuota, credit, setHold, setStatus. Nothing here logs.
+// never in clear or in an error. Fixtures apply on the first create only; a repeated owner mobile is never refused here. Controls (the vendor's side, for tests): setQuota, credit, setHold, setStatus. Nothing here logs.
 import { createHash } from 'node:crypto';
 import { money } from '@kesher/domain';
 import type { Money } from '@kesher/domain';
@@ -25,6 +25,10 @@ interface SubAccount {
 
 const E164 = /^\+[1-9]\d{7,14}$/;
 const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+/** Ref charset: what a chapter or account id at the vendor may contain. Anything else is not a ref. */
+const REF = /^s:([A-Za-z0-9_-]{1,64})$/;
+/** Caps. partyId: the vendor's sub-account name is `Member {partyId}` with a 255 maximum, so 128 leaves ample room. */
+const MAX = { partyId: 128, purpose: 200, name: 100, email: 254 };
 const USD = (minor: bigint): Money => money(minor, 'USD');
 const hash = (...parts: string[]): string => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 
@@ -50,8 +54,9 @@ export class MemberSubAccountSimulator implements MemberSubAccountPort {
   async ensureSubAccount(input: EnsureSubAccountInput, idempotencyKey: string): Promise<EnsuredSubAccount> {
     const i = input as Partial<Record<keyof EnsureSubAccountInput, unknown>>;
     const text = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
-    if (!text(i.partyId)) fail('VALIDATION_FAILED', 'partyId is required');
+    if (!text(i.partyId) || i.partyId.length > MAX.partyId) fail('VALIDATION_FAILED', 'partyId is required and must not be too long');
     if (!text(i.purpose)) fail('PURPOSE_REQUIRED', 'A purpose is required');
+    if (i.purpose.length > MAX.purpose) fail('VALIDATION_FAILED', 'purpose is too long');
     const hasOwner = i.owner !== undefined;
     const hasInvite = i.inviteEmail !== undefined;
     if (hasOwner === hasInvite) fail('VALIDATION_FAILED', 'Exactly one of owner and inviteEmail is required');
@@ -61,13 +66,14 @@ export class MemberSubAccountSimulator implements MemberSubAccountPort {
       const o = i.owner as Partial<Record<string, unknown>> | null;
       if (typeof o !== 'object' || o === null) fail('VALIDATION_FAILED', 'owner is not valid');
       if (!text(o.firstName) || !text(o.lastName)) fail('VALIDATION_FAILED', 'A first and last name are required');
-      if (typeof o.email !== 'string' || !EMAIL.test(o.email)) fail('VALIDATION_FAILED', 'email is not valid');
+      if (o.firstName.length > MAX.name || o.lastName.length > MAX.name) fail('VALIDATION_FAILED', 'A name is too long');
+      if (typeof o.email !== 'string' || o.email.length > MAX.email || !EMAIL.test(o.email)) fail('VALIDATION_FAILED', 'email is not valid');
       if (typeof o.mobile !== 'string' || !E164.test(o.mobile)) fail('VALIDATION_FAILED', 'mobile must be E.164');
       if (o.dateOfBirth !== undefined && (typeof o.dateOfBirth !== 'string' || !validDate(o.dateOfBirth))) fail('VALIDATION_FAILED', 'dateOfBirth must be YYYY-MM-DD');
       email = o.email.toLowerCase();
       ownerHash = hash('owner', o.firstName, o.lastName, email, o.mobile, typeof o.dateOfBirth === 'string' ? o.dateOfBirth : '');
     } else {
-      if (typeof i.inviteEmail !== 'string' || !EMAIL.test(i.inviteEmail)) fail('VALIDATION_FAILED', 'inviteEmail is not valid');
+      if (typeof i.inviteEmail !== 'string' || i.inviteEmail.length > MAX.email || !EMAIL.test(i.inviteEmail)) fail('VALIDATION_FAILED', 'inviteEmail is not valid');
       email = i.inviteEmail.toLowerCase();
       ownerHash = hash('invite', email);
     }
@@ -133,7 +139,8 @@ export class MemberSubAccountSimulator implements MemberSubAccountPort {
   }
 
   private get(subAccountRef: string): SubAccount {
-    const a = this.byRef.get(subAccountRef);
+    const m = typeof subAccountRef === 'string' ? REF.exec(subAccountRef) : null;
+    const a = m ? this.byRef.get(subAccountRef) : undefined;
     if (!a) fail('UNKNOWN_ACCOUNT', 'Unknown account');
     return a;
   }
