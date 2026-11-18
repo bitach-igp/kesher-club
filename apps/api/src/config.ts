@@ -192,6 +192,12 @@ const shared = {
    */
   PROVIDER_INSTITUTION_BANKING: z.enum(['sim', 'crowded']).default('sim'),
   CROWDED_BASE_URL: httpsUrl().optional(),
+  /**
+   * The nonprofit's chapter at Crowded, under which member sub-accounts sit (ADR-018 option 2, T-0751). Configuration only: no default,
+   * never hard-coded, and optional here because whether it is required depends on the `wallet.subAccounts` flag, which lives in the flag
+   * store, not the environment (the startup assertion is T-0709). A Crowded id: letters, digits, `_` and `-`.
+   */
+  CROWDED_NONPROFIT_CHAPTER_ID: z.string().regex(/^[A-Za-z0-9_-]+$/, 'must be a Crowded id (letters, digits, _ and -)').optional(),
   /** The binding mode recorded for the port: `sandbox` (default, whatever the base URL) or `live`, only when set explicitly. Not part of the all-or-nothing set. */
   CROWDED_BINDING: z.enum(['sandbox', 'live']).default('sandbox'),
   CROWDED_API_TOKEN: secret().optional(),
