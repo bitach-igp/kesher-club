@@ -6,7 +6,7 @@ import { DomainError, uuidv7 } from '@kesher/domain';
 import { MemberSubAccountSimulator, type EnsureSubAccountInput } from '@kesher/ports';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { SubAccountService, type OwnerDetailsReader, type SubAccountOwnerDetails } from './sub-accounts.ts';
+import { purposeHash, SubAccountService, type OwnerDetailsReader, type SubAccountOwnerDetails } from './sub-accounts.ts';
 
 const NOW = new Date('2026-11-18T09:00:00Z');
 const PURPOSE = 'test-purpose-a';
@@ -126,7 +126,7 @@ describe('SubAccountService.open (T-0752)', () => {
     const { service, sim, reads } = build();
     const first = await service.open({ partyId: id, purpose: PURPOSE }, NOW);
     expect(sim.calls).toHaveLength(1);
-    expect(sim.idemKeys).toEqual([`funding-subaccount:${id}:${PURPOSE}`]);
+    expect(sim.idemKeys).toEqual([`funding-subaccount:${id}:${purposeHash(PURPOSE)}`]);
     expect(sim.calls[0]).toMatchObject({ partyId: id, purpose: PURPOSE, owner: OWNER });
     expect(first).toMatchObject({ created: true, status: 'open', ownerStatus: 'active' });
     expect(first.subAccountRef).toMatch(/^s:[A-Za-z0-9_-]+$/);
@@ -134,6 +134,7 @@ describe('SubAccountService.open (T-0752)', () => {
     expect((await refs(id)).rows).toEqual([
       { entity_type: 'funding_account', external_id: first.accountRef },
       { entity_type: 'funding_subaccount', external_id: first.subAccountRef },
+      { entity_type: 'funding_subaccount_purpose', external_id: `p:${id}:${purposeHash(PURPOSE)}` },
     ]);
 
     const readsBefore = reads.length;
@@ -141,7 +142,56 @@ describe('SubAccountService.open (T-0752)', () => {
     expect(sim.calls).toHaveLength(1);
     expect(reads.length).toBe(readsBefore);
     expect(second).toMatchObject({ created: false, subAccountRef: first.subAccountRef, accountRef: first.accountRef });
-    expect((await refs(id)).rows).toHaveLength(2);
+    expect((await refs(id)).rows).toHaveLength(3);
+  });
+
+  it('refuses a different purpose for a member who has a sub-account: 409, no port call, nothing written, no purpose echoed', async () => {
+    const id = uuidv7();
+    const { service, sim } = build();
+    const first = await service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    const before = (await refs(id)).rows;
+    const e = await refused(service.open({ partyId: id, purpose: 'test-purpose-b' }, NOW));
+    expect(e.code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(e.message).toBe('This member already has a sub-account for another purpose');
+    expect(JSON.stringify(e.extra)).not.toContain('purpose-b');
+    expect(sim.calls).toHaveLength(1);
+    expect((await refs(id)).rows).toEqual(before);
+    expect((await service.open({ partyId: id, purpose: PURPOSE }, NOW)).subAccountRef).toBe(first.subAccountRef);
+  });
+
+  it('replays the same purpose written with other case or edge spaces', async () => {
+    const id = uuidv7();
+    const { service, sim } = build({ purposes: ['Test Purpose A'] });
+    const first = await service.open({ partyId: id, purpose: 'Test Purpose A' }, NOW);
+    for (const v of ['test purpose a', '  TEST PURPOSE A  ']) expect(await service.open({ partyId: id, purpose: v }, NOW)).toMatchObject({ created: false, subAccountRef: first.subAccountRef });
+    expect(sim.calls).toHaveLength(1);
+  });
+
+  it('refuses conservatively when refs exist with no purpose marker (older or partial state)', async () => {
+    const id = uuidv7();
+    const { service, sim } = build();
+    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_subaccount', $1, 'crowded', $2), ('funding_account', $1, 'crowded', $3)`, [id, `s:old-${id}`, `s:old-${id}:a`]);
+    const e = await refused(service.open({ partyId: id, purpose: PURPOSE }, NOW));
+    expect(e.code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(sim.calls).toHaveLength(0);
+  });
+
+  it('keeps the port key within 128 characters for a 200-character purpose', async () => {
+    const id = uuidv7();
+    const long = 'x'.repeat(200);
+    const { service, sim } = build({ purposes: [long] });
+    await service.open({ partyId: id, purpose: long }, NOW);
+    expect(sim.idemKeys[0]!.length).toBeLessThanOrEqual(128);
+    expect(sim.idemKeys[0]).toBe(`funding-subaccount:${id}:${purposeHash(long)}`);
+  });
+
+  it('rolls the refs back when a racing open stored another purpose first (a marker that differs after the write)', async () => {
+    const id = uuidv7();
+    const { service } = build();
+    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_subaccount_purpose', $1, 'crowded', $2)`, [id, `p:${id}:${purposeHash('test-purpose-b')}`]);
+    const e = await refused(service.open({ partyId: id, purpose: PURPOSE }, NOW));
+    expect(e.code).toBe('IDEMPOTENCY_CONFLICT');
+    expect((await refs(id)).rows.map((r) => r.entity_type)).toEqual(['funding_subaccount_purpose']);
   });
 
   it('matches the purpose without case or edge spaces and sends the configured spelling', async () => {
@@ -186,7 +236,8 @@ describe('SubAccountService.open (T-0752)', () => {
     const { service } = build({ details: { owner: { ...OWNER, email: 'ownerfail@example.test', firstName: 'Zelda', mobile: '+14155550199' } } });
     const r = await service.open({ partyId: id, purpose: PURPOSE }, NOW);
     expect(r).toMatchObject({ status: 'open', ownerStatus: 'failed' });
-    expect((await refs(id)).rows).toHaveLength(2);
+    expect((await refs(id)).rows).toHaveLength(4);
+    expect((await refs(id)).rows).toContainEqual({ entity_type: 'funding_subaccount_owner', external_id: `o:${id}:failed` });
     const c = await cases(id);
     expect(c.rows).toHaveLength(1);
     expect(c.rows[0]).toMatchObject({ kind: 'subaccount_owner_failed', severity: 'medium', dedupe_key: `subaccount-owner:${id}` });

@@ -7,12 +7,16 @@
 //   3. `eligible(partyId)` (default: refuse, so a minor can never get one by accident; the age is the owner's decision, T-0738 I4);
 //   4. the refs in ops.external_ref are read: found, the answer is those refs and nobody is asked;
 //   5. the owner details (T-0738's reader) or an invitation email: none is `detailsRequired`.
-// Then ONE port call under `funding-subaccount:{partyId}:{purpose}`, a frozen or closed answer refuses (naming the status, writing no refs so
-// a later open asks again), and both refs are written `on conflict do nothing` (vendor ids live only in ops.external_ref).
-// ops.external_ref is unique per (entity type, party, provider), so one party holds one sub-account ref pair: a second PURPOSE for the same
-// member finds that pair at step 4 (see the PR note). The refs are the service's answer, never an HTTP response body.
+// Then ONE port call under `funding-subaccount:{partyId}:{purposeHash}`, a frozen or closed answer refuses (naming the status, writing no refs so
+// a later open asks again), and the refs and markers are written in one transaction `on conflict do nothing` (vendor ids live only in ops.external_ref).
+// ops.external_ref is unique per (entity type, party, provider), so one party holds one sub-account ref pair. The pair records the purpose it
+// was opened for as our own marker row (`funding_subaccount_purpose`, `p:{party}:{hash}`; a stretch of "vendor ids only in external_ref",
+// accepted in T-0742, a migration avoided): a replay with another purpose, or a pair with no marker, is IDEMPOTENCY_CONFLICT, never the
+// wrong purpose's refs. A failed owner also leaves `funding_subaccount_owner` (`o:{party}:failed`) for load and credit paths to read.
+// The refs are the service's answer, never an HTTP response body.
 // An owner the vendor refused still returns the sub-account and opens one case for staff, with the party id and nothing personal.
 // Port errors (QUOTA_EXCEEDED and the rest) propagate unchanged; T-0753 maps them. Nothing here logs, and no error carries personal data.
+import { createHash } from 'node:crypto';
 import { DomainError, uuidv7 } from '@kesher/domain';
 import { isMemberSubAccountPort, type MemberSubAccountStatus, type SubAccountOwner, type SubAccountOwnerStatus } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
@@ -31,7 +35,14 @@ export interface OwnerDetailsReader {
   read(partyId: string): Promise<SubAccountOwnerDetails | undefined>;
 }
 
-export const subAccountKey = (partyId: string, purpose: string): string => `funding-subaccount:${partyId}:${purpose}`;
+export const SUBACCOUNT_PURPOSE_REF = 'funding_subaccount_purpose';
+export const SUBACCOUNT_OWNER_REF = 'funding_subaccount_owner';
+const normalize = (purpose: string): string => purpose.trim().toLowerCase();
+/** 16 hex characters of the normalized purpose: non-PII, and short enough that the port key stays under 128 characters. */
+export const purposeHash = (purpose: string): string => createHash('sha256').update(normalize(purpose)).digest('hex').slice(0, 16);
+export const subAccountKey = (partyId: string, purpose: string): string => `funding-subaccount:${partyId}:${purposeHash(purpose)}`;
+const purposeMarker = (partyId: string, purpose: string): string => `p:${partyId}:${purposeHash(purpose)}`;
+const OTHER_PURPOSE = 'This member already has a sub-account for another purpose';
 export const ownerCaseKey = (partyId: string): string => `subaccount-owner:${partyId}`;
 
 export interface SubAccountServiceDeps {
@@ -71,17 +82,22 @@ export class SubAccountService {
     const port = this.d.funding;
     if (!(await this.d.flags.isOn(SUB_ACCOUNTS_FLAG)) || !isMemberSubAccountPort(port)) throw new DomainError('FEATURE_OFF', 'Member sub-accounts are not enabled yet');
 
-    const wanted = input.purpose.trim().toLowerCase();
-    const purpose = wanted === '' ? undefined : this.d.purposes.find((p) => p.trim().toLowerCase() === wanted);
+    const wanted = normalize(input.purpose);
+    const purpose = wanted === '' ? undefined : this.d.purposes.find((p) => normalize(p) === wanted);
     if (purpose === undefined) throw new DomainError('VALIDATION_FAILED', 'A stated purpose from the allowed list is required', { purposeRequired: true });
 
     const { partyId } = input;
     if (!this.d.eligible || !(await this.d.eligible(partyId))) throw new DomainError('VALIDATION_FAILED', 'This member cannot have a sub-account', { eligibilityRequired: true });
 
-    const have = await db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [partyId, provider, [SUBACCOUNT_REF, SUBACCOUNT_ACCOUNT_REF]]);
+    const have = await db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [partyId, provider, [SUBACCOUNT_REF, SUBACCOUNT_ACCOUNT_REF, SUBACCOUNT_PURPOSE_REF]]);
     const sub = have.rows.find((r) => r.entity_type === SUBACCOUNT_REF);
     const acct = have.rows.find((r) => r.entity_type === SUBACCOUNT_ACCOUNT_REF);
-    if (sub && acct) return { subAccountRef: sub.external_id, accountRef: acct.external_id, created: false };
+    if (sub && acct) {
+      // The pair belongs to the purpose it was opened for; a marker that is missing or names another purpose is never guessed at.
+      const marker = have.rows.find((r) => r.entity_type === SUBACCOUNT_PURPOSE_REF);
+      if (marker?.external_id !== purposeMarker(partyId, purpose)) throw new DomainError('IDEMPOTENCY_CONFLICT', OTHER_PURPOSE);
+      return { subAccountRef: sub.external_id, accountRef: acct.external_id, created: false };
+    }
 
     const d = await this.d.details.read(partyId);
     if (!d || (!d.owner && !d.inviteEmail)) throw new DomainError('VALIDATION_FAILED', 'Owner details or an invitation email are needed first', { detailsRequired: true });
@@ -89,13 +105,19 @@ export class SubAccountService {
     const ensured = await port.ensureSubAccount({ partyId, purpose, ...(d.owner ? { owner: d.owner } : { inviteEmail: d.inviteEmail! }) }, subAccountKey(partyId, purpose));
     if (BLOCKED.includes(ensured.status)) throw new DomainError('FEATURE_OFF', `Your sub-account is ${ensured.status}`);
 
-    for (const [type, ref] of [[SUBACCOUNT_REF, ensured.subAccountRef], [SUBACCOUNT_ACCOUNT_REF, ensured.accountRef]] as const) {
-      await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [type, partyId, provider, ref]);
-    }
-    if (ensured.ownerStatus === 'failed') {
-      // For people: the party id and nothing personal, so staff can re-invite.
-      await db.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, $2, $3, 'medium', 'open', $4, $5) on conflict (dedupe_key) do nothing`, [uuidv7(now), OWNER_FAILED_CASE, ownerCaseKey(partyId), { partyId }, now]);
-    }
+    // One transaction: the refs, the purpose marker, the owner-failed marker and its case stand or fall together.
+    const rows: Array<readonly [string, string]> = [[SUBACCOUNT_REF, ensured.subAccountRef], [SUBACCOUNT_ACCOUNT_REF, ensured.accountRef], [SUBACCOUNT_PURPOSE_REF, purposeMarker(partyId, purpose)]];
+    if (ensured.ownerStatus === 'failed') rows.push([SUBACCOUNT_OWNER_REF, `o:${partyId}:failed`]);
+    await db.transaction(async (tx) => {
+      for (const [type, ref] of rows) await tx.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [type, partyId, provider, ref]);
+      // A racing open for another purpose may have stored its marker first: ours was then skipped, so refuse and roll back.
+      const stored = await tx.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = $1 and entity_id = $2 and provider = $3`, [SUBACCOUNT_PURPOSE_REF, partyId, provider]);
+      if (stored.rows[0]?.external_id !== purposeMarker(partyId, purpose)) throw new DomainError('IDEMPOTENCY_CONFLICT', OTHER_PURPOSE);
+      if (ensured.ownerStatus === 'failed') {
+        // For people: the party id and nothing personal, so staff can re-invite.
+        await tx.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, $2, $3, 'medium', 'open', $4, $5) on conflict (dedupe_key) do nothing`, [uuidv7(now), OWNER_FAILED_CASE, ownerCaseKey(partyId), { partyId }, now]);
+      }
+    });
     return { subAccountRef: ensured.subAccountRef, accountRef: ensured.accountRef, created: true, status: ensured.status, ownerStatus: ensured.ownerStatus };
   }
 }
