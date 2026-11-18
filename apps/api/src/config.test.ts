@@ -141,6 +141,27 @@ describe('CROWDED_NONPROFIT_CHAPTER_ID (T-0751)', () => {
   });
 });
 
+describe('SUB_ACCOUNT_PURPOSES (T-0752)', () => {
+  it('has no default: unset is undefined and a blank list is empty, in both processes', () => {
+    expect(loadApiConfig(env).SUB_ACCOUNT_PURPOSES).toBeUndefined();
+    expect(loadWorkerConfig(env).SUB_ACCOUNT_PURPOSES).toBeUndefined();
+    expect(loadApiConfig({ ...env, SUB_ACCOUNT_PURPOSES: ' , ,' }).SUB_ACCOUNT_PURPOSES).toEqual([]);
+  });
+
+  it('reads a comma list, trimmed, empty entries dropped', () => {
+    expect(loadApiConfig({ ...env, SUB_ACCOUNT_PURPOSES: 'alpha, beta ,,gamma' }).SUB_ACCOUNT_PURPOSES).toEqual(['alpha', 'beta', 'gamma']);
+    expect(loadWorkerConfig({ ...env, SUB_ACCOUNT_PURPOSES: 'alpha' }).SUB_ACCOUNT_PURPOSES).toEqual(['alpha']);
+  });
+
+  it('refuses an entry over 200 characters or with a control character, naming the key and never the value', () => {
+    for (const bad of ['x'.repeat(201), 'bad\u0007bell']) {
+      const e = thrown(() => loadApiConfig({ ...env, SUB_ACCOUNT_PURPOSES: bad }));
+      expect(e.invalid.join()).toMatch(/SUB_ACCOUNT_PURPOSES/);
+      expect(JSON.stringify(e.invalid) + e.message).not.toContain(bad);
+    }
+  });
+});
+
 describe('Crowded banking override (T-0659)', () => {
   it('defaults to the simulator and needs no Crowded key', () => {
     const c = loadApiConfig(env);

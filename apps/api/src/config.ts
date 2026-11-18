@@ -198,6 +198,15 @@ const shared = {
    * store, not the environment (the startup assertion is T-0709). A Crowded id: letters, digits, `_` and `-`.
    */
   CROWDED_NONPROFIT_CHAPTER_ID: z.string().regex(/^[A-Za-z0-9_-]+$/, 'must be a Crowded id (letters, digits, _ and -)').optional(),
+  /**
+   * The exempt purposes a member sub-account may be opened for (ADR-018 condition 2, T-0752): a comma list, NO default. Counsel owns the
+   * content (T-0759); unset or empty is an empty list and every purpose is refused. Each entry is 1 to 200 characters, no control characters.
+   */
+  SUB_ACCOUNT_PURPOSES: z
+    .string()
+    .transform((raw) => raw.split(',').map((p) => p.trim()).filter((p) => p !== ''))
+    .refine((list) => list.every((p) => p.length <= 200 && ![...p].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127)), 'each purpose must be at most 200 characters with no control characters')
+    .optional(),
   /** The binding mode recorded for the port: `sandbox` (default, whatever the base URL) or `live`, only when set explicitly. Not part of the all-or-nothing set. */
   CROWDED_BINDING: z.enum(['sandbox', 'live']).default('sandbox'),
   CROWDED_API_TOKEN: secret().optional(),
