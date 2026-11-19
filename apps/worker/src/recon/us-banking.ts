@@ -15,8 +15,9 @@
 // bank reports going out is reported, as the card asks. A day lost to an outage is reconciled on the next run that can read the account.
 import type { UsCollections } from '@kesher/api/institutions/us-collections';
 import type { Database } from '@kesher/api/db';
+import { openCase } from '@kesher/api/ops/cases';
 import type { FeatureFlags } from '@kesher/api/billing/capabilities';
-import { toWire, uuidv7 } from '@kesher/domain';
+import { toWire } from '@kesher/domain';
 import { InstitutionBankingError, type CollectedPayment, type InstitutionBankingPort } from '@kesher/ports';
 import { israelClock } from '../scheduler.ts';
 import { deadlineFor } from './recon.ts';
@@ -217,10 +218,6 @@ export class UsBankingRecon {
   }
 
   private async openCase(a: Account | undefined, ref: string, reason: string, extra: Record<string, unknown>, dedupeKey: string, now: Date): Promise<boolean> {
-    const r = await this.db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'recon_break', $2, 'medium', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-      [uuidv7(now), dedupeKey, { provider: a?.provider ?? 'crowded', externalId: ref, reason, ...(a ? { institutionId: a.institution_id } : {}), ...extra }, now],
-    );
-    return r.rowCount > 0;
+    return openCase(this.db, { kind: 'recon_break', dedupeKey, severity: 'medium', payload: { provider: a?.provider ?? 'crowded', externalId: ref, reason, ...(a ? { institutionId: a.institution_id } : {}), ...extra }, now });
   }
 }

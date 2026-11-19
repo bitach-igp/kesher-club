@@ -34,6 +34,7 @@ import type { InboundEvent } from '../webhooks/store.ts';
 import type { KybGate } from './kyb-gate.ts';
 import { BankError, type BankPort, type IncomingCredit } from '@kesher/ports';
 import { iso } from '../dates.ts';
+import { openCase } from '../ops/cases.ts';
 
 export const DEPOSITS_FLAG = 'institutions.deposits';
 export const BANK_FEED_FLAG = 'institutions.bankFeed';
@@ -346,10 +347,7 @@ export class InstitutionDeposits {
     for (const r of rows.rows) {
       if (seen.has(`${r.rail}:${r.bank_reference}`)) continue;
       n += 1;
-      await this.d.db.query(
-        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'deposit_not_on_statement', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-        [uuidv7(now), `deposit-not-on-statement:${r.id}`, { depositId: r.id, institutionId: r.institution_id, rail: r.rail, bankReference: r.bank_reference, amount: toWire(money(BigInt(r.amount_minor), r.currency)), valueDate, status: r.status }, now],
-      );
+      await openCase(this.d.db, { kind: 'deposit_not_on_statement', dedupeKey: `deposit-not-on-statement:${r.id}`, severity: 'high', payload: { depositId: r.id, institutionId: r.institution_id, rail: r.rail, bankReference: r.bank_reference, amount: toWire(money(BigInt(r.amount_minor), r.currency)), valueDate, status: r.status }, now });
     }
     return n;
   }
@@ -362,16 +360,14 @@ export class InstitutionDeposits {
 
   /** Money that came in for no one we can name: a case for ops, never a journal. One case per credit. */
   private async suspense(credit: IncomingCredit, provider: string, reason: SuspenseReason, now: Date, institutionId?: string): Promise<CreditOutcome> {
-    await this.d.db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'suspense', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-      [
-        uuidv7(now),
-        `bank-credit:${provider}:${credit.creditId}`,
-        // The remitter's text is data for ops to read, never instructions; it is already cut to 140 characters.
-        { reason, provider, creditId: credit.creditId, rail: credit.rail, amount: toWire(credit.amount), bankReference: credit.bankReference, valueDate: credit.valueDate, remitterReference: credit.remitterReference, ...(institutionId ? { institutionId } : {}) },
-        now,
-      ],
-    );
+    await openCase(this.d.db, {
+      kind: 'suspense',
+      dedupeKey: `bank-credit:${provider}:${credit.creditId}`,
+      severity: 'high',
+      // The remitter's text is data for ops to read, never instructions; it is already cut to 140 characters.
+      payload: { reason, provider, creditId: credit.creditId, rail: credit.rail, amount: toWire(credit.amount), bankReference: credit.bankReference, valueDate: credit.valueDate, remitterReference: credit.remitterReference, ...(institutionId ? { institutionId } : {}) },
+      now,
+    });
     return { kind: 'suspense', reason };
   }
 

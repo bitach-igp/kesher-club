@@ -15,6 +15,7 @@ import type { AuditService } from '../audit/service.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { created, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
+import { openCase } from '../ops/cases.ts';
 import type { KybGate } from './kyb-gate.ts';
 import { asDomain } from './us-funding.ts';
 import { US_BANKING_FLAG, type InstitutionUsBanking } from './us-banking.ts';
@@ -204,11 +205,8 @@ export class UsCollections {
   }
 
   private async openCaseIn(db: Pick<Database, 'query'>, item: ItemRow, paymentRef: string, reason: string, extra: Record<string, unknown>, now: Date): Promise<number> {
-    const r = await db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'us_fee_collection', $2, 'medium', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-      [uuidv7(now), `us-fee-case:${paymentRef}:${reason}`, { feeItemId: item.id, institutionId: item.institution_id, paymentRef, reason, ...extra }, now],
-    );
-    return r.rowCount;
+    const inserted = await openCase(db, { kind: 'us_fee_collection', dedupeKey: `us-fee-case:${paymentRef}:${reason}`, severity: 'medium', payload: { feeItemId: item.id, institutionId: item.institution_id, paymentRef, reason, ...extra }, now });
+    return inserted ? 1 : 0;
   }
 }
 

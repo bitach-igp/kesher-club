@@ -32,6 +32,7 @@ import type { RateService } from '../fx/rates.ts';
 import { rateString } from '../fx/service.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostedJournal, PostgresLedger } from '../ledger/post.ts';
+import { openCase } from '../ops/cases.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
@@ -291,10 +292,7 @@ export class LoadService implements LoadActivities {
       if (e.code === 'PROVIDER_UNAVAILABLE') throw new DomainError('PROVIDER_UNAVAILABLE', 'Funding is temporarily unavailable; try again with the same key');
       if (e.code === 'DUPLICATE_MOBILE' || e.code === 'PARTY_CONFLICT' || e.code === 'IDEMPOTENCY_CONFLICT') {
         // For people: the case carries the party and the code, never a name, number or vendor text.
-        await this.d.db.query(
-          `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_account_conflict', $2, 'medium', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-          [uuidv7(now), fundingAccountKey(partyId), { partyId, code: e.code }, now],
-        );
+        await openCase(this.d.db, { kind: 'load_account_conflict', dedupeKey: fundingAccountKey(partyId), severity: 'medium', payload: { partyId, code: e.code }, now });
         throw new DomainError('IDEMPOTENCY_CONFLICT', 'Your funding account could not be set up; support has been told');
       }
       throw new DomainError('VALIDATION_FAILED', 'Your funding details were not accepted', { detailsRequired: true });

@@ -15,6 +15,7 @@ import type { IdentityRepository } from '../auth/repository.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
 import { created, ok, requireIdempotencyKey, requirePrincipal, route, type Handler } from '../http.ts';
+import { openCase } from '../ops/cases.ts';
 import { ORG_ROLE } from '../admin/institutions.ts';
 import { checkPayee, maskIban } from '../payouts/iban.ts';
 import type { InstitutionKyb, KybStatus, PersonRole } from './kyb.ts';
@@ -219,10 +220,7 @@ export class InstitutionApplications {
     await this.d.db.transaction(async (tx) => {
       await tx.query(`insert into org.institution_application_event (id, application_id, kind, by_party, at) values ($1, $2, 'submitted', $3, $4)`, [eventId, id, applicant, now]);
       // The legal name is the applicant's text: the case carries it as data.
-      await tx.query(
-        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'kyb_application', $2, 'medium', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-        [uuidv7(now), `kyb_application:${eventId}`, JSON.stringify({ institutionId: current.institutionId, applicationId: id, market: current.market, summary: `Self-serve application: ${current.legalName} (${current.market})` }), now],
-      );
+      await openCase(tx, { kind: 'kyb_application', dedupeKey: `kyb_application:${eventId}`, severity: 'medium', payload: { institutionId: current.institutionId, applicationId: id, market: current.market, summary: `Self-serve application: ${current.legalName} (${current.market})` }, now });
     });
     return this.view(id);
   }

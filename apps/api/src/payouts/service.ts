@@ -16,6 +16,7 @@ import { approversRequired, SECOND_APPROVER_THRESHOLD_ILS_MINOR } from '../appro
 import type { IdentityRepository } from '../auth/repository.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
+import { openCase } from '../ops/cases.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferService } from '../transfers/service.ts';
@@ -308,10 +309,7 @@ export class PayoutService implements PayoutActivities {
     const first = await this.d.db.query<{ effective_at: string | Date }>(`select effective_at from ledger.journal where idempotency_key = $1`, [settleKey(transfer.idempotencyKey)]);
     if (!first.rows[0] || now.getTime() - new Date(first.rows[0].effective_at).getTime() < STRANDED_AFTER_MS) return undefined;
     // The case first (deduped): a crash after the fail must still leave ops the signal.
-    await this.d.db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'payout_stranded', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-      [uuidv7(now), `payout_stranded:${transfer.id}`, JSON.stringify({ transferId: transfer.id, runbook: 'RUN-01', summary: 'A payout the rail never took in 30 minutes was failed and reversed' }), now],
-    );
+    await openCase(this.d.db, { kind: 'payout_stranded', dedupeKey: `payout_stranded:${transfer.id}`, severity: 'high', payload: { transferId: transfer.id, runbook: 'RUN-01', summary: 'A payout the rail never took in 30 minutes was failed and reversed' }, now });
     return this.fail(transfer, 'PROVIDER_UNAVAILABLE', now, 'the rail stayed down for 30 minutes');
   }
 

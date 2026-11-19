@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { DomainError, uuidv7, type Currency, type Money } from '@kesher/domain';
 import { BillingError, type BillingPort } from '@kesher/ports';
 import { isPgError, PG, type Database } from '../db.ts';
+import { openCase } from '../ops/cases.ts';
 import type { MembershipRef } from './entitlements.ts';
 import type { PlanService } from './plans.ts';
 
@@ -133,10 +134,7 @@ export class MembershipService {
     try {
       await this.billing.cancel(subscriptionId, 'now', `lost:${createHash('sha256').update(key).digest('hex').slice(0, 40)}`);
     } catch (e) {
-      await this.db.query(
-        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'membership_orphan_subscription', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-        [uuidv7(now), `membership-orphan:${subscriptionId}`, { memberPartyId, subscriptionId, reason: e instanceof Error ? e.message.slice(0, 200) : 'cancel failed' }, now],
-      );
+      await openCase(this.db, { kind: 'membership_orphan_subscription', dedupeKey: `membership-orphan:${subscriptionId}`, severity: 'high', payload: { memberPartyId, subscriptionId, reason: e instanceof Error ? e.message.slice(0, 200) : 'cancel failed' }, now });
     }
   }
 
