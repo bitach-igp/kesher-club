@@ -19,7 +19,8 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import { P2P_FLAG } from '../p2p/handlers.ts';
 import type { P2pSendService } from '../p2p/send.ts';
 import type { TransferService, Transfer } from '../transfers/service.ts';
-import { WALLET_FLAG, type LoadService, type LoadView } from '../wallet/loads.ts';
+import { requireWalletOn } from '../wallet/flag.ts';
+import type { LoadService, LoadView } from '../wallet/loads.ts';
 
 export const INTENT_TTL_MS = 24 * 3_600_000;
 const INTENT_KEY_PREFIX = 'intent:';
@@ -367,7 +368,7 @@ export class IntentService {
     if (intent.kind === 'limit_change') return {};
     const key = intentKey(intent.id);
     if (intent.kind === 'load') {
-      if (!(await this.flags.isOn(WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
+      await requireWalletOn(this.flags);
       // The approver pays; LoadService judges the method and whose purse they may fund.
       const load = await this.money.loads.request(intent.partyId, { memberPartyId: intent.payload['memberPartyId'] ?? intent.partyId, amount: intent.payload['amount'], ...choice }, key, now);
       return { transfer: (await this.transfers.byKey(key))!, load };

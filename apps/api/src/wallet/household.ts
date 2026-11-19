@@ -16,9 +16,8 @@ import { ok, requirePrincipal, route, type Handler } from '../http.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { DisplayNameService } from '../me/display-name.ts';
 import type { CardService, CardView } from '../cards/service.ts';
+import { requireWalletOn } from './flag.ts';
 import type { Transaction, TransactionService } from './transactions.ts';
-
-export const WALLET_FLAG = 'wallet.enabled';
 
 export interface HouseholdMember {
   partyId: string;
@@ -158,7 +157,7 @@ export class HouseholdService {
   }
 
   private async requireOwn(householdId: string, callerPartyId: string): Promise<void> {
-    if (!(await this.d.flags.isOn(WALLET_FLAG, { partyId: callerPartyId }))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
+    await requireWalletOn(this.d.flags, { partyId: callerPartyId });
     if (!isUuidShape(householdId) || householdId.toLowerCase() !== callerPartyId.toLowerCase()) throw new DomainError('NOT_FOUND', 'Household not found');
   }
 

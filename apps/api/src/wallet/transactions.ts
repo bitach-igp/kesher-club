@@ -9,7 +9,7 @@ import { DomainError, isUuidShape, money, toWire, type Currency } from '@kesher/
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { ok, requirePrincipal, route, type Handler } from '../http.ts';
-import { WALLET_FLAG } from './household.ts';
+import { requireWalletOn } from './flag.ts';
 
 export const PAGE = 50;
 
@@ -93,7 +93,7 @@ export class TransactionService {
 
   /** The member's own purse, by its account id; anyone else's, or a purse that is not a wallet, answers 404. */
   async page(accountId: string, ownerPartyId: string, cursor: string | undefined, limit = PAGE): Promise<{ items: Transaction[]; nextCursor?: string }> {
-    if (!(await this.flags.isOn(WALLET_FLAG, { partyId: ownerPartyId }))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
+    await requireWalletOn(this.flags, { partyId: ownerPartyId });
     const owned = isUuidShape(accountId) ? await this.db.query('select 1 from ledger.account where id = $1 and owner_party_id = $2 and type = $3', [accountId, ownerPartyId, 'wallet']) : { rowCount: 0 };
     if (!owned.rowCount) throw new DomainError('NOT_FOUND', 'Purse not found');
     return this.forAccount(accountId, cursor, limit);
