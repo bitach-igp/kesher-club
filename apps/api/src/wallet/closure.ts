@@ -229,12 +229,7 @@ export class ClosureService {
 
   private async refundTransfers(partyId: string, currency?: Currency): Promise<Transfer[]> {
     const r = await this.d.db.query<{ id: string }>(`select id from ops.transfer where kind = 'refund' and idempotency_key like $1 ${currency ? 'and currency = $2' : ''} order by created_at, id`, currency ? [`closure:${partyId}:%`, currency] : [`closure:${partyId}:%`]);
-    const out: Transfer[] = [];
-    for (const row of r.rows) {
-      const t = await this.d.transfers.get(row.id);
-      if (t) out.push(t);
-    }
-    return out;
+    return this.d.transfers.getMany(r.rows.map((row) => row.id));
   }
 
   private async vendorRefundOf(transferId: string): Promise<string | undefined> {

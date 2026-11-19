@@ -138,6 +138,14 @@ export class TransferService {
     return r.rows[0] ? toTransfer(r.rows[0]) : undefined;
   }
 
+  /** `get` for many ids in one query: the transfers that exist, in the order asked (an unknown id is skipped, a repeated one answers twice). */
+  async getMany(ids: readonly string[], db: SqlClient = this.db): Promise<Transfer[]> {
+    if (!ids.length) return [];
+    const r = await db.query<Row>('select * from ops.transfer where id = any($1::uuid[])', [[...new Set(ids)]]);
+    const byId = new Map(r.rows.map((row) => [row.id, toTransfer(row)]));
+    return ids.flatMap((id) => byId.get(id) ?? []);
+  }
+
   async byKey(key: string): Promise<Transfer | undefined> {
     const r = await this.db.query<Row>('select * from ops.transfer where idempotency_key = $1', [key]);
     return r.rows[0] ? toTransfer(r.rows[0]) : undefined;
