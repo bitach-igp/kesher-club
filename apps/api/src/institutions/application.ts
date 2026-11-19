@@ -19,6 +19,7 @@ import { ORG_ROLE } from '../admin/institutions.ts';
 import { checkPayee, maskIban } from '../payouts/iban.ts';
 import type { InstitutionKyb, KybStatus, PersonRole } from './kyb.ts';
 import { sameHolder } from './payout-account.ts';
+import { iso } from '../dates.ts';
 
 export const SELF_SERVE_FLAG = 'institutions.selfServe';
 
@@ -68,7 +69,6 @@ interface AppRow {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const iso = (v: string | Date): string => new Date(v).toISOString();
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
 const text = (v: unknown, max: number, field: string): string => {
   const s = typeof v === 'string' ? v.trim() : '';

@@ -1,7 +1,8 @@
 // Step-up (T-0115, REQ-AUTH-006): a fresh passkey assertion mints a 5-minute step-up token bound to
 // the session. Every money handler calls requireStepUp(); the <StepUp/> component (packages/ui)
 // drives the ceremony when the API answers STEP_UP_REQUIRED.
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { sha256Url } from '../crypto/hash.ts';
 import { DomainError, uuidv7 } from '@kesher/domain';
 import type { AuthPort, Clock, PasskeyAuthenticationOptions, PasskeyAuthenticationResponse } from '@kesher/ports';
 import type { HttpRequest, Principal } from '../http.ts';
@@ -43,7 +44,7 @@ export class StepUpService {
     await this.repo.updatePasskeyCounter(stored.credentialId, result.newCounter, now.toISOString());
     const expiresAt = now.getTime() + STEP_UP_TTL_MS;
     const token = `su_${randomBytes(24).toString('base64url')}`;
-    await this.repo.putStepUp({ sessionId: principal.sessionId, tokenHash: hash(token), expiresAt: new Date(expiresAt).toISOString() }, now.toISOString());
+    await this.repo.putStepUp({ sessionId: principal.sessionId, tokenHash: sha256Url(token), expiresAt: new Date(expiresAt).toISOString() }, now.toISOString());
     return { stepUpToken: token, expiresAt: new Date(expiresAt).toISOString() };
   }
 
@@ -57,15 +58,11 @@ export class StepUpService {
       return false;
     }
     const a = Buffer.from(entry.tokenHash);
-    const b = Buffer.from(hash(token));
+    const b = Buffer.from(sha256Url(token));
     return a.length === b.length && timingSafeEqual(a, b);
   }
 }
 
-/** The token is 192 random bits, so an unsalted SHA-256 is enough: the table never holds a usable token. */
-function hash(token: string): string {
-  return createHash('sha256').update(token).digest('base64url');
-}
 
 /** Guard for money handlers. Reads X-Step-Up; throws STEP_UP_REQUIRED (401) so the client runs the ceremony. */
 export async function requireStepUp(stepUp: StepUpService, req: HttpRequest): Promise<void> {

@@ -17,12 +17,7 @@ import { monthlyExport } from '../institutions/export.ts';
 import { statement } from '../institutions/statement.ts';
 import { runLoad } from '../wallet/loads.ts';
 import { COOL_OFF_MS, RETRY_AFTER_MS, runPayout, settleKey, type PayoutView } from './service.ts';
-
-const seedTransfer = (db: { query: (t: string, p?: readonly unknown[]) => Promise<unknown> }, f: { id: string; kind: string; state: string; market: string; at: Date }) =>
-  db.query(
-    `insert into ops.transfer (id, idempotency_key, kind, to_party_id, amount_minor, currency, state, hold_releases_at, market, created_at, updated_at) values ($1, $2, $3, $4, 100, 'USD', $5, $6, $7, $6, $6)`,
-    [f.id, `seed-${f.id}`, f.kind, f.id, f.state, f.at, f.market],
-  );
+import { seedTransfer } from '../test-seed.ts';
 
 let db: TestDatabase;
 let app: App;

@@ -3,6 +3,8 @@
 // StripeTransportError; the adapters map those to their port's typed errors. The secret key is held
 // in a closure and never appears in errors or logs.
 
+import { isRecord, str } from '../json.ts';
+
 export type FormValue = string | bigint | boolean | undefined | FormValue[] | { [k: string]: FormValue };
 
 export interface StripeClientOptions {
@@ -122,8 +124,6 @@ export class StripeClient {
   }
 }
 
-export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-export const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 /** Stripe integers (amounts, unix timestamps) arrive as JSON numbers; we keep them as bigint. */
 export const int = (v: unknown): bigint | undefined => (typeof v === 'number' && Number.isInteger(v) ? BigInt(v) : typeof v === 'string' && /^-?\d+$/.test(v) ? BigInt(v) : undefined);
 export const unixToIso = (seconds: bigint): string => new Date(Number(seconds) * 1000).toISOString();

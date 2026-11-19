@@ -3,7 +3,7 @@
 // minor units (bigint). The proposer of a rule is never offered Approve or Reject; support reads and changes
 // nothing. The worked price is the API's own formula (apps/api/src/addons/pricing.ts), shown so a reviewer sees
 // what a rule does to a real cost before approving it; view.test.ts pins it to the API's example.
-import { applyBps, money, type Currency, type Money } from '@kesher/domain';
+import { applyBps, money, roundUpTo99, type Currency, type Money } from '@kesher/domain';
 import type { AdminActor, PriceRuleInput, PriceRuleKind, PriceRuleRow } from '../data/types.ts';
 
 export const KINDS: readonly { kind: PriceRuleKind; label: string }[] = [
@@ -69,13 +69,6 @@ export function parseRuleForm(f: Partial<Record<'kind' | 'provider' | 'skuPatter
   if (!reason || reason.length > 500) problems.push('reason');
   if (problems.length || !kind || marginBps === undefined || floor === undefined || !currency) return { ok: false, problems };
   return { ok: true, input: { kind, provider, skuPattern, marginBps, floor: money(floor, currency), roundTo99: f.roundTo99 === 'on' || f.roundTo99 === 'true', priority, reason } };
-}
-
-/** Rounds up to the next amount ending in 99 minor units, leaving an exact .99 alone (as the API does). */
-function roundUpTo99(minor: bigint): bigint {
-  if (minor <= 0n) return 99n;
-  const r = minor % 100n;
-  return r === 99n ? minor : minor - r + 99n;
 }
 
 /** What the rule charges for a vendor cost: max(floor, cost × (1 + margin)), then .99 rounding when asked. */

@@ -13,6 +13,7 @@ import { created, ok, requireIdempotencyKey, route, type Handler } from '../http
 import { maskPhone } from './customers.ts';
 import { approvalBody } from './handlers.ts';
 import { requireStaff, staffActor } from './staff-token.ts';
+import { iso } from '../dates.ts';
 
 export const STAFF_ROLES = ['staff', 'finance', 'admin'] as const;
 export type StaffRole = (typeof STAFF_ROLES)[number];
@@ -64,7 +65,6 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The audit service wants a Database; inside a transaction the client is the transaction. */
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
-const iso = (v: string | Date): string => new Date(v).toISOString();
 const toStaff = (r: StaffRow): InstitutionStaffMember => ({ partyId: r.party_id, institutionId: r.institution_id, role: r.role, active: r.active, createdAt: iso(r.created_at) });
 
 function requireReason(reason: unknown): string {

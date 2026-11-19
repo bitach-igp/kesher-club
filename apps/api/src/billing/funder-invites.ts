@@ -9,7 +9,8 @@
 // starts one membership on the pinned version with the inviter as funder, charged to the funder's saved card, keyed
 // by the invite so a retry is the same membership. An expired or cancelled invite charges nothing (409); a declined
 // card answers 422 and leaves the invite open for the funder to update their card.
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
+import { sha256Url } from '../crypto/hash.ts';
 import { DomainError, toWire, uuidv7 } from '@kesher/domain';
 import type { BillingPort, NotifyPort, PaymentSheet } from '@kesher/ports';
 import type { FeatureFlags } from './capabilities.ts';
@@ -19,6 +20,7 @@ import type { KycService } from '../kyc/service.ts';
 import type { DisplayNameService } from '../me/display-name.ts';
 import type { MembershipService } from './memberships.ts';
 import type { PlanService } from './plans.ts';
+import { iso } from '../dates.ts';
 
 export const INVITE_TTL_MS = 7 * 86_400_000;
 /** The member app's M04 reads the token from the query (T-0309); institution invites keep `invite?token=`. */
@@ -61,8 +63,6 @@ interface Row {
   created_at: string | Date;
 }
 
-const iso = (v: string | Date): string => new Date(v).toISOString();
-const hash = (s: string): string => createHash('sha256').update(s).digest('base64url');
 const mask = (kind: 'phone' | 'email', c: string): string => (kind === 'phone' ? `•••• ${c.slice(-4)}` : `${c[0]}•••${c.slice(c.indexOf('@'))}`);
 /** An open invite past its 7 days reads expired, whether or not a write has marked it yet. */
 const statusAt = (r: Pick<Row, 'status' | 'expires_at'>, now: Date): InviteStatus => (r.status === 'open' && new Date(r.expires_at) <= now ? 'expired' : r.status);
@@ -150,7 +150,7 @@ export class FunderInvites {
       await this.d.db.query(
         `insert into billing.funder_invite (id, idempotency_key, funder_party_id, member_name, contact_kind, contact, plan_code, plan_version, token_hash, status, expires_at, last_sent_at, created_at)
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'open', $10, $11, $11)`,
-        [id, key, funderPartyId, input.memberName, input.contactKind, input.contact, input.planCode, version, hash(token), new Date(now.getTime() + INVITE_TTL_MS), now],
+        [id, key, funderPartyId, input.memberName, input.contactKind, input.contact, input.planCode, version, sha256Url(token), new Date(now.getTime() + INVITE_TTL_MS), now],
       );
     } catch (e) {
       if (!isPgError(e, PG.UNIQUE_VIOLATION)) throw e;
@@ -174,7 +174,7 @@ export class FunderInvites {
     const r = await this.ownOpen(funderPartyId, id, now);
     const token = randomBytes(24).toString('base64url');
     const sent = r.sent_count + 1;
-    await this.d.db.query(`update billing.funder_invite set token_hash = $2, sent_count = $3, last_sent_at = $4 where id = $1 and status = 'open'`, [id, hash(token), sent, now]);
+    await this.d.db.query(`update billing.funder_invite set token_hash = $2, sent_count = $3, last_sent_at = $4 where id = $1 and status = 'open'`, [id, sha256Url(token), sent, now]);
     await this.send(id, { memberName: r.member_name, contactKind: r.contact_kind, contact: r.contact, planCode: r.plan_code }, token, sent);
     return view((await this.row(id))!, now);
   }
@@ -213,7 +213,7 @@ export class FunderInvites {
   }
 
   private async byToken(token: string): Promise<Row> {
-    const r = /^[\w-]{16,64}$/.test(token) ? (await this.d.db.query<Row>('select * from billing.funder_invite where token_hash = $1', [hash(token)])).rows[0] : undefined;
+    const r = /^[\w-]{16,64}$/.test(token) ? (await this.d.db.query<Row>('select * from billing.funder_invite where token_hash = $1', [sha256Url(token)])).rows[0] : undefined;
     if (!r) throw new DomainError('NOT_FOUND', 'Invite not found');
     return r;
   }

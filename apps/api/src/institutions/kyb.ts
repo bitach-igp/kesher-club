@@ -21,6 +21,7 @@ import type { ApprovalRequest, ApprovalService, Approver } from '../approvals/se
 import type { AuditService } from '../audit/service.ts';
 import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
 import { SYSTEM_OWNER } from '../ledger/accounts.ts';
+import { iso } from '../dates.ts';
 
 export const KYB_STATUSES = ['needs_more_info', 'approved_with_limits', 'approved', 'rejected'] as const;
 export type KybStatus = (typeof KYB_STATUSES)[number];
@@ -86,7 +87,6 @@ export const REFRESH_MONTHS: Readonly<Record<Risk, number>> = { high: 12, medium
 export const KYB_SWEEP_ACTOR: Approver = { partyId: SYSTEM_OWNER, role: 'system' };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const iso = (v: string | Date): string => new Date(v).toISOString();
 const SCREENING: readonly CheckKind[] = ['sanctions', 'pep'];
 
 export class InstitutionKyb {

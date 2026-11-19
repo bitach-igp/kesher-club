@@ -2,6 +2,7 @@
 // JSON bodies, HTTP Signature auth (hmac-sha1 over `date: <Date>`), quote packages keyed by id.
 // Policy types (test only): "travel_il_v1" ($12.00/30 d), "gadget_protection" ($4.99/30 d),
 // "always_down" -> 503. Unknown policy types -> 400. Control hooks: expireQuote(), outageRequests.
+import { toDecimal } from '@kesher/domain';
 import type { Clock } from '@kesher/ports';
 import { xcoverSignature } from './client.ts';
 
@@ -124,7 +125,7 @@ export class FakeXCover {
       status: 'QUOTED',
       quoteId: `q-${n}-${policyType}`,
       policyType,
-      priceDecimal: `${premiumMinor / 100n}.${String(premiumMinor % 100n).padStart(2, '0')}`,
+      priceDecimal: toDecimal(premiumMinor),
       currency,
       start,
       end,

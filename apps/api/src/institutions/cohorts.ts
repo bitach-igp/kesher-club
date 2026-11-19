@@ -7,6 +7,7 @@ import { DomainError, uuidv7 } from '@kesher/domain';
 import { isPgError, PG, type Database } from '../db.ts';
 import { created, ok, requireIdempotencyKey, requireRole, route, type Handler } from '../http.ts';
 import type { StaffOf } from './ach.ts';
+import { day } from '../dates.ts';
 
 export const MAX_BATCH = 500;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -29,7 +30,6 @@ interface CohortRow {
   member_count: number;
 }
 
-const day = (v: string | Date): string => (typeof v === 'string' ? v.slice(0, 10) : v.toISOString().slice(0, 10));
 const realDate = (s: string): boolean => DATE.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s;
 
 export function parseCohort(body: unknown): { name: string; startsOn: string; endsOn: string } {

@@ -2,7 +2,7 @@
 // saved payment method, at most once in 24 h) read and set. The worker already runs it; this shows and
 // edits it. Saving takes a passkey step-up because it authorises money to move later. A target at or
 // below the threshold is refused before any call; turning the rule off keeps its amounts for next time.
-import { money, toWire, type Currency, type Money } from '@kesher/domain';
+import { money, toDecimal, toWire, type Currency, type Money } from '@kesher/domain';
 import { errorIs, type Account, type AutoReloadApi, type AutoReloadRule, type SavedPaymentMethod } from '../../src/api.ts';
 import type { CopyKey } from '../../src/i18n.ts';
 import { createStore, type Store } from '../../src/model.ts';
@@ -49,12 +49,6 @@ export function parseMajor(text: string, currency: Currency): Money | undefined 
   return money(BigInt(whole!) * 100n + BigInt(frac.padEnd(2, '0')), currency);
 }
 
-/** Minor units back to the text a field shows: 5000 → "50.00". */
-export const majorText = (minor: string): string => {
-  const m = BigInt(minor);
-  return `${m / 100n}.${(m % 100n).toString().padStart(2, '0')}`;
-};
-
 export function problemFor(e: unknown): Problem | 'stepUp' | 'off' | 'none' {
   if (errorIs(e, { code: 'STEP_UP_REQUIRED' })) return 'stepUp';
   if (errorIs(e, { code: 'FEATURE_OFF' })) return 'off';
@@ -90,8 +84,8 @@ export function createAutoReloadModel(deps: AutoReloadDeps): AutoReloadModel {
     store.patch({
       mode: 'ready',
       rule,
-      thresholdText: rule ? majorText(rule.threshold.minor) : '',
-      targetText: rule ? majorText(rule.target.minor) : '',
+      thresholdText: rule ? toDecimal(BigInt(rule.threshold.minor)) : '',
+      targetText: rule ? toDecimal(BigInt(rule.target.minor)) : '',
       method: rule?.method ?? 'card',
       paymentMethodId: rule?.paymentMethodId ?? saved[0]?.id,
       enabled: rule?.enabled ?? false,

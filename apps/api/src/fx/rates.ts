@@ -10,6 +10,7 @@ import { RATE_SCALE } from '@kesher/ports';
 import type { ApprovalRequest, ApprovalService, Approver } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import type { Database, SqlClient } from '../db.ts';
+import { iso } from '../dates.ts';
 
 export type RatePair = 'USD/ILS';
 export const PAIRS: readonly RatePair[] = ['USD/ILS'];
@@ -64,7 +65,6 @@ interface Row {
   created_at: string | Date;
 }
 
-const iso = (v: string | Date): string => new Date(v).toISOString();
 const toRate = (r: Row): ClubRate => ({
   id: r.id,
   pair: r.pair,

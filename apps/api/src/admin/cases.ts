@@ -10,6 +10,7 @@ import type { AuditService } from '../audit/service.ts';
 import type { Database, SqlClient } from '../db.ts';
 import { requireStaff } from './staff-token.ts';
 import { ok, route, type Handler } from '../http.ts';
+import { iso } from '../dates.ts';
 
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
 
@@ -63,7 +64,6 @@ interface Row {
 }
 
 const COLUMNS = 'id, kind, severity, status, payload, opened_at, assigned_to, assigned_at, decided_by, decided_at, decision_note';
-const iso = (v: string | Date): string => new Date(v).toISOString();
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 const money = (v: unknown): string => {
   const m = v as { minor?: unknown; currency?: unknown } | undefined;

@@ -7,7 +7,8 @@
 // - deny, which answers the redirect URI with access_denied.
 // The first member to open a request claims it, so a forwarded link is not someone else's to approve. A request
 // is decided once: a second tap finds it decided.
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
+import { sha256Buf } from '../crypto/hash.ts';
 import { DomainError, uuidv7 } from '@kesher/domain';
 import { SCOPES, type ScopeTier } from '@kesher/ports';
 import type { AuditService } from '../audit/service.ts';
@@ -20,7 +21,7 @@ import { MCP_FLAG, type OAuthConfig } from './authorize.ts';
 export const CODE_TTL_MS = 60_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export const codeHash = (code: string): Buffer => createHash('sha256').update(code).digest();
+export const codeHash = sha256Buf;
 
 export interface ConsentView {
   id: string;

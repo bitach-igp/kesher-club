@@ -1,7 +1,7 @@
 // Price rules (REQ-MKT-002): prices come from rules, never from code or the catalogue by hand.
 //   price = max(floor, cost × (1 + margin)) then rounded UP to the next .99 when the rule says so.
 // Pure bigint arithmetic; shared by the catalogue sync (worker) and the API's quote path.
-import { applyBps, money, type Money } from '@kesher/domain';
+import { applyBps, money, roundUpTo99, type Money } from '@kesher/domain';
 
 export interface PriceRule {
   id: string;
@@ -12,13 +12,6 @@ export interface PriceRule {
   floor: Money;
   roundTo99: boolean;
   priority: number;
-}
-
-/** Rounds up to the next amount ending in 99 minor units (…$X.99), leaving an exact .99 unchanged. */
-export function roundUpTo99(minor: bigint): bigint {
-  if (minor <= 0n) return 99n;
-  const r = minor % 100n;
-  return r === 99n ? minor : minor - r + 99n + (r > 99n ? 100n : 0n);
 }
 
 export function applyRule(cost: Money, rule: PriceRule): Money {

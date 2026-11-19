@@ -7,7 +7,8 @@
 // against the PaymentIntent; a refund Stripe refuses comes back `failed` with its failure_reason.
 import { money, type Currency, type Money } from '@kesher/domain';
 import { addBusinessDays, type Clock, FundingError, type FundingMethod, type FundingPort, type FundingStatementPort, IdempotencyStore, type Load, type LoadStatus, type Refund, type RefundStatus, type SettledEntry, type SettledPage } from '@kesher/ports';
-import { int, isoToUnix, isRecord, str, StripeApiError, StripeClient, StripeTransportError, unixToIso } from './client.ts';
+import { isRecord, str } from '../json.ts';
+import { int, isoToUnix, StripeApiError, StripeClient, StripeTransportError, unixToIso } from './client.ts';
 import { DEFAULT_TOLERANCE_SECONDS, headerValue, STRIPE_SIGNATURE_HEADER, verifyStripeSignature } from './signature.ts';
 
 export interface StripeFundingOptions {

@@ -1,6 +1,7 @@
 // Airalo Partner API transport: client-credentials token (cached until shortly before expiry),
 // Bearer auth, JSON replies, no retries. Credentials live in a closure; errors never carry them.
 import type { Clock } from '@kesher/ports';
+import { isRecord } from '../json.ts';
 
 export interface AiraloClientOptions {
   clientId: string;
@@ -121,6 +122,4 @@ export class AiraloClient {
   }
 }
 
-export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-export const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 export const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && /^\d+(\.\d+)?$/.test(v) ? Number(v) : undefined);

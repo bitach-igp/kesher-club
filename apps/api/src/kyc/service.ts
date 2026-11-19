@@ -8,6 +8,7 @@ import { KycError, type KycDecision, type KycPort, type KycTier } from '@kesher/
 import type { Database } from '../db.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
+import { iso } from '../dates.ts';
 
 export type KycState = 'none' | 'pending' | 'approved' | 'rejected' | 'review';
 
@@ -48,7 +49,6 @@ interface Row {
   decided_at: string | Date | null;
 }
 
-const iso = (v: string | Date): string => new Date(v).toISOString();
 const view = (r: Row): KycSessionView => ({ sessionId: r.session_id, tier: r.tier, status: r.status, reasons: r.reasons, startedAt: iso(r.started_at), expiresAt: iso(r.expires_at), ...(r.decided_at ? { decidedAt: iso(r.decided_at) } : {}) });
 
 export class KycService {

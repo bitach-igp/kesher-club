@@ -8,6 +8,7 @@ import type { AuditService } from '../audit/service.ts';
 import type { IdentityRepository, UserAccount } from '../auth/repository.ts';
 import type { Database } from '../db.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
+import { iso } from '../dates.ts';
 
 export interface CustomerSummary {
   partyId: string;
@@ -61,7 +62,6 @@ const recipientHash = (email: string): string => createHash('sha256').update(ema
 /** Escapes LIKE metacharacters so a query of "%" does not match everyone. */
 const likeContains = (q: string): string => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 
-const iso = (v: string | Date): string => new Date(v).toISOString();
 
 export class CustomerReadModel {
   private readonly d: CustomerReadModelDeps;

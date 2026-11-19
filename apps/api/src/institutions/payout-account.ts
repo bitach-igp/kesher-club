@@ -16,6 +16,7 @@ import { isPgError, PG, type Database } from '../db.ts';
 import { requireStaff, staffActor } from '../admin/staff-token.ts';
 import { created, ok, requireIdempotencyKey, route, type Handler, type HttpRequest } from '../http.ts';
 import { checkPayee, maskIban } from '../payouts/iban.ts';
+import { iso } from '../dates.ts';
 
 export interface PayoutAccount {
   id: string;
@@ -45,7 +46,6 @@ interface Row {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const iso = (v: string | Date): string => new Date(v).toISOString();
 /** Trailing legal forms a register or a bank letter may add or leave off. */
 const LEGAL_FORMS = /\s*(?:\(?ע"?ר\)?|\(?חל"?צ\)?|בע"?מ|ltd|limited|inc|incorporated|corp|corporation|llc)\s*$/iu;
 

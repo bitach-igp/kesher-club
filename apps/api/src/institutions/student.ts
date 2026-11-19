@@ -9,6 +9,7 @@ import type { Database } from '../db.ts';
 import { ok, requireRole, route, type Handler } from '../http.ts';
 import type { StaffOf } from './ach.ts';
 import type { RosterList, RosterRow } from './roster-list.ts';
+import { day } from '../dates.ts';
 
 const ALLOWANCES = 20;
 const SPEND = 50;
@@ -23,7 +24,6 @@ export interface Student {
   spend?: { merchant: string; mcc: string; amount: Wire; at: string }[];
 }
 
-const day = (v: string | Date): string => (typeof v === 'string' ? v.slice(0, 10) : v.toISOString().slice(0, 10));
 
 export class StudentDetail {
   private readonly db: Database;
