@@ -9,7 +9,8 @@
 // no checkout screen can ever show a quote without the three disclosures.
 import { applyBps, type Currency, type Money } from '@kesher/domain';
 import { addMs, type Clock, IdempotencyStore, InsuranceError, type InsurancePort, type InsuranceQuote, type Policy } from '@kesher/ports';
-import { isRecord, str, XCoverApiError, XCoverClient, XCoverTransportError } from './client.ts';
+import { isRecord, str } from '../json.ts';
+import { XCoverApiError, XCoverClient, XCoverTransportError } from './client.ts';
 import { decimalToMinor } from './money.ts';
 
 export interface CoverGeniusProduct {

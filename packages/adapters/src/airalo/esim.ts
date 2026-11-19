@@ -7,7 +7,8 @@
 // by the workflow's key (also sent as the order `description` for reconciliation). No retries here.
 import type { Currency } from '@kesher/domain';
 import { type Clock, EsimError, type EsimOrder, type EsimPackage, type EsimPort, type EsimUsage, IdempotencyStore } from '@kesher/ports';
-import { AiraloApiError, AiraloClient, AiraloTransportError, isRecord, num, str } from './client.ts';
+import { isRecord, str } from '../json.ts';
+import { AiraloApiError, AiraloClient, AiraloTransportError, num } from './client.ts';
 import { decimalToMinor } from './money.ts';
 
 export interface AiraloEsimOptions {

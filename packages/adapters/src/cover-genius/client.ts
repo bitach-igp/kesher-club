@@ -4,6 +4,7 @@
 // JSON in, JSON out, no retries. The API secret lives in a closure and never appears in errors.
 import { createHmac } from 'node:crypto';
 import type { Clock } from '@kesher/ports';
+import { isRecord, str } from '../json.ts';
 
 export interface XCoverClientOptions {
   /** Partner code in the URL path, e.g. KESHER. */
@@ -108,5 +109,3 @@ export class XCoverClient {
   }
 }
 
-export const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-export const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
