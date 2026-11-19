@@ -17,7 +17,7 @@
 // `runSend` is the deterministic body over `SendActivities`, so Temporal (ADR-002) can host it unchanged;
 // `P2pSendService` is both the activities and the HTTP-facing entry. The note is member text: stored,
 // rendered, never interpreted.
-import { applyBps, DomainError, fromWire, money, sub, toWire, type Money, type Posting } from '@kesher/domain';
+import { applyBps, DomainError, fromWire, isUuidShape, money, sub, toWire, type Money, type Posting } from '@kesher/domain';
 import { applyRate, type NotifyPort } from '@kesher/ports';
 import type { IdentityRepository } from '../auth/repository.ts';
 import type { Database } from '../db.ts';
@@ -319,7 +319,7 @@ export class P2pSendService implements SendActivities {
 
 function parse(fromPartyId: string, body: unknown): SendInput {
   const b = (body ?? {}) as { toPartyId?: unknown; amount?: unknown; note?: unknown };
-  if (typeof b.toPartyId !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(b.toPartyId)) throw new DomainError('VALIDATION_FAILED', 'toPartyId must be a member id');
+  if (typeof b.toPartyId !== 'string' || !isUuidShape(b.toPartyId)) throw new DomainError('VALIDATION_FAILED', 'toPartyId must be a member id');
   let amount: Money;
   try {
     amount = fromWire(b.amount as { minor: string; currency: string });

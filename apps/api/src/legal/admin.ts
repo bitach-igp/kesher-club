@@ -17,7 +17,7 @@
 // a proposal or approval dated before an already scheduled version of the same document is therefore refused.
 // Texts are plain text, never markup. Limits count code points.
 import { createHash } from 'node:crypto';
-import { DomainError, uuidv7 } from '@kesher/domain';
+import { DomainError, isUuidShape, uuidv7 } from '@kesher/domain';
 import { requireStaff } from '../admin/staff-token.ts';
 import { ApprovalService, type ApprovalRequest, type Approver } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
@@ -29,7 +29,6 @@ import { LegalService, lockDocument, type DocKey, type DocumentVersion, type Loc
 const MAX_TITLE = 200;
 const MAX_BODY = 200_000;
 const MAX_SUMMARY = 2_000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface LegalDraft {
   docKey: DocKey;
@@ -213,7 +212,7 @@ export function legalAdminHandlers(admin: LegalAdmin): Record<string, Handler> {
     approveAdminLegalDocument: route(async (req) => {
       const p = requireStaff(req, 'admin');
       const id = req.params['requestId'] ?? '';
-      if (!UUID.test(id)) throw new DomainError('NOT_FOUND', 'Legal document proposal not found');
+      if (!isUuidShape(id)) throw new DomainError('NOT_FOUND', 'Legal document proposal not found');
       return ok(wireProposal(await admin.approve(id, { partyId: p.partyId, role: 'admin' }, req.now)));
     }),
   };

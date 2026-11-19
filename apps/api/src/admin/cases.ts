@@ -5,7 +5,7 @@
 // carries `admin`, so `admin` says nothing about who may act). A suspense credit is
 // resolved only by recording it against an institution (T-0631), so here it can only be dismissed, when the money
 // went back to its sender. A payload may quote a remitter's text: it is returned as data, never interpreted.
-import { DomainError } from '@kesher/domain';
+import { DomainError, isUuidShape } from '@kesher/domain';
 import type { AuditService } from '../audit/service.ts';
 import type { Database, SqlClient } from '../db.ts';
 import { requireStaff } from './staff-token.ts';
@@ -22,7 +22,6 @@ export const DECISIONS = ['resolved', 'dismissed'] as const;
 export type CaseDecision = (typeof DECISIONS)[number];
 /** Who may assign and decide; support reads. */
 export const CASE_WORKERS = ['ops', 'finance'] as const;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_NOTE = 500;
 const PAGE = 50;
 
@@ -112,7 +111,7 @@ function decodeCursor(raw: string | undefined): { at: string; id: string } | und
   if (!raw) return undefined;
   try {
     const c = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8')) as { at?: unknown; id?: unknown };
-    if (typeof c.at === 'string' && typeof c.id === 'string' && !Number.isNaN(Date.parse(c.at)) && UUID.test(c.id)) return { at: c.at, id: c.id };
+    if (typeof c.at === 'string' && typeof c.id === 'string' && !Number.isNaN(Date.parse(c.at)) && isUuidShape(c.id)) return { at: c.at, id: c.id };
   } catch {
     // fall through
   }
@@ -143,7 +142,7 @@ export class OpsCases {
   }
 
   async get(id: string): Promise<OpsCase> {
-    const r = UUID.test(id) ? await this.db.query<Row>(`select ${COLUMNS} from ops.case where id = $1 and kind = any($2)`, [id, [...OPS_CASE_KINDS]]) : { rows: [] as Row[] };
+    const r = isUuidShape(id) ? await this.db.query<Row>(`select ${COLUMNS} from ops.case where id = $1 and kind = any($2)`, [id, [...OPS_CASE_KINDS]]) : { rows: [] as Row[] };
     if (!r.rows[0]) throw new DomainError('NOT_FOUND', 'Case not found');
     return toCase(r.rows[0]);
   }

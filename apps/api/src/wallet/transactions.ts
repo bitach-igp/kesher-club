@@ -5,14 +5,13 @@
 // authorisation is one row whose state follows the card's life: pending while held, settled once a clearing names the
 // same authorisation, reversed once a release does; the clearing and the release are not rows of their own. A card
 // spend carries its merchant category and country; the ledger keeps no merchant text, so there is nothing untrusted.
-import { DomainError, money, toWire, type Currency } from '@kesher/domain';
+import { DomainError, isUuidShape, money, toWire, type Currency } from '@kesher/domain';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { ok, requirePrincipal, route, type Handler } from '../http.ts';
 import { WALLET_FLAG } from './household.ts';
 
 export const PAGE = 50;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type TransactionKind = 'load' | 'p2p' | 'card' | 'fee' | 'fx' | 'payout' | 'addon' | 'allowance' | 'reversal';
 
@@ -62,7 +61,7 @@ function decodeCursor(cursor: string | undefined): { at: Date; id: string } | un
   if (!cursor) return undefined;
   const [at, id] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
   const when = new Date(at ?? '');
-  if (Number.isNaN(when.getTime()) || !UUID.test(id ?? '')) throw new DomainError('VALIDATION_FAILED', 'cursor is not one this API gave');
+  if (Number.isNaN(when.getTime()) || !isUuidShape(id ?? '')) throw new DomainError('VALIDATION_FAILED', 'cursor is not one this API gave');
   return { at: when, id: id! };
 }
 
@@ -95,7 +94,7 @@ export class TransactionService {
   /** The member's own purse, by its account id; anyone else's, or a purse that is not a wallet, answers 404. */
   async page(accountId: string, ownerPartyId: string, cursor: string | undefined, limit = PAGE): Promise<{ items: Transaction[]; nextCursor?: string }> {
     if (!(await this.flags.isOn(WALLET_FLAG, { partyId: ownerPartyId }))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
-    const owned = UUID.test(accountId) ? await this.db.query('select 1 from ledger.account where id = $1 and owner_party_id = $2 and type = $3', [accountId, ownerPartyId, 'wallet']) : { rowCount: 0 };
+    const owned = isUuidShape(accountId) ? await this.db.query('select 1 from ledger.account where id = $1 and owner_party_id = $2 and type = $3', [accountId, ownerPartyId, 'wallet']) : { rowCount: 0 };
     if (!owned.rowCount) throw new DomainError('NOT_FOUND', 'Purse not found');
     return this.forAccount(accountId, cursor, limit);
   }

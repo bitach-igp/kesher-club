@@ -7,7 +7,7 @@
 // Currencies (T-0516, REQ-PAY-006/007): M14 offers the purses the member holds and opens on one with
 // money in it; M15 shows what the recipient receives from the server's preview (T-0518), which prices
 // exactly as the send does, and the sent sheet shows both amounts from the transfer itself.
-import { format, fromWire, money, toWire, type Currency, type Money } from '@kesher/domain';
+import { format, fromWire, isUuidShape, money, toWire, type Currency, type Money } from '@kesher/domain';
 import { errorIs, type Account, type MoneyWire, type PayApi, type PaymentRequest, type Split, type Transfer, type TransferPreview } from '../../src/api.ts';
 import type { Camera, Contacts } from '../../src/device.ts';
 import { intlLocale, t, type CopyKey, type Locale } from '../../src/i18n.ts';
@@ -58,7 +58,6 @@ export interface PayDeps {
   locale?: Locale;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const QR_SCHEME = 'kesher://pay';
 export const NOTE_MAX = 140;
 
@@ -74,7 +73,7 @@ export function parseAmount(text: string, currency: Currency): { amount: Money }
   return { amount: money(minor, currency) };
 }
 
-export const isMemberId = (v: string): boolean => UUID.test(v.trim());
+export const isMemberId = (v: string): boolean => isUuidShape(v.trim());
 /** A phone in international form, spaces and dashes allowed: "+972 50-123-4567". */
 export const isPhone = (v: string): boolean => /^\+[1-9]\d{7,14}$/.test(v.replace(/[\s()-]/g, ''));
 

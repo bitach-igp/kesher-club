@@ -3,7 +3,7 @@
 // The model carries no PAN and no full phone: the phone leaves this module as its last four digits.
 // Reads only; nothing here provisions accounts or writes a row.
 import { createHash } from 'node:crypto';
-import { toWire, type Currency } from '@kesher/domain';
+import { isUuidShape, toWire, type Currency } from '@kesher/domain';
 import type { AuditService } from '../audit/service.ts';
 import type { IdentityRepository, UserAccount } from '../auth/repository.ts';
 import type { Database } from '../db.ts';
@@ -47,7 +47,6 @@ export interface CustomerReadModelDeps {
   audit: AuditService;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const E164 = /^\+[1-9]\d{5,14}$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const SEARCH_LIMIT = 20;
@@ -112,7 +111,7 @@ export class CustomerReadModel {
 
   private async candidates(q: string): Promise<UserAccount[]> {
     if (E164.test(q)) return compact([await this.d.identity.findUserByPhone(q)]);
-    if (UUID.test(q)) return compact([await this.d.identity.findUser(q.toLowerCase())]);
+    if (isUuidShape(q)) return compact([await this.d.identity.findUser(q.toLowerCase())]);
     const ids = EMAIL.test(q)
       ? await this.d.db.query<{ member_party_id: string }>(
           `select distinct m.member_party_id from org.invite i join org.member m on m.id = i.member_id where i.recipient_hash = $1 and m.member_party_id is not null limit $2`,

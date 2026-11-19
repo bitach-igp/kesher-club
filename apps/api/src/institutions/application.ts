@@ -9,7 +9,7 @@
 // a decision approves. A reviewer's "needs more info" reopens the draft with the reasons, and a resubmit returns it
 // to the queue. Insert-only: the status is read from the application's events and the institution's decisions.
 // The account is a proposal; compliance still records the verified account from the bank's letter (T-0623).
-import { DomainError, uuidv7, type Currency } from '@kesher/domain';
+import { DomainError, isUuidShape, uuidv7, type Currency } from '@kesher/domain';
 import type { AuditService } from '../audit/service.ts';
 import type { IdentityRepository } from '../auth/repository.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
@@ -69,7 +69,6 @@ interface AppRow {
   market: Market;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
 const text = (v: unknown, max: number, field: string): string => {
   const s = typeof v === 'string' ? v.trim() : '';
@@ -262,7 +261,7 @@ export class InstitutionApplications {
 
   /** The applicant's own application; anyone else's reads as not found. */
   private async own(id: string, applicant: string): Promise<AppRow> {
-    const r = UUID.test(id) ? await this.d.db.query<AppRow>('select a.id, a.institution_id, a.applicant_party_id, a.legal_name, a.registration_number, a.address, a.created_at, i.market from org.institution_application a join org.institution i on i.id = a.institution_id where a.id = $1 and a.applicant_party_id = $2', [id, applicant]) : { rows: [] as AppRow[] };
+    const r = isUuidShape(id) ? await this.d.db.query<AppRow>('select a.id, a.institution_id, a.applicant_party_id, a.legal_name, a.registration_number, a.address, a.created_at, i.market from org.institution_application a join org.institution i on i.id = a.institution_id where a.id = $1 and a.applicant_party_id = $2', [id, applicant]) : { rows: [] as AppRow[] };
     if (!r.rows[0]) throw new DomainError('NOT_FOUND', 'Application not found');
     return r.rows[0];
   }

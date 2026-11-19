@@ -4,7 +4,7 @@
 // change is audited against the member's party id, so Customer 360 shows it. Removal deactivates the
 // org.staff row, which every institution handler checks per request, so institution actions stop at
 // once; the org_* role leaves the member's token at their next sign-in.
-import { DomainError, uuidv7 } from '@kesher/domain';
+import { DomainError, isUuidShape, uuidv7 } from '@kesher/domain';
 import type { ApprovalRequest, ApprovalService, Approver } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import type { IdentityRepository } from '../auth/repository.ts';
@@ -61,7 +61,6 @@ interface StaffRow {
 
 const MAX_NAME = 120;
 const MAX_REASON = 500;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The audit service wants a Database; inside a transaction the client is the transaction. */
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
@@ -129,7 +128,7 @@ export class InstitutionAdmin {
   }
 
   async get(id: string): Promise<AdminInstitution | undefined> {
-    if (!UUID.test(id)) return undefined;
+    if (!isUuidShape(id)) return undefined;
     const r = await this.db.query<{ id: string; name: string; market: InstitutionMarket; created_at: string | Date; active_staff: number }>(
       `select i.id, i.name, i.market, i.created_at, (select count(*)::int from org.staff s where s.institution_id = i.id and s.active) as active_staff
          from org.institution i where i.id = $1`,
@@ -163,7 +162,7 @@ export class InstitutionAdmin {
   async assign(input: { idempotencyKey: string; institutionId: string; partyId: unknown; role: unknown; reason: unknown }, actor: Approver, now: Date): Promise<StaffAssignment> {
     const reason = requireReason(input.reason);
     if (typeof input.role !== 'string' || !(STAFF_ROLES as readonly string[]).includes(input.role)) throw new DomainError('VALIDATION_FAILED', 'role must be staff, finance or admin');
-    if (typeof input.partyId !== 'string' || !UUID.test(input.partyId)) throw new DomainError('VALIDATION_FAILED', 'partyId must be a uuid');
+    if (typeof input.partyId !== 'string' || !isUuidShape(input.partyId)) throw new DomainError('VALIDATION_FAILED', 'partyId must be a uuid');
     const role = input.role as StaffRole;
     const partyId = input.partyId.toLowerCase();
     await this.requireInstitution(input.institutionId);
@@ -187,7 +186,7 @@ export class InstitutionAdmin {
 
   /** The second admin's approval: refused for the proposer (one decision per person), applied once approved. */
   async approve(grantId: string, actor: Approver, now: Date): Promise<StaffAssignment> {
-    const pre = UUID.test(grantId) ? await this.approvals.get(grantId) : undefined;
+    const pre = isUuidShape(grantId) ? await this.approvals.get(grantId) : undefined;
     if (!pre || pre.kind !== 'staff_grant') throw new DomainError('NOT_FOUND', 'Staff grant not found');
     const p = pre.payload as unknown as GrantPayload;
     // The member may have joined another institution since the proposal; refuse before deciding.

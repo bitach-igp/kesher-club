@@ -11,7 +11,7 @@
 // card answers 422 and leaves the invite open for the funder to update their card.
 import { randomBytes } from 'node:crypto';
 import { sha256Url } from '../crypto/hash.ts';
-import { DomainError, toWire, uuidv7 } from '@kesher/domain';
+import { DomainError, isUuidShape, toWire, uuidv7 } from '@kesher/domain';
 import type { BillingPort, NotifyPort, PaymentSheet } from '@kesher/ports';
 import type { FeatureFlags } from './capabilities.ts';
 import { isPgError, PG, type Database } from '../db.ts';
@@ -25,7 +25,6 @@ import { iso } from '../dates.ts';
 export const INVITE_TTL_MS = 7 * 86_400_000;
 /** The member app's M04 reads the token from the query (T-0309); institution invites keep `invite?token=`. */
 export const JOIN_BASE_URL = 'https://app.kesher.example/join?token=';
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PHONE = /^\+[1-9]\d{7,14}$/;
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,190}\.[a-z]{2,24}$/i;
 
@@ -228,7 +227,7 @@ export class FunderInvites {
 
   /** Another funder's invite, or one that is not there, answers 404 alike; a decided one 409. */
   private async ownOpen(funderPartyId: string, id: string, now: Date): Promise<Row> {
-    const r = UUID.test(id) ? await this.row(id) : undefined;
+    const r = isUuidShape(id) ? await this.row(id) : undefined;
     if (!r || r.funder_party_id !== funderPartyId) throw new DomainError('NOT_FOUND', 'Invite not found');
     const status = statusAt(r, now);
     if (status !== 'open') throw new DomainError('IDEMPOTENCY_CONFLICT', `This invite is ${status}`);

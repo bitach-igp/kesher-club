@@ -1,7 +1,7 @@
 // Compliance alerts (T-0908, REQ-CMP-001): ops.case rows of the monitoring kinds, read as a queue and
 // decided with a disposition. The rules that open them are T-0909 (worker); the recon job already
 // opens recon_break cases. A payload may quote member or merchant text: it is returned as text.
-import { DomainError } from '@kesher/domain';
+import { DomainError, isUuidShape } from '@kesher/domain';
 import type { AuditService } from '../audit/service.ts';
 import type { Database, SqlClient } from '../db.ts';
 import { iso } from '../dates.ts';
@@ -36,7 +36,6 @@ export interface StaffActor {
   role: string;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_NOTE = 500;
 
 interface Row {
@@ -70,7 +69,7 @@ const toAlert = (r: Row): Alert => {
     kind: r.kind,
     severity: r.severity,
     status: statusOf(r),
-    ...(typeof party === 'string' && UUID.test(party) ? { partyId: party.toLowerCase() } : {}),
+    ...(typeof party === 'string' && isUuidShape(party) ? { partyId: party.toLowerCase() } : {}),
     summary: summaryOf(r),
     openedAt: iso(r.opened_at),
     ...(r.decided_by ? { decidedBy: r.decided_by } : {}),
@@ -115,7 +114,7 @@ export class AlertService {
     if (!DISPOSITIONS.includes(disposition)) throw new DomainError('VALIDATION_FAILED', `decision must be one of ${DISPOSITIONS.join(', ')}`);
     const trimmed = note.trim();
     if (!trimmed || trimmed.length > MAX_NOTE) throw new DomainError('VALIDATION_FAILED', `note must be 1 to ${MAX_NOTE} characters`);
-    if (!UUID.test(id)) throw new DomainError('NOT_FOUND', 'Alert not found');
+    if (!isUuidShape(id)) throw new DomainError('NOT_FOUND', 'Alert not found');
     const current = await this.get(id);
     if (!current) throw new DomainError('NOT_FOUND', 'Alert not found');
     if (current.status === 'cleared' || current.status === 'escalated') throw new DomainError('IDEMPOTENCY_CONFLICT', 'Alert already decided');

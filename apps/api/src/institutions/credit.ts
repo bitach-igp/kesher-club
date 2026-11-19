@@ -9,7 +9,7 @@
 // unpaid remainder reserved. Payouts (T-0527) never use the limit: credit pays students, not suppliers.
 // Credit also waits on the institution's KYB (T-0621): a limit is set, and drawn, only while the decision is
 // `approved`; under `approved_with_limits` the drawable limit is zero.
-import { DomainError, format, fromWire, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
+import { DomainError, format, fromWire, isUuidShape, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
 import type { ApprovalRequest, ApprovalService, Approver } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import { approvalBody } from '../admin/handlers.ts';
@@ -19,7 +19,6 @@ import type { KybGate } from './kyb-gate.ts';
 import { created, ok, requireIdempotencyKey, route, type Handler } from '../http.ts';
 
 const CURRENCIES = ['ILS', 'USD'] as const;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface LimitPayload {
   institutionId: string;
@@ -155,7 +154,7 @@ export class InstitutionCredit {
 
   /** The second admin's approval sets the limit; the proposer's own approval is refused (one decision per person). */
   async approve(requestId: string, actor: Approver, now: Date): Promise<{ request: ApprovalRequest; limit?: CreditLimit }> {
-    const pre = UUID.test(requestId) ? await this.approvals.get(requestId) : undefined;
+    const pre = isUuidShape(requestId) ? await this.approvals.get(requestId) : undefined;
     if (!pre || pre.kind !== 'credit_limit') throw new DomainError('NOT_FOUND', 'Credit limit proposal not found');
     // The decision may have changed since the proposal.
     if (pre.status === 'awaiting_second_approval') await this.kyb.require((pre.payload as unknown as LimitPayload).institutionId, 'credit');
@@ -175,7 +174,7 @@ export class InstitutionCredit {
   }
 
   private async requireInstitution(id: string): Promise<void> {
-    const r = UUID.test(id) ? await this.db.query('select 1 from org.institution where id = $1', [id]) : { rowCount: 0 };
+    const r = isUuidShape(id) ? await this.db.query('select 1 from org.institution where id = $1', [id]) : { rowCount: 0 };
     if (!r.rowCount) throw new DomainError('NOT_FOUND', 'Institution not found');
   }
 }
