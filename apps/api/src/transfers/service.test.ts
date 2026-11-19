@@ -7,12 +7,7 @@ import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { OutboxPublisher, type OutboxMessage } from './outbox.ts';
 import { TransferService } from './service.ts';
 import { canTransition, next, TERMINAL_STATES, type TransferEvent, type TransferState } from './state-machine.ts';
-
-const seedTransfer = (db: { query: (t: string, p?: readonly unknown[]) => Promise<unknown> }, f: { id: string; kind: string; state: string; market: string; at: Date }) =>
-  db.query(
-    `insert into ops.transfer (id, idempotency_key, kind, to_party_id, amount_minor, currency, state, hold_releases_at, market, created_at, updated_at) values ($1, $2, $3, $4, 100, 'USD', $5, $6, $7, $6, $6)`,
-    [f.id, `seed-${f.id}`, f.kind, f.id, f.state, f.at, f.market],
-  );
+import { seedTransfer } from '../test-seed.ts';
 
 let db: TestDatabase;
 let transfers: TransferService;
