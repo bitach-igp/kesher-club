@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { computeCrowdedSignature, CrowdedClient, CrowdedFunding, CrowdedInstitutionBankingAdapter, CrowdedMemberAccounts, FakeCrowded } from '@kesher/adapters';
 import { money, uuidv7 } from '@kesher/domain';
-import type { AchStatus, ApplicationStatus, InstitutionBankingPort } from '@kesher/ports';
+import { chapterOf, parseSubAccountRef, subAccountRef, type AchStatus, type ApplicationStatus, type InstitutionBankingPort } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { createApp, type App } from '../app.ts';
@@ -509,9 +509,10 @@ describe('member-chapter payment events move a hosted load (T-0703, TST-WAL-003)
     const lookup = () => subAccountChapters(db, 'crowded');
     const ref = (type: string, party: string, externalId: string, provider = 'crowded') => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4)`, [type, party, provider, externalId]);
 
-    it('matches s:<chapter> and s:<chapter>:<account> on the chapter boundary only, for the funding provider only', async () => {
+    it('matches s:<chapter> on the chapter boundary only, for the funding provider only', async () => {
       await ref('funding_subaccount', uuidv7(T), 's:lk-one');
-      await ref('funding_subaccount', uuidv7(T), 's:lk-two:acct9');
+      await ref('funding_subaccount', uuidv7(T), 's:lk-two');
+      await ref('funding_subaccount', uuidv7(T), 's:lk-ab1');
       await ref('funding_subaccount', uuidv7(T), 's:lk-other', 'someone-else');
       await ref('funding_account', uuidv7(T), 's:lk-acctonly:a1');
       const l = lookup();
@@ -522,7 +523,37 @@ describe('member-chapter payment events move a hosted load (T-0703, TST-WAL-003)
       expect(await l.isMemberChapter('lk-other')).toBe(false);
       expect(await l.isMemberChapter('lk-acctonly')).toBe(false);
       expect(await l.isMemberChapter('lk_ne')).toBe(false);
+      expect(await l.isMemberChapter('lk-ab')).toBe(false);
+      expect(await l.isMemberChapter('lk-ab1')).toBe(true);
+      expect(await l.isMemberChapter('LK-ONE')).toBe(false);
       expect(await l.isMemberChapter('%')).toBe(false);
+    });
+
+    it('the lookup finds what subAccountRef makes (the adapter re-exports the same functions), and chapterOf inverts it', async () => {
+      expect(parseSubAccountRef(subAccountRef('lk-rt'))).toEqual({ chapterId: 'lk-rt' });
+      expect(chapterOf(subAccountRef('lk-rt', 'a1'))).toBe('lk-rt');
+      await ref('funding_subaccount', uuidv7(T), subAccountRef('lk-rt'));
+      await ref('funding_account', uuidv7(T), subAccountRef('lk-rt2', 'a1'));
+      expect(await lookup().isMemberChapter('lk-rt')).toBe(true);
+      expect(await lookup().isMemberChapter('lk-rt2')).toBe(false);
+    });
+
+    it('issues no string building (|| or left) in its SQL: the ref is one parameter', async () => {
+      const seen: string[] = [];
+      const spy: typeof db = Object.assign(Object.create(db), {
+        query: (text: string, params?: unknown[]) => {
+          seen.push(text);
+          return db.query(text, params);
+        },
+      });
+      const l = subAccountChapters(spy, 'crowded');
+      await l.isMemberChapter('lk-one');
+      await l.ownerFailed('lk-one', T);
+      expect(seen.length).toBeGreaterThanOrEqual(2);
+      for (const q of seen.filter((t) => t.includes('ops.external_ref'))) {
+        expect(q).not.toContain('||');
+        expect(q.toLowerCase()).not.toContain('left(');
+      }
     });
 
     it('ownerFailed is true only for a sub-account whose owner failed, and opens the one case for staff (and no second)', async () => {
@@ -537,6 +568,18 @@ describe('member-chapter payment events move a hosted load (T-0703, TST-WAL-003)
       expect(await l.ownerFailed('lk-bad', T)).toBe(true);
       expect((await db.query(`select 1 from ops.case where dedupe_key = $1 and kind = $2`, [ownerCaseKey(bad), OWNER_FAILED_CASE])).rows).toHaveLength(1);
       expect((await db.query(`select 1 from ops.case where dedupe_key = $1`, [ownerCaseKey(fine)])).rows).toHaveLength(0);
+    });
+
+    it('ownerFailed ignores an owner marker that names another party or is not the failed marker', async () => {
+      const a = uuidv7(T);
+      const b = uuidv7(T);
+      await ref('funding_subaccount', a, 's:lk-mism');
+      await ref('funding_subaccount_owner', a, `o:${b}:failed`);
+      await ref('funding_subaccount', b, 's:lk-other-owner');
+      await ref('funding_subaccount_owner', b, `o:${b}:ok`);
+      const l = lookup();
+      expect(await l.ownerFailed('lk-mism', T)).toBe(false);
+      expect(await l.ownerFailed('lk-other-owner', T)).toBe(false);
     });
   });
 
