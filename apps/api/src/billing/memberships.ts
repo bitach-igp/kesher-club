@@ -7,6 +7,7 @@ import { DomainError, uuidv7, type Currency, type Money } from '@kesher/domain';
 import { BillingError, type BillingPort } from '@kesher/ports';
 import { isPgError, PG, type Database } from '../db.ts';
 import { openCase } from '../ops/cases.ts';
+import { linkRef, refOf } from '../ops/external-ref.ts';
 import type { MembershipRef } from './entitlements.ts';
 import type { PlanService } from './plans.ts';
 
@@ -130,7 +131,7 @@ export class MembershipService {
    * subscription) and, if the vendor could not be told, a case is opened: that subscription would keep billing with no membership.
    */
   private async endLostSubscription(key: string, memberPartyId: string, subscriptionId: string, now: Date): Promise<void> {
-    await this.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('membership_lost_key', $1, 'stripe', $2) on conflict do nothing`, [uuidv7(now), key]);
+    await linkRef(this.db, { entityType: 'membership_lost_key', entityId: uuidv7(now), provider: 'stripe', externalId: key });
     try {
       await this.billing.cancel(subscriptionId, 'now', `lost:${createHash('sha256').update(key).digest('hex').slice(0, 40)}`);
     } catch (e) {
@@ -183,7 +184,7 @@ export class MembershipService {
     if (m.funderPartyId !== callerPartyId) throw new DomainError('FORBIDDEN', 'Only the person who pays for a membership can cancel it');
     if (m.status === 'cancelled') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This membership is already cancelled');
     if (m.cancelAt) return m;
-    const subscriptionId = await this.externalRef('membership', id, 'stripe');
+    const subscriptionId = await refOf(this.db, 'membership', id, 'stripe');
     if (!subscriptionId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This membership has no subscription to cancel');
     let cancelAt: string | undefined;
     try {
@@ -205,18 +206,13 @@ export class MembershipService {
     } catch (e) {
       throw mapBillingError(e);
     }
-    await this.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('party', $1, 'stripe', $2) on conflict do nothing`, [partyId, customerId]);
+    await linkRef(this.db, { entityType: 'party', entityId: partyId, provider: 'stripe', externalId: customerId });
     return customerId;
   }
 
   /** The payer's billing customer, when they have saved a card or paid before. */
   customerOf(partyId: string): Promise<string | undefined> {
-    return this.externalRef('party', partyId, 'stripe');
-  }
-
-  private async externalRef(entityType: string, entityId: string, provider: string): Promise<string | undefined> {
-    const r = await this.db.query<{ external_id: string }>('select external_id from ops.external_ref where entity_type = $1 and entity_id = $2 and provider = $3', [entityType, entityId, provider]);
-    return r.rows[0]?.external_id;
+    return refOf(this.db, 'party', partyId, 'stripe');
   }
 }
 

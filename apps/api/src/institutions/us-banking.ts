@@ -20,6 +20,7 @@ import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database, SqlClient } from '../db.ts';
 import { created, ok, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
+import { linkRef } from '../ops/external-ref.ts';
 import type { KybGate } from './kyb-gate.ts';
 
 export const US_BANKING_FLAG = 'institutions.usBanking';
@@ -249,7 +250,7 @@ export class InstitutionUsBanking {
    * this institution's to use (it matches organizations by name): nothing is written and the request is refused.
    */
   private async claimRef(tx: SqlClient, institutionId: string, provider: string, externalId: string): Promise<void> {
-    await tx.query('insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing', [ENTITY_TYPE, institutionId, provider, externalId]);
+    await linkRef(tx, { entityType: ENTITY_TYPE, entityId: institutionId, provider, externalId });
     const owner = (await tx.query<{ entity_id: string; entity_type: string }>('select entity_id, entity_type from ops.external_ref where provider = $1 and external_id = $2', [provider, externalId])).rows[0];
     if (!owner || owner.entity_type !== ENTITY_TYPE || owner.entity_id !== institutionId) {
       throw new DomainError('IDEMPOTENCY_CONFLICT', 'That US entity is already banked by another institution');

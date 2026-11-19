@@ -16,6 +16,7 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { created, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
 import { openCase } from '../ops/cases.ts';
+import { linkRef } from '../ops/external-ref.ts';
 import type { KybGate } from './kyb-gate.ts';
 import { asDomain } from './us-funding.ts';
 import { US_BANKING_FLAG, type InstitutionUsBanking } from './us-banking.ts';
@@ -115,7 +116,7 @@ export class UsCollections {
     const out: UsCollectionView['items'] = [];
     for (const f of funders) {
       const page = await port.createPaymentPage({ collectionRef, funder: { name: f.name, email: f.email, mobile: f.mobile }, idempotencyKey: `us-fee-item:${f.feeItemId}` }).catch(asDomain);
-      await this.d.db.query('insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing', [INTENT_REF, f.feeItemId, acct.provider ?? 'simulator', page.intentRef]);
+      await linkRef(this.d.db, { entityType: INTENT_REF, entityId: f.feeItemId, provider: acct.provider ?? 'simulator', externalId: page.intentRef });
       out.push({ feeItemId: f.feeItemId, status: items.find((i) => i.id === f.feeItemId)!.status === 'paid' ? 'paid' : 'collecting', paymentUrl: page.paymentUrl });
     }
     await this.d.audit.record({ actorId, actorRole: 'org_finance', action: 'institution.us_fee_collection.create', subject: institutionId, reason: 'Fee batch collected in the US', payload: { batchId, items: funders.length } }, now);
@@ -129,7 +130,7 @@ export class UsCollections {
     // The title is staff text; the batch id keeps two batches of one description apart at a provider that reuses a collection by name.
     const title = `${description.slice(0, 80)} (${batchId.slice(-8)})`;
     const made = await port.createCollection({ entityRef, title, amount, idempotencyKey: `us-fee-batch:${batchId}` }).catch(asDomain);
-    await this.d.db.query('insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing', [COLLECTION_REF, batchId, provider, made.collectionRef]);
+    await linkRef(this.d.db, { entityType: COLLECTION_REF, entityId: batchId, provider, externalId: made.collectionRef });
     return made.collectionRef;
   }
 
