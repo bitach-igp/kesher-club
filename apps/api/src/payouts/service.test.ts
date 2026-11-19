@@ -268,6 +268,16 @@ describe('TST-PO-002: cooling off, approval, settlement and reversal', () => {
     expect(resumable).not.toContain(us);
   });
 
+  it('the payout sweep answers several due payouts oldest first, whatever order their ids sort in', async () => {
+    const base = now.getTime() - 3_600_000;
+    const ids = [uuidv7(), uuidv7(), uuidv7()];
+    // created order is ids[1], ids[2], ids[0]: not the id order, not its reverse
+    const at = [base + 2_000, base, base + 1_000];
+    for (const [i, id] of ids.entries()) await seedTransfer(db, { id, kind: 'payout', state: 'pending_hold', market: 'IL', at: new Date(at[i]!) });
+    const mine = (await app.services.payouts.resumable(now, 1000)).map((t) => t.id).filter((id) => ids.includes(id));
+    expect(mine).toEqual([ids[1], ids[2], ids[0]]);
+  });
+
 });
 
 describe('T-0540: a payout that waits has its funds reserved (REQ-PO-001, REQ-WAL-001, F11)', () => {

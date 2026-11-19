@@ -35,6 +35,7 @@ import type { PostedJournal, PostgresLedger } from '../ledger/post.ts';
 import { openCase } from '../ops/cases.ts';
 import { entityOf, linkRef, refOf } from '../ops/external-ref.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
+import { holdKey, releaseKey, settleKey } from '../transfers/journal-keys.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
 
@@ -157,10 +158,8 @@ export async function applyVendorState(a: LoadActivities, t: Transfer, load: Ven
  */
 export const HELD_RECHECK_MS = 6 * 3_600_000;
 
-export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
-export const holdKey = (workflowId: string): string => `${workflowId}:hold`;
+export { holdKey, releaseKey, settleKey };
 const unknownLoadKey = (transferId: string): string => `load-unknown:${transferId}`;
-export const releaseKey = (workflowId: string): string => `${workflowId}:release`;
 /** The vendor credit's key (T-0705): a refusal is final for its key at the vendor, so a retry after one is the next `n`. */
 export const creditKey = (workflowId: string, n: number): string => `${workflowId}:credit:${n}`;
 const creditCaseKey = (transferId: string): string => `load-credit:${transferId}`;

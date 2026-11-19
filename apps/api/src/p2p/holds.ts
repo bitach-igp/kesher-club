@@ -8,14 +8,14 @@ import type { Database, SqlClient } from '../db.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferService } from '../transfers/service.ts';
+import { holdKey, releaseKey } from '../transfers/journal-keys.ts';
 
 export const HOLD_MS = 2 * 60 * 60_000;
 /** Above this, a first send to a new counterparty holds (REQ-PAY-003: ₪500). */
 export const HOLD_THRESHOLD_MINOR: Readonly<Record<Currency, bigint>> = { ILS: 50_000n, USD: 15_000n };
 export const HOLD_JOURNAL_KIND = 'p2p_hold';
 export const RELEASE_JOURNAL_KIND = 'p2p_release';
-export const holdKey = (workflowId: string): string => `${workflowId}:hold`;
-export const releaseKey = (workflowId: string): string => `${workflowId}:release`;
+export { holdKey, releaseKey };
 
 export class P2pHoldService {
   private readonly db: Database;

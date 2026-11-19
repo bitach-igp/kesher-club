@@ -20,6 +20,7 @@ import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import { linkRef, refOf } from '../ops/external-ref.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
+import { settleKey } from '../transfers/journal-keys.ts';
 
 export const REFUND_JOURNAL_KIND = 'refund';
 export type ClosureState = 'open' | 'refunding' | 'blocked' | 'closed';
@@ -47,7 +48,7 @@ interface Deps {
 }
 
 export const refundKey = (partyId: string, loadTransferId: string): string => `closure:${partyId}:${loadTransferId}`;
-export const refundSettleKey = (key: string): string => `${key}:settle`;
+export const refundSettleKey = settleKey;
 
 export class ClosureService {
   private readonly d: Deps;

@@ -26,8 +26,7 @@
 // - Personal data is passed through and never persisted in clear: the KeyLedger holds only HMAC-SHA256 values under `hmacKey`, the party
 //   id and vendor ids. The account number and routing number are never read into anything returned, logged or thrown. Errors carry fixed
 //   text; Crowded's own message (which can echo what we sent) is never passed on. Crowded's text is untrusted data.
-import { createHmac } from 'node:crypto';
-import { money, type Money } from '@kesher/domain';
+import type { Money } from '@kesher/domain';
 import {
   MemberSubAccountError,
   type EnsuredSubAccount,
@@ -41,7 +40,7 @@ import {
 } from '@kesher/ports';
 import { CrowdedApiError, CrowdedTransportError, type CrowdedClient } from './client.ts';
 import { guardLedger, InMemoryKeyLedger, type KeyLedger } from './institution-banking.ts';
-import { fromCents, isRecord, parseSubAccountRef, str, subAccountRef, uuidFromKey } from './map.ts';
+import { E164, EMAIL, fromCents, isRecord, low, macOf, parseSubAccountRef, str, subAccountRef, text, USD, uuidFromKey, validDate } from './map.ts';
 
 export interface CrowdedMemberSubAccountsOptions {
   client: CrowdedClient;
@@ -75,27 +74,15 @@ interface Claim {
   identity: string;
 }
 
-const E164 = /^\+[1-9]\d{7,14}$/;
-const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
 const MAX_PARTY = 128;
 const MAX_PURPOSE = 200;
 const MAX_NAME = 100;
 const MAX_EMAIL = 254;
-const low = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
-const text = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
-const USD = (minor: bigint): Money => money(minor, 'USD');
 const fail = (code: MemberSubAccountErrorCode, message: string): never => {
   throw new MemberSubAccountError(code, message);
 };
 const STATUS: Record<string, MemberSubAccountStatus> = { open: 'open', frozen: 'frozen', closed: 'closed' };
 const OWNER_STATUS: Record<string, SubAccountOwnerStatus> = { active: 'active', invited: 'invited', pending: 'invited', sent: 'invited', failed: 'failed' };
-
-function validDate(s: string, now: Date): boolean {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (!m) return false;
-  const d = new Date(`${s}T00:00:00Z`);
-  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(s) && Number(m[1]) >= 1900 && d.getTime() <= now.getTime();
-}
 
 export class CrowdedMemberSubAccounts implements MemberSubAccountPort {
   private readonly c: CrowdedClient;
@@ -119,7 +106,7 @@ export class CrowdedMemberSubAccounts implements MemberSubAccountPort {
 
   /** Keyed hash, domain-separated by `scope`. */
   private mac(scope: string, ...parts: string[]): string {
-    return createHmac('sha256', this.secret).update(JSON.stringify([scope, ...parts])).digest('hex');
+    return macOf(this.secret, scope, parts);
   }
 
   private serial<T>(fn: () => Promise<T>): Promise<T> {

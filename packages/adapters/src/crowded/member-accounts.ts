@@ -19,8 +19,6 @@
 // - Status is read from the vendor each call: Active contact and Open/Frozen/Closed account; Failed is `rejected`. No retries
 //   here (a 429, a 5xx or a transport error is PROVIDER_UNAVAILABLE for the calling workflow to retry).
 // Open question (not decided here): a member whose contact is `rejected` cannot re-apply with corrected data; see the card.
-import { createHmac } from 'node:crypto';
-import { money, type Money } from '@kesher/domain';
 import {
   FundingAccountError,
   type EnsureAccountInput,
@@ -34,7 +32,7 @@ import {
 } from '@kesher/ports';
 import { CrowdedApiError, type CrowdedClient } from './client.ts';
 import { guardLedger, InMemoryKeyLedger, type KeyLedger } from './institution-banking.ts';
-import { fromCents, fundingRef, isRecord, parseFundingRef, str, uuidFromKey } from './map.ts';
+import { E164, EMAIL, fromCents, fundingRef, isRecord, low, macOf, parseFundingRef, str, text, USD, uuidFromKey, validDate } from './map.ts';
 
 export interface CrowdedMemberAccountsOptions {
   client: CrowdedClient;
@@ -56,22 +54,9 @@ interface Binding {
   accountId?: string;
 }
 
-const E164 = /^\+[1-9]\d{7,14}$/;
-const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
-const USD = (minor: bigint): Money => money(minor, 'USD');
-const low = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
 const fail = (code: FundingAccountErrorCode, message: string): never => {
   throw new FundingAccountError(code, message);
 };
-const text = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
-
-function validDate(s: string, now: Date): boolean {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
-  if (!m) return false;
-  const d = new Date(`${s}T00:00:00Z`);
-  // A real calendar date, from 1900 to today: Crowded's own range is not documented, so this is a sanity bound only.
-  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(s) && Number(m[1]) >= 1900 && d.getTime() <= now.getTime();
-}
 
 const ACCOUNT_STATUS: Record<string, FundingAccountStatus> = { open: 'open', frozen: 'frozen', closed: 'closed' };
 
@@ -96,7 +81,7 @@ export class CrowdedMemberAccounts implements FundingAccountPort {
 
   /** Keyed hash, domain-separated by `scope`. */
   private mac(scope: string, ...parts: string[]): string {
-    return createHmac('sha256', this.key).update(JSON.stringify([scope, ...parts])).digest('hex');
+    return macOf(this.key, scope, parts);
   }
 
   /**

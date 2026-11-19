@@ -12,7 +12,6 @@
 // Money features (collections T-0652, ACH funding T-0653) open only when the provider approved AND the institution's KYB allows
 // `us_banking`: `moneyOpen` says so. Names and EINs are not logged; the account is read as its last four digits and a balance.
 import { createHash } from 'node:crypto';
-import type { KeyLedger } from '@kesher/adapters';
 import { DomainError, toWire, uuidv7 } from '@kesher/domain';
 import { InstitutionBankingError, type ApplicationStatus, type InstitutionBankingPort, type ProviderRegistry } from '@kesher/ports';
 import type { AuditService } from '../audit/service.ts';
@@ -30,24 +29,6 @@ const EIN = /^\d{2}-?\d{7}$/;
 const IP = /^[0-9a-f.:]{3,45}$/i;
 
 export type UsBankingHolder = 'platform' | 'institution';
-
-/** The banking adapter's idempotency ledger (T-0648) in Postgres: a retry after a restart reaches the same object. First write wins. */
-export class PostgresKeyLedger implements KeyLedger {
-  private readonly db: SqlClient;
-  private readonly clock: () => Date;
-  constructor(db: SqlClient, clock: () => Date = () => new Date()) {
-    this.db = db;
-    this.clock = clock;
-  }
-  async get(key: string): Promise<{ body: string; result: unknown } | undefined> {
-    const r = await this.db.query<{ body_hash: string; result: unknown }>('select body_hash, result from org.us_banking_key where key = $1', [key]);
-    const row = r.rows[0];
-    return row ? { body: row.body_hash, result: row.result ?? undefined } : undefined;
-  }
-  async put(key: string, entry: { body: string; result: unknown }): Promise<void> {
-    await this.db.query('insert into org.us_banking_key (key, body_hash, result, created_at) values ($1, $2, $3, $4) on conflict (key) do nothing', [key, entry.body, JSON.stringify(entry.result ?? null), this.clock()]);
-  }
-}
 
 export interface UsBankingDeps {
   db: Database;

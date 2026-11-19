@@ -41,7 +41,7 @@ import {
 } from '@kesher/ports';
 import { bookWireKey, BookShapeError, checkingAccountId, getBookPayment, listBookPayments, postBookPayments, type BookAnswer, type BookItem, type BookRow } from './book.ts';
 import { CrowdedApiError, type CrowdedClient } from './client.ts';
-import { date, fromCents, fundingRef, isRecord, parseFundingRef, str } from './map.ts';
+import { date, fromCents, fundingRef, isRecord, low, parseFundingRef, str } from './map.ts';
 
 export interface CrowdedMirrorOptions {
   client: CrowdedClient;
@@ -55,7 +55,6 @@ const MIRROR_KEY_PREFIX = 'mirror:';
 export const READBACK_MAX_PAGES = 20;
 const SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const SAFE_ID = /^[A-Za-z0-9_-]+$/;
-const low = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
 const ACCOUNT_STATUS: Record<string, MirrorAccountStatus> = { open: 'open', frozen: 'frozen', closed: 'closed' };
 
 export class CrowdedMirror implements MirrorPort {

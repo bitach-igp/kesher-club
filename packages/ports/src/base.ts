@@ -1,25 +1,4 @@
-// Shared port building blocks (T-0008). Every port error carries a closed `code` union that always
-// includes PROVIDER_UNAVAILABLE; every mutating method takes an idempotency key (constitution art. 3, 6).
-
-export type PortErrorCode<C extends string> = C | 'PROVIDER_UNAVAILABLE' | 'VALIDATION_FAILED';
-
-export class PortError<C extends string = never> extends Error {
-  readonly port: string;
-  readonly code: PortErrorCode<C>;
-  readonly retryable: boolean;
-  constructor(
-    port: string,
-    code: PortErrorCode<C>,
-    message: string,
-    retryable = code === 'PROVIDER_UNAVAILABLE',
-  ) {
-    super(message);
-    this.port = port;
-    this.code = code;
-    this.retryable = retryable;
-    this.name = `${port}Error`;
-  }
-}
+// Shared port building blocks (T-0008). Every mutating method takes an idempotency key (constitution art. 3, 6).
 
 export interface Clock {
   now(): Date;

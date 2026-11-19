@@ -36,5 +36,3 @@ export const PORTS: readonly PortDescriptor[] = [
   { capability: 'agent-gateway', port: 'AgentGateway', direction: 'in', simulator: false, contract: 'agent-gateway.contract.ts', flags: ['mcp.enabled', 'mcp.write.enabled', 'mcp.money.propose'], vendors: ['in-house'] },
   { capability: 'il-payinit', port: 'IlPayInitPort', direction: 'out', simulator: true, contract: 'il-payinit.contract.ts', flags: ['il.payinit'], vendors: ['licensed-pisp'] },
 ];
-
-export const portByCapability = (capability: string): PortDescriptor | undefined => PORTS.find((p) => p.capability === capability);

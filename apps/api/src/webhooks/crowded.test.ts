@@ -15,7 +15,7 @@ import { createServer, dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { holdKey, settleKey, type LoadInput } from '../wallet/loads.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey } from '../wallet/sub-accounts.ts';
-import { CrowdedWebhook, subAccountChapters, type CrowdedHandlers } from './crowded.ts';
+import { classifyCrowdedEvent, CrowdedWebhook, subAccountChapters, type CrowdedEventKind, type CrowdedHandlers } from './crowded.ts';
 import { InboundEventStore } from './store.ts';
 
 const SECRET = 'crowded_endpoint_secret_0123456789abcdef';
@@ -640,5 +640,31 @@ describe('member-chapter payment events move a hosted load (T-0703, TST-WAL-003)
         await expect(feed(event('sd-10', 'collect.payment.succeeded', 'subA', { paymentId: 'p1' }))).rejects.toMatchObject({ code: 'FEATURE_OFF' });
       });
     });
+  });
+});
+
+describe('classifying an event type', () => {
+  const table: [string, CrowdedEventKind][] = [
+    ['finance.application.updated', 'application'],
+    ['finance.application.approved', 'application'],
+    ['finance.ach_payment.settled', 'ach'],
+    ['finance.ach_payment.returned', 'ach'],
+    ['collect.payment.created', 'payment'],
+    ['collect.collection.updated', 'collected'],
+    ['collect.intent.created', 'collected'],
+    ['collect.refund.created', 'collected'],
+    ['collect.paymentx.created', 'collect'], // a near-miss: not the payment family, still a collect.* type
+    ['collect.payment', 'collect'],
+    ['collect.unknown.created', 'collect'],
+    ['finance.applicationx.updated', 'other'],
+    ['finance.application', 'other'],
+    ['finance.ach_paymentx.settled', 'other'],
+    ['finance.transaction.created', 'other'],
+    ['platform.chapter.updated', 'other'],
+    ['xcollect.payment.created', 'other'],
+    ['', 'other'],
+  ];
+  it.each(table)('%s is %s', (type, kind) => {
+    expect(classifyCrowdedEvent(type)).toBe(kind);
   });
 });

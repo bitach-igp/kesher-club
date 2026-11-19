@@ -21,6 +21,7 @@ import type { Database } from '../db.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferService } from '../transfers/service.ts';
+import { settleKey } from '../transfers/journal-keys.ts';
 import type { RateService } from './rates.ts';
 
 export const FX_FLAG = 'fx.enabled';
@@ -100,7 +101,7 @@ export function rateString(rateScaled: bigint): string {
   return `${whole}.${frac}`;
 }
 
-export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
+export { settleKey };
 /** The amount moves wallet → pending under this key before the vendor is called (T-0546, F51); `unreserveKey` reverses it, once. */
 export const reserveKey = (workflowId: string): string => `${workflowId}:reserve`;
 export const unreserveKey = (workflowId: string): string => `${workflowId}:unreserve`;

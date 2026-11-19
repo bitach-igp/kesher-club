@@ -28,13 +28,12 @@ import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { PreferenceService } from '../me/preferences.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
+import { settleKey } from '../transfers/journal-keys.ts';
 import { RELEASE_JOURNAL_KIND, releaseKey, type P2pHoldService } from './holds.ts';
 import type { P2pLimitService } from './limits.ts';
 
 export const P2P_JOURNAL_KIND = 'p2p';
 export const RECEIVED_TEMPLATE = 'money.p2p_received';
-/** REQ-PAY-001: the recipient hears within this long of the send settling. */
-export const NOTIFY_SLA_MS = 5_000;
 export const NOTE_MAX = 140;
 
 export interface SendInput {
@@ -97,7 +96,7 @@ export async function runSend(a: SendActivities, input: SendInput, workflowId: s
   return { workflowId, transfer: t, replayed, notified: true, held: false };
 }
 
-export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
+export { settleKey };
 
 interface Deps {
   db: Database;

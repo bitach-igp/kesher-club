@@ -111,7 +111,6 @@ describe('TST-AGT-001/002: /mcp over HTTP (T-1013)', () => {
     expect(again).toEqual(t0);
     expect(unknown.filter((k) => k !== 'mcp.enabled')).toEqual([]);
     expect(['mcp.enabled', 'mcp.write.enabled', 'mcp.money.propose'].every((k) => list.includes(k))).toBe(true);
-    process.stderr.write(`mcp flag reads t0=${t0.length} t1=${t1.length} t2=${t2.length} list=${list.length}\n`);
   });
 
   it('propose_p2p over HTTP creates a pending intent and no transfer (REQ-AGT-006)', async () => {

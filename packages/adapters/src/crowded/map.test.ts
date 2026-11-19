@@ -2,7 +2,7 @@
 // ids as strings, the account number cut to four digits, a funder's name split, and a stable UUID for our keys.
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
-import { achStatus, applicationStatus, collectedStatus, fromCents, last4, parseRef, ref, splitName, str, toCents, uuidFromKey } from './map.ts';
+import { achStatus, applicationStatus, collectedStatus, fromCents, last4, macOf, parseRef, ref, splitName, str, toCents, uuidFromKey } from './map.ts';
 
 describe('cents <-> Money', () => {
   it('round-trips 0 and 1, and reads 2^53 + 1 exactly from a string', () => {
@@ -72,5 +72,19 @@ describe('status tables', () => {
 
   it('collected payments: only an outcome counts; pending and processing are not yet one', () => {
     expect(['Succeeded', 'Failed', 'Cancelled', 'Returned', 'Refunded', 'Pending', 'Processing', 'Mystery'].map(collectedStatus)).toEqual(['paid', 'declined', 'declined', 'declined', 'refunded', undefined, undefined, undefined]);
+  });
+});
+
+describe('macOf', () => {
+  // Pinned from `createHmac('sha256', key).update(JSON.stringify([scope, ...parts])).digest('hex')` computed outside the code: the
+  // keyed hashes the adapters store as idempotency bodies must not drift, or every stored key would answer a conflict.
+  const KEY = 'test-only-mac-key-0123456789abcdef';
+  it('is the HMAC-SHA256 of the JSON of [scope, ...parts], hex', () => {
+    expect(macOf(KEY, 'load', ['cust-1', '2500', '', ''])).toBe('cea6c99d23c6671889c0a60ced7fb53e8f130234b273ea6624637519760e5850');
+    expect(macOf(KEY, 'input', ['party-1', 'abc'])).toBe('4db8a4211b9ac91d080d1e83b0263ab83bd95b03c4f529a2b35f20210c7fe2b7');
+  });
+  it('separates scopes and keys', () => {
+    expect(macOf(KEY, 'a', ['x'])).not.toBe(macOf(KEY, 'b', ['x']));
+    expect(macOf(KEY, 'a', ['x'])).not.toBe(macOf(`${KEY}!`, 'a', ['x']));
   });
 });
