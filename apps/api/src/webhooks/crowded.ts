@@ -104,6 +104,21 @@ export const refuseAllVerifier: WebhookVerifier = { verify: () => ({ ok: false, 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const idOf = (v: unknown): string | undefined => (typeof v === 'string' && v !== '' ? v : typeof v === 'number' && Number.isFinite(v) ? String(v) : undefined);
 
+/**
+ * What an event type is about. `payment` and `collected` (a collection, intent or refund) are the collected-payment families; `collect`
+ * is any other `collect.*` type (a near-miss such as `collect.paymentx.created` included): it is never an institution event, but a
+ * member chapter's still keeps it out of the institution path. `other` is everything we do not handle.
+ */
+export type CrowdedEventKind = 'application' | 'ach' | 'payment' | 'collected' | 'collect' | 'other';
+
+export function classifyCrowdedEvent(type: string): CrowdedEventKind {
+  if (type.startsWith('finance.application.')) return 'application';
+  if (type.startsWith('finance.ach_payment.')) return 'ach';
+  if (!type.startsWith('collect.')) return 'other';
+  if (type.startsWith('collect.payment.')) return 'payment';
+  return /^collect\.(collection|intent|refund)\./.test(type) ? 'collected' : 'collect';
+}
+
 export class CrowdedWebhook {
   private readonly d: CrowdedWebhookDeps;
   private readonly members = new Map<string, { member: boolean; at: number }>();
@@ -157,11 +172,12 @@ export class CrowdedWebhook {
     const chapter = idOf(ctx['chapterId']) ?? idOf(data['chapterId']);
     if (!chapter) return; // nothing to re-read: stored, and that is all
     const h = this.d.handlers ?? {};
+    const kind = classifyCrowdedEvent(type);
     // A hosted load's payment: a member chapter's `collect.payment.*` events (the platform member chapter, or a member's own sub-account
     // chapter, T-0757) belong to the wallet, never to the institution path. The refs are built from the event's own chapter, so one
     // member's event can only name that member's loads.
-    if (/^collect\./.test(type) && (await this.isMemberChapter(chapter))) {
-      if (!/^collect\.payment\./.test(type)) return; // collections, intents and refunds of the member chapter: stored and ignored
+    if ((kind === 'payment' || kind === 'collected' || kind === 'collect') && (await this.isMemberChapter(chapter))) {
+      if (kind !== 'payment') return; // collections, intents and refunds of the member chapter: stored and ignored
       // Flag off: this throws, the row stays unprocessed and the replay job applies it once the wallet is on.
       if (!(await this.d.flags.isOn(CROWDED_WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
       if (this.d.ownerFailed && (await this.d.ownerFailed(chapter))) return; // never credited blindly (T-0752 note): staff have the case
@@ -171,17 +187,16 @@ export class CrowdedWebhook {
       return;
     }
     // Everything else is the institution path. With only the wallet flag on, such an event is kept unprocessed until US banking is.
-    const institution = /^(finance\.application\.|finance\.ach_payment\.|collect\.(payment|collection|intent|refund)\.)/.test(type);
-    if (institution && !(await this.d.flags.isOn(CROWDED_FLAG))) throw new DomainError('FEATURE_OFF', 'US banking is not available');
-    if (type.startsWith('finance.application.')) {
+    if (kind !== 'collect' && kind !== 'other' && !(await this.d.flags.isOn(CROWDED_FLAG))) throw new DomainError('FEATURE_OFF', 'US banking is not available');
+    if (kind === 'application') {
       if (h.application) await h.application(chapter, await this.d.port().applicationStatus(chapter));
-    } else if (type.startsWith('finance.ach_payment.')) {
+    } else if (kind === 'ach') {
       const payment = idOf(data['id']) ?? idOf(data['paymentId']);
       if (payment && h.ach) {
         const paymentRef = crowdedRef(chapter, payment);
         await h.ach(paymentRef, await this.d.port().achStatus(paymentRef));
       }
-    } else if (/^collect\.(payment|collection|intent|refund)\./.test(type)) {
+    } else if (kind === 'payment' || kind === 'collected') {
       if (h.collected) await h.collected(chapter);
     }
     // Anything else (platform.*, finance.transaction.created, wires, event types we do not know yet) is stored and ignored.
