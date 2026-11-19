@@ -381,4 +381,31 @@
 | [T-0758](T-0758.md) | WAL | SCOPING: a parent pays for a child as a donation to the nonprofit credited to the child's sub-account | REQ-WAL-002 | later (option 2, WAITING on Crowded and counsel) |
 | [T-0759](T-0759.md) | SETUP | Counsel brief for option 2: exempt purposes, private benefit, donations, closure and fees | — | later (option 2, WAITING on counsel) |
 | [T-0760](T-0760.md) | CRD | SCOPING: a card on a member's sub-account | REQ-CRD-003 | later (option 2, WAITING on Crowded and D3) |
+| [T-0761](T-0761.md) | WAL | Typed credit-marker functions: `recordCreditBegan`, `recordCreditOutcome`, `creditAttemptState` are the only readers and writers of the credit markers (A2) | — | later (scoped 2026-11-19) · first of the chain |
+| [T-0762](T-0762.md) | WAL | One typed ref grammar for sub-account and marker refs (`s:` in ports, `o:` and `p:` in apps/api); no SQL string building in the Crowded webhook (A3) | — | later (scoped 2026-11-19) · independent of T-0761 |
+| [T-0763](T-0763.md) | WAL | The failed-owner rule is enforced on the credit path in LoadService, not in the webhook; a skipped credit is retried by the sweep (A1) | REQ-WAL-003 | later (scoped 2026-11-19) · after T-0761 (T-0762 soft) |
+| [T-0764](T-0764.md) | WAL | Split `loads.ts` 1/4: workflow body, types and pure helpers move out; API unchanged (A5) | — | later (scoped 2026-11-19) · after T-0761 |
+| [T-0765](T-0765.md) | WAL | Split `loads.ts` 2/4: case openers move to `load-cases.ts`, one reopen helper (A5) | — | later (scoped 2026-11-19) · after T-0764 |
+| [T-0766](T-0766.md) | WAL | Split `loads.ts` 3/4: the vendor credit step moves to `load-credit.ts` (A5) | — | later (scoped 2026-11-19) · after T-0761, T-0763, T-0765 |
+| [T-0767](T-0767.md) | WAL | Split `loads.ts` 4/4: funding-account provisioning and pricing/parsing move out (A5) | — | later (scoped 2026-11-19) · after T-0764 |
+| [T-0768](T-0768.md) | WAL | `ops.workflow_marker` table (ledger migration 0033), store module and desktop apply request (A4) | — | later (scoped 2026-11-19) · after T-0761, T-0762; desktop apply |
+| [T-0769](T-0769.md) | WAL | The credit markers move from `ops.external_ref` to `ops.workflow_marker` (A4) | — | later (scoped 2026-11-19) · after T-0761, T-0768 PASS |
+| [T-0770](T-0770.md) | WAL | The sub-account, lost-key and payee markers move to `ops.workflow_marker` (A4) | — | later (scoped 2026-11-19) · after T-0762, T-0768 PASS |
+| [T-0771](T-0771.md) | SETUP | DESIGN: capability properties on port bindings replace provider-name branching in registry.ts; first slice scoped (A6) | — | later (scoped 2026-11-19) · design; slice 1 on acceptance |
+| [T-0772](T-0772.md) | SETUP | One `isUuidShape` in `@kesher/domain` replaces 28 loose UUID regex copies in apps/api (A7) | — | later (scoped 2026-11-19) · independent |
+| [T-0773](T-0773.md) | SETUP | The mobile and console UUID regex copies use `isUuidShape` (A7) | — | later (scoped 2026-11-19) · after T-0772 |
+| [T-0774](T-0774.md) | CRD | Card authorisation: daily and monthly held-sum reads become one read-only query (A8) | — | later (scoped 2026-11-19) · independent |
+| [T-0775](T-0775.md) | INS | Identity `findUsers(ids)`: staff lists and customer lists read users in one query (A8) | — | later (scoped 2026-11-19) · independent |
+| [T-0776](T-0776.md) | WAL | `DisplayNameService.getMany` for `listMemberships` (A8) | — | later (scoped 2026-11-19) · independent |
+| [T-0777](T-0777.md) | NOT | Outbound events: `messages()` reads attempts concurrently (A8) | — | later (scoped 2026-11-19) · independent |
+| [T-0778](T-0778.md) | WAL | Closure status: pending refund refs read in one query (A8) | — | later (scoped 2026-11-19) · independent |
+| [T-0779](T-0779.md) | LED | Ledger account provisioning in batches, idempotent (A8) | — | later (scoped 2026-11-19) · independent |
+| [T-0780](T-0780.md) | BIL | WIRE OR DELETE: `DunningService` has no production caller and no Stripe billing webhook feeds it (B) | — | later (scoped 2026-11-19) · decision first (with T-0736, T-0737) |
+| [T-0781](T-0781.md) | SETUP | WIRE OR DELETE: generic `standardWebhooksVerifier`, `stripeVerifier`, `hmacVerifier` are bound nowhere and carry bugs (B, security flag) | — | later (scoped 2026-11-19) · decision first |
+| [T-0782](T-0782.md) | SETUP | WIRE OR DELETE: `makeRequest` is test-only; move it to a test helper (B) | — | later (scoped 2026-11-19) · decision first |
+| [T-0783](T-0783.md) | AGT | WIRE OR DELETE: `metadataHandler` is a test-only duplicate; `McpHttp` serves the metadata (B) | REQ-AGT-001 | later (scoped 2026-11-19) · decision first |
+| [T-0784](T-0784.md) | PAY | WIRE OR DELETE: `canTransition` is test-only; the state machine is enforced through `next()` (B, money-state flag) | — | later (scoped 2026-11-19) · decision first |
+| [T-0785](T-0785.md) | AUTH | WIRE OR DELETE: the org identity port and the WorkOS webhook check have no caller; REQ-AUTH-008 unwired (B, security flag) | REQ-AUTH-008 | later (scoped 2026-11-19) · decision first |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
+
+Scoped 2026-11-19 from the /simplify review (T-0761 to T-0785). Refactor cards carry REQ `—` and change no behaviour except T-0763. Order: T-0761 (A2) and T-0762 (A3) first; T-0763 (A1) after T-0761; the loads.ts split T-0764 to T-0767 (A5) after T-0761, with T-0766 also after T-0763 and T-0765; T-0768 to T-0770 (A4) after T-0761 and T-0762, T-0769 and T-0770 only after the desktop apply of T-0768 passes (`handoff/done/`). T-0772 and T-0773 (A7), T-0774 to T-0779 (A8) and the whole of Part B (T-0780 to T-0785, wire-or-delete decisions; nothing deleted yet) are independent. T-0771 is a design card.
