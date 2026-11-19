@@ -21,6 +21,7 @@ import { entityOf, linkRef, refOf } from '../ops/external-ref.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferService } from '../transfers/service.ts';
+import { settleKey } from '../transfers/journal-keys.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
 import { checkPayee, type PayeeCheck } from './iban.ts';
@@ -165,7 +166,7 @@ export async function runPayout(a: PayoutActivities, input: PayoutInput, workflo
   return { workflowId, transfer: t, replayed };
 }
 
-export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
+export { settleKey };
 /** A member's payout that has to wait moves the amount wallet → pending under this key (T-0540); `unreserveKey` reverses it, once. */
 export const reserveKey = (workflowId: string): string => `${workflowId}:reserve`;
 export const unreserveKey = (workflowId: string): string => `${workflowId}:unreserve`;

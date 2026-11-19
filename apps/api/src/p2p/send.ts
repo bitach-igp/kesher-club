@@ -28,6 +28,7 @@ import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { PreferenceService } from '../me/preferences.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
+import { settleKey } from '../transfers/journal-keys.ts';
 import { RELEASE_JOURNAL_KIND, releaseKey, type P2pHoldService } from './holds.ts';
 import type { P2pLimitService } from './limits.ts';
 
@@ -95,7 +96,7 @@ export async function runSend(a: SendActivities, input: SendInput, workflowId: s
   return { workflowId, transfer: t, replayed, notified: true, held: false };
 }
 
-export const settleKey = (workflowId: string): string => `${workflowId}:settle`;
+export { settleKey };
 
 interface Deps {
   db: Database;
