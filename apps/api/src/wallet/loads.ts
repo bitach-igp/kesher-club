@@ -688,12 +688,7 @@ export class LoadService implements LoadActivities {
             or not exists (select 1 from ops.load_check c where c.transfer_id = t.id and c.last_asked_at > $6))
         order by (t.state = 'pending_hold'), t.updated_at limit $2`,
       [new Date(now.getTime() - olderThanMs), limit, this.d.transfers.market, this.d.provider, now, new Date(now.getTime() - HELD_RECHECK_MS)]);
-    const out: Transfer[] = [];
-    for (const row of r.rows) {
-      const t = await this.d.transfers.get(row.id);
-      if (t) out.push(t);
-    }
-    return out;
+    return this.d.transfers.getMany(r.rows.map((row) => row.id));
   }
 
   view(run: Omit<LoadRun, 'replayed'>): LoadView {

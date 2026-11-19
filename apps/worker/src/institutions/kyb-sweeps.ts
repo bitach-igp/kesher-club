@@ -52,7 +52,7 @@ export class KybRescreen {
     const now = this.clock();
     for (const inst of await this.approved()) {
       out.institutions += 1;
-      const record = await this.kyb.record(inst.id);
+      const record = await this.kyb.peopleAndChecks(inst.id);
       let screened;
       try {
         screened = await this.port.screen({ names: [inst.legalName, ...record.people.map((p) => p.fullName)] });

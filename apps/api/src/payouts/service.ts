@@ -683,12 +683,7 @@ export class PayoutService implements PayoutActivities {
        ) and t.market = $3 order by t.created_at limit $2`,
       [now, limit, this.d.transfers.market, RETRY_AFTER_MS],
     );
-    const out: Transfer[] = [];
-    for (const row of r.rows) {
-      const t = await this.d.transfers.get(row.id);
-      if (t) out.push(t);
-    }
-    return out;
+    return this.d.transfers.getMany(r.rows.map((row) => row.id));
   }
 
   private async payeeIdOf(transferId: string): Promise<string | undefined> {

@@ -1,6 +1,6 @@
 // T-0205: transfer state machine + transactional outbox. Also exercises THR-04 (double submit
 // never creates two transfers) at the service layer; the HTTP layer is TST-PAY-005.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { isPgError } from '../db.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
@@ -37,6 +37,20 @@ describe('state machine', () => {
 });
 
 describe('TransferService', () => {
+  it('getMany answers what get answers, in the order asked, skipping an unknown id, in one query (cleanup)', async () => {
+    const a = await transfers.create({ idempotencyKey: `many-a-${uuidv7()}`, kind: 'load', toPartyId: uuidv7(), amount: money(100n, 'ILS') }, now);
+    const b = await transfers.create({ idempotencyKey: `many-b-${uuidv7()}`, kind: 'payout', fromPartyId: uuidv7(), amount: money(250n, 'USD') }, now);
+    await transfers.apply(b.id, 'submit', now);
+    const c = await transfers.create({ idempotencyKey: `many-c-${uuidv7()}`, kind: 'load', toPartyId: uuidv7(), amount: money(300n, 'ILS') }, now);
+    const ids = [c.id, uuidv7(), a.id, b.id];
+    const spy = vi.spyOn(db, 'query');
+    const many = await transfers.getMany(ids);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+    expect(many).toEqual([(await transfers.get(c.id))!, (await transfers.get(a.id))!, (await transfers.get(b.id))!]);
+    expect(await transfers.getMany([])).toEqual([]);
+  });
+
   it('stamps the market of the API that created it; the database refuses a transfer without one (T-0027)', async () => {
     const us = await new TransferService(db, 'US').create({ idempotencyKey: `us-${uuidv7()}`, kind: 'load', toPartyId: uuidv7(), amount: money(100n, 'USD') }, now);
     const il = await transfers.create({ idempotencyKey: `il-${uuidv7()}`, kind: 'load', toPartyId: uuidv7(), amount: money(100n, 'ILS') }, now);

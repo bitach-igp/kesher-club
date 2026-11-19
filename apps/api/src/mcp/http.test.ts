@@ -8,7 +8,7 @@
 // - a tool with no data source yet says so as a tool error, never as an empty list;
 // - a read token calling freeze_card answers 403 insufficient_scope with the challenge;
 // - with mcp.enabled off, /mcp and its metadata answer 404.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { SignJWT } from 'jose';
 import { uuidv7 } from '@kesher/domain';
 import { SimulatorHost } from '@kesher/simulators';
@@ -87,6 +87,31 @@ describe('TST-AGT-001/002: /mcp over HTTP (T-1013)', () => {
     expect(names(await call('all', 'tools/list', {}, readOnly))).not.toEqual(expect.arrayContaining(['freeze_card']));
     expect(names(await call('all', 'tools/list', {}, readOnly)).some((n) => n.startsWith('propose_'))).toBe(false);
     expect((await call('all', 'tools/call', { name: 'propose_p2p', arguments: { toPartyId: bob, amount: { minor: '5000', currency: 'ILS' } } }, readOnly)).body).toMatchObject({ error: { code: -32602 } });
+  });
+
+  it('a tool call reads only its own tier flag, fresh each time; tools/list still reads all three', async () => {
+    const spy = vi.spyOn(app.services.flags, 'isOn');
+    const reads = async (method: string, params: unknown) => {
+      spy.mockClear();
+      await call('all', method, params);
+      return spy.mock.calls.map(([k]) => k).filter((k) => k.startsWith('mcp.'));
+    };
+    const t0 = await reads('tools/call', { name: 'get_balances', arguments: {} });
+    const t1 = await reads('tools/call', { name: 'freeze_card', arguments: {} });
+    const t2 = await reads('tools/call', { name: 'propose_p2p', arguments: { toPartyId: bob, amount: { minor: '1', currency: 'ILS' } } });
+    const again = await reads('tools/call', { name: 'get_balances', arguments: {} });
+    const unknown = await reads('tools/call', { name: 'no_such_tool', arguments: {} });
+    const list = await reads('tools/list', {});
+    spy.mockRestore();
+    expect(t0.filter((k) => k !== 'mcp.enabled')).toEqual([]);
+    expect(t1).toContain('mcp.write.enabled');
+    expect(t1).not.toContain('mcp.money.propose');
+    expect(t2).toContain('mcp.money.propose');
+    expect(t2).not.toContain('mcp.write.enabled');
+    expect(again).toEqual(t0);
+    expect(unknown.filter((k) => k !== 'mcp.enabled')).toEqual([]);
+    expect(['mcp.enabled', 'mcp.write.enabled', 'mcp.money.propose'].every((k) => list.includes(k))).toBe(true);
+    process.stderr.write(`mcp flag reads t0=${t0.length} t1=${t1.length} t2=${t2.length} list=${list.length}\n`);
   });
 
   it('propose_p2p over HTTP creates a pending intent and no transfer (REQ-AGT-006)', async () => {

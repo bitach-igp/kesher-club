@@ -122,7 +122,8 @@ export class FunderInvites {
   async setupSheet(partyId: string): Promise<PaymentSheet> {
     await this.requireOn();
     const customerId = await this.d.memberships.ensureCustomer(partyId, payerEmail(partyId));
-    return this.d.billing.createSetupSheet(customerId, { applePay: !!(await this.d.flags.isOn('billing.applePay', { partyId })), googlePay: !!(await this.d.flags.isOn('billing.googlePay', { partyId })) });
+    const [applePay, googlePay] = await Promise.all([this.d.flags.isOn('billing.applePay', { partyId }), this.d.flags.isOn('billing.googlePay', { partyId })]);
+    return this.d.billing.createSetupSheet(customerId, { applePay: !!applePay, googlePay: !!googlePay });
   }
 
   async create(funderPartyId: string, body: unknown, key: string, now: Date): Promise<FunderInvite> {
