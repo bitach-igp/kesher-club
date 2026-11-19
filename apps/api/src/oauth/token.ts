@@ -9,6 +9,7 @@
 //   revokes the whole grant, so the next /mcp call is 401 (the validator checks the grant on every call).
 // A revoked grant (the grants screen, T-1006) refreshes nothing: every exchange checks the grant is active.
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { sha256Buf } from '../crypto/hash.ts';
 import { SignJWT } from 'jose';
 import type { SigningKey } from '../auth/tokens.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
@@ -38,7 +39,6 @@ export interface TokenResponse {
   scope: string;
 }
 
-const hash = (token: string): Buffer => createHash('sha256').update(token).digest();
 const s256 = (verifier: string): string => createHash('sha256').update(verifier).digest('base64url');
 const VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 
@@ -107,7 +107,7 @@ export class TokenEndpoint {
         await tx.query<{ grant_id: string; family: string; expires_at: string | Date; rotated_at: string | Date | null; client_id: string; party_id: string; scopes: string[]; status: string }>(
           `select t.grant_id, t.family, t.expires_at, t.rotated_at, g.client_id, g.party_id, g.scopes, g.status
              from agent.refresh_token t join agent.grant g on g.id = t.grant_id where t.token_hash = $1 for update of t`,
-          [hash(token)],
+          [sha256Buf(token)],
         )
       ).rows[0];
       if (!r || r.client_id !== f('client_id')) throw bad();
@@ -117,7 +117,7 @@ export class TokenEndpoint {
         return true;
       }
       if (r.status !== 'active' || new Date(r.expires_at) <= now) throw bad();
-      await tx.query('update agent.refresh_token set rotated_at = $2 where token_hash = $1', [hash(token), now]);
+      await tx.query('update agent.refresh_token set rotated_at = $2 where token_hash = $1', [sha256Buf(token), now]);
       return this.issue(tx, { grantId: r.grant_id, clientId: r.client_id, partyId: r.party_id, scopes: r.scopes }, r.family, new Date(r.expires_at), now);
     });
     if (replayed === true) throw bad('The refresh token was already used; the grant is revoked');
@@ -141,7 +141,7 @@ export class TokenEndpoint {
       .setExpirationTime(iat + ACCESS_TTL_S)
       .sign(this.key.privateKey);
     const refresh = randomBytes(32).toString('base64url');
-    await tx.query('insert into agent.refresh_token (token_hash, grant_id, family, issued_at, expires_at) values ($1, $2, $3, $4, $5)', [hash(refresh), g.grantId, family, now, refreshExpires]);
+    await tx.query('insert into agent.refresh_token (token_hash, grant_id, family, issued_at, expires_at) values ($1, $2, $3, $4, $5)', [sha256Buf(refresh), g.grantId, family, now, refreshExpires]);
     return { access_token: access, token_type: 'Bearer', expires_in: ACCESS_TTL_S, refresh_token: refresh, scope: g.scopes.join(' ') };
   }
 }

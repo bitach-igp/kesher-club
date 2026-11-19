@@ -5,7 +5,7 @@
 // Tokens arrive here already hashed (refresh) or are hashed on the way in (OTP session), so no table
 // holds a usable credential. Each write that the in-memory version does as read-then-write is one
 // statement here, so two API instances cannot interleave inside it.
-import { createHash } from 'node:crypto';
+import { sha256Url } from '../crypto/hash.ts';
 import type { PiiCipher } from '../crypto/pii.ts';
 import type { Database } from '../db.ts';
 import type { Ceremony, CeremonyKind, Device, FederatedLinkInput, FederatedLinkProvider, FederatedLinkResult, IdentityRepository, OtpRecord, OtpSession, Restriction, SessionFamily, StepUpRecord, StoredPasskey, UserAccount, UserStatus } from './repository.ts';
@@ -20,7 +20,6 @@ const COL = {
 } as const;
 
 const iso = (d: Date | string): string => (d instanceof Date ? d : new Date(d)).toISOString();
-const tokenHash = (token: string): string => createHash('sha256').update(token).digest('base64url');
 
 interface UserRow { party_id: string; phone_sealed: Uint8Array; status: UserStatus; roles: string[]; created_at: Date }
 interface PasskeyRow { credential_id: string; party_id: string; public_key: string; counter: string; device_id: string; device_name_sealed: Uint8Array; created_at: Date; last_used_at: Date | null }
@@ -86,7 +85,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
     await this.db.query(
       `insert into identity.otp_session (token_hash, phone_sealed, purpose, expires_at, consumed_at) values ($1, $2, $3, $4, $5)
        on conflict (token_hash) do update set phone_sealed = excluded.phone_sealed, purpose = excluded.purpose, expires_at = excluded.expires_at, consumed_at = excluded.consumed_at`,
-      [tokenHash(session.token), this.pii.seal(session.phone, COL.otpSessionPhone), session.purpose, session.expiresAt, session.consumedAt ?? null],
+      [sha256Url(session.token), this.pii.seal(session.phone, COL.otpSessionPhone), session.purpose, session.expiresAt, session.consumedAt ?? null],
     );
   }
 
@@ -94,7 +93,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
     // One statement: of two concurrent takes, exactly one gets the session.
     const r = await this.db.query<{ phone_sealed: Uint8Array; purpose: OtpSession['purpose']; expires_at: Date }>(
       `update identity.otp_session set consumed_at = now() where token_hash = $1 and consumed_at is null returning phone_sealed, purpose, expires_at`,
-      [tokenHash(token)],
+      [sha256Url(token)],
     );
     const row = r.rows[0];
     return row && { token, phone: this.pii.open(row.phone_sealed, COL.otpSessionPhone), purpose: row.purpose, expiresAt: iso(row.expires_at) };

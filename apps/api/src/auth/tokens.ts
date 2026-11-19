@@ -1,7 +1,8 @@
 // Token service (T-0112, REQ-AUTH-007): ES256 access JWTs that live 10 minutes, opaque refresh
 // tokens that rotate on every use and live 30 days, each bound to a device-session family. A
 // refresh token that was already rotated, or presented from another device, revokes the family.
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { sha256Url } from '../crypto/hash.ts';
 import { DomainError } from '@kesher/domain';
 import { fixedClock, type Clock } from '@kesher/ports';
 import { SignJWT, exportJWK, generateKeyPair, importJWK, jwtVerify, type CryptoKey, type JWK } from 'jose';
@@ -73,7 +74,7 @@ export class TokenService {
       partyId: input.partyId,
       deviceId: input.deviceId,
       roles: input.roles,
-      currentRefreshHash: hash(refresh),
+      currentRefreshHash: sha256Url(refresh),
       rotatedHashes: [],
       createdAt: now.toISOString(),
       refreshExpiresAt: new Date(now.getTime() + REFRESH_TTL_MS).toISOString(),
@@ -84,7 +85,7 @@ export class TokenService {
 
   async refresh(refreshToken: string, deviceId: string): Promise<TokenPair> {
     const now = this.clock.now();
-    const found = await this.repo.findSessionByRefreshHash(hash(refreshToken));
+    const found = await this.repo.findSessionByRefreshHash(sha256Url(refreshToken));
     if (!found) throw new DomainError('UNAUTHENTICATED', 'Unknown refresh token');
     const { session, isCurrent } = found;
     if (session.revokedAt) throw new DomainError('UNAUTHENTICATED', 'Session revoked');
@@ -101,8 +102,8 @@ export class TokenService {
       throw new DomainError('UNAUTHENTICATED', 'Refresh token expired');
     }
     const next = newRefreshToken();
-    await this.repo.rotateSession(session.sessionId, hash(next), session.currentRefreshHash);
-    return this.pair({ ...session, currentRefreshHash: hash(next) }, next);
+    await this.repo.rotateSession(session.sessionId, sha256Url(next), session.currentRefreshHash);
+    return this.pair({ ...session, currentRefreshHash: sha256Url(next) }, next);
   }
 
   async verifyAccess(token: string): Promise<Principal> {
@@ -169,4 +170,3 @@ export class TokenService {
 }
 
 const newRefreshToken = (): string => `rt_${randomBytes(32).toString('base64url')}`;
-const hash = (token: string): string => createHash('sha256').update(token).digest('base64url');

@@ -5,7 +5,8 @@
 // The student opens the link, previews it and accepts it signed in (T-0626): their party becomes the
 // roster member's, verified at once and active once their identity is approved at T1 or above, which is
 // what receiving an allowance needs. Linking a funder is the memberships' job, not the invite's.
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
+import { sha256Url } from '../crypto/hash.ts';
 import { DomainError, uuidv7 } from '@kesher/domain';
 import type { KycTier, NotifyPort } from '@kesher/ports';
 import { isPgError, PG, type Database } from '../db.ts';
@@ -151,7 +152,7 @@ export class InviteService {
       `select i.id, i.member_id, m.institution_id, i.status as invite_status, i.expires_at, m.status as member_status, m.member_party_id, m.member_name, m.programme, o.name as institution_name
          from org.invite i join org.member m on m.id = i.member_id join org.institution o on o.id = m.institution_id
         where i.token_hash = $1`,
-      [hash(token)],
+      [sha256Url(token)],
     );
     return r.rows[0];
   }
@@ -190,7 +191,7 @@ export class InviteService {
     const token = randomBytes(24).toString('base64url');
     const key = `invite:${memberId}:${template}:${now.getTime()}`;
     try {
-      await this.db.query(`insert into org.invite (id, idempotency_key, member_id, channel, recipient_hash, token_hash, status, sent_at, expires_at) values ($1, $2, $3, $4, $5, $6, 'sent', $7, $8)`, [uuidv7(now), key, memberId, channel, hash(to.toLowerCase()), hash(token), now, new Date(now.getTime() + INVITE_TTL_MS)]);
+      await this.db.query(`insert into org.invite (id, idempotency_key, member_id, channel, recipient_hash, token_hash, status, sent_at, expires_at) values ($1, $2, $3, $4, $5, $6, 'sent', $7, $8)`, [uuidv7(now), key, memberId, channel, sha256Url(to.toLowerCase()), sha256Url(token), now, new Date(now.getTime() + INVITE_TTL_MS)]);
     } catch (e) {
       if (isPgError(e, PG.UNIQUE_VIOLATION)) return;
       throw e;
@@ -199,7 +200,6 @@ export class InviteService {
   }
 }
 
-const hash = (s: string): string => createHash('sha256').update(s).digest('base64url');
 
 /** The invite link's two operations (REQ-INS-002): a public preview, and the signed-in accept. */
 export function inviteHandlers(invites: InviteService): Record<string, Handler> {
