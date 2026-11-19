@@ -16,6 +16,7 @@ import {
   type MemberSubAccountView,
   type SubAccountOwnerStatus,
 } from './member-sub-account.ts';
+import { parseSubAccountRef, subAccountRef } from './member-sub-account-ref.ts';
 
 interface SubAccount {
   ref: EnsuredSubAccount;
@@ -25,8 +26,6 @@ interface SubAccount {
 
 const E164 = /^\+[1-9]\d{7,14}$/;
 const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
-/** Ref charset: what a chapter or account id at the vendor may contain. Anything else is not a ref. */
-const REF = /^s:([A-Za-z0-9_-]{1,64})$/;
 /** Caps. partyId: the vendor's sub-account name is `Member {partyId}` with a 255 maximum, so 128 leaves ample room. */
 const MAX = { partyId: 128, purpose: 200, name: 100, email: 254 };
 const USD = (minor: bigint): Money => money(minor, 'USD');
@@ -93,7 +92,7 @@ export class MemberSubAccountSimulator implements MemberSubAccountPort {
         const chapter = this.chapterIds.next();
         const ownerStatus: SubAccountOwnerStatus = email === 'ownerfail@example.test' ? 'failed' : hasOwner ? 'active' : 'invited';
         const status: MemberSubAccountStatus = email === 'frozen@example.test' ? 'frozen' : 'open';
-        const sa: SubAccount = { ref: { subAccountRef: `s:${chapter}`, accountRef: `s:${chapter}:${this.accountIds.next()}`, status, ownerStatus }, balance: 0n, hold: 0n };
+        const sa: SubAccount = { ref: { subAccountRef: subAccountRef(chapter), accountRef: subAccountRef(chapter, this.accountIds.next()), status, ownerStatus }, balance: 0n, hold: 0n };
         this.byMemberPurpose.set(memberKey, sa);
         this.byRef.set(sa.ref.subAccountRef, sa);
       }
@@ -139,8 +138,7 @@ export class MemberSubAccountSimulator implements MemberSubAccountPort {
   }
 
   private get(subAccountRef: string): SubAccount {
-    const m = typeof subAccountRef === 'string' ? REF.exec(subAccountRef) : null;
-    const a = m ? this.byRef.get(subAccountRef) : undefined;
+    const a = parseSubAccountRef(subAccountRef) ? this.byRef.get(subAccountRef) : undefined;
     if (!a) fail('UNKNOWN_ACCOUNT', 'Unknown account');
     return a;
   }

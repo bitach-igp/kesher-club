@@ -20,13 +20,15 @@
 // opens ONE high `ops.case` (dedupe `subaccount-quota`) whose payload is the count of refusals since it opened; a later refusal bumps that
 // count, and one that comes after ops resolved the case reopens it with a count of 1. The count is refusals, not distinct members
 // (the case holds no party id on purpose). Other port errors propagate unchanged. Nothing here logs, and no error carries personal data.
-import { createHash } from 'node:crypto';
 import { DomainError, uuidv7 } from '@kesher/domain';
 import { isMemberSubAccountPort, MemberSubAccountError, type MemberSubAccountStatus, type SubAccountOwner, type SubAccountOwnerStatus } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { openCase } from '../ops/cases.ts';
 import { linkRef, refOf } from '../ops/external-ref.ts';
+import { normalizePurpose, ownerFailedMarker, purposeHash, purposeMarker } from './sub-account-markers.ts';
+
+export { purposeHash };
 
 export const SUB_ACCOUNTS_FLAG = 'wallet.subAccounts';
 export const SUBACCOUNT_REF = 'funding_subaccount';
@@ -45,11 +47,7 @@ export interface OwnerDetailsReader {
 
 export const SUBACCOUNT_PURPOSE_REF = 'funding_subaccount_purpose';
 export const SUBACCOUNT_OWNER_REF = 'funding_subaccount_owner';
-const normalize = (purpose: string): string => purpose.trim().toLowerCase();
-/** 16 hex characters of the normalized purpose: non-PII, and short enough that the port key stays under 128 characters. */
-export const purposeHash = (purpose: string): string => createHash('sha256').update(normalize(purpose)).digest('hex').slice(0, 16);
 export const subAccountKey = (partyId: string, purpose: string): string => `funding-subaccount:${partyId}:${purposeHash(purpose)}`;
-const purposeMarker = (partyId: string, purpose: string): string => `p:${partyId}:${purposeHash(purpose)}`;
 const OTHER_PURPOSE = 'This member already has a sub-account for another purpose';
 export const ownerCaseKey = (partyId: string): string => `subaccount-owner:${partyId}`;
 
@@ -90,8 +88,8 @@ export class SubAccountService {
     const port = this.d.funding;
     if (!(await this.d.flags.isOn(SUB_ACCOUNTS_FLAG)) || !isMemberSubAccountPort(port)) throw new DomainError('FEATURE_OFF', 'Member sub-accounts are not enabled yet');
 
-    const wanted = normalize(input.purpose);
-    const purpose = wanted === '' ? undefined : this.d.purposes.find((p) => normalize(p) === wanted);
+    const wanted = normalizePurpose(input.purpose);
+    const purpose = wanted === '' ? undefined : this.d.purposes.find((p) => normalizePurpose(p) === wanted);
     if (purpose === undefined) throw new DomainError('VALIDATION_FAILED', 'A stated purpose from the allowed list is required', { purposeRequired: true });
 
     const { partyId } = input;
@@ -122,7 +120,7 @@ export class SubAccountService {
 
     // One transaction: the refs, the purpose marker, the owner-failed marker and its case stand or fall together.
     const rows: Array<readonly [string, string]> = [[SUBACCOUNT_REF, ensured.subAccountRef], [SUBACCOUNT_ACCOUNT_REF, ensured.accountRef], [SUBACCOUNT_PURPOSE_REF, purposeMarker(partyId, purpose)]];
-    if (ensured.ownerStatus === 'failed') rows.push([SUBACCOUNT_OWNER_REF, `o:${partyId}:failed`]);
+    if (ensured.ownerStatus === 'failed') rows.push([SUBACCOUNT_OWNER_REF, ownerFailedMarker(partyId)]);
     await db.transaction(async (tx) => {
       for (const [type, ref] of rows) await linkRef(tx, { entityType: type, entityId: partyId, provider, externalId: ref });
       // A racing open for another purpose may have stored its marker first: ours was then skipped, so refuse and roll back.
