@@ -18,6 +18,9 @@ export function uuidv7(now: Date = new Date()): string {
 
 export const isUuid = (s: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s);
 
+/** The loose 8-4-4-4-12 hex shape, case-insensitive, with no version or variant check: for guarding an id before a lookup. Use `isUuid` when the version matters. */
+export const isUuidShape = (s: string): boolean => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+
 /** Milliseconds since epoch encoded in a v7 id. */
 export function uuidv7Time(id: string): number {
   return Number(BigInt(`0x${id.replace(/-/g, '').slice(0, 12)}`));

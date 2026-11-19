@@ -4,6 +4,7 @@
 // never makes it twice. A person shows as the last four digits of their party id; names are data, never copy. The
 // signed-in person's party id comes from their access token's sub claim, read without verifying: the API enforces
 // every rule; the console only hides the buttons the API would refuse.
+import { isUuidShape } from '@kesher/domain';
 import type { Schemas } from '@kesher/sdk';
 import type { Result } from './api.ts';
 import { t, type CopyKey, type Locale } from './i18n.ts';
@@ -19,7 +20,6 @@ export type Grant = Schemas['ApprovalRequest'];
 export type StaffRole = TeamMember['role'];
 export const ROLES: readonly StaffRole[] = ['staff', 'finance', 'admin'];
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE = /^\+[1-9]\d{7,14}$/;
 
@@ -31,7 +31,7 @@ export function partyIdOf(accessToken: string): string | undefined {
   try {
     const claims = JSON.parse(Buffer.from(accessToken.split('.')[1] ?? '', 'base64url').toString('utf8')) as { sub?: unknown };
     const sub = str(claims.sub) ?? '';
-    return UUID.test(sub) ? sub.toLowerCase() : undefined;
+    return isUuidShape(sub) ? sub.toLowerCase() : undefined;
   } catch {
     return undefined;
   }

@@ -2,7 +2,7 @@
 // member's behalf (phone, email, bank, regulator) or the app files one; acknowledging and resolving
 // stamp the acting staff subject and the API clock, so the SLA clocks (console, sla.ts) read the same
 // timestamps the export carries. The summary is member text: stored and returned, never interpreted.
-import { DomainError, uuidv7 } from '@kesher/domain';
+import { DomainError, isUuidShape, uuidv7 } from '@kesher/domain';
 import type { AuditService } from '../audit/service.ts';
 import type { Database, SqlClient } from '../db.ts';
 import { iso } from '../dates.ts';
@@ -49,7 +49,6 @@ export interface StaffActor {
   role: string;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_SUMMARY = 2000;
 const MAX_CATEGORY = 80;
 
@@ -111,7 +110,7 @@ export class ComplaintService {
   }
 
   async open(input: OpenComplaintInput, by: StaffActor, now: Date): Promise<Complaint> {
-    if (!UUID.test(input.partyId)) throw new DomainError('VALIDATION_FAILED', 'partyId must be a uuid');
+    if (!isUuidShape(input.partyId)) throw new DomainError('VALIDATION_FAILED', 'partyId must be a uuid');
     if (!COMPLAINT_CHANNELS.includes(input.channel)) throw new DomainError('VALIDATION_FAILED', `channel must be one of ${COMPLAINT_CHANNELS.join(', ')}`);
     const category = input.category.trim();
     const summary = input.summary.trim();

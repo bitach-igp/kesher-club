@@ -16,7 +16,7 @@
 //
 // Keeping it current (T-0624): an approval is reviewed again every 12, 24 or 36 months by risk, and one past
 // that date drops to approved with limits; an open sanctions match suspends payouts and credit (the gate).
-import { DomainError, uuidv7 } from '@kesher/domain';
+import { DomainError, isUuidShape, uuidv7 } from '@kesher/domain';
 import type { ApprovalRequest, ApprovalService, Approver } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
@@ -86,7 +86,6 @@ export const REFRESH_MONTHS: Readonly<Record<Risk, number>> = { high: 12, medium
 /** Who decides what no person decided: the refresh sweep's lapse of an overdue approval. */
 export const KYB_SWEEP_ACTOR: Approver = { partyId: SYSTEM_OWNER, role: 'system' };
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SCREENING: readonly CheckKind[] = ['sanctions', 'pep'];
 
 export class InstitutionKyb {
@@ -164,7 +163,7 @@ export class InstitutionKyb {
     if (!fullName || fullName.length > 200) throw new DomainError('VALIDATION_FAILED', 'fullName must be 1 to 200 characters');
     const roles = Array.isArray(input.roles) ? [...new Set(input.roles)] : [];
     if (!roles.length || !roles.every((r): r is PersonRole => (PERSON_ROLES as readonly unknown[]).includes(r))) throw new DomainError('VALIDATION_FAILED', 'roles must be one or more of board, control, signatory');
-    if (input.partyId !== undefined && (typeof input.partyId !== 'string' || !UUID.test(input.partyId))) throw new DomainError('VALIDATION_FAILED', 'partyId must be a uuid');
+    if (input.partyId !== undefined && (typeof input.partyId !== 'string' || !isUuidShape(input.partyId))) throw new DomainError('VALIDATION_FAILED', 'partyId must be a uuid');
     const partyId = input.partyId as string | undefined;
     try {
       await this.db.query('insert into org.kyb_person (id, institution_id, idempotency_key, full_name, roles, party_id, created_by, created_at) values ($1, $2, $3, $4, $5, $6, $7, $8)', [uuidv7(now), institutionId, key, fullName, roles, partyId ?? null, actor.partyId, now]);
@@ -198,7 +197,7 @@ export class InstitutionKyb {
     if (input.outcome !== 'false_positive' && input.outcome !== 'true_match') throw new DomainError('VALIDATION_FAILED', 'outcome must be false_positive or true_match');
     const note = typeof input.note === 'string' ? input.note.trim().slice(0, 1000) : '';
     if (!note) throw new DomainError('VALIDATION_FAILED', 'A note is required');
-    const r = UUID.test(checkId) ? await this.db.query<{ institution_id: string; kind: CheckKind; result: CheckResult }>('select institution_id, kind, result from org.kyb_check where id = $1', [checkId]) : { rows: [] };
+    const r = isUuidShape(checkId) ? await this.db.query<{ institution_id: string; kind: CheckKind; result: CheckResult }>('select institution_id, kind, result from org.kyb_check where id = $1', [checkId]) : { rows: [] };
     const c = r.rows[0];
     if (!c) throw new DomainError('NOT_FOUND', 'Check not found');
     if (c.result !== 'hit' || !SCREENING.includes(c.kind)) throw new DomainError('VALIDATION_FAILED', 'Only a screening hit is disposed of');
@@ -249,7 +248,7 @@ export class InstitutionKyb {
 
   /** The second reviewer of a high-risk approval; the record is checked again, as it may have changed since. */
   async approveDecision(approvalId: string, actor: Approver, now: Date): Promise<{ approval: ApprovalRequest; decision?: KybDecision }> {
-    const pre = UUID.test(approvalId) ? await this.approvals.get(approvalId) : undefined;
+    const pre = isUuidShape(approvalId) ? await this.approvals.get(approvalId) : undefined;
     if (!pre || pre.kind !== 'kyb_decision') throw new DomainError('NOT_FOUND', 'KYB approval not found');
     const p = pre.payload as unknown as PendingDecision;
     if (pre.status === 'awaiting_second_approval') {
@@ -344,7 +343,7 @@ export class InstitutionKyb {
   }
 
   private async requireInstitution(id: string): Promise<void> {
-    const r = UUID.test(id) ? await this.db.query('select 1 from org.institution where id = $1', [id]) : { rowCount: 0 };
+    const r = isUuidShape(id) ? await this.db.query('select 1 from org.institution where id = $1', [id]) : { rowCount: 0 };
     if (!r.rowCount) throw new DomainError('NOT_FOUND', 'Institution not found');
   }
 }

@@ -9,7 +9,7 @@
 //   call is refused; their org role leaves their token at the next sign-in. The last active admin cannot be removed
 //   or demoted. Every change is audited. Only admins act; other staff read the list.
 import { createHash, randomBytes } from 'node:crypto';
-import { DomainError, uuidv7 } from '@kesher/domain';
+import { DomainError, isUuidShape, uuidv7 } from '@kesher/domain';
 import type { NotifyPort } from '@kesher/ports';
 import type { ApprovalRequest, ApprovalService, Approver } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
@@ -25,7 +25,6 @@ export const STAFF_INVITE_BASE_URL = 'https://console.kesher.example/staff-invit
 const INVITE_TTL_MS = 7 * 86_400_000;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE = /^\+[1-9]\d{7,14}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
 
 export interface TeamMember {
@@ -144,7 +143,7 @@ export class InstitutionTeam {
   /** An admin's change: a role, or removal. Staff applies at once; finance and admin open a grant. */
   async change(institutionId: string, admin: string, partyId: string, body: unknown, key: string, now: Date): Promise<{ staff: TeamMember; grant?: ApprovalRequest }> {
     const b = (body ?? {}) as Record<string, unknown>;
-    const target = UUID.test(partyId) ? await this.member(institutionId, partyId.toLowerCase()) : undefined;
+    const target = isUuidShape(partyId) ? await this.member(institutionId, partyId.toLowerCase()) : undefined;
     if (!target || !target.active) throw new DomainError('NOT_FOUND', 'Not active staff of this institution');
     if (b['active'] === false) {
       await this.requireAnotherAdmin(institutionId, target);
@@ -165,7 +164,7 @@ export class InstitutionTeam {
 
   /** The second admin's approval; the proposer cannot approve their own grant. Applies the role once approved. */
   async approve(institutionId: string, admin: string, grantId: string, now: Date): Promise<{ grant: ApprovalRequest; staff?: TeamMember }> {
-    const pre = UUID.test(grantId) ? await this.d.approvals.get(grantId) : undefined;
+    const pre = isUuidShape(grantId) ? await this.d.approvals.get(grantId) : undefined;
     const p = pre?.payload as unknown as GrantPayload | undefined;
     if (!pre || pre.kind !== 'staff_grant' || p?.institutionId !== institutionId) throw new DomainError('NOT_FOUND', 'Grant not found');
     if (p.partyId === admin) throw new DomainError('FORBIDDEN', 'You cannot approve your own role');

@@ -10,20 +10,19 @@
 // POST /institutions/{id}/allowance-schedules (T-0627) is how finance makes a schedule: an amount per member in
 // the institution's currency, a cadence, and every active member or a listed few. Its Idempotency-Key is kept
 // in org.allowance_schedule_request with the body's fingerprint, so a retry answers the schedule it made.
-import { createHash } from 'node:crypto';
-import { DomainError, toWire, uuidv7, type Currency } from '@kesher/domain';
+import { DomainError, isUuidShape, toWire, uuidv7, type Currency } from '@kesher/domain';
 import type { IdentityRepository } from '../auth/repository.ts';
 import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import { staffNames } from './staff-names.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import { isPgError, PG, type Database } from '../db.ts';
+import { sha256Url } from '../crypto/hash.ts';
 import { ok, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
 import { preview, run, type AllowanceActivities } from './allowance/workflow.ts';
 import { owedByRun, type InstitutionCredit } from './credit.ts';
 
 export const INSTITUTIONS_MONEY_FLAG = 'institutions.money';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 interface RunRequest {
@@ -36,7 +35,7 @@ function parse(body: unknown): RunRequest {
   const b = (body ?? {}) as Record<string, unknown>;
   const scheduleId = typeof b['scheduleId'] === 'string' ? b['scheduleId'] : '';
   const date = typeof b['date'] === 'string' ? b['date'] : '';
-  if (!UUID.test(scheduleId)) throw new DomainError('VALIDATION_FAILED', 'scheduleId must be a uuid');
+  if (!isUuidShape(scheduleId)) throw new DomainError('VALIDATION_FAILED', 'scheduleId must be a uuid');
   // A real calendar day: 2026-02-30 parses to March, so round-trip it.
   if (!DATE.test(date) || new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) !== date) throw new DomainError('VALIDATION_FAILED', 'date must be a calendar date, YYYY-MM-DD');
   if (typeof b['dryRun'] !== 'boolean') throw new DomainError('VALIDATION_FAILED', 'dryRun must be true or false');
@@ -87,13 +86,13 @@ function parseSchedule(body: unknown, currency: Currency): ScheduleRequest {
   const cohort = (b['cohort'] ?? {}) as Record<string, unknown>;
   if (cohort['kind'] === 'all') return { name, amountMinor: minor, currency, cadence, memberIds: [] };
   const ids = cohort['memberIds'];
-  if (cohort['kind'] !== 'listed' || !Array.isArray(ids) || ids.length === 0 || ids.length > COHORT_MAX || !ids.every((x) => typeof x === 'string' && UUID.test(x)) || new Set(ids).size !== ids.length) {
+  if (cohort['kind'] !== 'listed' || !Array.isArray(ids) || ids.length === 0 || ids.length > COHORT_MAX || !ids.every((x) => typeof x === 'string' && isUuidShape(x)) || new Set(ids).size !== ids.length) {
     throw new DomainError('VALIDATION_FAILED', `cohort must be { kind: all } or { kind: listed, memberIds: 1 to ${COHORT_MAX} distinct member ids }`);
   }
   return { name, amountMinor: minor, currency, cadence, memberIds: (ids as string[]).map((x) => x.toLowerCase()).sort() };
 }
 
-const fingerprint = (r: ScheduleRequest): string => createHash('sha256').update(JSON.stringify([r.name, r.amountMinor.toString(), r.currency, r.cadence, r.memberIds])).digest('base64url');
+const fingerprint = (r: ScheduleRequest): string => sha256Url(JSON.stringify([r.name, r.amountMinor.toString(), r.currency, r.cadence, r.memberIds]));
 type RunStatus = 'preview' | 'awaiting_second_approval' | 'running' | 'completed' | 'failed';
 const HISTORY_LIMIT = 100;
 

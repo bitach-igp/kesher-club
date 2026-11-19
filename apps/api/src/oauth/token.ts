@@ -8,8 +8,8 @@
 // - `refresh_token`: rotates; the old one stops working. Presenting one already rotated is taken as theft and
 //   revokes the whole grant, so the next /mcp call is 401 (the validator checks the grant on every call).
 // A revoked grant (the grants screen, T-1006) refreshes nothing: every exchange checks the grant is active.
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { sha256Buf } from '../crypto/hash.ts';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { sha256Buf, sha256Url } from '../crypto/hash.ts';
 import { SignJWT } from 'jose';
 import type { SigningKey } from '../auth/tokens.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
@@ -39,7 +39,7 @@ export interface TokenResponse {
   scope: string;
 }
 
-const s256 = (verifier: string): string => createHash('sha256').update(verifier).digest('base64url');
+const s256 = (verifier: string): string => sha256Url(verifier);
 const VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 
 export class TokenEndpoint {

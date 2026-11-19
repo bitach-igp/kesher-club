@@ -2,10 +2,9 @@
 // admin console. A request names how many distinct approvers it needs; a person decides once;
 // the requester cannot be an approver of their own money request; over-threshold amounts and
 // money flags always need two.
-import { DomainError, uuidv7, type Currency, type Money } from '@kesher/domain';
+import { DomainError, isUuidShape, uuidv7, type Currency, type Money } from '@kesher/domain';
 import { isPgError, PG, type Database, type SqlClient } from '../db.ts';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type ApprovalKind = 'allowance_run' | 'payout' | 'flag_flip' | 'provider_binding' | 'ledger_correction' | 'fx_rate' | 'staff_grant' | 'institution_deposit' | 'credit_limit' | 'kyb_decision' | 'price_rule' | 'plan_version' | 'legal_publish';
 export type ApprovalStatus = 'pending' | 'awaiting_second_approval' | 'approved' | 'rejected' | 'expired';
@@ -70,7 +69,7 @@ export class ApprovalService {
    */
   private async requiredFor(tx: SqlClient, input: { kind: ApprovalKind; scope: string; amount?: Money }, now: Date): Promise<number> {
     const own = approversRequired(input.kind, input.amount);
-    if (own > 1 || input.kind !== 'payout' || !input.amount || input.amount.currency !== 'ILS' || !UUID.test(input.scope)) return own;
+    if (own > 1 || input.kind !== 'payout' || !input.amount || input.amount.currency !== 'ILS' || !isUuidShape(input.scope)) return own;
     await tx.query('select 1 from org.institution where id = $1 for update', [input.scope]);
     const r = await tx.query<{ total: string }>(
       `select coalesce(sum(amount_minor::bigint), 0)::text as total from ops.approval_request

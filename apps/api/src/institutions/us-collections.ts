@@ -9,7 +9,7 @@
 // payments through the port, and `reconcileEntity` records each one. `org.fee_external_payment` is insert-only and unique on the provider's
 // payment ref per kind, so a payment marks its item paid exactly once however often it is told. A payment of another amount, one for an item
 // Kesher's purse already paid, and a refund are not marked: each opens a case for a person. The provider's ids live in ops.external_ref.
-import { DomainError, money, toWire, uuidv7, type Money } from '@kesher/domain';
+import { DomainError, isUuidShape, money, toWire, uuidv7, type Money } from '@kesher/domain';
 import { InstitutionBankingError, type InstitutionBankingPort, type ProviderRegistry } from '@kesher/ports';
 import type { AuditService } from '../audit/service.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
@@ -24,7 +24,6 @@ import { US_BANKING_FLAG, type InstitutionUsBanking } from './us-banking.ts';
 const COLLECTION_REF = 'fee_batch_us_collection';
 const INTENT_REF = 'fee_item_us_intent';
 const MAX_FUNDERS = 200;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMAIL = /^[^\s@]{1,64}@[^\s@]{1,255}$/;
 const MOBILE = /^\+?\d{7,15}$/;
 
@@ -56,7 +55,7 @@ function parseFunders(body: unknown): Funder[] {
   const seen = new Set<string>();
   return list.map((x: unknown) => {
     const f = typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : {};
-    const id = typeof f['feeItemId'] === 'string' && UUID.test(f['feeItemId']) ? f['feeItemId'].toLowerCase() : '';
+    const id = typeof f['feeItemId'] === 'string' && isUuidShape(f['feeItemId']) ? f['feeItemId'].toLowerCase() : '';
     const name = typeof f['name'] === 'string' ? f['name'].trim() : '';
     const email = typeof f['email'] === 'string' ? f['email'].trim() : '';
     const mobile = typeof f['mobile'] === 'string' ? f['mobile'].replace(/[\s()-]/g, '') : '';
@@ -93,7 +92,7 @@ export class UsCollections {
     const acct = await this.d.usBanking.account(institutionId);
     if (!acct || acct.status !== 'approved' || !acct.ref) throw new DomainError('VALIDATION_FAILED', 'The US account is not approved yet');
     await this.d.kyb.require(institutionId, 'us_banking');
-    const batch = (await this.d.db.query<{ description: string; amount_minor: string; currency: string }>('select description, amount_minor::text, currency from org.fee_batch where id = $1 and institution_id = $2', [UUID.test(batchId) ? batchId : '00000000-0000-0000-0000-000000000000', institutionId])).rows[0];
+    const batch = (await this.d.db.query<{ description: string; amount_minor: string; currency: string }>('select description, amount_minor::text, currency from org.fee_batch where id = $1 and institution_id = $2', [isUuidShape(batchId) ? batchId : '00000000-0000-0000-0000-000000000000', institutionId])).rows[0];
     if (!batch) throw new DomainError('NOT_FOUND', 'Fee batch not found');
     if (batch.currency !== 'USD') throw new DomainError('VALIDATION_FAILED', 'Only USD fees are collected in the US');
     const items = (await this.d.db.query<ItemRow>('select id, institution_id, batch_id, amount_minor::text, currency, status from org.fee_item where batch_id = $1 and id = any($2::uuid[])', [batchId, funders.map((f) => f.feeItemId)])).rows;

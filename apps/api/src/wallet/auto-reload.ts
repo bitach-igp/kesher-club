@@ -10,7 +10,8 @@ import { uuidv7 } from '@kesher/domain';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import type { AccountService } from '../ledger/accounts.ts';
-import { LOAD_METHODS, runLoad, WALLET_FLAG, type LoadRun, type LoadService } from './loads.ts';
+import { requireWalletOn } from './flag.ts';
+import { LOAD_METHODS, runLoad, type LoadRun, type LoadService } from './loads.ts';
 
 export const WINDOW_MS = 24 * 60 * 60_000;
 
@@ -99,7 +100,7 @@ export class AutoReloadService {
 
   /** POST /accounts/{id}/auto-reload: create or replace the rule. Idempotent by nature (a replace). */
   async set(partyId: string, accountId: string, body: unknown, now: Date): Promise<AutoReloadView> {
-    if (!(await this.flags.isOn(WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
+    await requireWalletOn(this.flags);
     const { currency } = await this.ownWallet(partyId, accountId);
     const b = parse(body, currency);
     const existing = await this.byAccount(accountId);

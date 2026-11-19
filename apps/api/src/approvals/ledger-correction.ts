@@ -1,7 +1,7 @@
 // A ledger correction (T-0685, REQ-LED-001, REQ-ADM-002): finance proposes reversing one journal, two OTHER finance
 // users approve it (the proposer's own approval never counts), and the second approval posts ONE reversing journal under
 // the key `{approvalId}:reverse`. The ledger stays insert-only: the reversal is a new journal linked by reverses_id.
-import { DomainError, type Currency } from '@kesher/domain';
+import { DomainError, isUuidShape, type Currency } from '@kesher/domain';
 import { requireStaff } from '../admin/staff-token.ts';
 import type { AuditService } from '../audit/service.ts';
 import type { Database } from '../db.ts';
@@ -9,7 +9,6 @@ import { created, ok, requireIdempotencyKey, route, type Handler, type HttpReque
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { ApprovalRequest, ApprovalService, Approver } from './service.ts';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const subjectOf = (key: string) => `ledger-correction:${key}`;
 const reverseKey = (approvalId: string) => `${approvalId}:reverse`;
 
@@ -43,7 +42,7 @@ export class LedgerCorrections {
     if (by.role !== 'finance') throw new DomainError('FORBIDDEN', 'Only finance proposes ledger corrections');
     const reason = input.reason.trim();
     if (!reason) throw new DomainError('VALIDATION_FAILED', 'A reason is required');
-    if (!UUID.test(input.journalId)) throw new DomainError('VALIDATION_FAILED', 'journalId must be a journal id');
+    if (!isUuidShape(input.journalId)) throw new DomainError('VALIDATION_FAILED', 'journalId must be a journal id');
     const subject = subjectOf(input.idempotencyKey);
     const prior = await this.approvals.find('ledger_correction', subject);
     if (prior) {
@@ -85,7 +84,7 @@ export class LedgerCorrections {
   }
 
   private async mine(id: string): Promise<ApprovalRequest> {
-    const req = UUID.test(id) ? await this.approvals.get(id) : undefined;
+    const req = isUuidShape(id) ? await this.approvals.get(id) : undefined;
     if (!req || req.kind !== 'ledger_correction') throw new DomainError('NOT_FOUND', 'Ledger correction not found');
     return req;
   }

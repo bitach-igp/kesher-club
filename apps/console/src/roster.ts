@@ -2,6 +2,7 @@
 // paging; selected rows can be placed in a cohort in one call (all or none). Each row opens I06. The selection
 // survives paging, so staff can pick students across pages. Names are roster text, shown as written; balances
 // render from bigint per locale; there is no spend in a row.
+import { isUuidShape } from '@kesher/domain';
 import type { Schemas } from '@kesher/sdk';
 import { fmt } from './allowances.ts';
 import type { CopyKey, Locale } from './i18n.ts';
@@ -16,7 +17,6 @@ export interface Filter {
   cursor?: string | undefined;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The page's search params as a filter; anything the API would refuse is dropped, not sent. */
 export function filterFrom(params: Record<string, string | string[] | undefined>): Filter {
@@ -26,7 +26,7 @@ export function filterFrom(params: Record<string, string | string[] | undefined>
   const cursor = one('cursor');
   return {
     ...(status && (STATUSES as readonly string[]).includes(status) ? { status: status as Status } : {}),
-    ...(cohort && UUID.test(cohort) ? { cohort } : {}),
+    ...(cohort && isUuidShape(cohort) ? { cohort } : {}),
     ...(cursor ? { cursor } : {}),
   };
 }

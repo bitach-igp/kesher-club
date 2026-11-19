@@ -17,7 +17,7 @@
 // already hold the payment, is `OUTCOME_UNKNOWN`: the request stops (`needs_review`), a case opens, and nothing is resent until a person has
 // read the payment back. So does a request still unsent after a day, well inside the bank's dedupe window. A refusal, a rejection or a return
 // opens a case and the status says so.
-import { DomainError, fromWire, money, toWire, uuidv7, type Money } from '@kesher/domain';
+import { DomainError, fromWire, isUuidShape, money, toWire, uuidv7, type Money } from '@kesher/domain';
 import { InstitutionBankingError, isAddenda, type AchStatus, type InstitutionBankingPort, type ProviderRegistry } from '@kesher/ports';
 import type { AuditService } from '../audit/service.ts';
 import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
@@ -36,7 +36,6 @@ const QUOTE_TTL_MS = 10 * 60_000;
 const SENDING_STALE_MS = 10 * 60_000;
 /** An approved request still unsent after this stops being resent: the bank dedupes a key for about 48 hours, so a resend later could be a second payment. */
 const RESEND_WINDOW_MS = 24 * 3_600_000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type FundingStatus = 'awaiting_approval' | 'approved' | 'sending' | 'in_transit' | 'deposit_pending' | 'received' | 'returned' | 'rejected' | 'cancelled' | 'failed' | 'needs_review';
 type EventKind = 'requested' | 'approved' | 'sending' | 'sent' | 'send_unknown' | 'ach_status' | 'book_transferred' | 'deposit_recorded' | 'linked' | 'cancelled' | 'failed';
@@ -209,7 +208,7 @@ export class InstitutionUsFunding {
   async request(institutionId: string, actorId: string, body: unknown, key: string, now: Date): Promise<UsFundingView> {
     await this.requireOn();
     const quoteId = (body as { quoteId?: unknown } | null)?.quoteId;
-    if (typeof quoteId !== 'string' || !UUID.test(quoteId)) throw new DomainError('VALIDATION_FAILED', 'quoteId is required');
+    if (typeof quoteId !== 'string' || !isUuidShape(quoteId)) throw new DomainError('VALIDATION_FAILED', 'quoteId is required');
     const acct = await this.open(institutionId);
     if (acct.holder === 'institution' && !this.d.collectionCounterpartyRef()) throw new DomainError('VALIDATION_FAILED', 'Kesher\'s US collection account is not set up yet');
     // A platform institution's funding ends in a deposit for finance to approve, so the deposit path must be on before money moves.
@@ -461,7 +460,7 @@ export class InstitutionUsFunding {
   }
 
   private async requireRequest(institutionId: string, requestId: string): Promise<RequestRow> {
-    const r = UUID.test(requestId) ? (await this.d.db.query<RequestRow>('select * from org.us_funding_request where id = $1 and institution_id = $2', [requestId, institutionId])).rows[0] : undefined;
+    const r = isUuidShape(requestId) ? (await this.d.db.query<RequestRow>('select * from org.us_funding_request where id = $1 and institution_id = $2', [requestId, institutionId])).rows[0] : undefined;
     if (!r) throw new DomainError('NOT_FOUND', 'Funding request not found');
     return r;
   }

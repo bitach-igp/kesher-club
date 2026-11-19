@@ -4,11 +4,11 @@
 // processor's token.created / token.suspended / token.deleted webhooks keep cards.card_token current,
 // applied at receipt and swept by the worker within its cycle (apps/worker/src/cards/token-events.ts),
 // deduped by event id. The PAN never appears: the payload is opaque material for the processor's SDK.
-import { createHash } from 'node:crypto';
 import { DomainError } from '@kesher/domain';
 import type { CardIssuingPort } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
+import { sha256Url } from '../crypto/hash.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import { simulatorVerifier, type WebhookVerifier } from '../webhooks/verify.ts';
 import type { CardService } from './service.ts';
@@ -39,11 +39,10 @@ export function detailsTokenProvisioning(port: CardIssuingPort): WalletProvision
     async payload({ processorCardId, wallet, deviceId, clientData }) {
       const t = await port.showDetailsToken(processorCardId);
       const nonce = clientData['nonce'] ?? '';
-      const digest = (s: string) => createHash('sha256').update(s).digest('base64url');
       return {
         encryptedPassData: Buffer.from(`${wallet}:${deviceId}:${t.token}`).toString('base64url'),
-        activationData: digest(`${t.token}:${nonce}`),
-        ephemeralPublicKey: digest(`${wallet}:${nonce}`),
+        activationData: sha256Url(`${t.token}:${nonce}`),
+        ephemeralPublicKey: sha256Url(`${wallet}:${nonce}`),
       };
     },
   };
