@@ -112,7 +112,7 @@ export class McpHttp {
       case 'tools/call': {
         if (typeof params.name !== 'string') return rpcError(msg.id, -32602, 'params.name is required');
         const tool = listTools().find((t) => t.name === params.name);
-        if (!tool || !(await this.openTiers()).has(tool.tier)) return rpcError(msg.id, -32602, `Unknown tool: ${params.name}`);
+        if (!tool || !(await this.flags.isOn(FLAG_FOR_TIER[tool.tier]))) return rpcError(msg.id, -32602, `Unknown tool: ${params.name}`);
         const call: ToolCall = { name: params.name, arguments: (params.arguments ?? {}) as Record<string, unknown> };
         let r;
         try {
@@ -132,8 +132,8 @@ export class McpHttp {
   }
 
   private async openTiers(): Promise<Set<string>> {
-    const open = new Set<string>();
-    for (const [tier, flag] of Object.entries(FLAG_FOR_TIER)) if (await this.flags.isOn(flag)) open.add(tier);
-    return open;
+    const tiers = Object.keys(FLAG_FOR_TIER);
+    const on = await Promise.all(Object.values(FLAG_FOR_TIER).map((flag) => this.flags.isOn(flag)));
+    return new Set(tiers.filter((_, i) => on[i]));
   }
 }
