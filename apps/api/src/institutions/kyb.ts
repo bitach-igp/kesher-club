@@ -150,6 +150,13 @@ export class InstitutionKyb {
     return { institutionId, decision, people, checks, blocking: await this.blocking(people, checks), ...(pendingApproval ? { pendingApproval } : {}) };
   }
 
+  /** The people and their latest checks, nothing else: what the rescreen sweep reads (`record` without the decision, blocking and approval). */
+  async peopleAndChecks(institutionId: string): Promise<{ people: KybPerson[]; checks: KybCheck[] }> {
+    await this.requireInstitution(institutionId);
+    const [people, checks] = await Promise.all([this.people(institutionId), this.latestChecks(institutionId)]);
+    return { people, checks };
+  }
+
   /** A board member, control person or signatory; a retry with the same key answers the same person. */
   async addPerson(institutionId: string, input: { fullName: unknown; roles: unknown; partyId?: unknown }, key: string, actor: Approver, now: Date): Promise<KybPerson> {
     await this.requireInstitution(institutionId);

@@ -5,7 +5,7 @@
 // - a medium-risk institution approved on 2024-10-01 reads approved_with_limits after the 2026-10-02 sweep, and
 //   not after the 2026-09-30 one; a low-risk one approved the same day is not due;
 // - running either job twice on a day writes nothing more; with the checks flag off the rescreen asks nothing.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { DomainError, uuidv7 } from '@kesher/domain';
 import { KybSimulator, type KybPort } from '@kesher/ports';
 import { generateSigningKey } from '@kesher/api/auth/tokens';
@@ -100,6 +100,31 @@ describe('the daily sanctions rescreen (T-0624, TST-INS-013)', () => {
 
   it('with the checks flag off it asks the provider nothing', async () => {
     expect(await rescreen(new StaticFlags())).toMatchObject({ institutions: 0, skipped: 'flag_off' });
+  });
+});
+
+describe('KybService.peopleAndChecks (cleanup: the rescreen reads only what it uses)', () => {
+  it('answers the people and checks of record() in fewer queries, and refuses an unknown institution alike', async () => {
+    const inst = await institution(1n);
+    const kyb = app.services.institutionKyb;
+    await kyb.addPerson(inst, { fullName: 'Rav Narrow Example', roles: ['board', 'control'] }, `narrow-${inst}`, CLEO, NOW);
+    await rescreen();
+    const spy = vi.spyOn(db, 'query');
+    const queries = async (f: () => Promise<unknown>): Promise<number> => {
+      spy.mockClear();
+      await f();
+      return spy.mock.calls.length;
+    };
+    const full = await kyb.record(inst);
+    const before = await queries(() => kyb.record(inst));
+    const narrow = await kyb.peopleAndChecks(inst);
+    const after = await queries(() => kyb.peopleAndChecks(inst));
+    spy.mockRestore();
+    expect(narrow).toEqual({ people: full.people, checks: full.checks });
+    expect(after).toBeLessThan(before);
+    const missing = uuidv7();
+    expect(await refusal(kyb.record(missing))).toMatchObject({ code: 'NOT_FOUND' });
+    expect(await refusal(kyb.peopleAndChecks(missing))).toMatchObject({ code: 'NOT_FOUND' });
   });
 });
 
