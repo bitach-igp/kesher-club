@@ -57,3 +57,10 @@ export function format(a: Money, locale: 'en-US' | 'he-IL' = 'en-US'): string {
   const body = locale === 'he-IL' ? `${grouped}.${frac} ${symbol}` : `${symbol}${grouped}.${frac}`;
   return negative ? `−${body}` : body;
 }
+
+/** Rounds a price up to the next amount ending in 99 minor units (…$X.99); an exact .99 is unchanged and anything at or below zero becomes 99. */
+export function roundUpTo99(minor: bigint): bigint {
+  if (minor <= 0n) return 99n;
+  const r = minor % 100n;
+  return r === 99n ? minor : minor - r + 99n;
+}

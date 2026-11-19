@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
-import { add, applyBps, CurrencyMismatchError, format, fromWire, money, sub, toWire } from './money.ts';
+import { add, applyBps, CurrencyMismatchError, format, fromWire, money, roundUpTo99, sub, toWire } from './money.ts';
 
 const minor = fc.bigInt({ min: -(10n ** 12n), max: 10n ** 12n });
 
@@ -38,6 +38,27 @@ describe('money', () => {
   it('a markup never exceeds the amount for bps <= 10000', () => {
     fc.assert(fc.property(fc.bigInt({ min: 0n, max: 10n ** 12n }), fc.bigInt({ min: 0n, max: 10_000n }), (m, bps) => {
       expect(applyBps(money(m, 'USD'), bps).minor <= m).toBe(true);
+    }));
+  });
+});
+
+describe('roundUpTo99', () => {
+  it('rounds up to the next .99 and leaves an exact .99 alone', () => {
+    expect(roundUpTo99(2500n)).toBe(2599n);
+    expect(roundUpTo99(2599n)).toBe(2599n);
+    expect(roundUpTo99(2600n)).toBe(2699n);
+    expect(roundUpTo99(1n)).toBe(99n);
+  });
+  it('maps zero and negatives to 99', () => {
+    expect(roundUpTo99(0n)).toBe(99n);
+    expect(roundUpTo99(-500n)).toBe(99n);
+  });
+  it('always ends in 99 and never rounds down', () => {
+    fc.assert(fc.property(fc.bigInt({ min: 1n, max: 10n ** 12n }), (n) => {
+      const r = roundUpTo99(n);
+      expect(r % 100n).toBe(99n);
+      expect(r >= n).toBe(true);
+      expect(r - n < 100n).toBe(true);
     }));
   });
 });

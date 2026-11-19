@@ -3,7 +3,7 @@
 // TST-ESIM-002: the monthly data credit applies automatically at checkout. Given a 5 GB credit,
 // when buying 5 GB, the price is $0.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { money, uuidv7 } from '@kesher/domain';
+import { money, roundUpTo99, uuidv7 } from '@kesher/domain';
 import { BillingSimulator, SIM_OTP_CODE, SimPasskeyDevice } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { createApp, type App } from '../app.ts';
@@ -19,7 +19,7 @@ import { isPgError } from '../db.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { CreditService } from './credit.ts';
 import { AddonOrderService } from './orders.ts';
-import { applyRule, pickRule, roundUpTo99, type PriceRule } from './pricing.ts';
+import { applyRule, pickRule, type PriceRule } from './pricing.ts';
 
 let db: TestDatabase;
 let ledger: PostgresLedger;
