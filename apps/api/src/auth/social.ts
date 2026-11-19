@@ -5,11 +5,12 @@
 // (entity_type 'member', provider 'apple' | 'google'). An identity nobody is linked to answers NOT_FOUND and creates no
 // member. Linking from settings is a later card; until then the link rows are written by support or a test.
 // The member gets the same token pair as a passkey sign-in, and a new device raises the same new_device_sign_in event.
-import { DomainError, uuidv7 } from '@kesher/domain';
+import { DomainError } from '@kesher/domain';
 import { FederatedIdPError, type FederatedIdPPort, type FederatedProvider } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { ok, route, type Handler } from '../http.ts';
+import { openCase } from '../ops/cases.ts';
 import type { AuthEvent } from './passkeys.ts';
 import type { IdentityRepository } from './repository.ts';
 import type { SocialLinks } from './social-links.ts';
@@ -119,10 +120,7 @@ export class SocialTokenRevoker {
     }
     // The case first: if recording it fails the token stays and a retry tries again; once it is there the token goes.
     if (failure !== undefined) {
-      await this.d.db.query(
-        `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'apple_revoke_failed', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-        [uuidv7(now), appleRevokeCaseKey(partyId), { partyId, provider: 'apple', failure }, now],
-      );
+      await openCase(this.d.db, { kind: 'apple_revoke_failed', dedupeKey: appleRevokeCaseKey(partyId), severity: 'high', payload: { partyId, provider: 'apple', failure }, now });
     }
     await this.d.links.eraseToken(partyId, 'apple');
   }

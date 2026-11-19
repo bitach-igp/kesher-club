@@ -18,6 +18,7 @@ import type { AuditService } from '../audit/service.ts';
 import type { Database } from '../db.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
+import { linkRef, refOf } from '../ops/external-ref.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
 
 export const REFUND_JOURNAL_KIND = 'refund';
@@ -113,7 +114,7 @@ export class ClosureService {
       if (e instanceof FundingError) return this.d.transfers.apply(t.id, 'fail', now, { failureCode: e.code, reason: e.message.slice(0, 200) });
       throw e;
     }
-    await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('refund', $1, $2, $3) on conflict do nothing`, [t.id, this.d.provider, refund.refundId]);
+    await linkRef(this.d.db, { entityType: 'refund', entityId: t.id, provider: this.d.provider, externalId: refund.refundId });
     return this.applyRefund(t, refund, now);
   }
 
@@ -237,8 +238,7 @@ export class ClosureService {
   }
 
   private async vendorRefundOf(transferId: string): Promise<string | undefined> {
-    const r = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'refund' and entity_id = $1 and provider = $2`, [transferId, this.d.provider]);
-    return r.rows[0]?.external_id;
+    return refOf(this.d.db, 'refund', transferId, this.d.provider);
   }
 }
 

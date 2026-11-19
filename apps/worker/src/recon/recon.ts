@@ -4,6 +4,7 @@
 // breaks. Breaks are never auto-corrected.
 import { uuidv7, type Currency, type Money } from '@kesher/domain';
 import type { Database } from '@kesher/api/db';
+import { openCase } from '@kesher/api/ops/cases';
 import { businessDayWindow } from './statement-source.ts';
 
 export interface PartnerTransaction {
@@ -147,10 +148,7 @@ export class ReconJob {
   }
 
   private async openDeadlineCase(provider: string, runDate: string, at: Date): Promise<void> {
-    await this.db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'recon_break', $2, 'medium', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-      [uuidv7(at), `recon:deadline:${provider}:${runDate}`, JSON.stringify({ provider, externalId: 'platform', reason: 'deadline_missed', runDate }), at],
-    );
+    await openCase(this.db, { kind: 'recon_break', dedupeKey: `recon:deadline:${provider}:${runDate}`, severity: 'medium', payload: { provider, externalId: 'platform', reason: 'deadline_missed', runDate }, now: at });
   }
 
   private async openCase(b: ReconBreak, runDate: string, at: Date): Promise<void> {
@@ -158,12 +156,8 @@ export class ReconJob {
     const caseId = uuidv7(at);
     const severity = b.reason === 'amount_mismatch' || b.reason === 'currency_mismatch' ? 'high' : 'medium';
     const payload = { provider: b.provider, externalId: b.externalId, reason: b.reason, partnerMinor: b.partner?.minor.toString(), partnerCurrency: b.partner?.currency, ledgerMinor: b.ledger?.minor.toString(), ledgerCurrency: b.ledger?.currency, journalId: b.journalId };
-    const inserted = await this.db.query<{ id: string }>(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'recon_break', $2, $3, 'open', $4, $5)
-       on conflict (dedupe_key) do nothing returning id`,
-      [caseId, dedupeKey, severity, JSON.stringify(payload), at],
-    );
-    if (inserted.rows.length === 0) return;
+    const inserted = await openCase(this.db, { id: caseId, kind: 'recon_break', dedupeKey, severity, payload, now: at });
+    if (!inserted) return;
     await this.db.query(
       `insert into ops.recon_break (id, case_id, provider, external_id, journal_id, partner_minor, partner_currency, ledger_minor, ledger_currency, reason, run_date)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) on conflict do nothing`,

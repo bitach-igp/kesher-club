@@ -2,8 +2,9 @@
 // reconciliation job. Compares ops.account_balance with the sum of ledger.posting per account,
 // checks system totals per currency and per-journal balance, and opens an ops case per break.
 // It never "fixes" anything: corrections are reversing journals with two-person approval.
-import { uuidv7, type Currency } from '@kesher/domain';
+import type { Currency } from '@kesher/domain';
 import type { Database } from '@kesher/api/db';
+import { openCase } from '@kesher/api/ops/cases';
 
 export interface BalanceBreak {
   accountId: string;
@@ -54,12 +55,7 @@ export class BalanceProof {
 
   /** One case per dedupe key; re-runs the same night do not duplicate. */
   private async openCase(now: Date, kind: string, dedupeKey: string, payload: Record<string, string>): Promise<void> {
-    await this.db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at)
-       values ($1, $2, $3, 'high', 'open', $4, $5)
-       on conflict (dedupe_key) do nothing`,
-      [uuidv7(now), kind, dedupeKey, JSON.stringify(payload), now],
-    );
+    await openCase(this.db, { kind, dedupeKey, severity: 'high', payload, now });
   }
 }
 

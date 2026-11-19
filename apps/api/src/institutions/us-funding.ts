@@ -24,6 +24,8 @@ import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database, SqlClient } from '../db.ts';
 import { created, ok, requireIdempotencyKey, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
+import { openCase } from '../ops/cases.ts';
+import { linkRef } from '../ops/external-ref.ts';
 import { DEPOSITS_FLAG, paymentReference, type InstitutionDeposits } from './deposits.ts';
 import type { KybGate } from './kyb-gate.ts';
 import { US_BANKING_FLAG, type InstitutionUsBanking } from './us-banking.ts';
@@ -296,7 +298,7 @@ export class InstitutionUsFunding {
         if (!counterpartyRef || !isAddenda(req.reference)) throw new InstitutionBankingError('VALIDATION_FAILED', 'The transfer cannot be described to the bank');
         const sent = await port.sendAch({ entityRef: acct.ref, counterpartyRef, amount, addenda: req.reference, idempotencyKey: key });
         await this.d.db.transaction(async (tx) => {
-          await tx.query('insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing', [ENTITY_TYPE, requestId, acct.provider ?? 'simulator', sent.paymentRef]);
+          await linkRef(tx, { entityType: ENTITY_TYPE, entityId: requestId, provider: acct.provider ?? 'simulator', externalId: sent.paymentRef });
           await this.append(tx, requestId, 'sent', null, { paymentRef: sent.paymentRef, status: sent.status }, now);
         });
         if (sent.status === 'rejected' || sent.status === 'returned') await this.openCase(req, sent.status, now);
@@ -454,10 +456,7 @@ export class InstitutionUsFunding {
   }
 
   private async openCase(req: RequestRow, reason: string, now: Date): Promise<void> {
-    await this.d.db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'us_funding_failed', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-      [uuidv7(now), `us-funding-case:${req.id}:${reason}`, { requestId: req.id, institutionId: req.institution_id, reason, amount: { minor: req.amount_minor, currency: req.currency }, reference: req.reference }, now],
-    );
+    await openCase(this.d.db, { kind: 'us_funding_failed', dedupeKey: `us-funding-case:${req.id}:${reason}`, severity: 'high', payload: { requestId: req.id, institutionId: req.institution_id, reason, amount: { minor: req.amount_minor, currency: req.currency }, reference: req.reference }, now });
     await this.d.audit.record({ actorId: req.requested_by, actorRole: 'system', action: 'institution.us_funding.failed', subject: req.institution_id, reason: `US funding ${reason}`, payload: { requestId: req.id } }, now);
   }
 

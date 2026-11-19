@@ -17,6 +17,7 @@ import { requireStaff, staffActor } from '../admin/staff-token.ts';
 import { created, ok, requireIdempotencyKey, route, type Handler, type HttpRequest } from '../http.ts';
 import { checkPayee, maskIban } from '../payouts/iban.ts';
 import { iso } from '../dates.ts';
+import { openCase } from '../ops/cases.ts';
 
 export interface PayoutAccount {
   id: string;
@@ -137,10 +138,7 @@ export class PayoutAccounts {
     if (!latest.approved_by) throw new DomainError('VALIDATION_FAILED', 'The institution\'s new payout account is waiting for a second compliance approval', { reason: 'account_pending_approval' });
     if (latest.iban === iban) return;
     const hash = createHash('sha256').update(iban).digest('hex').slice(0, 16);
-    await this.db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'payout_account_mismatch', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-      [uuidv7(now), `payout-account-mismatch:${payoutKey}`, JSON.stringify({ institutionId, ibanLast4: iban.slice(-4), ibanHash: hash, payoutKey }), now],
-    );
+    await openCase(this.db, { kind: 'payout_account_mismatch', dedupeKey: `payout-account-mismatch:${payoutKey}`, severity: 'high', payload: { institutionId, ibanLast4: iban.slice(-4), ibanHash: hash, payoutKey }, now });
     throw new DomainError('VALIDATION_FAILED', 'Institution payouts go only to the institution\'s own verified account', { reason: 'not_own_account' });
   }
 

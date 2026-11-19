@@ -25,6 +25,8 @@ import { DomainError, uuidv7 } from '@kesher/domain';
 import { isMemberSubAccountPort, MemberSubAccountError, type MemberSubAccountStatus, type SubAccountOwner, type SubAccountOwnerStatus } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
+import { openCase } from '../ops/cases.ts';
+import { linkRef, refOf } from '../ops/external-ref.ts';
 
 export const SUB_ACCOUNTS_FLAG = 'wallet.subAccounts';
 export const SUBACCOUNT_REF = 'funding_subaccount';
@@ -122,13 +124,13 @@ export class SubAccountService {
     const rows: Array<readonly [string, string]> = [[SUBACCOUNT_REF, ensured.subAccountRef], [SUBACCOUNT_ACCOUNT_REF, ensured.accountRef], [SUBACCOUNT_PURPOSE_REF, purposeMarker(partyId, purpose)]];
     if (ensured.ownerStatus === 'failed') rows.push([SUBACCOUNT_OWNER_REF, `o:${partyId}:failed`]);
     await db.transaction(async (tx) => {
-      for (const [type, ref] of rows) await tx.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [type, partyId, provider, ref]);
+      for (const [type, ref] of rows) await linkRef(tx, { entityType: type, entityId: partyId, provider, externalId: ref });
       // A racing open for another purpose may have stored its marker first: ours was then skipped, so refuse and roll back.
-      const stored = await tx.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = $1 and entity_id = $2 and provider = $3`, [SUBACCOUNT_PURPOSE_REF, partyId, provider]);
-      if (stored.rows[0]?.external_id !== purposeMarker(partyId, purpose)) throw new DomainError('IDEMPOTENCY_CONFLICT', OTHER_PURPOSE);
+      const stored = await refOf(tx, SUBACCOUNT_PURPOSE_REF, partyId, provider);
+      if (stored !== purposeMarker(partyId, purpose)) throw new DomainError('IDEMPOTENCY_CONFLICT', OTHER_PURPOSE);
       if (ensured.ownerStatus === 'failed') {
         // For people: the party id and nothing personal, so staff can re-invite.
-        await tx.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, $2, $3, 'medium', 'open', $4, $5) on conflict (dedupe_key) do nothing`, [uuidv7(now), OWNER_FAILED_CASE, ownerCaseKey(partyId), { partyId }, now]);
+        await openCase(tx, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(partyId), severity: 'medium', payload: { partyId }, now });
       }
     });
     return { subAccountRef: ensured.subAccountRef, accountRef: ensured.accountRef, created: true, status: ensured.status, ownerStatus: ensured.ownerStatus };

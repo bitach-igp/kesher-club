@@ -8,6 +8,7 @@
 import { sha256Url } from '../crypto/hash.ts';
 import type { PiiCipher } from '../crypto/pii.ts';
 import type { Database } from '../db.ts';
+import { linkRef, refOf } from '../ops/external-ref.ts';
 import type { Ceremony, CeremonyKind, Device, FederatedLinkInput, FederatedLinkProvider, FederatedLinkResult, IdentityRepository, OtpRecord, OtpSession, Restriction, SessionFamily, StepUpRecord, StoredPasskey, UserAccount, UserStatus } from './repository.ts';
 
 /** Column names double as the cipher's context, so a sealed value only opens where it was written. */
@@ -259,11 +260,8 @@ export class PostgresIdentityRepository implements IdentityRepository {
     // The link row and the token row are one transaction, so a failed token insert leaves no link behind.
     return this.db.transaction(async (tx) => {
       // No conflict target: both ops.external_ref keys (one subject per provider, one link per member and provider) skip the insert.
-      const inserted = await tx.query(
-        `insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('member', $1, $2, $3) on conflict do nothing`,
-        [l.partyId, l.provider, l.subject],
-      );
-      if (inserted.rowCount === 0) {
+      const inserted = await linkRef(tx, { entityType: 'member', entityId: l.partyId, provider: l.provider, externalId: l.subject });
+      if (!inserted) {
         const mine = await tx.query(`select 1 from ops.external_ref where entity_type = 'member' and entity_id = $1 and provider = $2`, [l.partyId, l.provider]);
         return mine.rowCount > 0 ? 'member_already_linked' : 'subject_taken';
       }
@@ -275,8 +273,7 @@ export class PostgresIdentityRepository implements IdentityRepository {
   }
 
   async findFederatedSubject(partyId: string, provider: FederatedLinkProvider): Promise<string | undefined> {
-    const r = await this.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'member' and entity_id = $1 and provider = $2`, [partyId, provider]);
-    return r.rows[0]?.external_id;
+    return refOf(this.db, 'member', partyId, provider);
   }
 
   async findFederatedToken(partyId: string, provider: FederatedLinkProvider): Promise<Uint8Array | undefined> {

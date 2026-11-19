@@ -7,9 +7,10 @@
 // undecided case for the same party and rule suppresses a new one until compliance records a
 // disposition. The job never moves money and never reads a note: a case payload is ids, counts,
 // amounts and times.
-import { money, uuidv7, type Currency } from '@kesher/domain';
+import { money, type Currency } from '@kesher/domain';
 import type { FeatureFlags } from '@kesher/api/billing/capabilities';
 import type { Database } from '@kesher/api/db';
+import { openCase } from '@kesher/api/ops/cases';
 import { evaluate, lookbackMs, THRESHOLDS, type Finding, type Movement, type MovementKind, type Thresholds } from './rules.ts';
 
 export const MONITORING_FLAG = 'monitoring.rules';
@@ -106,11 +107,7 @@ export class MonitoringJob {
       transferIds: f.transferIds,
       summary: f.summary,
     };
-    const inserted = await this.db.query<{ id: string }>(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, $2, $3, $4, 'open', $5, $6)
-       on conflict (dedupe_key) do nothing returning id`,
-      [uuidv7(now), f.caseKind, f.dedupeKey, f.severity, JSON.stringify(payload), now],
-    );
-    return inserted.rows[0] ? 'opened' : 'duplicate';
+    const inserted = await openCase(this.db, { kind: f.caseKind, dedupeKey: f.dedupeKey, severity: f.severity, payload, now });
+    return inserted ? 'opened' : 'duplicate';
   }
 }

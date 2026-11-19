@@ -32,6 +32,8 @@ import type { RateService } from '../fx/rates.ts';
 import { rateString } from '../fx/service.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostedJournal, PostgresLedger } from '../ledger/post.ts';
+import { openCase } from '../ops/cases.ts';
+import { entityOf, linkRef, refOf } from '../ops/external-ref.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
@@ -266,9 +268,9 @@ export class LoadService implements LoadActivities {
   }
 
   private async contactRef(partyId: string): Promise<string> {
-    const r = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'funding_contact' and entity_id = $1 and provider = $2`, [partyId, this.d.provider]);
-    if (!r.rows[0]) throw new DomainError('FEATURE_OFF', 'Your funding account is not set up yet');
-    return r.rows[0].external_id;
+    const ref = await refOf(this.d.db, 'funding_contact', partyId, this.d.provider);
+    if (ref === undefined) throw new DomainError('FEATURE_OFF', 'Your funding account is not set up yet');
+    return ref;
   }
 
   /**
@@ -291,22 +293,19 @@ export class LoadService implements LoadActivities {
       if (e.code === 'PROVIDER_UNAVAILABLE') throw new DomainError('PROVIDER_UNAVAILABLE', 'Funding is temporarily unavailable; try again with the same key');
       if (e.code === 'DUPLICATE_MOBILE' || e.code === 'PARTY_CONFLICT' || e.code === 'IDEMPOTENCY_CONFLICT') {
         // For people: the case carries the party and the code, never a name, number or vendor text.
-        await this.d.db.query(
-          `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_account_conflict', $2, 'medium', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-          [uuidv7(now), fundingAccountKey(partyId), { partyId, code: e.code }, now],
-        );
+        await openCase(this.d.db, { kind: 'load_account_conflict', dedupeKey: fundingAccountKey(partyId), severity: 'medium', payload: { partyId, code: e.code }, now });
         throw new DomainError('IDEMPOTENCY_CONFLICT', 'Your funding account could not be set up; support has been told');
       }
       throw new DomainError('VALIDATION_FAILED', 'Your funding details were not accepted', { detailsRequired: true });
     }
     if (!('accountRef' in ensured) || BLOCKED_ACCOUNT_STATUSES.includes(ensured.status)) throw new DomainError('FEATURE_OFF', `Your funding account is ${ensured.status}`);
     for (const [type, ref] of [['funding_contact', ensured.contactRef], ['funding_account', ensured.accountRef]] as const) {
-      await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [type, partyId, this.d.provider, ref]);
+      await linkRef(this.d.db, { entityType: type, entityId: partyId, provider: this.d.provider, externalId: ref });
     }
   }
 
   async link(transfer: Transfer, load: VendorLoad): Promise<void> {
-    await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('transfer', $1, $2, $3) on conflict do nothing`, [transfer.id, this.d.provider, load.loadId]);
+    await linkRef(this.d.db, { entityType: 'transfer', entityId: transfer.id, provider: this.d.provider, externalId: load.loadId });
   }
 
   async settle(transfer: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Transfer> {
@@ -510,13 +509,12 @@ export class LoadService implements LoadActivities {
   // ---- lookups ----
 
   async byVendorLoad(loadId: string): Promise<Transfer | undefined> {
-    const r = await this.d.db.query<{ entity_id: string }>(`select entity_id from ops.external_ref where entity_type = 'transfer' and provider = $1 and external_id = $2`, [this.d.provider, loadId]);
-    return r.rows[0] ? this.d.transfers.get(r.rows[0].entity_id) : undefined;
+    const id = await entityOf(this.d.db, 'transfer', this.d.provider, loadId);
+    return id !== undefined ? this.d.transfers.get(id) : undefined;
   }
 
   async vendorLoadOf(transferId: string): Promise<string | undefined> {
-    const r = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'transfer' and entity_id = $1 and provider = $2`, [transferId, this.d.provider]);
-    return r.rows[0]?.external_id;
+    return refOf(this.d.db, 'transfer', transferId, this.d.provider);
   }
 
   /** Notes that the vendor was just asked about a held load (upsert, never moving the time backwards), so `stale()` leaves it alone until HELD_RECHECK_MS passes (T-0558). */

@@ -16,6 +16,8 @@ import { approversRequired, SECOND_APPROVER_THRESHOLD_ILS_MINOR } from '../appro
 import type { IdentityRepository } from '../auth/repository.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
+import { openCase } from '../ops/cases.ts';
+import { entityOf, linkRef, refOf } from '../ops/external-ref.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferService } from '../transfers/service.ts';
@@ -269,7 +271,7 @@ export class PayoutService implements PayoutActivities {
   async begin(input: PayoutInput, workflowId: string, now: Date): Promise<Transfer> {
     const t = await this.d.transfers.create({ idempotencyKey: workflowId, kind: 'payout', fromPartyId: input.partyId, amount: input.amount, note: input.reference }, now);
     if (t.kind !== 'payout') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
-    await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('payee', $1, 'payee', $2) on conflict do nothing`, [t.id, `${input.payeeId}:${t.id}`]);
+    await linkRef(this.d.db, { entityType: 'payee', entityId: t.id, provider: 'payee', externalId: `${input.payeeId}:${t.id}` });
     // An institution payout's approval is asked for now, before any cool-off, so it records who asked (T-0628):
     // the worker's sweep rebuilds the requester from it, and without it named the institution, which let the
     // person who asked approve their own withdrawal. The request counts as their approval; a cool-off still
@@ -308,10 +310,7 @@ export class PayoutService implements PayoutActivities {
     const first = await this.d.db.query<{ effective_at: string | Date }>(`select effective_at from ledger.journal where idempotency_key = $1`, [settleKey(transfer.idempotencyKey)]);
     if (!first.rows[0] || now.getTime() - new Date(first.rows[0].effective_at).getTime() < STRANDED_AFTER_MS) return undefined;
     // The case first (deduped): a crash after the fail must still leave ops the signal.
-    await this.d.db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'payout_stranded', $2, 'high', 'open', $3, $4) on conflict (dedupe_key) do nothing`,
-      [uuidv7(now), `payout_stranded:${transfer.id}`, JSON.stringify({ transferId: transfer.id, runbook: 'RUN-01', summary: 'A payout the rail never took in 30 minutes was failed and reversed' }), now],
-    );
+    await openCase(this.d.db, { kind: 'payout_stranded', dedupeKey: `payout_stranded:${transfer.id}`, severity: 'high', payload: { transferId: transfer.id, runbook: 'RUN-01', summary: 'A payout the rail never took in 30 minutes was failed and reversed' }, now });
     return this.fail(transfer, 'PROVIDER_UNAVAILABLE', now, 'the rail stayed down for 30 minutes');
   }
 
@@ -469,7 +468,7 @@ export class PayoutService implements PayoutActivities {
       }
       throw mapPayoutError(e);
     }
-    await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('transfer', $1, $2, $3) on conflict do nothing`, [t.id, this.d.provider, payout.payoutId]);
+    await linkRef(this.d.db, { entityType: 'transfer', entityId: t.id, provider: this.d.provider, externalId: payout.payoutId });
     // A payout that cooled off is already past 'submitted' (pending after the hold); it keeps the journal id and
     // waits for the rail's webhook there. A fresh one moves to submitted now.
     if (t.state === 'created') t = await this.d.transfers.apply(t.id, 'submit', now, { journalId: journal.id, reason: 'sent to the rail' });
@@ -693,13 +692,12 @@ export class PayoutService implements PayoutActivities {
   }
 
   private async payeeIdOf(transferId: string): Promise<string | undefined> {
-    const r = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'payee' and entity_id = $1 and provider = 'payee'`, [transferId]);
-    return r.rows[0]?.external_id.split(':')[0];
+    return (await refOf(this.d.db, 'payee', transferId, 'payee'))?.split(':')[0];
   }
 
   private async byVendorPayout(payoutId: string): Promise<Transfer | undefined> {
-    const r = await this.d.db.query<{ entity_id: string }>(`select entity_id from ops.external_ref where entity_type = 'transfer' and provider = $1 and external_id = $2`, [this.d.provider, payoutId]);
-    return r.rows[0] ? this.d.transfers.get(r.rows[0].entity_id) : undefined;
+    const id = await entityOf(this.d.db, 'transfer', this.d.provider, payoutId);
+    return id !== undefined ? this.d.transfers.get(id) : undefined;
   }
 
   private async tellPayer(t: Transfer, code: string, now: Date): Promise<void> {

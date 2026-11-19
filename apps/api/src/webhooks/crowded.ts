@@ -13,10 +13,11 @@
 // both re-read the same current state. Event bodies are untrusted text: stored as JSON, never interpreted.
 import { createHash } from 'node:crypto';
 import { crowdedHeaderValue, crowdedRef, CROWDED_SIGNATURE_HEADER, verifyCrowdedSignature } from '@kesher/adapters';
-import { DomainError, uuidv7 } from '@kesher/domain';
+import { DomainError } from '@kesher/domain';
 import type { AchStatus, ApplicationStatus, InstitutionBankingPort } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
+import { openCase } from '../ops/cases.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF, SUBACCOUNT_REF } from '../wallet/sub-accounts.ts';
 import { HttpError, ok, route, type Handler, type HttpRequest } from '../http.ts';
 import type { InboundEvent, InboundEventStore } from './store.ts';
@@ -91,7 +92,7 @@ export function subAccountChapters(db: Database, provider: string): { isMemberCh
       const party = r.rows[0]?.party;
       if (party === undefined) return false;
       // The same case T-0752 opened when the owner failed (same dedupe key): nothing new if it is there, one for staff if it is not.
-      await db.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, $2, $3, 'medium', 'open', $4, $5) on conflict (dedupe_key) do nothing`, [uuidv7(now), OWNER_FAILED_CASE, ownerCaseKey(party), { partyId: party }, now]);
+      await openCase(db, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(party), severity: 'medium', payload: { partyId: party }, now });
       return true;
     },
   };

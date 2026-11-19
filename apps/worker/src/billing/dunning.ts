@@ -6,6 +6,7 @@ import { DomainError, uuidv7 } from '@kesher/domain';
 import type { BillingEvent, BillingPort, Market, NotifyPort } from '@kesher/ports';
 import type { Database } from '@kesher/api/db';
 import type { Membership, MembershipService } from '@kesher/api/billing/memberships';
+import { refOf } from '@kesher/api/ops/external-ref';
 
 export const DUNNING_SCHEDULE_DAYS: readonly number[] = [3, 5, 7];
 export const MAX_ATTEMPTS = 3;
@@ -116,9 +117,9 @@ export class DunningService {
   }
 
   private async subRef(membershipId: string): Promise<string> {
-    const r = await this.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'membership' and entity_id = $1 and provider = 'stripe'`, [membershipId]);
-    if (!r.rows[0]) throw new DomainError('NOT_FOUND', 'Membership has no vendor subscription');
-    return r.rows[0].external_id;
+    const ref = await refOf(this.db, 'membership', membershipId, 'stripe');
+    if (ref === undefined) throw new DomainError('NOT_FOUND', 'Membership has no vendor subscription');
+    return ref;
   }
 
   private async must(id: string): Promise<Membership> {
