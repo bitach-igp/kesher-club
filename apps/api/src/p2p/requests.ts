@@ -3,7 +3,7 @@
 // runs the ordinary send (T-0505: limits, hold, journal, notification) under a key derived from the
 // request, so paying twice is one transfer; the payer may decline instead. The worker expires what is
 // left after 14 days. Request text is member text: stored and returned verbatim, never interpreted.
-import { DomainError, fromWire, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
+import { DomainError, fromWire, isUuidShape, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
 import type { IdentityRepository } from '../auth/repository.ts';
 import type { Database } from '../db.ts';
 import type { P2pSendService, TransferView } from './send.ts';
@@ -198,7 +198,7 @@ export class PaymentRequestService {
   }
 
   private async member(v: unknown, field: string): Promise<string> {
-    if (typeof v !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v)) throw new DomainError('VALIDATION_FAILED', `${field} must be a member id`);
+    if (typeof v !== 'string' || !isUuidShape(v)) throw new DomainError('VALIDATION_FAILED', `${field} must be a member id`);
     const u = await this.identity.findUser(v);
     if (!u || u.status === 'closed') throw new DomainError('NOT_FOUND', 'Member not found');
     return v;

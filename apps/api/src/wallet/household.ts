@@ -8,7 +8,7 @@
 // One member's activity (T-0537, REQ-WAL-009, P06): for a member the caller funds, their recent transactions across
 // both purses (T-0536's rows, which carry no names or notes, so a P2P reads as a P2P and nothing more), this month's
 // card spend by category in each currency, and their cards with the controls the funder set, so P09 can open one.
-import { DomainError, money, toWire, type Currency } from '@kesher/domain';
+import { DomainError, isUuidShape, money, toWire, type Currency } from '@kesher/domain';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { FunderInvites } from '../billing/funder-invites.ts';
 import type { Database } from '../db.ts';
@@ -16,9 +16,8 @@ import { ok, requirePrincipal, route, type Handler } from '../http.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { DisplayNameService } from '../me/display-name.ts';
 import type { CardService, CardView } from '../cards/service.ts';
-import type { Transaction, TransactionService } from './transactions.ts';
-
-export const WALLET_FLAG = 'wallet.enabled';
+import { requireWalletOn } from './flag.ts';
+import { PAGE, type Transaction, type TransactionService } from './transactions.ts';
 
 export interface HouseholdMember {
   partyId: string;
@@ -69,7 +68,7 @@ export function categoryOf(mcc: string | undefined): SpendCategory {
 export interface MemberActivity {
   partyId: string;
   displayName: string;
-  /** The latest 50 across both purses, newest first. */
+  /** The latest page across both purses, newest first. */
   transactions: Transaction[];
   /** This calendar month's card spend (UTC), held or cleared but not released, per category and currency. */
   spendByCategory: { category: SpendCategory; amount: ReturnType<typeof toWire> }[];
@@ -86,7 +85,6 @@ export interface HouseholdDeps {
   cards: Pick<CardService, 'forParty'>;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export class HouseholdService {
   private readonly d: HouseholdDeps;
@@ -123,7 +121,7 @@ export class HouseholdService {
   /** One member the caller funds; any other member, or another household, answers 404 alike. */
   async member(householdId: string, memberPartyId: string, callerPartyId: string, now: Date): Promise<MemberActivity> {
     await this.requireOwn(householdId, callerPartyId);
-    const funded = UUID.test(memberPartyId)
+    const funded = isUuidShape(memberPartyId)
       ? await this.d.db.query(`select 1 from billing.membership where funder_party_id = $1 and member_party_id = $2 and status in ('active', 'past_due', 'paused') limit 1`, [callerPartyId, memberPartyId])
       : { rowCount: 0 };
     if (!funded.rowCount) throw new DomainError('NOT_FOUND', 'Member not found');
@@ -132,7 +130,7 @@ export class HouseholdService {
     const transactions = pages
       .flatMap((p) => p.items)
       .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))
-      .slice(0, 50);
+      .slice(0, PAGE);
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     const spend = await this.d.db.query<{ mcc: string | null; currency: Currency; total: string }>(
       `select j.metadata->>'mcc' as mcc, p.currency, sum(p.amount_minor)::text as total
@@ -159,8 +157,8 @@ export class HouseholdService {
   }
 
   private async requireOwn(householdId: string, callerPartyId: string): Promise<void> {
-    if (!(await this.d.flags.isOn(WALLET_FLAG, { partyId: callerPartyId }))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
-    if (!UUID.test(householdId) || householdId.toLowerCase() !== callerPartyId.toLowerCase()) throw new DomainError('NOT_FOUND', 'Household not found');
+    await requireWalletOn(this.d.flags, { partyId: callerPartyId });
+    if (!isUuidShape(householdId) || householdId.toLowerCase() !== callerPartyId.toLowerCase()) throw new DomainError('NOT_FOUND', 'Household not found');
   }
 
   /** The latest card authorisation on the member's own purses: what left the purse (`auth_hold`, T-0405/T-0409). */

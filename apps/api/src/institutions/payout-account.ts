@@ -9,7 +9,7 @@
 // - A replacement waits the same way, and payouts stop until it is approved.
 // - A payout to any other account is refused and opens a compliance case.
 import { createHash } from 'node:crypto';
-import { DomainError, uuidv7, type Currency } from '@kesher/domain';
+import { DomainError, isUuidShape, uuidv7, type Currency } from '@kesher/domain';
 import type { Approver } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import { isPgError, PG, type Database } from '../db.ts';
@@ -46,7 +46,6 @@ interface Row {
   approved_at: string | Date | null;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Trailing legal forms a register or a bank letter may add or leave off. */
 const LEGAL_FORMS = /\s*(?:\(?ע"?ר\)?|\(?חל"?צ\)?|בע"?מ|ltd|limited|inc|incorporated|corp|corporation|llc)\s*$/iu;
 
@@ -102,7 +101,7 @@ export class PayoutAccounts {
 
   /** A different compliance member approves; then the account is where payouts go. */
   async approve(accountId: string, actor: Approver, now: Date): Promise<PayoutAccount> {
-    const r = UUID.test(accountId) ? (await this.db.query<Row>(`${SELECT} where a.id = $1`, [accountId])).rows[0] : undefined;
+    const r = isUuidShape(accountId) ? (await this.db.query<Row>(`${SELECT} where a.id = $1`, [accountId])).rows[0] : undefined;
     if (!r) throw new DomainError('NOT_FOUND', 'Payout account not found');
     if (r.approved_by) return (await this.list(r.institution_id)).find((a) => a.id === accountId)!;
     if (r.recorded_by === actor.partyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'The member who recorded the account cannot approve it');
@@ -153,7 +152,7 @@ export class PayoutAccounts {
   }
 
   private async requireInstitution(id: string): Promise<void> {
-    const r = UUID.test(id) ? await this.db.query('select 1 from org.institution where id = $1', [id]) : { rowCount: 0 };
+    const r = isUuidShape(id) ? await this.db.query('select 1 from org.institution where id = $1', [id]) : { rowCount: 0 };
     if (!r.rowCount) throw new DomainError('NOT_FOUND', 'Institution not found');
   }
 }

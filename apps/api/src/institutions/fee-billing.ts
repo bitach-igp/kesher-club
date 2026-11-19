@@ -3,10 +3,10 @@
 // One call is one batch, written in one transaction: all of its items or none. The batch keeps the call's
 // Idempotency-Key and the body's fingerprint, so a retry answers the batch it made and the same key with another
 // body is a conflict. The description is staff-entered text the member sees; it is stored and shown as text.
-import { createHash } from 'node:crypto';
-import { DomainError, money, toWire, uuidv7, type Currency } from '@kesher/domain';
+import { DomainError, isUuidShape, money, toWire, uuidv7, type Currency } from '@kesher/domain';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import { isPgError, PG, type Database } from '../db.ts';
+import { sha256Url } from '../crypto/hash.ts';
 import { ok, requireIdempotencyKey, requireRole, route, type Handler } from '../http.ts';
 import { COLLECTIONS_FLAG } from './collections.ts';
 
@@ -15,7 +15,6 @@ export const MAX_FEE_MINOR = 1_000_000n;
 const DESCRIPTION_MAX = 120;
 const COHORT_MAX = 1000;
 const DUE_WITHIN_DAYS = 366;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const MARKET_CURRENCY: Record<string, Currency> = { IL: 'ILS', US: 'USD' };
 
@@ -57,13 +56,13 @@ export function parseBill(body: unknown, currency: Currency, today: string): Bil
   const members = (b['members'] ?? {}) as Record<string, unknown>;
   if (members['kind'] === 'all') return { description, amountMinor: minor, currency, dueDate, memberIds: [] };
   const ids = members['memberIds'];
-  if (members['kind'] !== 'listed' || !Array.isArray(ids) || ids.length === 0 || ids.length > COHORT_MAX || !ids.every((x) => typeof x === 'string' && UUID.test(x)) || new Set(ids).size !== ids.length) {
+  if (members['kind'] !== 'listed' || !Array.isArray(ids) || ids.length === 0 || ids.length > COHORT_MAX || !ids.every((x) => typeof x === 'string' && isUuidShape(x)) || new Set(ids).size !== ids.length) {
     throw new DomainError('VALIDATION_FAILED', `members must be { kind: all } or { kind: listed, memberIds: 1 to ${COHORT_MAX} distinct member ids }`);
   }
   return { description, amountMinor: minor, currency, dueDate, memberIds: (ids as string[]).map((x) => x.toLowerCase()).sort() };
 }
 
-const fingerprint = (r: BillRequest): string => createHash('sha256').update(JSON.stringify([r.description, r.amountMinor.toString(), r.currency, r.dueDate, r.memberIds])).digest('base64url');
+const fingerprint = (r: BillRequest): string => sha256Url(JSON.stringify([r.description, r.amountMinor.toString(), r.currency, r.dueDate, r.memberIds]));
 
 interface BatchRow {
   id: string;

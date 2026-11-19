@@ -2,7 +2,7 @@
 // ids as strings, the account number cut to four digits, a funder's name split, and a stable UUID for our keys.
 import { describe, expect, it } from 'vitest';
 import { money } from '@kesher/domain';
-import { achStatus, applicationStatus, collectedStatus, fromCents, last4, macOf, parseRef, ref, splitName, str, toCents, uuidFromKey } from './map.ts';
+import { achStatus, applicationStatus, collectedStatus, E164, EMAIL, fromCents, last4, macOf, parseRef, ref, splitName, str, toCents, uuidFromKey, validDate } from './map.ts';
 
 describe('cents <-> Money', () => {
   it('round-trips 0 and 1, and reads 2^53 + 1 exactly from a string', () => {
@@ -86,5 +86,31 @@ describe('macOf', () => {
   it('separates scopes and keys', () => {
     expect(macOf(KEY, 'a', ['x'])).not.toBe(macOf(KEY, 'b', ['x']));
     expect(macOf(KEY, 'a', ['x'])).not.toBe(macOf(`${KEY}!`, 'a', ['x']));
+  });
+});
+
+// The wire validators: a loosened `{7,14}` or domain class would let a value Crowded refuses reach its API.
+describe('Crowded input validators', () => {
+  it('E164 is a plus, a non-zero first digit and 8 to 15 digits in all', () => {
+    const accept = ['+12345678', '+123456789012345', '+972501234567', '+12125550100'];
+    const reject = ['+1234567', '+1234567890123456', '+02345678', '+0', '12345678', '+1234 5678', '+12345678a', '+12345678\n', ' +12345678', '++12345678', '+', ''];
+    for (const v of accept) expect(E164.test(v), v).toBe(true);
+    for (const v of reject) expect(E164.test(v), JSON.stringify(v)).toBe(false);
+  });
+
+  it('EMAIL needs one @, no spaces, and a dotted domain of non-empty labels', () => {
+    const accept = ['a@b.co', 'a.b+c@d.e.f', 'first.last@sub.example.org', 'x@y.z'];
+    const reject = ['', 'a', 'a@b', 'a@b.', 'a@.b', 'a@b..c', 'a b@c.d', 'a@b c.d', 'a@@b.c', 'a@b@c.d', '@b.c', 'a@b.c d', 'a@b.c\n', ' a@b.c'];
+    for (const v of accept) expect(EMAIL.test(v), v).toBe(true);
+    for (const v of reject) expect(EMAIL.test(v), JSON.stringify(v)).toBe(false);
+  });
+
+  it('validDate is a real calendar day from 1900 up to and including today', () => {
+    const now = new Date('2026-11-19T12:00:00Z');
+    for (const v of ['1900-01-01', '1999-12-31', '2024-02-29', '2026-11-18', '2026-11-19']) expect(validDate(v, now), v).toBe(true);
+    for (const v of ['1899-12-31', '0001-01-01', '2026-11-20', '2027-01-01', '2023-02-29', '2026-13-01', '2026-00-10', '2026-04-31', '2026-1-1', '20261119', '2026-11-19T00:00:00Z', '', ' 2026-11-19']) expect(validDate(v, now), v).toBe(false);
+    // `<= now` compares the instant: midnight UTC of today is in, and the day before the clock's date is too.
+    expect(validDate('2026-11-19', new Date('2026-11-19T00:00:00Z'))).toBe(true);
+    expect(validDate('2026-11-19', new Date('2026-11-18T23:59:59Z'))).toBe(false);
   });
 });

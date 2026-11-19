@@ -17,8 +17,7 @@
 // naming its `caseId`. The rail, bank reference, amount and value date come from the case, so nothing is retyped
 // (a field given anyway must agree); the credit id is linked through `ops.external_ref`, so the daily statement finds
 // the line recorded; and when the second approver posts it, the case resolves naming the deposit.
-import { createHash } from 'node:crypto';
-import { DomainError, fromWire, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
+import { DomainError, fromWire, isUuidShape, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
 import type { Approver, ApprovalService } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import { requireStaff, staffActor } from '../admin/staff-token.ts';
@@ -34,6 +33,7 @@ import type { InboundEvent } from '../webhooks/store.ts';
 import type { KybGate } from './kyb-gate.ts';
 import { BankError, type BankPort, type IncomingCredit } from '@kesher/ports';
 import { iso } from '../dates.ts';
+import { sha256Buf } from '../crypto/hash.ts';
 import { openCase } from '../ops/cases.ts';
 
 export const DEPOSITS_FLAG = 'institutions.deposits';
@@ -48,7 +48,6 @@ type Status = 'pending' | 'posted' | 'rejected';
 /** Masav moves shekels and ACH dollars; a wire carries either. */
 const RAIL_CURRENCIES: Record<Rail, readonly Currency[]> = { masav: ['ILS'], wire: ['ILS', 'USD'], ach: ['USD'] };
 const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * "KC-7M4QX2HD": what an institution quotes on its transfer so finance can tell whose money arrived. Derived
@@ -56,7 +55,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
  * in Crockford base 32: no I, L, O or U to misread on a statement.
  */
 export function paymentReference(institutionId: string): string {
-  const h = createHash('sha256').update(`kesher-institution:${institutionId.toLowerCase()}`).digest();
+  const h = sha256Buf(`kesher-institution:${institutionId.toLowerCase()}`);
   let out = '';
   for (let i = 0; i < 8; i++) out += CROCKFORD[h[i]! % 32];
   return `KC-${out}`;
@@ -238,7 +237,7 @@ export class InstitutionDeposits {
     const caseId = (body as { caseId?: unknown } | null | undefined)?.caseId;
     if (caseId === undefined) return undefined;
     type Payload = { provider: string; creditId: string; rail: Rail; bankReference: string; amount: { minor: string; currency: Currency }; valueDate: string };
-    const c = typeof caseId === 'string' && UUID.test(caseId) ? (await this.d.db.query<{ kind: string; status: string; payload: Payload }>('select kind, status, payload from ops.case where id = $1', [caseId])).rows[0] : undefined;
+    const c = typeof caseId === 'string' && isUuidShape(caseId) ? (await this.d.db.query<{ kind: string; status: string; payload: Payload }>('select kind, status, payload from ops.case where id = $1', [caseId])).rows[0] : undefined;
     if (!c || c.kind !== 'suspense' || (c.status !== 'open' && c.status !== 'investigating')) throw new DomainError('VALIDATION_FAILED', 'caseId must name an open suspense case');
     const p = c.payload;
     return { id: caseId as string, provider: p.provider, creditId: p.creditId, fields: { rail: p.rail, bankReference: normalizeReference(p.bankReference).slice(0, 64), amount: p.amount, valueDate: p.valueDate } };
@@ -464,12 +463,12 @@ export class InstitutionDeposits {
   }
 
   private async requireInstitution(id: string): Promise<void> {
-    const r = UUID.test(id) ? await this.d.db.query('select 1 from org.institution where id = $1', [id]) : { rowCount: 0 };
+    const r = isUuidShape(id) ? await this.d.db.query('select 1 from org.institution where id = $1', [id]) : { rowCount: 0 };
     if (!r.rowCount) throw new DomainError('NOT_FOUND', 'Institution not found');
   }
 
   private async requireRow(id: string): Promise<Row> {
-    const r = UUID.test(id) ? await this.row(id) : undefined;
+    const r = isUuidShape(id) ? await this.row(id) : undefined;
     if (!r) throw new DomainError('NOT_FOUND', 'Deposit not found');
     return r;
   }

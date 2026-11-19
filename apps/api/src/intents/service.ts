@@ -9,7 +9,7 @@
 // swept to expired, unless its money already started under its key (an approval that crashed before its
 // status write): that one is the member's approval, finished as such by a late approval or by the sweep.
 import { createHash } from 'node:crypto';
-import { DomainError, fromWire, uuidv7, type Money } from '@kesher/domain';
+import { DomainError, fromWire, isUuidShape, uuidv7, type Money } from '@kesher/domain';
 import type { Database } from '../db.ts';
 import type { HttpRequest, Principal } from '../http.ts';
 import { assertNotRestricted } from '../auth/recovery.ts';
@@ -19,7 +19,8 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import { P2P_FLAG } from '../p2p/handlers.ts';
 import type { P2pSendService } from '../p2p/send.ts';
 import type { TransferService, Transfer } from '../transfers/service.ts';
-import { WALLET_FLAG, type LoadService, type LoadView } from '../wallet/loads.ts';
+import { requireWalletOn } from '../wallet/flag.ts';
+import type { LoadService, LoadView } from '../wallet/loads.ts';
 
 export const INTENT_TTL_MS = 24 * 3_600_000;
 const INTENT_KEY_PREFIX = 'intent:';
@@ -153,7 +154,7 @@ export class IntentService {
       const amount = parseMoney(input.payload['amount']);
       if (amount.minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'Amount must be positive');
       // A member id, checked now: a phone or a name here would only fail later, at the member's passkey (T-1013).
-      if (input.kind === 'p2p' && !(typeof input.payload['toPartyId'] === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.payload['toPartyId']))) throw new DomainError('VALIDATION_FAILED', 'toPartyId must be a member id');
+      if (input.kind === 'p2p' && !(typeof input.payload['toPartyId'] === 'string' && isUuidShape(input.payload['toPartyId']))) throw new DomainError('VALIDATION_FAILED', 'toPartyId must be a member id');
     }
     const id = uuidv7(now);
     await this.db.query(`insert into agent.pending_intent (id, grant_id, party_id, kind, payload, status, expires_at) values ($1, $2, $3, $4, $5, 'pending', $6)`, [id, input.grantId, input.partyId, input.kind, JSON.stringify(input.payload), new Date(now.getTime() + INTENT_TTL_MS)]);
@@ -367,7 +368,7 @@ export class IntentService {
     if (intent.kind === 'limit_change') return {};
     const key = intentKey(intent.id);
     if (intent.kind === 'load') {
-      if (!(await this.flags.isOn(WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
+      await requireWalletOn(this.flags);
       // The approver pays; LoadService judges the method and whose purse they may fund.
       const load = await this.money.loads.request(intent.partyId, { memberPartyId: intent.payload['memberPartyId'] ?? intent.partyId, amount: intent.payload['amount'], ...choice }, key, now);
       return { transfer: (await this.transfers.byKey(key))!, load };

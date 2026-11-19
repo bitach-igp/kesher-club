@@ -3,7 +3,7 @@
 // member between cohorts moves no money. Placements are insert-only; a member's cohort is the latest. A batch of
 // up to 500 is all or nothing: one member or cohort of another institution and nobody is placed. Another
 // institution reads as not found.
-import { DomainError, uuidv7 } from '@kesher/domain';
+import { DomainError, isUuidShape, uuidv7 } from '@kesher/domain';
 import { isPgError, PG, type Database } from '../db.ts';
 import { created, ok, requireIdempotencyKey, requireRole, route, type Handler } from '../http.ts';
 import type { StaffOf } from './ach.ts';
@@ -11,7 +11,6 @@ import { day } from '../dates.ts';
 
 export const MAX_BATCH = 500;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface Cohort {
   id: string;
@@ -89,11 +88,11 @@ export class Cohorts {
   /** Places roster members in the cohort, all or none; a retried batch places nobody twice. */
   async place(institutionId: string, cohortId: string, body: unknown, key: string, by: string, now: Date): Promise<{ cohort: Cohort; placed: number }> {
     const ids = (body as { memberIds?: unknown } | undefined)?.memberIds;
-    if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_BATCH || !ids.every((x): x is string => typeof x === 'string' && UUID.test(x))) {
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > MAX_BATCH || !ids.every((x): x is string => typeof x === 'string' && isUuidShape(x))) {
       throw new DomainError('VALIDATION_FAILED', `memberIds must be 1 to ${MAX_BATCH} roster member ids`);
     }
     const memberIds = [...new Set(ids.map((x) => x.toLowerCase()))];
-    const cohort = UUID.test(cohortId) ? await this.get(institutionId, cohortId) : undefined;
+    const cohort = isUuidShape(cohortId) ? await this.get(institutionId, cohortId) : undefined;
     if (!cohort) throw new DomainError('NOT_FOUND', 'Cohort not found');
     const placed = await this.db.transaction(async (tx) => {
       const own = await tx.query<{ id: string }>('select id from org.member where institution_id = $1 and id = any($2::uuid[])', [institutionId, memberIds]);

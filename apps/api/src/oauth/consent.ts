@@ -9,7 +9,7 @@
 // is decided once: a second tap finds it decided.
 import { randomBytes } from 'node:crypto';
 import { sha256Buf } from '../crypto/hash.ts';
-import { DomainError, uuidv7 } from '@kesher/domain';
+import { DomainError, isUuidShape, uuidv7 } from '@kesher/domain';
 import { SCOPES, type ScopeTier } from '@kesher/ports';
 import type { AuditService } from '../audit/service.ts';
 import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
@@ -19,7 +19,6 @@ import { ok, requirePrincipal, route, type Handler } from '../http.ts';
 import { MCP_FLAG, type OAuthConfig } from './authorize.ts';
 
 export const CODE_TTL_MS = 60_000;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const codeHash = sha256Buf;
 
@@ -90,7 +89,7 @@ export class ConsentService {
 
   /** A pending, unexpired request this member may decide; the first member to open it claims it. */
   private async open(id: string, partyId: string, now: Date): Promise<RequestRow> {
-    if (!UUID.test(id)) throw new DomainError('NOT_FOUND', 'No such request');
+    if (!isUuidShape(id)) throw new DomainError('NOT_FOUND', 'No such request');
     await this.db.query(`update agent.authorization_request set party_id = $2 where id = $1 and party_id is null and status = 'pending'`, [id, partyId]);
     const r = (
       await this.db.query<RequestRow>(

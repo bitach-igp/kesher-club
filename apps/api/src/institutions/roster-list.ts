@@ -3,7 +3,7 @@
 // currency and plan. A row type with no spend field at all: merchant-level spend reaches staff only through the
 // student's live consent (REQ-INS-005, T-0641), never here. Balances are read from the ledger's postings and never
 // create accounts, so a GET writes nothing.
-import { DomainError, money, toWire, type Currency } from '@kesher/domain';
+import { DomainError, isUuidShape, money, toWire, type Currency } from '@kesher/domain';
 import type { Database } from '../db.ts';
 import { ok, requireRole, route, type Handler } from '../http.ts';
 import type { StaffOf } from './ach.ts';
@@ -12,7 +12,6 @@ export const PAGE = 50;
 const STATUSES = ['invited', 'verified', 'active', 'declined', 'removed'] as const;
 type Status = (typeof STATUSES)[number];
 const CURRENCIES: readonly Currency[] = ['ILS', 'USD'];
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export type CardState = 'none' | 'inactive' | 'active' | 'frozen';
 
@@ -41,7 +40,7 @@ function decodeCursor(cursor: string | undefined): [string, string] | undefined 
   if (!cursor) return undefined;
   try {
     const v = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as unknown;
-    if (Array.isArray(v) && typeof v[0] === 'string' && typeof v[1] === 'string' && UUID.test(v[1])) return [v[0], v[1]];
+    if (Array.isArray(v) && typeof v[0] === 'string' && typeof v[1] === 'string' && isUuidShape(v[1])) return [v[0], v[1]];
   } catch {
     // fall through
   }
@@ -59,7 +58,7 @@ export class RosterList {
 
   async page(institutionId: string, filter: { status?: string | undefined; cohort?: string | undefined; cursor?: string | undefined; memberId?: string | undefined }): Promise<{ items: RosterRow[]; nextCursor?: string }> {
     if (filter.status !== undefined && !(STATUSES as readonly string[]).includes(filter.status)) throw new DomainError('VALIDATION_FAILED', `status must be one of ${STATUSES.join(', ')}`);
-    if (filter.cohort !== undefined && !UUID.test(filter.cohort)) throw new DomainError('VALIDATION_FAILED', 'cohort must be a cohort id');
+    if (filter.cohort !== undefined && !isUuidShape(filter.cohort)) throw new DomainError('VALIDATION_FAILED', 'cohort must be a cohort id');
     const after = decodeCursor(filter.cursor);
     const r = await this.db.query<Row>(
       `with cur as (select distinct on (cm.member_id) cm.member_id, cm.cohort_id from org.cohort_member cm order by cm.member_id, cm.seq desc)
@@ -94,7 +93,7 @@ export class RosterList {
 
   /** One member's roster row, for the student page (T-0641); another institution's member reads as none. */
   async one(institutionId: string, memberId: string): Promise<RosterRow | undefined> {
-    if (!UUID.test(memberId)) return undefined;
+    if (!isUuidShape(memberId)) return undefined;
     return (await this.page(institutionId, { memberId })).items[0];
   }
 
