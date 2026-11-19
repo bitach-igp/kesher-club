@@ -46,13 +46,19 @@ export function fromWire(w: { minor: string; currency: string }): Money {
   return money(BigInt(w.minor), w.currency);
 }
 
+/** Minor units as plain decimal text with two places and no grouping: 5000n → "50.00", -5n → "-0.05". */
+export function toDecimal(minor: bigint): string {
+  const negative = minor < 0n;
+  const abs = negative ? -minor : minor;
+  return `${negative ? '-' : ''}${abs / 100n}.${(abs % 100n).toString().padStart(2, '0')}`;
+}
+
 /** Display only; never parse this back. Uses U+2212 for negatives. */
 export function format(a: Money, locale: 'en-US' | 'he-IL' = 'en-US'): string {
   const negative = a.minor < 0n;
   const abs = negative ? -a.minor : a.minor;
-  const whole = abs / 100n;
-  const frac = (abs % 100n).toString().padStart(2, '0');
-  const grouped = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  const [whole = '0', frac = '00'] = toDecimal(abs).split('.');
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   const symbol = a.currency === 'USD' ? '$' : '₪';
   const body = locale === 'he-IL' ? `${grouped}.${frac} ${symbol}` : `${symbol}${grouped}.${frac}`;
   return negative ? `−${body}` : body;

@@ -13,7 +13,7 @@
 //   pnpm --filter @kesher/demo seed     (DEMO_API_URL and DEMO_PANEL_URL default to the dev ports)
 import { pathToFileURL } from 'node:url';
 import { importJWK, SignJWT, type JWK } from 'jose';
-import { loadConfig } from '@kesher/domain';
+import { loadConfig, toDecimal } from '@kesher/domain';
 import { SIM_OTP_CODE, type PasskeyAuthenticationOptions, type PasskeyRegistrationOptions } from '@kesher/ports';
 import { ApiError, createClient, type Schemas } from '@kesher/sdk';
 import { z } from 'zod';
@@ -356,17 +356,11 @@ const apiBase = (target: SeedTarget): string => {
   return base.endsWith('/v1') ? base : `${base}/v1`;
 };
 
-const major = (minor: bigint): string => {
-  const sign = minor < 0n ? '-' : '';
-  const abs = minor < 0n ? -minor : minor;
-  return `${sign}${abs / 100n}.${(abs % 100n).toString().padStart(2, '0')}`;
-};
-
 /** The table the seed prints: the same on every run against the same database. */
 export function formatTable(result: SeedResult): string {
   const rows = result.personas;
   const head = ['persona', 'name', 'market', 'phone', 'party', 'kyc', 'USD', 'ILS', 'card', 'recordings'];
-  const body = rows.map((r) => [r.persona.key, r.persona.name, r.persona.market, r.persona.phone, r.partyId, r.kyc, major(r.usd), major(r.ils), r.card, r.persona.recs.join(' ')]);
+  const body = rows.map((r) => [r.persona.key, r.persona.name, r.persona.market, r.persona.phone, r.partyId, r.kyc, toDecimal(r.usd), toDecimal(r.ils), r.card, r.persona.recs.join(' ')]);
   const widths = head.map((h, i) => Math.max(h.length, ...body.map((row) => row[i]!.length)));
   const line = (cells: readonly string[]): string => cells.map((c, i) => c.padEnd(widths[i]!)).join('  ').trimEnd();
   const i = result.institution;

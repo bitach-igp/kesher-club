@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
-import { add, applyBps, CurrencyMismatchError, format, fromWire, money, roundUpTo99, sub, toWire } from './money.ts';
+import { add, applyBps, CurrencyMismatchError, format, fromWire, money, roundUpTo99, sub, toDecimal, toWire } from './money.ts';
 
 const minor = fc.bigInt({ min: -(10n ** 12n), max: 10n ** 12n });
 
@@ -59,6 +59,24 @@ describe('roundUpTo99', () => {
       expect(r % 100n).toBe(99n);
       expect(r >= n).toBe(true);
       expect(r - n < 100n).toBe(true);
+    }));
+  });
+});
+
+describe('toDecimal', () => {
+  it('writes two places with no grouping', () => {
+    expect(toDecimal(0n)).toBe('0.00');
+    expect(toDecimal(5n)).toBe('0.05');
+    expect(toDecimal(5000n)).toBe('50.00');
+    expect(toDecimal(123456789n)).toBe('1234567.89');
+  });
+  it('keeps the sign on negatives, including those under one major unit', () => {
+    expect(toDecimal(-5n)).toBe('-0.05');
+    expect(toDecimal(-5000n)).toBe('-50.00');
+  });
+  it('round-trips through BigInt for any amount', () => {
+    fc.assert(fc.property(minor, (n) => {
+      expect(BigInt(toDecimal(n).replace('.', ''))).toBe(n);
     }));
   });
 });
