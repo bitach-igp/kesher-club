@@ -33,8 +33,6 @@ import type { P2pLimitService } from './limits.ts';
 
 export const P2P_JOURNAL_KIND = 'p2p';
 export const RECEIVED_TEMPLATE = 'money.p2p_received';
-/** REQ-PAY-001: the recipient hears within this long of the send settling. */
-export const NOTIFY_SLA_MS = 5_000;
 export const NOTE_MAX = 140;
 
 export interface SendInput {

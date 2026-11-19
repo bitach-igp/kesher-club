@@ -13,7 +13,7 @@ import { createApp, type App } from '../app.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { PostgresKeyLedger, clientIp } from './us-banking.ts';
+import { clientIp } from './us-banking.ts';
 import type { HttpRequest } from '../http.ts';
 
 let db: TestDatabase;
@@ -283,20 +283,6 @@ describe('hardening (Opus review of T-0650)', () => {
     const after = (await rows(RJ)).map((r) => r.status);
     expect(after.length).toBeLessThanOrEqual(before + 1);
     for (let i = 1; i < after.length; i++) expect(after[i]).not.toBe(after[i - 1]);
-  });
-});
-
-describe('the Postgres key ledger (T-0648\'s KeyLedger)', () => {
-  it('remembers a result by key, first write wins, and a missing key is undefined', async () => {
-    const ledger = new PostgresKeyLedger(db, () => NOW);
-    expect(await ledger.get('entity:key-1')).toBeUndefined();
-    await ledger.put('entity:key-1', { body: 'hash-a', result: { entityRef: 'ch000001' } });
-    await ledger.put('entity:key-1', { body: 'hash-b', result: { entityRef: 'ch000002' } });
-    expect(await ledger.get('entity:key-1')).toEqual({ body: 'hash-a', result: { entityRef: 'ch000001' } });
-    await ledger.put('holder:ch000001', { body: '', result: 'institution' });
-    expect(await ledger.get('holder:ch000001')).toEqual({ body: '', result: 'institution' });
-    await ledger.put('nothing', { body: 'h', result: undefined });
-    expect(await ledger.get('nothing')).toEqual({ body: 'h', result: undefined });
   });
 });
 

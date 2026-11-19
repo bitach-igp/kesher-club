@@ -44,8 +44,6 @@ export interface ReconReport {
   withinDeadline: boolean;
 }
 
-export const DEADLINE_IL = '06:00';
-
 /** 06:00 Asia/Jerusalem on `runDate`, as an instant. */
 export function deadlineFor(runDate: string): Date {
   // Israel is UTC+2 (IST) or UTC+3 (IDT); derive the offset from Intl so DST is right.
