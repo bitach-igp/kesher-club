@@ -17,7 +17,7 @@ import type { AccountService } from '../ledger/accounts.ts';
 import type { DisplayNameService } from '../me/display-name.ts';
 import type { CardService, CardView } from '../cards/service.ts';
 import { requireWalletOn } from './flag.ts';
-import type { Transaction, TransactionService } from './transactions.ts';
+import { PAGE, type Transaction, type TransactionService } from './transactions.ts';
 
 export interface HouseholdMember {
   partyId: string;
@@ -68,7 +68,7 @@ export function categoryOf(mcc: string | undefined): SpendCategory {
 export interface MemberActivity {
   partyId: string;
   displayName: string;
-  /** The latest 50 across both purses, newest first. */
+  /** The latest page across both purses, newest first. */
   transactions: Transaction[];
   /** This calendar month's card spend (UTC), held or cleared but not released, per category and currency. */
   spendByCategory: { category: SpendCategory; amount: ReturnType<typeof toWire> }[];
@@ -130,7 +130,7 @@ export class HouseholdService {
     const transactions = pages
       .flatMap((p) => p.items)
       .sort((a, b) => b.at.localeCompare(a.at) || b.id.localeCompare(a.id))
-      .slice(0, 50);
+      .slice(0, PAGE);
     const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     const spend = await this.d.db.query<{ mcc: string | null; currency: Currency; total: string }>(
       `select j.metadata->>'mcc' as mcc, p.currency, sum(p.amount_minor)::text as total
