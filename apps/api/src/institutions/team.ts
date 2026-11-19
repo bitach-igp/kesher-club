@@ -19,6 +19,7 @@ import type { Database } from '../db.ts';
 import { created, ok, requireIdempotencyKey, requirePrincipal, requireRole, route, type Handler, type HttpRequest } from '../http.ts';
 import { ORG_ROLE, STAFF_ROLES, type StaffRole } from '../admin/institutions.ts';
 import { approvalBody } from '../admin/handlers.ts';
+import { iso } from '../dates.ts';
 
 export const STAFF_INVITE_BASE_URL = 'https://console.kesher.example/staff-invite?token=';
 const INVITE_TTL_MS = 7 * 86_400_000;
@@ -26,7 +27,6 @@ const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const PHONE = /^\+[1-9]\d{7,14}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const sha256 = (s: string): string => createHash('sha256').update(s).digest('hex');
-const iso = (v: string | Date): string => new Date(v).toISOString();
 
 export interface TeamMember {
   partyId: string;

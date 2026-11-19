@@ -5,6 +5,7 @@
 import { DomainError, uuidv7 } from '@kesher/domain';
 import type { AuditService } from '../audit/service.ts';
 import type { Database, SqlClient } from '../db.ts';
+import { iso } from '../dates.ts';
 
 /** The audit service wants a Database; inside a transaction the client is the transaction. */
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
@@ -69,7 +70,6 @@ interface Row {
   escalated_to_bank: boolean;
 }
 
-const iso = (v: string | Date): string => new Date(v).toISOString();
 
 const toComplaint = (r: Row): Complaint => ({
   id: r.id,

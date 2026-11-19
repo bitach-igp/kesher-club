@@ -33,6 +33,7 @@ import type { WebhookVerifier } from '../webhooks/verify.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { KybGate } from './kyb-gate.ts';
 import { BankError, type BankPort, type IncomingCredit } from '@kesher/ports';
+import { iso } from '../dates.ts';
 
 export const DEPOSITS_FLAG = 'institutions.deposits';
 export const BANK_FEED_FLAG = 'institutions.bankFeed';
@@ -126,7 +127,6 @@ interface Row {
 }
 
 const COLUMNS = 'id, idempotency_key, institution_id, rail, bank_reference, amount_minor::text, currency, value_date::text as value_date, note, status, approval_id, journal_id, recorded_by, created_at, decided_at';
-const iso = (v: string | Date): string => new Date(v).toISOString();
 /** The `date` column, read as text (YYYY-MM-DD) so no driver turns it into a local midnight. */
 const day = (v: string): string => v.slice(0, 10);
 

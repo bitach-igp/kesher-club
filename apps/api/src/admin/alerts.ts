@@ -4,6 +4,7 @@
 import { DomainError } from '@kesher/domain';
 import type { AuditService } from '../audit/service.ts';
 import type { Database, SqlClient } from '../db.ts';
+import { iso } from '../dates.ts';
 
 /** The audit service wants a Database; inside a transaction the client is the transaction. */
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
@@ -51,7 +52,6 @@ interface Row {
   decision_note: string | null;
 }
 
-const iso = (v: string | Date): string => new Date(v).toISOString();
 
 /** A case without a disposition is open; investigating/resolved/dismissed without one came from elsewhere and read as in_review/cleared. */
 const statusOf = (r: Row): AlertStatus => r.disposition ?? (r.status === 'open' ? 'open' : r.status === 'investigating' ? 'in_review' : 'cleared');

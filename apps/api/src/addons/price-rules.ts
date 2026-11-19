@@ -9,6 +9,7 @@ import type { ApprovalRequest, ApprovalService, Approver } from '../approvals/se
 import type { AuditService } from '../audit/service.ts';
 import type { Database } from '../db.ts';
 import { created, ok, route, type Handler } from '../http.ts';
+import { iso } from '../dates.ts';
 
 export type RuleKind = 'esim' | 'insurance' | 'concierge';
 export type RuleState = 'proposed' | 'active' | 'rejected';
@@ -55,7 +56,6 @@ interface Row {
   created_at: string | Date;
 }
 
-const iso = (v: string | Date): string => new Date(v).toISOString();
 const view = (r: Row): PriceRuleView => ({
   id: r.id,
   kind: r.kind,

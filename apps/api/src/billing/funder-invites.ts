@@ -19,6 +19,7 @@ import type { KycService } from '../kyc/service.ts';
 import type { DisplayNameService } from '../me/display-name.ts';
 import type { MembershipService } from './memberships.ts';
 import type { PlanService } from './plans.ts';
+import { iso } from '../dates.ts';
 
 export const INVITE_TTL_MS = 7 * 86_400_000;
 /** The member app's M04 reads the token from the query (T-0309); institution invites keep `invite?token=`. */
@@ -61,7 +62,6 @@ interface Row {
   created_at: string | Date;
 }
 
-const iso = (v: string | Date): string => new Date(v).toISOString();
 const hash = (s: string): string => createHash('sha256').update(s).digest('base64url');
 const mask = (kind: 'phone' | 'email', c: string): string => (kind === 'phone' ? `•••• ${c.slice(-4)}` : `${c[0]}•••${c.slice(c.indexOf('@'))}`);
 /** An open invite past its 7 days reads expired, whether or not a write has marked it yet. */

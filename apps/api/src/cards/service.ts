@@ -11,6 +11,7 @@ import type { KycService } from '../kyc/service.ts';
 import { provisionPendingAccounts } from '../ledger/accounts.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import { applyPatch, type Actor, type ControlsPatch } from './controls.ts';
+import { iso } from '../dates.ts';
 
 export const ISSUE_FLAG = 'card.virtual';
 /** last_event_id markers on cards.card_token for the freeze cascade (REQ-CRD-004). */
@@ -89,7 +90,6 @@ interface Row {
   issued_at: string | Date;
 }
 
-const iso = (v: string | Date): string => new Date(v).toISOString();
 
 export class CardService {
   private readonly db: Database;

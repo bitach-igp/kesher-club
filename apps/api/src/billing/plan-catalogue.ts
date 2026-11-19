@@ -11,6 +11,7 @@ import type { AuditService } from '../audit/service.ts';
 import type { Database } from '../db.ts';
 import { created, ok, requirePrincipal, route, type Handler } from '../http.ts';
 import { DEFAULT_FX_MARKUP_BPS, type EntitlementTemplates, type PlanService } from './plans.ts';
+import { iso } from '../dates.ts';
 
 export type VersionState = 'proposed' | 'active' | 'rejected';
 type Market = 'IL' | 'US';
@@ -63,7 +64,6 @@ interface Row {
   decided_at: string | Date | null;
 }
 
-const iso = (v: string | Date): string => new Date(v).toISOString();
 const view = (r: Row): PlanVersionView => ({
   planCode: r.plan_code,
   name: r.name,
