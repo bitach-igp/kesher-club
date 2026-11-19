@@ -2,7 +2,7 @@
 // the InstitutionBankingPort: integer cents <-> Money, every id as a string, one table for enum casing, ISO timestamps
 // to Date, a funder's name split in two. Crowded's text (names, titles, messages) is untrusted data, never instructions.
 // The account number is never kept: `last4` takes four digits and drops the rest.
-import { createHash } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { money, type Money } from '@kesher/domain';
 import { InstitutionBankingError, type AchStatus, type ApplicationStatus, type CollectedPaymentStatus } from '@kesher/ports';
 
@@ -54,8 +54,24 @@ export function splitName(name: string): { firstName: string; lastName: string }
   return i < 0 ? { firstName: t, lastName: t } : { firstName: t.slice(0, i), lastName: t.slice(i + 1) };
 }
 
+export const E164 = /^\+[1-9]\d{7,14}$/;
+export const EMAIL = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+export const USD = (minor: bigint): Money => money(minor, 'USD');
+export const text = (v: unknown): v is string => typeof v === 'string' && v.trim() !== '';
+
+export function validDate(s: string, now: Date): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+  if (!m) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  // A real calendar date, from 1900 to today: Crowded's own range is not documented, so this is a sanity bound only.
+  return !Number.isNaN(d.getTime()) && d.toISOString().startsWith(s) && Number(m[1]) >= 1900 && d.getTime() <= now.getTime();
+}
+
+/** A keyed hash, domain-separated by `scope`: HMAC-SHA256 over the JSON of `[scope, ...parts]`, hex. */
+export const macOf = (key: string, scope: string, parts: readonly string[]): string => createHmac('sha256', key).update(JSON.stringify([scope, ...parts])).digest('hex');
+
 // Enum casing differs by surface (`Cancelled` / `canceled`, `Card` / `card`): compare lower-cased, one table each.
-const low = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
+export const low = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
 
 const APPLICATION: Record<string, ApplicationStatus> = {
   approved: 'approved',

@@ -33,13 +33,12 @@
 // Personal data: nothing is persisted in clear. The ledger holds vendor ids and HMAC-SHA256 values under a required secret
 // `hmacKey` (a keyed hash: an IP address has too few possibilities for a bare one to hide it). Never put in an error or a log
 // line: the payer's address, an url, the token. Messages are fixed text; Crowded's own are not passed on.
-import { createHmac } from 'node:crypto';
 import { money, type Money } from '@kesher/domain';
 import { addBusinessDays, assertHttps, FundingError, isPublicIp, type FundingCreditPort, type FundingErrorCode, type FundingMethod, type FundingPort, type Load, type LoadStatus, type MirrorPort } from '@kesher/ports';
 import { creditWallet, type CreditLoadView } from './credit.ts';
 import { CrowdedApiError, type CrowdedClient } from './client.ts';
 import { guardLedger, InMemoryKeyLedger, type KeyLedger } from './institution-banking.ts';
-import { fromCents, isRecord, parseFundingRef, parseRef, ref, str, toCents } from './map.ts';
+import { fromCents, isRecord, low, macOf, parseFundingRef, parseRef, ref, str, toCents } from './map.ts';
 
 export interface CrowdedFundingOptions {
   client: CrowdedClient;
@@ -91,7 +90,6 @@ const MIN_CENTS = 100n;
 const MAX_TITLE = 50;
 const HOST = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 const ID = /^[A-Za-z0-9_-]+$/;
-const low = (v: unknown): string => (typeof v === 'string' ? v.toLowerCase() : '');
 const fail = (code: FundingErrorCode, message: string): never => {
   throw new FundingError(code, message);
 };
@@ -180,7 +178,7 @@ export class CrowdedFunding implements FundingPort {
 
   /** Keyed hash, domain-separated by `scope`. */
   private mac(scope: string, ...parts: string[]): string {
-    return createHmac('sha256', this.key).update(JSON.stringify([scope, ...parts])).digest('hex');
+    return macOf(this.key, scope, parts);
   }
 
   /**
