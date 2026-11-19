@@ -382,7 +382,7 @@
 | [T-0759](T-0759.md) | SETUP | Counsel brief for option 2: exempt purposes, private benefit, donations, closure and fees | — | later (option 2, WAITING on counsel) |
 | [T-0760](T-0760.md) | CRD | SCOPING: a card on a member's sub-account | REQ-CRD-003 | later (option 2, WAITING on Crowded and D3) |
 | [T-0761](T-0761.md) | WAL | Typed credit-marker functions: `recordCreditBegan`, `recordCreditOutcome`, `creditAttemptState` are the only readers and writers of the credit markers (A2) | — | later (built, PR open) · first of the chain |
-| [T-0762](T-0762.md) | WAL | One typed ref grammar for sub-account and marker refs (`s:` in ports, `o:` and `p:` in apps/api); no SQL string building in the Crowded webhook (A3) | — | later (scoped 2026-11-19) · independent of T-0761 |
+| [T-0762](T-0762.md) | WAL | One typed ref grammar for sub-account and marker refs (`s:` in ports, `o:` and `p:` in apps/api); no SQL string building in the Crowded webhook (A3) | — | later (built, PR open) · independent of T-0761 |
 | [T-0763](T-0763.md) | WAL | The failed-owner rule is enforced on the credit path in LoadService, not in the webhook; a skipped credit is retried by the sweep (A1) | REQ-WAL-003 | later (scoped 2026-11-19) · after T-0761 (T-0762 soft) |
 | [T-0764](T-0764.md) | WAL | Split `loads.ts` 1/4: workflow body, types and pure helpers move out; API unchanged (A5) | — | later (scoped 2026-11-19) · after T-0761 |
 | [T-0765](T-0765.md) | WAL | Split `loads.ts` 2/4: case openers move to `load-cases.ts`, one reopen helper (A5) | — | later (scoped 2026-11-19) · after T-0764 |

@@ -14,10 +14,11 @@
 import { createHash } from 'node:crypto';
 import { crowdedHeaderValue, crowdedRef, CROWDED_SIGNATURE_HEADER, verifyCrowdedSignature } from '@kesher/adapters';
 import { DomainError } from '@kesher/domain';
-import type { AchStatus, ApplicationStatus, InstitutionBankingPort } from '@kesher/ports';
+import { subAccountRef, type AchStatus, type ApplicationStatus, type InstitutionBankingPort } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { openCase } from '../ops/cases.ts';
+import { isOwnerFailedMarker } from '../wallet/sub-account-markers.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF, SUBACCOUNT_REF } from '../wallet/sub-accounts.ts';
 import { HttpError, ok, route, type Handler, type HttpRequest } from '../http.ts';
 import type { InboundEvent, InboundEventStore } from './store.ts';
@@ -73,23 +74,24 @@ export const CHAPTER_CACHE_MS = 10_000;
 
 /**
  * The `ops.external_ref` side of the sub-account dispatch (T-0757). A chapter is a member's when a `funding_subaccount` ref of the
- * funding provider reads `s:<chapter>` or `s:<chapter>:<account>`; the match is on the chapter boundary, so `s:ab1` is not chapter `ab`,
+ * funding provider reads exactly `s:<chapter>` (`subAccountRef`, T-0762); equality on the whole ref is the chapter boundary, so `s:ab1` is not chapter `ab`,
  * and a chapter with no ref (the nonprofit's own included) is not a member chapter. No pattern matching: the chapter id is compared as text.
  */
 export function subAccountChapters(db: Database, provider: string): { isMemberChapter(chapterId: string): Promise<boolean>; ownerFailed(chapterId: string, now: Date): Promise<boolean> } {
-  const match = `r.entity_type = $1 and r.provider = $2 and (r.external_id = 's:' || $3::text or left(r.external_id, length($3::text) + 3) = 's:' || $3::text || ':')`;
+  const match = `r.entity_type = $1 and r.provider = $2 and r.external_id = $3`;
   return {
     async isMemberChapter(chapterId) {
-      const r = await db.query(`select 1 from ops.external_ref r where ${match} limit 1`, [SUBACCOUNT_REF, provider, chapterId]);
+      const r = await db.query(`select 1 from ops.external_ref r where ${match} limit 1`, [SUBACCOUNT_REF, provider, subAccountRef(chapterId)]);
       return r.rows.length > 0;
     },
     async ownerFailed(chapterId, now) {
-      const r = await db.query<{ party: string }>(
-        `select r.entity_id::text as party from ops.external_ref r where ${match}
-           and exists (select 1 from ops.external_ref o where o.entity_type = $4 and o.entity_id = r.entity_id and o.provider = $2 and o.external_id = 'o:' || r.entity_id::text || ':failed') limit 1`,
-        [SUBACCOUNT_REF, provider, chapterId, SUBACCOUNT_OWNER_REF],
+      const r = await db.query<{ party: string; marker: string }>(
+        `select r.entity_id::text as party, o.external_id as marker from ops.external_ref r
+           join ops.external_ref o on o.entity_type = $4 and o.entity_id = r.entity_id and o.provider = $2
+          where ${match}`,
+        [SUBACCOUNT_REF, provider, subAccountRef(chapterId), SUBACCOUNT_OWNER_REF],
       );
-      const party = r.rows[0]?.party;
+      const party = r.rows.find((x) => isOwnerFailedMarker(x.party, x.marker))?.party;
       if (party === undefined) return false;
       // The same case T-0752 opened when the owner failed (same dedupe key): nothing new if it is there, one for staff if it is not.
       await openCase(db, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(party), severity: 'medium', payload: { partyId: party }, now });
