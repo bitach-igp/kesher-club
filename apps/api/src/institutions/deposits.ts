@@ -17,7 +17,6 @@
 // naming its `caseId`. The rail, bank reference, amount and value date come from the case, so nothing is retyped
 // (a field given anyway must agree); the credit id is linked through `ops.external_ref`, so the daily statement finds
 // the line recorded; and when the second approver posts it, the case resolves naming the deposit.
-import { createHash } from 'node:crypto';
 import { DomainError, fromWire, isUuidShape, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
 import type { Approver, ApprovalService } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
@@ -34,6 +33,7 @@ import type { InboundEvent } from '../webhooks/store.ts';
 import type { KybGate } from './kyb-gate.ts';
 import { BankError, type BankPort, type IncomingCredit } from '@kesher/ports';
 import { iso } from '../dates.ts';
+import { sha256Buf } from '../crypto/hash.ts';
 import { openCase } from '../ops/cases.ts';
 
 export const DEPOSITS_FLAG = 'institutions.deposits';
@@ -55,7 +55,7 @@ const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
  * in Crockford base 32: no I, L, O or U to misread on a statement.
  */
 export function paymentReference(institutionId: string): string {
-  const h = createHash('sha256').update(`kesher-institution:${institutionId.toLowerCase()}`).digest();
+  const h = sha256Buf(`kesher-institution:${institutionId.toLowerCase()}`);
   let out = '';
   for (let i = 0; i < 8; i++) out += CROCKFORD[h[i]! % 32];
   return `KC-${out}`;

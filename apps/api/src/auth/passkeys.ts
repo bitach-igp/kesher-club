@@ -1,9 +1,10 @@
 // Passkey registration (T-0110, REQ-AUTH-001) and authentication with device binding (T-0111,
 // REQ-AUTH-002). Two-step ceremonies: a call without `response` returns options; the second call
 // verifies. Passkeys are the only sign-in; the response carries the recovery entry point as a link.
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { DomainError, uuidv7 } from '@kesher/domain';
 import type { AuthPort, Clock, PasskeyAuthenticationOptions, PasskeyAuthenticationResponse, PasskeyRegistrationOptions, PasskeyRegistrationResponse } from '@kesher/ports';
+import { sha256Url } from '../crypto/hash.ts';
 import type { Principal } from '../http.ts';
 import type { OtpService } from './otp.ts';
 import type { IdentityRepository, StoredPasskey } from './repository.ts';
@@ -73,7 +74,7 @@ export class PasskeyService {
   async register(input: RegisterInput): Promise<RegisterResult> {
     const now = this.clock.now();
     // The key may embed the otp-session token, so only its hash reaches the table.
-    const ceremonyKey = createHash('sha256').update(`${input.deviceId}|${input.otpSessionToken ?? input.principal?.partyId ?? input.recoveryFor ?? ''}`).digest('base64url');
+    const ceremonyKey = sha256Url(`${input.deviceId}|${input.otpSessionToken ?? input.principal?.partyId ?? input.recoveryFor ?? ''}`);
     if (!input.response) {
       const partyId = input.recoveryFor ?? input.principal?.partyId ?? `pending:${randomUUID()}`;
       const options = await this.port.registrationOptions({ id: partyId, name: input.principal ? partyId : 'new member' });

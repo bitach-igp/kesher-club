@@ -3,10 +3,10 @@
 // One call is one batch, written in one transaction: all of its items or none. The batch keeps the call's
 // Idempotency-Key and the body's fingerprint, so a retry answers the batch it made and the same key with another
 // body is a conflict. The description is staff-entered text the member sees; it is stored and shown as text.
-import { createHash } from 'node:crypto';
 import { DomainError, isUuidShape, money, toWire, uuidv7, type Currency } from '@kesher/domain';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import { isPgError, PG, type Database } from '../db.ts';
+import { sha256Url } from '../crypto/hash.ts';
 import { ok, requireIdempotencyKey, requireRole, route, type Handler } from '../http.ts';
 import { COLLECTIONS_FLAG } from './collections.ts';
 
@@ -62,7 +62,7 @@ export function parseBill(body: unknown, currency: Currency, today: string): Bil
   return { description, amountMinor: minor, currency, dueDate, memberIds: (ids as string[]).map((x) => x.toLowerCase()).sort() };
 }
 
-const fingerprint = (r: BillRequest): string => createHash('sha256').update(JSON.stringify([r.description, r.amountMinor.toString(), r.currency, r.dueDate, r.memberIds])).digest('base64url');
+const fingerprint = (r: BillRequest): string => sha256Url(JSON.stringify([r.description, r.amountMinor.toString(), r.currency, r.dueDate, r.memberIds]));
 
 interface BatchRow {
   id: string;

@@ -2,11 +2,11 @@
 // database; it reads this. Identity lives in the identity repository, everything else in Postgres.
 // The model carries no PAN and no full phone: the phone leaves this module as its last four digits.
 // Reads only; nothing here provisions accounts or writes a row.
-import { createHash } from 'node:crypto';
 import { isUuidShape, toWire, type Currency } from '@kesher/domain';
 import type { AuditService } from '../audit/service.ts';
 import type { IdentityRepository, UserAccount } from '../auth/repository.ts';
 import type { Database } from '../db.ts';
+import { sha256Url } from '../crypto/hash.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import { iso } from '../dates.ts';
 
@@ -56,7 +56,7 @@ const AUDIT_TAIL = 20;
 export const maskPhone = (e164: string): string => `•••• ${e164.slice(-4)}`;
 
 /** The same hash org.invite stores for a recipient address (institutions/invites.ts). */
-const recipientHash = (email: string): string => createHash('sha256').update(email.toLowerCase()).digest('base64url');
+const recipientHash = (email: string): string => sha256Url(email.toLowerCase());
 
 /** Escapes LIKE metacharacters so a query of "%" does not match everyone. */
 const likeContains = (q: string): string => `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
