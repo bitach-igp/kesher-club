@@ -385,7 +385,7 @@
 | [T-0762](T-0762.md) | WAL | One typed ref grammar for sub-account and marker refs (`s:` in ports, `o:` and `p:` in apps/api); no SQL string building in the Crowded webhook (A3) | — | later (built, PR open) · independent of T-0761 |
 | [T-0763](T-0763.md) | WAL | The failed-owner rule is enforced on the credit path in LoadService, not in the webhook; a skipped credit is retried by the sweep (A1) | REQ-WAL-003 | later (built, PR open) · after T-0761 (T-0762 soft) |
 | [T-0764](T-0764.md) | WAL | Split `loads.ts` 1/4: workflow body, types and pure helpers move out; API unchanged (A5) | — | later (built, PR open) · after T-0761 |
-| [T-0765](T-0765.md) | WAL | Split `loads.ts` 2/4: case openers move to `load-cases.ts`, one reopen helper (A5) | — | later (scoped 2026-11-19) · after T-0764 |
+| [T-0765](T-0765.md) | WAL | Split `loads.ts` 2/4: case openers move to `load-cases.ts`, one reopen helper (A5) | — | later (built, PR open) · after T-0764 |
 | [T-0766](T-0766.md) | WAL | Split `loads.ts` 3/4: the vendor credit step moves to `load-credit.ts` (A5) | — | later (scoped 2026-11-19) · after T-0761, T-0763, T-0765 |
 | [T-0767](T-0767.md) | WAL | Split `loads.ts` 4/4: funding-account provisioning and pricing/parsing move out (A5) | — | later (scoped 2026-11-19) · after T-0764 |
 | [T-0768](T-0768.md) | WAL | `ops.workflow_marker` table (ledger migration 0033), store module and desktop apply request (A4) | — | later (scoped 2026-11-19) · after T-0761, T-0762; desktop apply |

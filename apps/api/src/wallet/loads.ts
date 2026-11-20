@@ -23,7 +23,7 @@
 // `runLoad` is the deterministic workflow body, pure over `LoadActivities`, so Temporal (ADR-002) can
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
-import { applyBps, DomainError, fromWire, money, sub, toWire, uuidv7, type Currency, type Money, type Posting } from '@kesher/domain';
+import { applyBps, DomainError, fromWire, money, sub, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
 import { applyRate, FundingAccountError, FundingError, type FundingAccountPort, type CreditResult, type FundingCreditPort, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
@@ -39,6 +39,7 @@ import type { InboundEvent } from '../webhooks/store.ts';
 import { isOwnerFailedMarker } from './sub-account-markers.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF } from './sub-accounts.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
+import { creditCase, openCreditCase, openReturnedCase, openUnknownLoadCase, unknownLoadOpen } from './load-cases.ts';
 import { credited, conversionMetadata, eventIdOf, institutionMetadata, journalKind, loadState, mapFundingError, markupOf } from './load-model.ts';
 import {
   ACH_FLAG, applyVendorState, FUNDING_PROVIDER, HELD_RECHECK_MS, HOLD_JOURNAL_KIND, INSTITUTION_DEPOSIT_JOURNAL_KIND, LOAD_JOURNAL_KIND, LOAD_METHODS, PURSE_CURRENCIES, RELEASE_JOURNAL_KIND, runLoad, WALLET_FLAG,
@@ -51,10 +52,8 @@ export { ACH_FLAG, applyVendorState, FUNDING_PROVIDER, HELD_RECHECK_MS, HOLD_JOU
 export type { LoadActivities, LoadInput, LoadRun, LoadState, LoadView };
 export { loadState };
 export { holdKey, releaseKey, settleKey };
-const unknownLoadKey = (transferId: string): string => `load-unknown:${transferId}`;
 /** The vendor credit's key (T-0705): a refusal is final for its key at the vendor, so a retry after one is the next `n`. */
 export const creditKey = (workflowId: string, n: number): string => `${workflowId}:credit:${n}`;
-const creditCaseKey = (transferId: string): string => `load-credit:${transferId}`;
 /** What the vendor answered to a credit attempt (the stored outcome suffix). */
 export type CreditOutcome = 'credited' | 'pending' | 'refused';
 /** `ops.external_ref` row type noting that credit attempt `n` of a transfer was begun (its external id is the credit key). */
@@ -86,8 +85,6 @@ export async function creditAttemptState(db: Database, a: CreditAttempt): Promis
   const suffix = done.external_id.slice(done.external_id.lastIndexOf(':') + 1);
   return { began: true, outcome: suffix === 'credited' || suffix === 'refused' ? suffix : 'pending' };
 }
-/** The one case per transfer for money the vendor holds that a return or reversal now contradicts (T-0742). */
-const returnedCaseKey = (transferId: string): string => `load-returned:${transferId}`;
 
 interface Deps {
   db: Database;
@@ -448,13 +445,11 @@ export class LoadService implements LoadActivities {
 
   /** True while a case people have not decided exists for a held load the vendor does not know; a resolved or dismissed one lets it be asked again. */
   async unknownLoadOpen(transferId: string): Promise<boolean> {
-    return Boolean((await this.d.db.query(`select 1 from ops.case where dedupe_key = $1 and status in ('open', 'investigating')`, [unknownLoadKey(transferId)])).rows[0]);
+    return unknownLoadOpen(this.d.db, transferId);
   }
 
   private async creditCase(transferId: string): Promise<{ open: boolean; attempt: number }> {
-    const r = await this.d.db.query<{ status: string; payload: { attempt?: number } }>(`select status, payload from ops.case where dedupe_key = $1`, [creditCaseKey(transferId)]);
-    const row = r.rows[0];
-    return { open: row?.status === 'open' || row?.status === 'investigating', attempt: row ? (row.payload.attempt ?? 1) : 0 };
+    return creditCase(this.d.db, transferId);
   }
 
   /**
@@ -562,47 +557,16 @@ export class LoadService implements LoadActivities {
     return state.began && state.outcome !== 'refused' ? vendorId : undefined;
   }
 
-  /**
-   * The vendor took the money back (a return, a refund, a cancel) after the member's wallet was credited (T-0742): one case for people,
-   * `load_returned_after_release`, high, per transfer. It moves nothing: no journal, no state change, no debit of the wallet (who bears
-   * the loss is the owner's to decide). A resolved or dismissed case is reopened by a later report; an open one is left alone. The
-   * payload holds ids, the amount and the code only. `stage` is `after_release` (the vendor read a settled load failed) or `before_journal` (our records show a credit began and no journal posted; the load is failed and its hold reversed).
-   */
   private async openReturnedCase(transfer: Transfer, loadId: string, failureCode: string, stage: 'after_release' | 'before_journal', now: Date): Promise<void> {
-    await this.d.db.query(
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_returned_after_release', $2, 'high', 'open', $3, $4)
-       on conflict (dedupe_key) do update set status = 'open', resolved_at = null, resolved_by = null, resolution = null,
-         disposition = null, decided_by = null, decided_at = null, decision_note = null, assigned_to = null, assigned_at = null,
-         payload = excluded.payload || jsonb_build_object('reopened', jsonb_build_object('at', excluded.opened_at, 'was', ops.case.status, 'resolution', ops.case.resolution))
-       where ops.case.status in ('resolved', 'dismissed')`,
-      [uuidv7(now), returnedCaseKey(transfer.id), { transferId: transfer.id, loadId, amount: { minor: transfer.amount.minor.toString(), currency: transfer.amount.currency }, memberPartyId: transfer.toPartyId, failureCode, reasonCode: failureCode, stage }, now],
-    );
+    await openReturnedCase(this.d.db, transfer, loadId, failureCode, stage, now);
   }
 
   private async openCreditCase(transfer: Transfer, loadId: string, reasonCode: string, attempt: number, now: Date): Promise<void> {
-    const r = await this.d.db.query(
-      // A resolved or dismissed case is reopened by the next refusal (the earlier decision is kept in the payload); an open one is left alone.
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_credit_refused', $2, 'high', 'open', $3, $4)
-       on conflict (dedupe_key) do update set status = 'open', resolved_at = null, resolved_by = null, resolution = null,
-         disposition = null, decided_by = null, decided_at = null, decision_note = null, assigned_to = null, assigned_at = null,
-         payload = excluded.payload || jsonb_build_object('reopened', jsonb_build_object('at', excluded.opened_at, 'was', ops.case.status, 'resolution', ops.case.resolution))
-       where ops.case.status in ('resolved', 'dismissed') returning id`,
-      [uuidv7(now), creditCaseKey(transfer.id), { transferId: transfer.id, loadId, amount: { minor: transfer.amount.minor.toString(), currency: transfer.amount.currency }, reasonCode, attempt }, now],
-    );
-    if (r.rows.length > 0) this.refusals += 1;
+    if (await openCreditCase(this.d.db, transfer, loadId, reasonCode, attempt, now)) this.refusals += 1;
   }
 
   private async openUnknownLoadCase(transfer: Transfer, loadId: string, now: Date): Promise<void> {
-    await this.d.db.query(
-      // A case people resolved or dismissed while the vendor still does not know the load is reopened (what they decided is kept in the
-      // payload), so the hold never stalls without anyone being told (T-0680); an open one is left alone.
-      `insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_unknown', $2, 'high', 'open', $3, $4)
-       on conflict (dedupe_key) do update set status = 'open', resolved_at = null, resolved_by = null, resolution = null,
-         disposition = null, decided_by = null, decided_at = null, decision_note = null, assigned_to = null, assigned_at = null,
-         payload = excluded.payload || jsonb_build_object('reopened', jsonb_build_object('at', excluded.opened_at, 'was', ops.case.status, 'resolution', ops.case.resolution))
-       where ops.case.status in ('resolved', 'dismissed')`,
-      [uuidv7(now), unknownLoadKey(transfer.id), { transferId: transfer.id, loadId, state: transfer.state, amount: { minor: transfer.amount.minor.toString(), currency: transfer.amount.currency } }, now],
-    );
+    await openUnknownLoadCase(this.d.db, transfer, loadId, now);
   }
 
   /**
