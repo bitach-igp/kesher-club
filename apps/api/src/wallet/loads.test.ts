@@ -707,6 +707,26 @@ describe('a returned ACH debit through the real Stripe adapter (T-0539, F05)', (
     expect(await available(party)).toBe(0n);
   });
 
+  // T-0781 security guard: the live Stripe funding receiver (app.ts binds `loads.webhookVerifier()`, which calls the adapter's
+  // verifyStripeSignature with a 5-minute tolerance) refuses a forged, a missing and a replayed (stale) signature.
+  it('the Stripe funding receiver refuses a forged, a missing and a stale signature, and accepts one at the edge of the window', async () => {
+    const { fake, svc } = stripe();
+    const party = await newParty();
+    const { loadId } = await heldLoad(svc, party, `stripe-ach-sig-${party}`);
+    const hook = fake.settlePaymentIntent(loadId, 'returned');
+    const verify = (headers: Record<string, string>, body = hook.rawBody) => svc.webhookVerifier().verify(headers, body, NOW);
+    expect((await verify(hook.headers)).ok).toBe(true);
+    const t = Math.floor(NOW.getTime() / 1000);
+    expect(await verify({ 'stripe-signature': `t=${t},v1=${'0'.repeat(64)}` })).toMatchObject({ ok: false, reason: 'bad signature' });
+    expect(await verify(new FakeStripe({ secretKey: 'sk_test_fake_key', webhookSecret: 'whsec_some_other_secret', clock }).sign(hook.rawBody))).toMatchObject({ ok: false });
+    expect(await verify({})).toMatchObject({ ok: false, reason: 'bad signature' });
+    // A captured, correctly signed delivery replayed after the window is refused; at the edge it still verifies.
+    expect(await verify(fake.sign(hook.rawBody, 301))).toMatchObject({ ok: false, reason: 'bad signature' });
+    expect((await verify(fake.sign(hook.rawBody, 300))).ok).toBe(true);
+    // A body altered after signing is refused.
+    expect((await verify(hook.headers, hook.rawBody + ' ')).ok).toBe(false);
+  });
+
   it('with the webhook lost, the release on the hold date asks Stripe, fails the load and credits nothing', async () => {
     const { fake, svc } = stripe();
     const party = await newParty();
