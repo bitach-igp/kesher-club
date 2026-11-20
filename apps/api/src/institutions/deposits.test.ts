@@ -275,3 +275,15 @@ describe('a suspense credit recorded from its case (T-0631, TST-INS-015)', () =>
     expect(await caseRow(id)).toMatchObject({ status: 'investigating', payload: { depositId: right.id } });
   });
 });
+
+describe('paymentReference (T-0614)', () => {
+  // Vectors from node:crypto computed outside the code: sha256 of `kesher-institution:{lower-cased id}`, the first 8 bytes mod 32 into Crockford base 32.
+  it('is pinned for fixed institution ids', () => {
+    expect(paymentReference('0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b')).toBe('KC-801R6ANQ');
+    expect(paymentReference('inst-1')).toBe('KC-KT9CEQ07');
+  });
+
+  it('ignores the case of the id', () => {
+    expect(paymentReference('0190A1B2-C3D4-7E5F-8A6B-7C8D9E0F1A2B')).toBe('KC-801R6ANQ');
+  });
+});

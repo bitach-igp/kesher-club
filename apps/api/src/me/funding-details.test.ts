@@ -124,4 +124,34 @@ describe('TST-WAL-002: the funding details', () => {
     expect([await priv('select'), await priv('insert'), await priv('update')]).toEqual([true, true, true]);
     expect([await priv('delete'), await priv('truncate'), await priv('references'), await priv('trigger')]).toEqual([false, false, false, false]);
   });
+
+  describe('the member_funding_details_shape check', () => {
+    // Raw bytea stand-ins (the check looks at null or not null only). Each insert is its own statement: a failing one aborts a PGlite transaction.
+    const insert = (cols: { first?: boolean; last?: boolean; dob?: boolean }) =>
+      db.query(
+        'insert into identity.member_funding_details (party_id, first_name, last_name, email, date_of_birth, updated_at) values ($1, $2, $3, $4, $5, $6)',
+        [uuidv7(NOW), cols.first ? Buffer.from([1]) : null, cols.last ? Buffer.from([1]) : null, Buffer.from([1]), cols.dob ? Buffer.from([1]) : null, NOW],
+      );
+
+    it('rejects a first name without a last name', async () => {
+      await expect(insert({ first: true })).rejects.toThrow(/member_funding_details_shape/);
+    });
+
+    it('rejects a last name without a first name', async () => {
+      await expect(insert({ last: true })).rejects.toThrow(/member_funding_details_shape/);
+    });
+
+    it('rejects a date of birth without an owner', async () => {
+      await expect(insert({ dob: true })).rejects.toThrow(/member_funding_details_shape/);
+    });
+
+    it('accepts an email alone', async () => {
+      await expect(insert({})).resolves.toBeDefined();
+    });
+
+    it('accepts a whole owner, with and without a date of birth', async () => {
+      await expect(insert({ first: true, last: true })).resolves.toBeDefined();
+      await expect(insert({ first: true, last: true, dob: true })).resolves.toBeDefined();
+    });
+  });
 });

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { isOwnerFailedMarker, ownerFailedMarker, parsePurposeMarker, purposeMarker } from './sub-account-markers.ts';
+import { isOwnerFailedMarker, ownerFailedMarker, parsePurposeMarker, purposeHash, purposeMarker } from './sub-account-markers.ts';
 
 const P = '0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2b';
 const Q = '0190a1b2-c3d4-7e5f-8a6b-7c8d9e0f1a2c';
@@ -34,5 +34,47 @@ describe('sub-account marker grammar (T-0762)', () => {
   it('a purpose marker never parses as an owner marker, nor the reverse', () => {
     expect(isOwnerFailedMarker(P, purposeMarker(P, 'failed'))).toBe(false);
     expect(parsePurposeMarker(ownerFailedMarker(P))).toBeUndefined();
+  });
+
+  it('parsePurposeMarker is anchored at the start and takes lower-case hex only', () => {
+    const h = hash16('a');
+    expect(parsePurposeMarker(`p:${P}:${h}`)).toEqual({ partyId: P, hash: h });
+    expect(parsePurposeMarker(`x p:${P}:${h}`)).toBeUndefined();
+    expect(parsePurposeMarker(`junkp:${P}:${h}`)).toBeUndefined();
+    expect(parsePurposeMarker(`p:${P}:${h.toUpperCase()}`)).toBeUndefined();
+    expect(parsePurposeMarker(`p:${P}:${h.slice(0, 15)}A`)).toBeUndefined();
+    expect(parsePurposeMarker(`p:${P}:${h}\n`)).toBeUndefined();
+  });
+
+  it('takes exactly 16 hex: 15 and 17 are rejected, and purposeMarker always writes 16', () => {
+    const h = hash16('a');
+    expect(parsePurposeMarker(`p:${P}:${h.slice(0, 15)}`)).toBeUndefined();
+    expect(parsePurposeMarker(`p:${P}:${h}0`)).toBeUndefined();
+    expect(purposeMarker(P, 'a').split(':').pop()).toHaveLength(16);
+    expect(parsePurposeMarker(purposeMarker(P, 'a'))?.hash).toHaveLength(16);
+  });
+
+  it('a party id that contains ":" round-trips (the doc comment says it may; the hash is the last 16 hex)', () => {
+    const party = 'org:42:member';
+    expect(parsePurposeMarker(purposeMarker(party, 'dues'))).toEqual({ partyId: party, hash: hash16('dues') });
+  });
+});
+
+describe('purposeHash (T-0762)', () => {
+  // Vectors from node:crypto computed outside the code: first 16 hex of sha256 over the UTF-8 of the trimmed, lower-cased purpose.
+  it('is pinned: trimmed and lower-cased, nothing else', () => {
+    expect(purposeHash(' Stipend ')).toBe('381ec8e417b6913b');
+    expect(purposeHash('stipend')).toBe('381ec8e417b6913b');
+    expect(purposeHash('a  b')).toBe('6e12db73209a66d1');
+  });
+
+  it('keeps a double space inside the purpose (only the edges are trimmed)', () => {
+    expect(purposeHash('a  b')).not.toBe(purposeHash('a b'));
+  });
+
+  it('does no unicode normalisation: precomposed and decomposed e-acute differ', () => {
+    expect(purposeHash('\u00e9')).toBe('4a99557e4033c353');
+    expect(purposeHash('e\u0301')).toBe('bf12767b0f2a56b2');
+    expect(purposeHash('\u00e9')).not.toBe(purposeHash('e\u0301'));
   });
 });

@@ -24,6 +24,20 @@ describe('openCase', () => {
     expect(new Date(rows.rows[0]!.opened_at).toISOString()).toBe(now.toISOString());
   });
 
+  it('stores the payload as JSON.stringify writes it: a nested Date becomes its ISO string, null stays, undefined is dropped', async () => {
+    const payload = { when: new Date('2026-03-01T09:30:00.123Z'), nested: { at: new Date('2026-02-01T00:00:00Z'), none: null, gone: undefined }, none: null, gone: undefined, n: 7 };
+    await openCase(db, { kind: 'unit_test', dedupeKey: 'unit:roundtrip', severity: 'low', payload, now });
+    const expected = JSON.stringify(payload);
+    expect(expected).not.toContain('gone');
+    const r = await db.query<{ stored: string; same: boolean; payload: Record<string, unknown> }>(
+      `select payload::text as stored, payload::text = $1::jsonb::text as same, payload from ops.case where dedupe_key = 'unit:roundtrip'`,
+      [expected],
+    );
+    expect(r.rows[0]?.same).toBe(true);
+    expect(r.rows[0]?.payload).toEqual({ when: '2026-03-01T09:30:00.123Z', nested: { at: '2026-02-01T00:00:00.000Z', none: null }, none: null, n: 7 });
+    expect(r.rows[0]?.stored).not.toContain('gone');
+  });
+
   it('keeps a resolved case as it is (no reopen)', async () => {
     await openCase(db, { kind: 'unit_test', dedupeKey: 'unit:2', severity: 'medium', payload: {}, now });
     await db.query(`update ops.case set status = 'resolved' where dedupe_key = 'unit:2'`);

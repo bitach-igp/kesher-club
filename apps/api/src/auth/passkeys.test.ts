@@ -1,6 +1,6 @@
 // TST-AUTH-001 (passkey half) and TST-AUTH-002: enrol a passkey right after OTP; passkeys are the
 // default sign-in with device binding; OTP is offered only for recovery.
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { Secret } from '@kesher/domain';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AuthSimulator, SIM_OTP_CODE, SimPasskeyDevice, fixedClock, type AdvanceableClock } from '@kesher/ports';
@@ -189,5 +189,56 @@ describe('PasskeyService ceremonies across two instances (T-0682)', () => {
     await t.a.passkeys.register({ otpSessionToken: token, deviceId: 'iphone-1', deviceName: 'x' });
     const rows = await db.query(`select * from identity.passkey_ceremony`);
     expect(JSON.stringify(rows.rows)).not.toContain(token);
+  });
+});
+
+describe('PasskeyService registration ceremony key (REQ-AUTH-001)', () => {
+  // The key is what the second step looks the ceremony up by, and what the table stores: sha256 of `deviceId|subject`, base64url.
+  // The expected values come from node:crypto here, not from the code under test.
+  const keyOf = (text: string) => createHash('sha256').update(text, 'utf8').digest('base64url');
+  const capture = (s: Awaited<ReturnType<typeof setup>>) => {
+    const keys: string[] = [];
+    const save = s.repo.saveCeremony.bind(s.repo);
+    s.repo.saveCeremony = (c, staleBefore) => (keys.push(c.key), save(c, staleBefore));
+    return keys;
+  };
+
+  it('is sha256 of deviceId|otpSessionToken for a new member', async () => {
+    const s = await setup();
+    const keys = capture(s);
+    const { otpId } = await s.otp.start({ phone: '+972501234567', locale: 'en' });
+    const v = await s.otp.verify({ otpId, code: SIM_OTP_CODE, purpose: 'register' });
+    await s.passkeys.register({ otpSessionToken: v.otpSessionToken!, deviceId: 'iphone-1', deviceName: 'x' });
+    expect(keys).toEqual([keyOf(`iphone-1|${v.otpSessionToken!}`)]);
+    expect(keys[0]).not.toBe(keyOf('iphone-1|'));
+  });
+
+  it('is sha256 of deviceId|partyId for a signed-in member, and of deviceId|recoveryFor for a recovery', async () => {
+    const s = await setup();
+    const { tokens } = await registerUser(s);
+    const principal = await s.tokens.verifyAccess(tokens.accessToken);
+    const keys = capture(s);
+    await s.passkeys.register({ principal, deviceId: 'pixel-1', deviceName: 'x' });
+    await s.passkeys.register({ recoveryFor: 'party-recover-1', deviceId: 'pixel-2', deviceName: 'x' });
+    expect(keys).toEqual([keyOf(`pixel-1|${principal.partyId}`), keyOf('pixel-2|party-recover-1')]);
+  });
+
+  it('prefers the otp session token, then the principal, then recoveryFor, when more than one is given', async () => {
+    const s = await setup();
+    const { tokens } = await registerUser(s);
+    const principal = await s.tokens.verifyAccess(tokens.accessToken);
+    const keys = capture(s);
+    await s.passkeys.register({ otpSessionToken: 'tok-1', principal, recoveryFor: 'party-x', deviceId: 'd', deviceName: 'x' }).catch(() => undefined);
+    await s.passkeys.register({ principal, recoveryFor: 'party-x', deviceId: 'd', deviceName: 'x' });
+    expect(keys).toEqual([keyOf('d|tok-1'), keyOf(`d|${principal.partyId}`)]);
+  });
+
+  it('separates devices and subjects (the | cannot be forged across them)', async () => {
+    const s = await setup();
+    const keys = capture(s);
+    await s.passkeys.register({ recoveryFor: 'b', deviceId: 'a', deviceName: 'x' });
+    await s.passkeys.register({ recoveryFor: 'a|b', deviceId: 'x', deviceName: 'x' });
+    expect(keys).toEqual([keyOf('a|b'), keyOf('x|a|b')]);
+    expect(keys[0]).not.toBe(keys[1]);
   });
 });

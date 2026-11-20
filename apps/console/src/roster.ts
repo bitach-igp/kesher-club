@@ -17,7 +17,6 @@ export interface Filter {
   cursor?: string | undefined;
 }
 
-
 /** The page's search params as a filter; anything the API would refuse is dropped, not sent. */
 export function filterFrom(params: Record<string, string | string[] | undefined>): Filter {
   const one = (k: string) => (typeof params[k] === 'string' ? (params[k] as string) : undefined);
