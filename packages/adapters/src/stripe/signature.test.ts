@@ -125,3 +125,41 @@ describe('verifyStripeSignature fixed vectors', () => {
     });
   });
 });
+
+// An empty secret is a key anyone can sign with, so the verifier must refuse it whatever the header says, rather than rely on
+// its caller to have checked (apps/api config requires non-empty secrets, and the adapter constructors refuse an empty one).
+// The signatures below were computed outside this code base, as above, with the empty key:
+//   node -e "console.log(require('crypto').createHmac('sha256','').update('1767225600.'+BODY).digest('hex'))"
+//   printf '1767225600.%s' "$BODY" | openssl dgst -sha256 -hmac '' -hex
+describe('verifyStripeSignature with an empty secret', () => {
+  const eBody = '{"id":"evt_empty_1","object":"event","type":"invoice.paid"}';
+  const t = 1_767_225_600;
+  const EMPTY_KEY_SIG = 'c99b0a3e46038af202e26ace7c4a494c287d66e1f480791c51600584b9186bef'; // HMAC('', `${t}.${eBody}`)
+  const verify = (header: string | undefined, secret: string) => verifyStripeSignature({ header, rawBody: eBody, secret, nowSeconds: t });
+
+  it('refuses a delivery signed with the empty key', () => {
+    expect(verify(`t=${t},v1=${EMPTY_KEY_SIG}`, '')).toBe('MISMATCH');
+  });
+
+  it('refuses it whatever the header looks like', () => {
+    expect(verify(`t=${t},v1=${EMPTY_KEY_SIG},v1=${'0'.repeat(64)}`, '')).toBe('MISMATCH');
+    expect(verify(`t=${t},v1=${'0'.repeat(64)}`, '')).toBe('MISMATCH');
+    expect(verify(`v1=${EMPTY_KEY_SIG},t=${t}`, '')).toBe('MISMATCH');
+    expect(verify(`t=${t},v1=${EMPTY_KEY_SIG.toUpperCase()}`, '')).toBe('MISMATCH');
+    expect(verify(`t=${t}`, '')).toBe('MISMATCH');
+    expect(verify('forged', '')).toBe('MISMATCH');
+    expect(verify(undefined, '')).toBe('MISMATCH');
+  });
+
+  it('refuses it even when the timestamp is far outside the tolerance', () => {
+    expect(verifyStripeSignature({ header: `t=${t},v1=${EMPTY_KEY_SIG}`, rawBody: eBody, secret: '', nowSeconds: t + 10_000 })).toBe('MISMATCH');
+  });
+
+  it('still accepts a non-empty secret, and the empty-key signature does not verify under one', () => {
+    const real = 'whsec_vector_secret_A';
+    const REAL_SIG = '4eb2ac31565ce4ccdfacc3ab69a85da1e806d7a7d9eaa7c04a733aea8fd1ae53'; // HMAC(real, `${t}.{"id":"evt_vec_1",...}`)
+    const vBody = '{"id":"evt_vec_1","object":"event","type":"invoice.paid"}';
+    expect(verifyStripeSignature({ header: `t=${t},v1=${REAL_SIG}`, rawBody: vBody, secret: real, nowSeconds: t })).toBeUndefined();
+    expect(verify(`t=${t},v1=${EMPTY_KEY_SIG}`, real)).toBe('MISMATCH');
+  });
+});
