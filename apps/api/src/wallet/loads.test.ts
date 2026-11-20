@@ -1603,3 +1603,17 @@ describe('the failed-owner rule is enforced on the credit path (T-0763, TST-WAL-
     expect((await t.svc.request(t.party, t.body, 'owner-other-0001', NOW)).state).toBe('settled');
   });
 });
+
+// The public surface of wallet/loads.ts (T-0764): the importers (app, institutions/ach, intents/service, the worker through
+// @kesher/api/wallet/loads and the test files) keep importing every name from here, however the file is split. A move that drops
+// or renames one fails here, not at some importer's runtime.
+describe('the export surface of wallet/loads (T-0764)', () => {
+  it('keeps every runtime export it had before the split', async () => {
+    const mod = await import('./loads.ts');
+    expect(Object.keys(mod).sort()).toEqual([
+      'ACH_FLAG', 'FUNDING_PROVIDER', 'HELD_RECHECK_MS', 'HOLD_JOURNAL_KIND', 'INSTITUTION_DEPOSIT_JOURNAL_KIND', 'LOAD_JOURNAL_KIND', 'LOAD_METHODS',
+      'LoadService', 'PURSE_CURRENCIES', 'RELEASE_JOURNAL_KIND', 'WALLET_FLAG', 'applyVendorState', 'creditAttemptState', 'creditKey', 'fundingAccountKey',
+      'holdKey', 'loadState', 'recordCreditBegan', 'recordCreditOutcome', 'releaseKey', 'runLoad', 'settleKey',
+    ]);
+  });
+});
