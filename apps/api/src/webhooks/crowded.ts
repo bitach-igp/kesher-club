@@ -17,9 +17,7 @@ import { DomainError } from '@kesher/domain';
 import { subAccountRef, type AchStatus, type ApplicationStatus, type InstitutionBankingPort } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
-import { openCase } from '../ops/cases.ts';
-import { isOwnerFailedMarker } from '../wallet/sub-account-markers.ts';
-import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF, SUBACCOUNT_REF } from '../wallet/sub-accounts.ts';
+import { SUBACCOUNT_REF } from '../wallet/sub-accounts.ts';
 import { HttpError, ok, route, type Handler, type HttpRequest } from '../http.ts';
 import type { InboundEvent, InboundEventStore } from './store.ts';
 import type { WebhookVerifier } from './verify.ts';
@@ -62,11 +60,6 @@ export interface CrowdedWebhookDeps {
    * `memberChapterId` is a member chapter. The answer is cached for `CHAPTER_CACHE_MS`, so a burst of events costs one query per chapter.
    */
   isMemberChapter?(chapterId: string): Promise<boolean>;
-  /**
-   * True when the sub-account's owner failed (T-0752 note): its payments are not credited blindly. The funding handler is skipped; the
-   * lookup has opened (or found) the one case for staff, and the sweep through `getLoad` still sees the load once the owner is fixed.
-   */
-  ownerFailed?(chapterId: string): Promise<boolean>;
 }
 
 /** How long a chapter's answer is kept: long enough for one replay pass over a batch, short enough that a new sub-account is seen at once. */
@@ -77,25 +70,12 @@ export const CHAPTER_CACHE_MS = 10_000;
  * funding provider reads exactly `s:<chapter>` (`subAccountRef`, T-0762); equality on the whole ref is the chapter boundary, so `s:ab1` is not chapter `ab`,
  * and a chapter with no ref (the nonprofit's own included) is not a member chapter. No pattern matching: the chapter id is compared as text.
  */
-export function subAccountChapters(db: Database, provider: string): { isMemberChapter(chapterId: string): Promise<boolean>; ownerFailed(chapterId: string, now: Date): Promise<boolean> } {
+export function subAccountChapters(db: Database, provider: string): { isMemberChapter(chapterId: string): Promise<boolean> } {
   const match = `r.entity_type = $1 and r.provider = $2 and r.external_id = $3`;
   return {
     async isMemberChapter(chapterId) {
       const r = await db.query(`select 1 from ops.external_ref r where ${match} limit 1`, [SUBACCOUNT_REF, provider, subAccountRef(chapterId)]);
       return r.rows.length > 0;
-    },
-    async ownerFailed(chapterId, now) {
-      const r = await db.query<{ party: string; marker: string }>(
-        `select r.entity_id::text as party, o.external_id as marker from ops.external_ref r
-           join ops.external_ref o on o.entity_type = $4 and o.entity_id = r.entity_id and o.provider = $2
-          where ${match}`,
-        [SUBACCOUNT_REF, provider, subAccountRef(chapterId), SUBACCOUNT_OWNER_REF],
-      );
-      const party = r.rows.find((x) => isOwnerFailedMarker(x.party, x.marker))?.party;
-      if (party === undefined) return false;
-      // The same case T-0752 opened when the owner failed (same dedupe key): nothing new if it is there, one for staff if it is not.
-      await openCase(db, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(party), severity: 'medium', payload: { partyId: party }, now });
-      return true;
     },
   };
 }
@@ -182,7 +162,6 @@ export class CrowdedWebhook {
       if (kind !== 'payment') return; // collections, intents and refunds of the member chapter: stored and ignored
       // Flag off: this throws, the row stays unprocessed and the replay job applies it once the wallet is on.
       if (!(await this.d.flags.isOn(CROWDED_WALLET_FLAG))) throw new DomainError('FEATURE_OFF', 'The wallet is not enabled yet');
-      if (this.d.ownerFailed && (await this.d.ownerFailed(chapter))) return; // never credited blindly (T-0752 note): staff have the case
       const payment = idOf(data['paymentId']) ?? idOf(data['id']);
       const intent = idOf(data['intentId']);
       if (payment && h.funding) await h.funding(chapter, crowdedRef('crowded', chapter, payment), intent ? crowdedRef('crowded', chapter, intent) : undefined);
