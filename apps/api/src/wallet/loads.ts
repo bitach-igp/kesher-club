@@ -29,7 +29,6 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import type { Database } from '../db.ts';
 import type { RateService } from '../fx/rates.ts';
-import { rateString } from '../fx/service.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostedJournal, PostgresLedger } from '../ledger/post.ts';
 import { openCase } from '../ops/cases.ts';
@@ -40,126 +39,17 @@ import type { InboundEvent } from '../webhooks/store.ts';
 import { isOwnerFailedMarker } from './sub-account-markers.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF } from './sub-accounts.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
+import { credited, conversionMetadata, eventIdOf, institutionMetadata, journalKind, loadState, mapFundingError, markupOf } from './load-model.ts';
+import {
+  ACH_FLAG, applyVendorState, FUNDING_PROVIDER, HELD_RECHECK_MS, HOLD_JOURNAL_KIND, INSTITUTION_DEPOSIT_JOURNAL_KIND, LOAD_JOURNAL_KIND, LOAD_METHODS, PURSE_CURRENCIES, RELEASE_JOURNAL_KIND, runLoad, WALLET_FLAG,
+  type LoadActivities, type LoadInput, type LoadRun, type LoadState, type LoadView,
+} from './load-workflow.ts';
 
-export const WALLET_FLAG = 'wallet.enabled';
-/** Provider name the funding webhooks arrive under: POST /hooks/funding. */
-export const FUNDING_PROVIDER = 'funding';
-export const ACH_FLAG = 'funding.ach';
-export const LOAD_METHODS: readonly FundingMethod[] = ['card', 'apple_pay', 'google_pay'];
-export const PURSE_CURRENCIES: readonly Currency[] = ['USD', 'ILS'];
-/** Journal kinds: the settlement (one per load, ever), the ACH hold into pending, and its release into the wallet. */
-export const LOAD_JOURNAL_KIND = 'load';
-export const HOLD_JOURNAL_KIND = 'load_hold';
-export const RELEASE_JOURNAL_KIND = 'load_release';
-/** An institution's ACH pull lands as a deposit (T-0617), the journal kind T-0614's recorded deposits post. */
-export const INSTITUTION_DEPOSIT_JOURNAL_KIND = 'deposit';
-
-export type LoadState = 'created' | 'requires_action' | 'processing' | 'on_hold' | 'settled' | 'failed';
-
-export interface LoadInput {
-  /** Who pays (their payment method, the vendor's customer). */
-  payerPartyId: string;
-  /** Whose purse is loaded: the payer, or a member the payer funds. */
-  memberPartyId: string;
-  method: FundingMethod;
-  amount: Money;
-  paymentMethodId?: string;
-  /** The purse credited; the amount's currency when absent. */
-  purse?: Currency;
-  /** An institution's ACH pull (T-0617): payer and payee are the institution, and it lands in its own account. */
-  kind?: 'deposit';
-}
-
-/** The OpenAPI `Load`. */
-export interface LoadView {
-  id: string;
-  state: LoadState;
-  amount: ReturnType<typeof toWire>;
-  holdUntil?: string;
-  clientSecret?: string;
-  /** What the purse is credited, when the load converts. */
-  credited?: ReturnType<typeof toWire>;
-  /** The club rate version the load converted at. */
-  rateVersion?: number;
-}
-
-export interface LoadActivities {
-  /** The transfer for this workflow id, created on the first run and found on every later one. */
-  begin(input: LoadInput, workflowId: string, now: Date): Promise<Transfer>;
-  submit(transfer: Transfer, now: Date): Promise<Transfer>;
-  /** The vendor pull, keyed by the workflow id: safe to repeat. */
-  pull(input: LoadInput, workflowId: string): Promise<VendorLoad>;
-  /** Remembers which vendor load belongs to the transfer so its webhooks find it. */
-  link(transfer: Transfer, load: VendorLoad): Promise<void>;
-  settle(transfer: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Transfer>;
-  /** The bank's hold: the money shows in the member's pending purse until `holdUntil` (REQ-WAL-003). */
-  hold(transfer: Transfer, holdUntil: string, now: Date): Promise<Transfer>;
-  /** On the hold date: pending → wallet, and the transfer settles. */
-  release(transfer: Transfer, now: Date): Promise<Transfer>;
-  /** A held load that fails (an ACH return) reverses its hold journal. */
-  fail(transfer: Transfer, code: string, now: Date): Promise<Transfer>;
-}
-
-export interface LoadRun {
-  workflowId: string;
-  transfer: Transfer;
-  /** Set while the vendor still needs the member (payment sheet) or time (processing). */
-  awaiting?: 'action' | 'vendor';
-  /** For the payment sheet; in the response only. */
-  clientSecret?: string;
-  /** True when the run found a transfer a previous run had already finished. */
-  replayed: boolean;
-}
-
-/**
- * The workflow body. created → submitted → (vendor) → settled | failed | pending_hold, or left
- * submitted while the vendor is still working; a rerun resumes from wherever the record stands.
- */
-export async function runLoad(a: LoadActivities, input: LoadInput, workflowId: string, now: Date): Promise<LoadRun> {
-  let t = await a.begin(input, workflowId, now);
-  if (t.state === 'settled' || t.state === 'failed' || t.state === 'cancelled' || t.state === 'reversed' || t.state === 'pending_hold') return { workflowId, transfer: t, replayed: true };
-  const replayed = t.state !== 'created';
-  if (t.state === 'created') t = await a.submit(t, now);
-  let load: VendorLoad;
-  try {
-    load = await a.pull(input, workflowId);
-  } catch (e) {
-    if (e instanceof FundingError && e.code === 'DECLINED') return { workflowId, transfer: await a.fail(t, e.code, now), replayed };
-    // Anything else (outage, bad input) leaves the transfer submitted: the same key reruns the pull.
-    throw e;
-  }
-  await a.link(t, load);
-  return { ...(await applyVendorState(a, t, load, workflowId, now)), replayed };
-}
-
-/** Moves the transfer to where the vendor says the load stands. Idempotent: a state already reached is left alone. */
-export async function applyVendorState(a: LoadActivities, t: Transfer, load: VendorLoad, workflowId: string, now: Date): Promise<Omit<LoadRun, 'replayed'>> {
-  // A load in `pending` is a release that began and did not finish: whatever the vendor's calm answer, it finishes through the release
-  // (which asks the vendor again and fails the load if it was returned). A `failed` answer takes the normal path below.
-  if (t.state === 'pending' && (load.status === 'succeeded' || load.status === 'on_hold')) return { workflowId, transfer: await a.settle(t, load, workflowId, now) };
-  switch (load.status) {
-    case 'succeeded':
-      // A held load stays held: the bank's hold days govern, and the release job settles it on the date.
-      return { workflowId, transfer: t.state === 'settled' || t.state === 'pending_hold' ? t : await a.settle(t, load, workflowId, now) };
-    case 'failed':
-      return { workflowId, transfer: t.state === 'failed' ? t : await a.fail(t, load.failureCode ?? 'VENDOR_FAILED', now) };
-    case 'on_hold':
-      return { workflowId, transfer: t.state === 'pending_hold' || !load.holdUntil ? t : await a.hold(t, load.holdUntil, now) };
-    case 'requires_action':
-      return { workflowId, transfer: t, awaiting: 'action', ...(load.clientSecret ? { clientSecret: load.clientSecret } : {}) };
-    case 'processing':
-      return { workflowId, transfer: t, awaiting: 'vendor' };
-  }
-}
-
-/**
- * How long the sweep leaves a held load alone after the vendor was last asked about it (T-0558). A load held for the bank's hold
- * days used to be read every cycle, hundreds of times for one load (vendor cost). Trade-off: a return no webhook announced is found
- * within this interval instead of within STALE_AFTER_MS (10 minutes); a webhook still fails the load at once, and a hold that is due
- * is asked every cycle until it releases, so the interval never delays a release.
- */
-export const HELD_RECHECK_MS = 6 * 3_600_000;
-
+// The public surface of this file is unchanged (T-0764): what moved to load-workflow.ts and load-model.ts is re-exported by name, so every
+// importer, the worker through `@kesher/api/wallet/loads` included, keeps importing from here.
+export { ACH_FLAG, applyVendorState, FUNDING_PROVIDER, HELD_RECHECK_MS, HOLD_JOURNAL_KIND, INSTITUTION_DEPOSIT_JOURNAL_KIND, LOAD_JOURNAL_KIND, LOAD_METHODS, PURSE_CURRENCIES, RELEASE_JOURNAL_KIND, runLoad, WALLET_FLAG };
+export type { LoadActivities, LoadInput, LoadRun, LoadState, LoadView };
+export { loadState };
 export { holdKey, releaseKey, settleKey };
 const unknownLoadKey = (transferId: string): string => `load-unknown:${transferId}`;
 /** The vendor credit's key (T-0705): a refusal is final for its key at the vendor, so a retry after one is the next `n`. */
@@ -829,73 +719,5 @@ export class LoadService implements LoadActivities {
       ...(typeof b.paymentMethodId === 'string' ? { paymentMethodId: b.paymentMethodId } : {}),
       ...(b.purseCurrency !== undefined ? { purse: b.purseCurrency as Currency } : {}),
     };
-  }
-}
-
-export function loadState(t: Transfer, awaiting?: 'action' | 'vendor'): LoadState {
-  switch (t.state) {
-    case 'created':
-      return 'created';
-    case 'submitted':
-      return awaiting === 'action' ? 'requires_action' : 'processing';
-    case 'pending':
-    case 'pending_hold':
-      return 'on_hold';
-    case 'settled':
-    case 'reversed':
-      return 'settled';
-    case 'failed':
-    case 'cancelled':
-      return 'failed';
-  }
-}
-
-/** A member's load books its own journal kinds; an institution's pull lands as a deposit (T-0617). */
-const journalKind = (t: Transfer, memberKind: string): string => (t.kind === 'deposit' ? INSTITUTION_DEPOSIT_JOURNAL_KIND : memberKind);
-
-/** The institution and the rail on an institution's pull, as the monthly export reads a deposit. */
-const institutionMetadata = (t: Transfer): Record<string, unknown> => (t.kind === 'deposit' ? { institutionId: t.toPartyId, rail: 'ach', description: 'ACH pull from the institution\'s bank' } : {});
-
-/** What the member's purse receives: the conversion's amount, or the load itself. */
-function credited(t: Transfer): Money {
-  return t.conversion?.received ?? t.amount;
-}
-
-function conversionMetadata(t: Transfer): Record<string, unknown> {
-  const c = t.conversion;
-  if (!c) return {};
-  return {
-    fx_rate_version: c.rateVersion,
-    fx_rate_id: c.rateId,
-    fx_markup_bps: Number(c.markupBps),
-    rateScaled: c.rateScaled.toString(),
-    rate: rateString(c.rateScaled),
-    loaded: toWire(t.amount),
-    credited: toWire(c.received),
-    markup: toWire(money(markupOf(t, c), c.received.currency)),
-  };
-}
-
-/** The markup kept by fee income: the gross at the rate applied, less what the purse was credited. */
-function markupOf(t: Transfer, c: TransferConversion): bigint {
-  return applyRate(t.amount.minor, c.rateScaled) - c.received.minor;
-}
-
-function mapFundingError(e: unknown): Error {
-  if (e instanceof FundingError) {
-    if (e.code === 'PROVIDER_UNAVAILABLE') return new DomainError('PROVIDER_UNAVAILABLE', 'Funding is temporarily unavailable; try again with the same key');
-    if (e.code === 'UNSUPPORTED_METHOD') return new DomainError('VALIDATION_FAILED', 'This funding method is not supported');
-    if (e.code === 'VALIDATION_FAILED') return new DomainError('VALIDATION_FAILED', e.message);
-  }
-  return e as Error;
-}
-
-/** The vendor's event id from the raw body, for the forensic record of a refused webhook. */
-function eventIdOf(rawBody: string): { eventId: string; body: unknown } {
-  try {
-    const b = JSON.parse(rawBody) as { eventId?: unknown; id?: unknown } | null;
-    return { eventId: typeof b?.eventId === 'string' ? b.eventId : typeof b?.id === 'string' ? b.id : '', body: b ?? {} };
-  } catch {
-    return { eventId: '', body: { raw: rawBody.slice(0, 2_000) } };
   }
 }
