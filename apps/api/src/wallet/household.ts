@@ -85,7 +85,6 @@ export interface HouseholdDeps {
   cards: Pick<CardService, 'forParty'>;
 }
 
-
 export class HouseholdService {
   private readonly d: HouseholdDeps;
   constructor(d: HouseholdDeps) {

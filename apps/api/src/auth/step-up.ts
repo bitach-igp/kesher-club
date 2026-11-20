@@ -63,7 +63,6 @@ export class StepUpService {
   }
 }
 
-
 /** Guard for money handlers. Reads X-Step-Up; throws STEP_UP_REQUIRED (401) so the client runs the ceremony. */
 export async function requireStepUp(stepUp: StepUpService, req: HttpRequest): Promise<void> {
   if (!req.principal) throw new DomainError('UNAUTHENTICATED', 'Sign in required');

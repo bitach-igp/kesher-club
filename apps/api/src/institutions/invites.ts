@@ -200,7 +200,6 @@ export class InviteService {
   }
 }
 
-
 /** The invite link's two operations (REQ-INS-002): a public preview, and the signed-in accept. */
 export function inviteHandlers(invites: InviteService): Record<string, Handler> {
   return {

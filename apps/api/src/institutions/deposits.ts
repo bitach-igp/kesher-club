@@ -18,10 +18,13 @@
 // (a field given anyway must agree); the credit id is linked through `ops.external_ref`, so the daily statement finds
 // the line recorded; and when the second approver posts it, the case resolves naming the deposit.
 import { DomainError, fromWire, isUuidShape, money, toWire, uuidv7, type Currency, type Money } from '@kesher/domain';
+import { BankError, type BankPort, type IncomingCredit } from '@kesher/ports';
 import type { Approver, ApprovalService } from '../approvals/service.ts';
 import type { AuditService } from '../audit/service.ts';
 import { requireStaff, staffActor } from '../admin/staff-token.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
+import { sha256Buf } from '../crypto/hash.ts';
+import { iso } from '../dates.ts';
 import { isPgError, PG, type Database } from '../db.ts';
 import { created, ok, requireIdempotencyKey, route, type Handler } from '../http.ts';
 import type { AccountService } from '../ledger/accounts.ts';
@@ -31,9 +34,6 @@ import { SYSTEM_OWNER } from '../ledger/accounts.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { KybGate } from './kyb-gate.ts';
-import { BankError, type BankPort, type IncomingCredit } from '@kesher/ports';
-import { iso } from '../dates.ts';
-import { sha256Buf } from '../crypto/hash.ts';
 import { openCase } from '../ops/cases.ts';
 
 export const DEPOSITS_FLAG = 'institutions.deposits';
