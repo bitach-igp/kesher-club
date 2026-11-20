@@ -797,6 +797,76 @@ describe('a failed-owner sub-account is credited by neither the webhook nor the 
   });
 });
 
+// The app as wired today: createApp gives its LoadService NO credit port (T-0709). The rule must hold there too: a failed-owner load is
+// never settled or journaled, by the webhook or the sweep, and settles normally once the marker row is gone.
+describe('a failed-owner sub-account with no credit port is neither settled nor journaled (T-0763, TST-WAL-003)', () => {
+  const T = new Date('2026-11-03T10:00:00Z');
+  const LATER = new Date('2100-01-01T00:00:00Z');
+  const PROVIDER = 'simulator-owner-noport';
+  let app: App;
+  let sim: FundingSimulator;
+  const pay = (body: string) => dispatch(app, { method: 'POST', url: '/v1/webhooks/crowded', headers: signed(body), rawBody: body, now: T });
+  const replay = () => app.services.webhooks.replay({ provider: 'crowded', now: T });
+
+  beforeAll(async () => {
+    sim = new FundingSimulator(fixedClock(T.toISOString()));
+    const bare = (ref: string) => /^crowded:[^:]+:(.+)$/.exec(ref)?.[1] ?? ref;
+    const port = { createLoad: (i: never, k: string) => sim.createLoad(i, k), getLoad: (id: string) => sim.getLoad(bare(id)), refund: (i: never, k: string) => sim.refund(i, k), getRefund: (id: string) => sim.getRefund(id), parseWebhook: (h: never, b: never) => sim.parseWebhook(h, b) };
+    const host = new SimulatorHost();
+    host.registry.register('funding', PROVIDER, () => port as never);
+    host.registry.bind({ capability: 'funding', market: 'US', provider: PROVIDER, mode: 'sim' });
+    app = createApp({ db, registry: host.registry, market: 'US', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => T, crowdedWebhookSecrets: [SECRET], flags: new StaticFlags(undefined, { 'wallet.enabled': true }) });
+  }, 60_000);
+
+  const ref = (type: string, party: string, externalId: string) => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4)`, [type, party, PROVIDER, externalId]);
+  const journals = async (wf: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [settleKey(wf)])).rows[0]!.n;
+  const state = async (id: string) => (await app.services.transfers.get(id))!.state;
+  const sweep = async () => {
+    const loads = app.services.loads;
+    for (const x of await loads.stale(LATER, 0)) {
+      const vendorId = await loads.vendorLoadOf(x.id);
+      if (!vendorId) continue;
+      await applyVendorState(loads, x, await sim.getLoad(vendorId), x.idempotencyKey, LATER);
+    }
+  };
+
+  it.each(['webhook', 'sweep'] as const)('the %s path leaves it submitted with no journal and one owner case; once the marker row is cleared it settles once', async (path) => {
+    const chapter = `own-noport-${path}`;
+    const wf = `own-noport-load-${path}`;
+    const s = app.services;
+    const party = uuidv7(T);
+    await s.accounts.provisionMember(party);
+    await ref('funding_subaccount', party, subAccountRef(chapter));
+    await ref('funding_account', party, `a:${party}`);
+    await ref('funding_subaccount_owner', party, ownerFailedMarker(party));
+    const amount = money(10_000n, 'USD');
+    const tr = await s.loads.submit(await s.loads.begin({ payerPartyId: party, memberPartyId: party, method: 'card', amount }, wf, T), T);
+    const vendor = await sim.createLoad({ customerId: party, method: 'card', amount, paymentMethodId: 'pm_ok' }, wf);
+    await s.loads.link(tr, vendor);
+    let n = 0;
+    const drive = async () => {
+      if (path === 'sweep') return sweep();
+      await pay(batch(event(`onp-${path}-${++n}`, 'collect.payment.succeeded', chapter, { paymentId: 'pay-1', intentId: vendor.loadId })));
+      await replay();
+    };
+    await drive();
+    await drive();
+    expect(await state(tr.id)).toBe('submitted');
+    expect(await journals(wf)).toBe(0);
+    expect((await s.accounts.purses(party)).find((p) => p.currency === 'USD')?.available.minor ?? 0n).toBe(0n);
+    expect((await db.query<{ kind: string }>(`select kind from ops.case where dedupe_key = $1`, [ownerCaseKey(party)])).rows).toEqual([{ kind: OWNER_FAILED_CASE }]);
+    expect((await db.query(`select 1 from ops.case where dedupe_key = $1`, [`load-credit:${tr.id}`])).rows).toHaveLength(0);
+    await db.query(`delete from ops.external_ref where entity_type = 'funding_subaccount_owner' and entity_id = $1`, [party]);
+    await drive();
+    expect(await state(tr.id)).toBe('settled');
+    expect(await journals(wf)).toBe(1);
+    await drive();
+    await sweep();
+    expect(await journals(wf)).toBe(1);
+    expect((await s.accounts.purses(party)).find((p) => p.currency === 'USD')!.available.minor).toBe(10_000n);
+  });
+});
+
 describe('classifying an event type', () => {
   const table: [string, CrowdedEventKind][] = [
     ['finance.application.updated', 'application'],

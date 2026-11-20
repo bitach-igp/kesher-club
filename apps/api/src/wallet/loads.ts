@@ -577,15 +577,17 @@ export class LoadService implements LoadActivities {
    */
   private async creditStep(transfer: Transfer, vendor: VendorLoad | undefined, now: Date): Promise<boolean> {
     const port = this.d.credit;
-    if (!port || transfer.kind !== 'load' || !vendor) return true;
+    if (transfer.kind !== 'load' || !vendor) return true;
+    // A sub-account whose owner the vendor refused is not credited (T-0763), with or without a credit port: this is the one place every path
+    // (webhook, sweep, release) passes before a load's journal. It runs ahead of the credit-case and account gates, so a failed owner never
+    // opens a `load_credit_refused` case either, and unlike them it writes no `began` marker: no attempt number is spent, nobody has to
+    // resolve a case, and the next cycle reads the marker again and goes on with the same key once it is gone.
+    if (await this.ownerBlock(transfer, now)) return false;
+    if (!port) return true;
     const found = await this.creditCase(transfer.id);
     if (found.open) return false;
     // Not `succeeded` (an ACH the vendor still holds, even past our hold date when its clock lags ours): nothing to credit yet, no case.
     if (vendor.status !== 'succeeded') return false;
-    // A sub-account whose owner the vendor refused is not credited (T-0763): this is the one place every path (webhook, sweep, release) passes.
-    // Unlike the account gate below it opens no credit case and writes no `began` marker, so no attempt number is spent and nobody has to
-    // resolve a case before the retry: the next cycle reads the marker again and credits with the same key once it is gone.
-    if (await this.ownerBlock(transfer, now)) return false;
     const attempt = found.attempt + 1;
     const accountRef = await this.memberAccountRef(transfer);
     if (!accountRef) {

@@ -1540,6 +1540,54 @@ describe('the failed-owner rule is enforced on the credit path (T-0763, TST-WAL-
     expect(await ownerCases(t.party)).toEqual([]);
   });
 
+  it('with NO credit port (the app as wired today) a failed-owner load is not settled or journaled, opens one owner case, and settles normally once the marker is gone', async () => {
+    const t = await setup();
+    const s = app.services;
+    const svc = new LoadService({ db, port: t.sim, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider: t.provider });
+    const key = 'owner-noport-001';
+    await t.marker(ownerFailedMarker(t.party));
+    expect((await svc.request(t.party, t.body, key, NOW)).state).not.toBe('settled');
+    expect((await s.transfers.byKey(key))!.state).toBe('submitted');
+    expect(await settleJournals(key)).toBe(0);
+    expect(await balance(t.party)).toBe(0n);
+    expect(await ownerCases(t.party)).toHaveLength(1);
+    expect(await creditCases(key)).toBe(0);
+    expect(await creditMarkers(key)).toBe(0);
+    for (const x of await svc.stale(LATER, 0)) if (await svc.vendorLoadOf(x.id)) await applyVendorState(svc, x, await t.sim.getLoad((await svc.vendorLoadOf(x.id))!), x.idempotencyKey, LATER);
+    expect(await settleJournals(key)).toBe(0);
+    expect(await ownerCases(t.party)).toHaveLength(1);
+    await t.clear();
+    for (const x of await svc.stale(LATER, 0)) if (await svc.vendorLoadOf(x.id)) await applyVendorState(svc, x, await t.sim.getLoad((await svc.vendorLoadOf(x.id))!), x.idempotencyKey, LATER);
+    expect(await settleJournals(key)).toBe(1);
+    expect(await balance(t.party)).toBe(10_000n);
+  });
+
+  it('the owner block comes before the account gate: a failed owner with NO funding account ref, or a frozen account, opens the owner case and NO load_credit_refused case', async () => {
+    const noAccount = await setup();
+    await db.query(`delete from ops.external_ref where entity_type = 'funding_account' and entity_id = $1`, [noAccount.party]);
+    await noAccount.marker(ownerFailedMarker(noAccount.party));
+    await noAccount.svc.request(noAccount.party, noAccount.body, 'owner-noacct-001', NOW);
+    await noAccount.sweep();
+    expect(await ownerCases(noAccount.party)).toHaveLength(1);
+    expect(await creditCases('owner-noacct-001')).toBe(0);
+    expect(noAccount.spy).not.toHaveBeenCalled();
+
+    const t = await setup();
+    const s = app.services;
+    const accounts = new FundingAccountSimulator();
+    const ensured = await accounts.ensureAccount({ partyId: t.party, firstName: 'Test', lastName: 'Member', email: 'owner-frozen@example.test', mobile: '+14155552002' }, `funding-account:${t.party}`);
+    if (!('accountRef' in ensured)) throw new Error('no account');
+    await db.query(`update ops.external_ref set external_id = $3 where entity_id = $1 and entity_type = 'funding_account' and provider = $2`, [t.party, t.provider, ensured.accountRef]);
+    const svc = new LoadService({ db, port: t.sim, credit: t.sim as Required<FundingSimulator>, fundingAccounts: accounts, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider: t.provider });
+    accounts.setStatus(ensured.accountRef, 'frozen');
+    await t.marker(ownerFailedMarker(t.party));
+    await svc.request(t.party, t.body, 'owner-frozen-001', NOW);
+    expect(await ownerCases(t.party)).toHaveLength(1);
+    expect(await creditCases('owner-frozen-001')).toBe(0);
+    expect(await creditMarkers('owner-frozen-001')).toBe(0);
+    expect(t.spy).not.toHaveBeenCalled();
+  });
+
   it('a failed marker stored under another provider does not block this provider\'s credit', async () => {
     const t = await setup();
     const key = 'owner-prov-0001';
