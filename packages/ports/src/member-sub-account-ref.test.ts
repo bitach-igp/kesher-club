@@ -24,6 +24,17 @@ describe('member sub-account ref grammar (T-0762)', () => {
     expect(parseSubAccountRef(`s:${'x'.repeat(64)}`)).toEqual({ chapterId: 'x'.repeat(64) });
   });
 
+  it('accepts an account id of 63 and 64 characters and rejects 65', () => {
+    for (const n of [63, 64]) expect(parseSubAccountRef(`s:c:${'a'.repeat(n)}`)).toEqual({ chapterId: 'c', accountId: 'a'.repeat(n) });
+    for (const n of [63, 64]) expect(parseSubAccountRef(`s:${'c'.repeat(n)}:a`)).toEqual({ chapterId: 'c'.repeat(n), accountId: 'a' });
+    expect(parseSubAccountRef(`s:c:${'a'.repeat(65)}`)).toBeUndefined();
+    expect(parseSubAccountRef(`s:${'c'.repeat(65)}:a`)).toBeUndefined();
+  });
+
+  it('rejects dots and slashes in either id (they would become path segments)', () => {
+    for (const bad of ['s:..', 's:.', 's:a:.', 's:a:..', 's:a.b', 's:a:b.c', 's:/', 's:a:/', 's:/a', 's:a:b/c', 's:../a']) expect(parseSubAccountRef(bad)).toBeUndefined();
+  });
+
   it('parses the refs the simulator makes', async () => {
     const sim = new MemberSubAccountSimulator();
     const r = await sim.ensureSubAccount({ partyId: 'p1', purpose: 'dues', inviteEmail: 'a@example.test' }, 'key-ref-00001');
