@@ -2,7 +2,7 @@
 // forged signatures never credit a wallet, timestamps outside tolerance are refused, and the
 // replay tool re-drives events whose processing failed. TST-LED-005 (T-0207): a forged delivery claims nothing,
 // so the provider's genuine delivery of the same event id is still verified and processed once.
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createMetrics, uuidv7 } from '@kesher/domain';
 import { BankError, type BankPort } from '@kesher/ports';
@@ -14,7 +14,7 @@ import { PostgresLedger } from '../ledger/post.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { WebhookRouter } from './handler.ts';
 import { InboundEventStore } from './store.ts';
-import { simulatorVerifier, standardWebhooksVerifier, stripeVerifier } from './verify.ts';
+import { simulatorVerifier, type WebhookVerifier } from './verify.ts';
 
 let db: TestDatabase;
 let ledger: PostgresLedger;
@@ -27,6 +27,30 @@ let processed = 0;
 let failNext = false;
 const now = new Date('2026-11-01T10:00:00Z');
 const STRIPE_SECRET = 'whsec_test_stripe';
+const SVIX_SECRET = 'secret-bytes';
+
+// A tiny verifier of the test's own (the router's cases need a signature scheme with a header, a secret and a replay window; no
+// production receiver uses this, they verify through their ports, T-0781): `<header>: <hex hmac of "<ts>.<body>">` and `x-ts`.
+const testVerifier = (secret: string, header: string): WebhookVerifier => ({
+  verify(headers, rawBody, at) {
+    let payload: unknown;
+    try {
+      payload = JSON.parse(rawBody);
+    } catch {
+      return { ok: false, eventId: '', payload: undefined, reason: 'malformed json' };
+    }
+    const eventId = (payload as { id?: string })?.id ?? headers['x-id'] ?? '';
+    if (!eventId) return { ok: false, eventId, payload, reason: 'missing event id' };
+    const given = headers[header];
+    if (!given) return { ok: false, eventId, payload, reason: 'missing signature' };
+    const ts = Number(headers['x-ts'] ?? NaN);
+    if (!Number.isFinite(ts) || Math.abs(at.getTime() / 1000 - ts) > 300) return { ok: false, eventId, payload, reason: 'timestamp outside tolerance' };
+    const expected = createHmac('sha256', secret).update(`${ts}.${rawBody}`).digest();
+    const got = Buffer.from(given, 'hex');
+    return got.length === expected.length && timingSafeEqual(got, expected) ? { ok: true, eventId, payload } : { ok: false, eventId, payload, reason: 'bad signature' };
+  },
+});
+const signed = (secret: string, ts: number, raw: string) => createHmac('sha256', secret).update(`${ts}.${raw}`).digest('hex');
 
 beforeAll(async () => {
   db = await createTestDatabase();
@@ -48,8 +72,8 @@ beforeAll(async () => {
     await ledger.post({ idempotencyKey: `${e.provider}:${e.eventId}`, kind: 'load', postings: [{ accountId: partner, currency: 'USD', amountMinor: minor }, { accountId: wallet, currency: 'USD', amountMinor: -minor }] });
   };
   router.bind('simulator', { verifier: simulatorVerifier, process: credit });
-  router.bind('stripe', { verifier: stripeVerifier([STRIPE_SECRET]), process: credit });
-  router.bind('institution-svix', { verifier: standardWebhooksVerifier(['whsec_' + Buffer.from('secret-bytes').toString('base64')]), process: async () => undefined });
+  router.bind('stripe', { verifier: testVerifier(STRIPE_SECRET, 'x-sig'), process: credit });
+  router.bind('institution-svix', { verifier: testVerifier(SVIX_SECRET, 'x-sig'), process: async () => undefined });
 }, 60_000);
 afterAll(async () => db.close());
 
@@ -93,24 +117,25 @@ describe('providerWebhook', () => {
     expect((await db.query(`select 1 from ops.inbound_rejected where event_id = 'evt-raced'`)).rowCount).toBe(2);
   });
 
-  it('Stripe-style signatures verify with the secret and fail with the wrong one', async () => {
+  it('a signed delivery verifies with the secret and fails with a wrong one', async () => {
     const raw = JSON.stringify({ id: 'evt_stripe_1', amountMinor: '500' });
     const t = Math.floor(now.getTime() / 1000);
-    const sig = createHmac('sha256', STRIPE_SECRET).update(`${t}.${raw}`).digest('hex');
-    const ok = await post('stripe', { 'stripe-signature': `t=${t},v1=${sig}` }, raw);
+    const ok = await post('stripe', { 'x-ts': String(t), 'x-sig': signed(STRIPE_SECRET, t, raw) }, raw);
     expect(ok.status).toBe(200);
-    const bad = await post('stripe', { 'stripe-signature': `t=${t},v1=${'0'.repeat(64)}` }, JSON.stringify({ id: 'evt_stripe_2', amountMinor: '500' }));
-    expect(bad.status).toBe(401);
+    const wrong = JSON.stringify({ id: 'evt_stripe_2', amountMinor: '500' });
+    expect((await post('stripe', { 'x-ts': String(t), 'x-sig': signed('another-secret', t, wrong) }, wrong)).status).toBe(401);
+    expect((await post('stripe', { 'x-ts': String(t), 'x-sig': '0'.repeat(64) }, wrong)).status).toBe(401);
   });
 
-  it('Standard Webhooks signatures are checked with the id.timestamp.body string and a 5-minute tolerance', async () => {
-    const raw = JSON.stringify({ type: 'collection.paid' });
+  it('a verifier that refuses a stale timestamp makes the router answer 401 and store nothing', async () => {
+    const raw = JSON.stringify({ id: 'msg_1', type: 'collection.paid' });
     const ts = Math.floor(now.getTime() / 1000);
-    const sig = createHmac('sha256', 'secret-bytes').update(`msg_1.${ts}.${raw}`).digest('base64');
-    const ok = await post('institution-svix', { 'webhook-id': 'msg_1', 'webhook-timestamp': String(ts), 'webhook-signature': `v1,${sig}` }, raw);
-    expect(ok.status).toBe(200);
-    const stale = await post('institution-svix', { 'webhook-id': 'msg_2', 'webhook-timestamp': String(ts), 'webhook-signature': `v1,${sig}` }, raw, new Date(now.getTime() + 6 * 60_000));
+    const headers = { 'x-ts': String(ts), 'x-sig': signed(SVIX_SECRET, ts, raw) };
+    expect((await post('institution-svix', headers, raw)).status).toBe(200);
+    const staleRaw = JSON.stringify({ id: 'msg_2', type: 'collection.paid' });
+    const stale = await post('institution-svix', { 'x-ts': String(ts), 'x-sig': signed(SVIX_SECRET, ts, staleRaw) }, staleRaw, new Date(now.getTime() + 6 * 60_000));
     expect(stale.status).toBe(401);
+    expect(await store.get('institution-svix', 'msg_2')).toBeUndefined();
   });
 
   it('unknown providers are 404 and a body without an event id is 422', async () => {
@@ -162,8 +187,8 @@ describe('webhook.rejected (T-0689)', () => {
     const lines: string[] = [];
     const metered = new WebhookRouter(new InboundEventStore(db, 'IL', createMetrics({ write: (l) => lines.push(l) })));
     metered.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-    metered.bind('stripe', { verifier: stripeVerifier([STRIPE_SECRET]), process: async () => undefined });
-    metered.bind('institution-svix', { verifier: standardWebhooksVerifier(['whsec_' + Buffer.from('secret-bytes').toString('base64')]), process: async () => undefined });
+    metered.bind('stripe', { verifier: testVerifier(STRIPE_SECRET, 'x-sig'), process: async () => undefined });
+    metered.bind('institution-svix', { verifier: testVerifier(SVIX_SECRET, 'x-sig'), process: async () => undefined });
     const res = await metered.handler()(makeRequest({ method: 'POST', path: `/hooks/${provider}`, params: { provider }, headers, rawBody: JSON.stringify(body), body, now }));
     return { res, lines: lines.map((l) => JSON.parse(l) as Record<string, unknown>) };
   };
@@ -178,7 +203,7 @@ describe('webhook.rejected (T-0689)', () => {
   it('a missing signature and a stale timestamp are told apart from a bad one', async () => {
     const missing = await rejected('stripe', {}, { id: 'evt_m', amountMinor: '5' });
     expect(missing.lines).toEqual([expect.objectContaining({ provider: 'stripe', reason: 'missing_signature' })]);
-    const stale = await rejected('institution-svix', { 'webhook-id': 'msg_1', 'webhook-timestamp': '1', 'webhook-signature': 'v1,AAAA' }, { a: 1 });
+    const stale = await rejected('institution-svix', { 'x-id': 'msg_1', 'x-ts': '1', 'x-sig': 'AAAA' }, { a: 1 });
     expect(stale.lines).toEqual([expect.objectContaining({ provider: 'institution-svix', reason: 'stale' })]);
   });
 
@@ -187,7 +212,7 @@ describe('webhook.rejected (T-0689)', () => {
     const metered = new WebhookRouter(new InboundEventStore(db, 'IL', createMetrics({ write: (l) => lines.push(l) })));
     const forged = { parseWebhook: async () => { throw new BankError('BAD_SIGNATURE', 'forged'); } } as unknown as BankPort;
     metered.bind('bank', { verifier: bankCreditVerifier(forged), process: async () => undefined });
-    metered.bind('institution-svix', { verifier: standardWebhooksVerifier(['whsec_' + Buffer.from('secret-bytes').toString('base64')]), process: async () => undefined });
+    metered.bind('institution-svix', { verifier: testVerifier(SVIX_SECRET, 'x-sig'), process: async () => undefined });
     const post2 = (provider: string, rawBody: string) => metered.handler()(makeRequest({ method: 'POST', path: `/hooks/${provider}`, params: { provider }, headers: {}, rawBody, body: rawBody, now }));
     const bank = await post2('bank', '{"amount":"1"}');
     expect(bank.status).toBe(422);

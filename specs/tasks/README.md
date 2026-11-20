@@ -401,7 +401,7 @@
 | [T-0778](T-0778.md) | WAL | Closure status: pending refund refs read in one query (A8) | — | later (scoped 2026-11-19) · independent |
 | [T-0779](T-0779.md) | LED | Ledger account provisioning in batches, idempotent (A8) | — | later (scoped 2026-11-19) · independent |
 | [T-0780](T-0780.md) | BIL | WIRE OR DELETE: `DunningService` has no production caller and no Stripe billing webhook feeds it (B) | — | later (scoped 2026-11-19) · decision first (with T-0736, T-0737) |
-| [T-0781](T-0781.md) | SETUP | WIRE OR DELETE: generic `standardWebhooksVerifier`, `stripeVerifier`, `hmacVerifier` are bound nowhere and carry bugs (B, security flag) | — | later (scoped 2026-11-19) · decision first |
+| [T-0781](T-0781.md) | SETUP | DELETED: generic `standardWebhooksVerifier`, `stripeVerifier`, `hmacVerifier` were bound nowhere and carried bugs; live Stripe funding receiver now has a forged/stale-signature guard (B, security flag) | — | done 2026-11-20 |
 | [T-0782](T-0782.md) | SETUP | WIRE OR DELETE: `makeRequest` is test-only; move it to a test helper (B) | — | later (scoped 2026-11-19) · decision first |
 | [T-0783](T-0783.md) | AGT | WIRE OR DELETE: `metadataHandler` is a test-only duplicate; `McpHttp` serves the metadata (B) | REQ-AGT-001 | later (scoped 2026-11-19) · decision first |
 | [T-0784](T-0784.md) | PAY | WIRE OR DELETE: `canTransition` is test-only; the state machine is enforced through `next()` (B, money-state flag) | — | later (scoped 2026-11-19) · decision first |

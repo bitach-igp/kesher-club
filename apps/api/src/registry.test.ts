@@ -531,6 +531,20 @@ describe('Stripe and notification bindings (T-0041)', () => {
     await expect(billing.parseWebhook(forged.headers, forged.rawBody)).rejects.toMatchObject({ code: 'BAD_SIGNATURE' });
   });
 
+  it('during a rotation a Stripe webhook older than the 5-minute window is refused whichever secret signed it (T-0781)', async () => {
+    const clock = fixedClock() as AdvanceableClock;
+    const config = { ...sim, ...stripeSet, STRIPE_WEBHOOK_SECRET: [new Secret(STRIPE_CURRENT), new Secret(STRIPE_PREVIOUS)] };
+    const old = new FakeStripe({ secretKey: STRIPE_KEY, webhookSecret: STRIPE_PREVIOUS, clock });
+    const { registry } = createRegistry('sandbox', clock, overridesFromConfig(config, nodb, undefined, old.fetch));
+    const funding = registry.resolve<FundingPort>('funding', 'US');
+    const l = await funding.createLoad({ customerId: 'cus_1', method: 'card', amount: { minor: 5_000n, currency: 'USD' }, paymentMethodId: 'pm_card_ok' }, 'load-key-0004');
+    const hook = old.settlePaymentIntent(l.loadId);
+    await expect(funding.parseWebhook(old.sign(hook.rawBody, 301), hook.rawBody)).rejects.toMatchObject({ code: 'BAD_SIGNATURE' });
+    const current = new FakeStripe({ secretKey: STRIPE_KEY, webhookSecret: STRIPE_CURRENT, clock });
+    await expect(funding.parseWebhook(current.sign(hook.rawBody, 301), hook.rawBody)).rejects.toMatchObject({ code: 'BAD_SIGNATURE' });
+    expect((await funding.parseWebhook(old.sign(hook.rawBody, 300), hook.rawBody)).load.loadId).toBe(l.loadId);
+  });
+
   it('with a single webhook secret the previous one is not accepted', async () => {
     const clock = fixedClock() as AdvanceableClock;
     const old = new FakeStripe({ secretKey: STRIPE_KEY, webhookSecret: STRIPE_PREVIOUS, clock });
