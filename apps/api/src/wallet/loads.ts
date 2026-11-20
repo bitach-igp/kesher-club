@@ -163,10 +163,37 @@ const unknownLoadKey = (transferId: string): string => `load-unknown:${transferI
 /** The vendor credit's key (T-0705): a refusal is final for its key at the vendor, so a retry after one is the next `n`. */
 export const creditKey = (workflowId: string, n: number): string => `${workflowId}:credit:${n}`;
 const creditCaseKey = (transferId: string): string => `load-credit:${transferId}`;
-/** `ops.external_ref` row type noting that credit attempt `n` of a transfer was begun (its external id is the credit key); see `creditMayHaveMoved`. */
+/** What the vendor answered to a credit attempt (the stored outcome suffix). */
+export type CreditOutcome = 'credited' | 'pending' | 'refused';
+/** `ops.external_ref` row type noting that credit attempt `n` of a transfer was begun (its external id is the credit key). */
 const creditMarkerType = (n: number): string => `funding_credit:${n}`;
 /** The outcome of attempt `n` (external id `{creditKey}:{credited|pending|refused}`), written once after the vendor answered; absent after a crash in between. */
 const creditDoneType = (n: number): string => `funding_credit_done:${n}`;
+interface CreditAttempt {
+  transferId: string;
+  provider: string;
+  attempt: number;
+}
+
+/** Writes the `began` marker of a credit attempt, before the vendor is called, so a crash between the vendor's answer and our journal leaves a trace (T-0742). Idempotent. */
+export async function recordCreditBegan(db: Database, a: CreditAttempt & { workflowId: string }): Promise<void> {
+  await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditMarkerType(a.attempt), a.transferId, a.provider, creditKey(a.workflowId, a.attempt)]);
+}
+
+/** Writes the outcome of a credit attempt. The FIRST outcome wins: a second violates unique (entity_type, entity_id, provider) and is dropped, so a `pending` that later turns credited or refused stays `pending` (conservative: it can only open a case, never hide one). */
+export async function recordCreditOutcome(db: Database, a: CreditAttempt & { workflowId: string; outcome: CreditOutcome }): Promise<void> {
+  await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditDoneType(a.attempt), a.transferId, a.provider, `${creditKey(a.workflowId, a.attempt)}:${a.outcome}`]);
+}
+
+/** What our own records say of a credit attempt: whether it began, and its outcome when one was written. A stored suffix that is none of the three reads as `pending` (the conservative answer: money may have moved). */
+export async function creditAttemptState(db: Database, a: CreditAttempt): Promise<{ began: boolean; outcome?: CreditOutcome }> {
+  const rows = await db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [a.transferId, a.provider, [creditMarkerType(a.attempt), creditDoneType(a.attempt)]]);
+  if (!rows.rows.some((r) => r.entity_type === creditMarkerType(a.attempt))) return { began: false };
+  const done = rows.rows.find((r) => r.entity_type === creditDoneType(a.attempt));
+  if (!done) return { began: true };
+  const suffix = done.external_id.slice(done.external_id.lastIndexOf(':') + 1);
+  return { began: true, outcome: suffix === 'credited' || suffix === 'refused' ? suffix : 'pending' };
+}
 /** The one case per transfer for money the vendor holds that a return or reversal now contradicts (T-0742). */
 const returnedCaseKey = (transferId: string): string => `load-returned:${transferId}`;
 
@@ -566,7 +593,7 @@ export class LoadService implements LoadActivities {
       return false;
     }
     // Written before the call, so a crash between the vendor's `credited` and our journal leaves a trace a later return can find (T-0742).
-    await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditMarkerType(attempt), transfer.id, this.d.provider, creditKey(transfer.idempotencyKey, attempt)]);
+    await recordCreditBegan(this.d.db, { transferId: transfer.id, workflowId: transfer.idempotencyKey, provider: this.d.provider, attempt });
     let result: CreditResult;
     try {
       result = await port.creditWallet({ loadId: vendor.loadId, accountRef, amount: transfer.amount }, creditKey(transfer.idempotencyKey, attempt));
@@ -581,7 +608,7 @@ export class LoadService implements LoadActivities {
     }
     // The FIRST outcome of an attempt wins: a second one violates unique (entity_type, entity_id, provider) and is dropped by `on conflict do nothing`.
     // A `pending` that later turns credited or refused stays `pending`, which is conservative: it can only open a case, never hide one.
-    await this.d.db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditDoneType(attempt), transfer.id, this.d.provider, `${creditKey(transfer.idempotencyKey, attempt)}:${result.status}`]);
+    await recordCreditOutcome(this.d.db, { transferId: transfer.id, workflowId: transfer.idempotencyKey, provider: this.d.provider, attempt, outcome: result.status });
     if (result.status === 'credited') {
       this.credits += 1;
       return true;
@@ -623,10 +650,8 @@ export class LoadService implements LoadActivities {
     const found = await this.creditCase(transfer.id);
     if (found.open) return undefined;
     const attempt = found.attempt + 1;
-    const rows = await this.d.db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [transfer.id, this.d.provider, [creditMarkerType(attempt), creditDoneType(attempt)]]);
-    if (!rows.rows.some((r) => r.entity_type === creditMarkerType(attempt))) return undefined;
-    const done = rows.rows.find((r) => r.entity_type === creditDoneType(attempt));
-    return done?.external_id.endsWith(':refused') ? undefined : vendorId;
+    const state = await creditAttemptState(this.d.db, { transferId: transfer.id, provider: this.d.provider, attempt });
+    return state.began && state.outcome !== 'refused' ? vendorId : undefined;
   }
 
   /**
