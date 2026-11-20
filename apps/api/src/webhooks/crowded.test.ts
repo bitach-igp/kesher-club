@@ -5,7 +5,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { computeCrowdedSignature, CrowdedClient, CrowdedFunding, CrowdedInstitutionBankingAdapter, CrowdedMemberAccounts, FakeCrowded } from '@kesher/adapters';
 import { money, uuidv7 } from '@kesher/domain';
-import { chapterOf, parseSubAccountRef, subAccountRef, type AchStatus, type ApplicationStatus, type InstitutionBankingPort } from '@kesher/ports';
+import { chapterOf, fixedClock, FundingSimulator, parseSubAccountRef, subAccountRef, type AchStatus, type ApplicationStatus, type InstitutionBankingPort } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { createApp, type App } from '../app.ts';
@@ -13,7 +13,8 @@ import { StaticFlags } from '../billing/capabilities.ts';
 import type { AddressInfo } from 'node:net';
 import { createServer, dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { holdKey, settleKey, type LoadInput } from '../wallet/loads.ts';
+import { applyVendorState, creditKey, holdKey, settleKey, type LoadInput } from '../wallet/loads.ts';
+import { ownerFailedMarker } from '../wallet/sub-account-markers.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey } from '../wallet/sub-accounts.ts';
 import { classifyCrowdedEvent, CrowdedWebhook, subAccountChapters, type CrowdedEventKind, type CrowdedHandlers } from './crowded.ts';
 import { InboundEventStore } from './store.ts';
@@ -548,38 +549,11 @@ describe('member-chapter payment events move a hosted load (T-0703, TST-WAL-003)
       });
       const l = subAccountChapters(spy, 'crowded');
       await l.isMemberChapter('lk-one');
-      await l.ownerFailed('lk-one', T);
-      expect(seen.length).toBeGreaterThanOrEqual(2);
+      expect(seen.length).toBeGreaterThanOrEqual(1);
       for (const q of seen.filter((t) => t.includes('ops.external_ref'))) {
         expect(q).not.toContain('||');
         expect(q.toLowerCase()).not.toContain('left(');
       }
-    });
-
-    it('ownerFailed is true only for a sub-account whose owner failed, and opens the one case for staff (and no second)', async () => {
-      const bad = uuidv7(T);
-      const fine = uuidv7(T);
-      await ref('funding_subaccount', bad, 's:lk-bad');
-      await ref('funding_subaccount_owner', bad, `o:${bad}:failed`);
-      await ref('funding_subaccount', fine, 's:lk-fine');
-      const l = lookup();
-      expect(await l.ownerFailed('lk-fine', T)).toBe(false);
-      expect(await l.ownerFailed('lk-bad', T)).toBe(true);
-      expect(await l.ownerFailed('lk-bad', T)).toBe(true);
-      expect((await db.query(`select 1 from ops.case where dedupe_key = $1 and kind = $2`, [ownerCaseKey(bad), OWNER_FAILED_CASE])).rows).toHaveLength(1);
-      expect((await db.query(`select 1 from ops.case where dedupe_key = $1`, [ownerCaseKey(fine)])).rows).toHaveLength(0);
-    });
-
-    it('ownerFailed ignores an owner marker that names another party or is not the failed marker', async () => {
-      const a = uuidv7(T);
-      const b = uuidv7(T);
-      await ref('funding_subaccount', a, 's:lk-mism');
-      await ref('funding_subaccount_owner', a, `o:${b}:failed`);
-      await ref('funding_subaccount', b, 's:lk-other-owner');
-      await ref('funding_subaccount_owner', b, `o:${b}:ok`);
-      const l = lookup();
-      expect(await l.ownerFailed('lk-mism', T)).toBe(false);
-      expect(await l.ownerFailed('lk-other-owner', T)).toBe(false);
     });
   });
 
@@ -669,13 +643,13 @@ describe('member-chapter payment events move a hosted load (T-0703, TST-WAL-003)
         spy.mockRestore();
       });
 
-      it('a sub-account whose owner failed is not credited: funding is not called', async () => {
+      it('a failed-owner chapter\'s event reaches the funding handler and is marked processed: the credit path owns the rule now (T-0763)', async () => {
         const funding = vi.fn(async () => undefined);
-        const ownerFailed = vi.fn(async (c: string) => c === 'subBad');
-        const feed = sub({ funding }, { isMemberChapter: async () => true, ownerFailed });
+        const feed = sub({ funding }, { isMemberChapter: async () => true });
         await feed(event('sd-8', 'collect.payment.succeeded', 'subBad', { paymentId: 'p1', intentId: 'i1' }));
         await feed(event('sd-9', 'collect.payment.succeeded', 'subOk', { paymentId: 'p2', intentId: 'i2' }));
-        expect(funding.mock.calls).toEqual([['subOk', 'crowded:subOk:p2', 'crowded:subOk:i2']]);
+        expect(funding.mock.calls).toEqual([['subBad', 'crowded:subBad:p1', 'crowded:subBad:i1'], ['subOk', 'crowded:subOk:p2', 'crowded:subOk:i2']]);
+        expect(Object.keys(subAccountChapters(db, 'crowded')).sort()).toEqual(['isMemberChapter']);
       });
 
       it('with the wallet flag off a sub-account event throws FEATURE_OFF so replay applies it later', async () => {
@@ -683,6 +657,143 @@ describe('member-chapter payment events move a hosted load (T-0703, TST-WAL-003)
         await expect(feed(event('sd-10', 'collect.payment.succeeded', 'subA', { paymentId: 'p1' }))).rejects.toMatchObject({ code: 'FEATURE_OFF' });
       });
     });
+  });
+});
+
+// T-0763: the failed-owner rule lives in LoadService.creditStep, so the webhook and the worker sweep meet it alike. Through createApp: the real
+// webhook route, router, funding handler, LoadService and database. The only stand-ins are the vendor (the funding simulator with its credit step,
+// behind a port that reads the webhook's `crowded:{chapter}:{id}` refs) and the credit port handed to the app's LoadService, which createApp does
+// not wire until T-0709.
+describe('a failed-owner sub-account is credited by neither the webhook nor the sweep (T-0763, TST-WAL-003)', () => {
+  const T = new Date('2026-11-03T10:00:00Z');
+  const LATER = new Date('2100-01-01T00:00:00Z');
+  const PROVIDER = 'simulator-owner-wire';
+  let app: App;
+  let sim: FundingSimulator;
+  let spy: { mock: { calls: [unknown, string][] } };
+  let n = 0;
+  const pay = (body: string) => dispatch(app, { method: 'POST', url: '/v1/webhooks/crowded', headers: signed(body), rawBody: body, now: T });
+  const replay = () => app.services.webhooks.replay({ provider: 'crowded', now: T });
+
+  beforeAll(async () => {
+    sim = new FundingSimulator(fixedClock(T.toISOString()), { credit: true });
+    // The webhook names the load by `crowded:{chapter}:{id}`; the simulator knows the bare id.
+    const bare = (ref: string) => /^crowded:[^:]+:(.+)$/.exec(ref)?.[1] ?? ref;
+    const port = { createLoad: (i: never, k: string) => sim.createLoad(i, k), getLoad: (id: string) => sim.getLoad(bare(id)), refund: (i: never, k: string) => sim.refund(i, k), getRefund: (id: string) => sim.getRefund(id), parseWebhook: (h: never, b: never) => sim.parseWebhook(h, b), creditWallet: (i: never, k: string) => (sim as Required<FundingSimulator>).creditWallet(i, k) };
+    const host = new SimulatorHost();
+    host.registry.register('funding', PROVIDER, () => port as never);
+    host.registry.bind({ capability: 'funding', market: 'US', provider: PROVIDER, mode: 'sim' });
+    app = createApp({ db, registry: host.registry, market: 'US', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => T, crowdedWebhookSecrets: [SECRET], flags: new StaticFlags(undefined, { 'wallet.enabled': true }) });
+    spy = vi.spyOn(sim as Required<FundingSimulator>, 'creditWallet');
+    // createApp builds the LoadService without a credit port (T-0709 wires it): attach the simulator's so the credit step runs.
+    (app.services.loads as unknown as { d: { credit: unknown } }).d.credit = port;
+  }, 60_000);
+
+  const ref = (type: string, party: string, externalId: string) => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4)`, [type, party, PROVIDER, externalId]);
+  async function member(failed: boolean) {
+    n += 1;
+    const s = app.services;
+    const chapter = `own-wire-${n}`;
+    const wf = `own-wire-load-${n}`;
+    const party = uuidv7(T);
+    await s.accounts.provisionMember(party);
+    await ref('funding_subaccount', party, subAccountRef(chapter));
+    await ref('funding_account', party, `a:${party}`);
+    if (failed) await ref('funding_subaccount_owner', party, ownerFailedMarker(party));
+    const amount = money(10_000n, 'USD');
+    const t = await s.loads.submit(await s.loads.begin({ payerPartyId: party, memberPartyId: party, method: 'card', amount }, wf, T), T);
+    const vendor = await sim.createLoad({ customerId: party, method: 'card', amount, paymentMethodId: 'pm_ok' }, wf);
+    await s.loads.link(t, vendor);
+    return { chapter, wf, party, transfer: t, vendorId: vendor.loadId };
+  }
+  let ev = 0;
+  const deliver = async (m: { chapter: string; vendorId: string }, eventId?: string) => {
+    const e = event(eventId ?? `ow-${++ev}`, 'collect.payment.succeeded', m.chapter, { paymentId: 'pay-1', intentId: m.vendorId });
+    const r = await pay(batch(e));
+    await replay();
+    return { r, id: e.eventId };
+  };
+  const sweep = async () => {
+    const loads = app.services.loads;
+    for (const x of await loads.stale(LATER, 0)) {
+      const vendorId = await loads.vendorLoadOf(x.id);
+      if (!vendorId) continue;
+      await applyVendorState(loads, x, await sim.getLoad(vendorId), x.idempotencyKey, LATER);
+    }
+  };
+  const state = async (id: string) => (await app.services.transfers.get(id))!.state;
+  const journals = async (wf: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [settleKey(wf)])).rows[0]!.n;
+  const callsFor = (wf: string) => spy.mock.calls.filter((c) => String(c[1]).startsWith(`${wf}:credit:`)).map((c) => c[1]);
+  const markers = async (id: string) => (await db.query(`select 1 from ops.external_ref where entity_id = $1 and entity_type like 'funding_credit%'`, [id])).rows.length;
+  const cases = async (party: string, transferId: string) => ({
+    owner: (await db.query<{ severity: string; payload: unknown; kind: string }>(`select kind, severity, payload from ops.case where dedupe_key = $1`, [ownerCaseKey(party)])).rows,
+    credit: (await db.query(`select 1 from ops.case where dedupe_key = $1`, [`load-credit:${transferId}`])).rows.length,
+  });
+  const processed = async (eventId: string) => (await db.query<{ processed_at: unknown }>(`select processed_at from ops.inbound_event where event_id = $1`, [eventId])).rows[0]!.processed_at;
+
+  it('the webhook does not credit it (event stored and processed), a replay and the sweep add nothing, and removing the marker lets the sweep credit once', async () => {
+    const m = await member(true);
+    const first = await deliver(m);
+    expect(first.r.status).toBe(200);
+    expect(await processed(first.id)).not.toBeNull();
+    const expectUntouched = async () => {
+      expect(await state(m.transfer.id)).toBe('submitted');
+      expect(callsFor(m.wf)).toEqual([]);
+      expect(await journals(m.wf)).toBe(0);
+      expect(await markers(m.transfer.id)).toBe(0);
+      expect(await cases(m.party, m.transfer.id)).toEqual({ owner: [{ kind: OWNER_FAILED_CASE, severity: 'medium', payload: { partyId: m.party } }], credit: 0 });
+    };
+    await expectUntouched();
+    // The same event twice (a duplicate id) and again under a new id (a re-delivery): no second case, no vendor call, no journal.
+    const body = batch(event(first.id, 'collect.payment.succeeded', m.chapter, { paymentId: 'pay-1', intentId: m.vendorId }));
+    expect((await pay(body)).body).toEqual({ received: 1, stored: 0, duplicates: 1 });
+    await replay();
+    await deliver(m);
+    await expectUntouched();
+    // The sweep path meets the same rule.
+    await sweep();
+    await sweep();
+    await expectUntouched();
+    // The owner is fixed (the marker row is gone): the sweep credits once.
+    await db.query(`delete from ops.external_ref where entity_type = 'funding_subaccount_owner' and entity_id = $1`, [m.party]);
+    await sweep();
+    expect(callsFor(m.wf)).toEqual([creditKey(m.wf, 1)]);
+    expect(await journals(m.wf)).toBe(1);
+    expect(await state(m.transfer.id)).toBe('settled');
+    expect((await app.services.accounts.purses(m.party)).find((p) => p.currency === 'USD')!.available.minor).toBe(10_000n);
+    // Replays after the credit change nothing more.
+    await deliver(m);
+    await sweep();
+    expect(callsFor(m.wf)).toHaveLength(1);
+    expect(await journals(m.wf)).toBe(1);
+    expect((await cases(m.party, m.transfer.id)).owner).toHaveLength(1);
+  });
+
+  it('the sweep first, then the marker is removed and the next webhook credits once', async () => {
+    const m = await member(true);
+    await sweep();
+    expect(await state(m.transfer.id)).toBe('submitted');
+    expect(callsFor(m.wf)).toEqual([]);
+    expect(await journals(m.wf)).toBe(0);
+    await db.query(`delete from ops.external_ref where entity_type = 'funding_subaccount_owner' and entity_id = $1`, [m.party]);
+    await deliver(m);
+    expect(callsFor(m.wf)).toEqual([creditKey(m.wf, 1)]);
+    expect(await journals(m.wf)).toBe(1);
+    expect(await state(m.transfer.id)).toBe('settled');
+    await deliver(m);
+    await sweep();
+    expect(callsFor(m.wf)).toHaveLength(1);
+    expect(await journals(m.wf)).toBe(1);
+  });
+
+  it('a member whose owner did not fail is credited by the same webhook, once', async () => {
+    const m = await member(false);
+    await deliver(m);
+    expect(callsFor(m.wf)).toEqual([creditKey(m.wf, 1)]);
+    expect(await journals(m.wf)).toBe(1);
+    expect((await cases(m.party, m.transfer.id)).owner).toEqual([]);
+    await deliver(m);
+    expect(callsFor(m.wf)).toHaveLength(1);
   });
 });
 

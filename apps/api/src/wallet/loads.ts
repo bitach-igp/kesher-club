@@ -37,6 +37,8 @@ import { entityOf, linkRef, refOf } from '../ops/external-ref.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
 import { holdKey, releaseKey, settleKey } from '../transfers/journal-keys.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
+import { isOwnerFailedMarker } from './sub-account-markers.ts';
+import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF } from './sub-accounts.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
 
 export const WALLET_FLAG = 'wallet.enabled';
@@ -580,6 +582,10 @@ export class LoadService implements LoadActivities {
     if (found.open) return false;
     // Not `succeeded` (an ACH the vendor still holds, even past our hold date when its clock lags ours): nothing to credit yet, no case.
     if (vendor.status !== 'succeeded') return false;
+    // A sub-account whose owner the vendor refused is not credited (T-0763): this is the one place every path (webhook, sweep, release) passes.
+    // Unlike the account gate below it opens no credit case and writes no `began` marker, so no attempt number is spent and nobody has to
+    // resolve a case before the retry: the next cycle reads the marker again and credits with the same key once it is gone.
+    if (await this.ownerBlock(transfer, now)) return false;
     const attempt = found.attempt + 1;
     const accountRef = await this.memberAccountRef(transfer);
     if (!accountRef) {
@@ -616,6 +622,16 @@ export class LoadService implements LoadActivities {
     // `NOT_SUCCEEDED` after a `succeeded` read is the vendor's read flapping, not a refusal: retried with the same key, no case.
     if (result.status === 'refused' && result.reasonCode !== 'NOT_SUCCEEDED') await this.openCreditCase(transfer, vendor.loadId, result.reasonCode ?? 'REFUSED', attempt, now);
     return false;
+  }
+
+  /** True when the load's purse is a sub-account whose owner failed (the `o:{party}:failed` marker of this provider); opens the one owner case for staff (the key sub-accounts.ts used) if it is not there. */
+  private async ownerBlock(transfer: Transfer, now: Date): Promise<boolean> {
+    const party = transfer.toPartyId;
+    if (party === undefined) return false;
+    const r = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = $1 and entity_id = $2 and provider = $3`, [SUBACCOUNT_OWNER_REF, party, this.d.provider]);
+    if (!r.rows.some((x) => isOwnerFailedMarker(party, x.external_id))) return false;
+    await openCase(this.d.db, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(party), severity: 'medium', payload: { partyId: party }, now });
+    return true;
   }
 
   private async memberAccountRef(transfer: Transfer): Promise<string | undefined> {

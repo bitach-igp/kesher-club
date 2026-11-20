@@ -15,8 +15,11 @@ import { FakeStripe, StripeFundingAdapter } from '@kesher/adapters';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { creditAttemptState, creditKey, HELD_RECHECK_MS, holdKey, loadState, LoadService, recordCreditBegan, recordCreditOutcome, releaseKey, runLoad, settleKey, type CreditOutcome, type LoadView } from './loads.ts';
+import { applyVendorState, creditAttemptState, creditKey, HELD_RECHECK_MS, holdKey, loadState, LoadService, recordCreditBegan, recordCreditOutcome, releaseKey, runLoad, settleKey, type CreditOutcome, type LoadView } from './loads.ts';
 import { seedTransfer } from '../test-seed.ts';
+import { openCase } from '../ops/cases.ts';
+import { ownerFailedMarker } from './sub-account-markers.ts';
+import { OWNER_FAILED_CASE, ownerCaseKey } from './sub-accounts.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -1349,6 +1352,13 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
         expect(r.cases).toBe(cases);
       });
 
+      it('a near-miss suffix (refused_later) is not `refused`: it reads as may-have-moved, the load fails, no vendor call, one case', async () => {
+        const r = await returnedWith('nearmiss', { began: true, outcome: 'refused_later' } as never);
+        expect(r.state).toBe('failed');
+        expect(r.calls).toBe(0);
+        expect(r.cases).toBe(1);
+      });
+
       it('a stored outcome suffix that is none of the three reads as may-have-moved: the load fails, no vendor call, one case', async () => {
         const r = await returnedWith('oddsuffix', { began: true, outcome: 'weird' } as never);
         expect(r.state).toBe('failed');
@@ -1421,5 +1431,127 @@ describe('the typed credit-marker functions (T-0761)', () => {
     await recordCreditBegan(db, { ...a, attempt: 2 });
     expect(await read(a, 2)).toEqual({ began: true });
     expect(await read(a, 1)).toEqual({ began: true, outcome: 'refused' });
+  });
+});
+
+describe('the failed-owner rule is enforced on the credit path (T-0763, TST-WAL-003, TST-WAL-002)', () => {
+  const LATER = new Date('2100-01-01T00:00:00Z');
+  let nth = 0;
+  const setup = async () => {
+    const s = app.services;
+    nth += 1;
+    const provider = `simulator-owner-${nth}`;
+    const sim = new FundingSimulator(fixedClock(NOW.toISOString()), { credit: true });
+    const svc = new LoadService({ db, port: sim, credit: sim as Required<FundingSimulator>, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
+    const party = uuidv7(NOW);
+    await s.accounts.provisionMember(party);
+    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_account', $1, $3, $2)`, [party, `a:${party}`, provider]);
+    const spy = vi.spyOn(sim as Required<FundingSimulator>, 'creditWallet');
+    const body = { memberPartyId: party, amount: USD_100, method: 'card', paymentMethodId: 'pm_ok' };
+    const marker = (value: string, entityId = party, prov = provider) => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_subaccount_owner', $1, $2, $3)`, [entityId, prov, value]);
+    const clear = () => db.query(`delete from ops.external_ref where entity_type = 'funding_subaccount_owner' and entity_id = $1`, [party]);
+    /** The worker sweep's own steps (stale, read the vendor, apply its state), without the worker package. */
+    const sweep = async () => {
+      for (const x of await svc.stale(LATER, 0)) {
+        const vendorId = await svc.vendorLoadOf(x.id);
+        if (!vendorId) continue; // another test's load, under another provider
+        await applyVendorState(svc, x, await sim.getLoad(vendorId), x.idempotencyKey, LATER);
+      }
+    };
+    return { sim, svc, party, spy, body, provider, marker, clear, sweep };
+  };
+  const ownerCases = async (party: string) => (await db.query<{ kind: string; severity: string; status: string; payload: Record<string, unknown> }>(`select kind, severity, status, payload from ops.case where dedupe_key = $1`, [ownerCaseKey(party)])).rows;
+  const creditCases = async (key: string) => (await db.query(`select 1 from ops.case c join ops.transfer t on c.dedupe_key = 'load-credit:' || t.id where t.idempotency_key = $1`, [key])).rows.length;
+  const creditMarkers = async (key: string) => (await db.query(`select r.entity_type from ops.external_ref r join ops.transfer t on r.entity_id = t.id where t.idempotency_key = $1 and r.entity_type like 'funding_credit%'`, [key])).rows.length;
+  const settleJournals = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [settleKey(key)])).rows[0]!.n;
+  const balance = async (party: string) => (await app.services.accounts.purses(party)).find((p) => p.currency === 'USD')!.available.minor;
+
+  it('a failed-owner load the vendor has taken is not credited: no vendor call, no journal, no credit marker, one owner case and no credit case; a replay and a sweep change nothing; once the marker is gone the sweep credits once', async () => {
+    const t = await setup();
+    const key = 'owner-fail-0001';
+    await t.marker(ownerFailedMarker(t.party));
+    const view = await t.svc.request(t.party, t.body, key, NOW);
+    expect(view.state).not.toBe('settled');
+    const tr = (await app.services.transfers.byKey(key))!;
+    expect(tr.state).toBe('submitted');
+    expect(t.spy).not.toHaveBeenCalled();
+    expect(await settleJournals(key)).toBe(0);
+    expect(await creditMarkers(key)).toBe(0);
+    expect(await creditCases(key)).toBe(0);
+    expect(await ownerCases(t.party)).toEqual([{ kind: OWNER_FAILED_CASE, severity: 'medium', status: 'open', payload: { partyId: t.party } }]);
+    expect(await balance(t.party)).toBe(0n);
+
+    // A second apply and the sweep, three cycles: nothing moves and nothing new opens.
+    await t.svc.applyVendorLoad((await t.svc.vendorLoadOf(tr.id))!, LATER);
+    await t.sweep();
+    await t.sweep();
+    expect(t.spy).not.toHaveBeenCalled();
+    expect(await settleJournals(key)).toBe(0);
+    expect(await creditMarkers(key)).toBe(0);
+    expect(await creditCases(key)).toBe(0);
+    expect(await ownerCases(t.party)).toHaveLength(1);
+    expect((await app.services.transfers.byKey(key))!.state).toBe('submitted');
+
+    // The owner marker is cleared (SQL: nothing in the code clears it today, see the card's open question): the next sweep credits.
+    await t.clear();
+    await t.sweep();
+    expect(t.spy).toHaveBeenCalledTimes(1);
+    expect(t.spy.mock.calls[0]![1]).toBe(`${key}:credit:1`);
+    expect(await settleJournals(key)).toBe(1);
+    expect((await app.services.transfers.byKey(key))!.state).toBe('settled');
+    expect(await balance(t.party)).toBe(10_000n);
+    expect(await ownerCases(t.party)).toHaveLength(1);
+    await t.sweep();
+    expect(t.spy).toHaveBeenCalledTimes(1);
+    expect(await settleJournals(key)).toBe(1);
+  });
+
+  it('the owner case is the one sub-accounts.ts opened: an existing case is reused, not duplicated, and its fields are left alone', async () => {
+    const t = await setup();
+    await openCase(db, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(t.party), severity: 'medium', payload: { partyId: t.party }, now: NOW });
+    await t.marker(ownerFailedMarker(t.party));
+    await t.svc.request(t.party, t.body, 'owner-case-0001', NOW);
+    await t.sweep();
+    expect(await ownerCases(t.party)).toEqual([{ kind: OWNER_FAILED_CASE, severity: 'medium', status: 'open', payload: { partyId: t.party } }]);
+  });
+
+  it('a load the vendor still holds (ACH on hold) is not an owner case yet: nothing to credit, so no case', async () => {
+    const t = await setup();
+    await t.marker(ownerFailedMarker(t.party));
+    await t.svc.request(t.party, { ...t.body, method: 'ach' }, 'owner-ach-00001', NOW);
+    expect(await ownerCases(t.party)).toEqual([]);
+    expect(t.spy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['no marker at all (a platform or non-sub-account purse)', undefined],
+    ['the owner marker for a different state (`o:{party}:ok`)', (p: string) => `o:${p}:ok`],
+    ['a failed marker that names another party', () => `o:${uuidv7(NOW)}:failed`],
+    ['a failed marker with a suffix', (p: string) => `${ownerFailedMarker(p)}:x`],
+  ] as const)('%s credits exactly as before: one vendor call, one journal, no owner case', async (_name, value) => {
+    const t = await setup();
+    const key = `owner-ok-${(nth + 1000).toString()}`;
+    if (value) await t.marker(value(t.party));
+    const view = await t.svc.request(t.party, t.body, key, NOW);
+    expect(view.state).toBe('settled');
+    expect(t.spy).toHaveBeenCalledTimes(1);
+    expect(t.spy.mock.calls[0]![1]).toBe(`${key}:credit:1`);
+    expect(await settleJournals(key)).toBe(1);
+    expect(await ownerCases(t.party)).toEqual([]);
+  });
+
+  it('a failed marker stored under another provider does not block this provider\'s credit', async () => {
+    const t = await setup();
+    const key = 'owner-prov-0001';
+    await t.marker(ownerFailedMarker(t.party), t.party, 'some-other-provider');
+    expect((await t.svc.request(t.party, t.body, key, NOW)).state).toBe('settled');
+    expect(t.spy).toHaveBeenCalledTimes(1);
+    expect(await ownerCases(t.party)).toEqual([]);
+  });
+
+  it('another member\'s failed owner does not block this member', async () => {
+    const t = await setup();
+    await t.marker(ownerFailedMarker(uuidv7(NOW)), uuidv7(NOW));
+    expect((await t.svc.request(t.party, t.body, 'owner-other-0001', NOW)).state).toBe('settled');
   });
 });

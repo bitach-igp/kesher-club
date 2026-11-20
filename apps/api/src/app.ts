@@ -205,9 +205,9 @@ function buildServices(o: AppOptions) {
   // An application event is re-read through the port and its current status reaches the US-banking link (T-0650).
   const usCollections = new UsCollections({ db: o.db, flags, audit, kyb: kybGate, registry: o.registry, usBanking });
   // A member's own sub-account is a Crowded chapter of its own: payment events find the wallet by the funding_subaccount refs (T-0757).
-  const crowdedChapterLookup = (): Pick<CrowdedWebhookDeps, 'isMemberChapter' | 'ownerFailed'> => {
+  const crowdedChapterLookup = (): Pick<CrowdedWebhookDeps, 'isMemberChapter'> => {
     const refs = subAccountChapters(o.db, o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator');
-    return { isMemberChapter: refs.isMemberChapter, ownerFailed: (chapter) => refs.ownerFailed(chapter, clock.now()) };
+    return { isMemberChapter: refs.isMemberChapter };
   };
   const crowdedWebhook = new CrowdedWebhook({ store: inbound, flags, secrets: () => o.crowdedWebhookSecrets ?? [], port: () => o.registry.resolve<InstitutionBankingPort>('institution-banking', o.market), ...(o.crowdedMemberChapterId ? { memberChapterId: o.crowdedMemberChapterId } : {}), ...crowdedChapterLookup(), handlers: {
       ...o.crowdedHandlers,
