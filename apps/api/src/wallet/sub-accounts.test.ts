@@ -339,6 +339,33 @@ describe('a full sub-account quota (T-0753)', () => {
     expect(c.rows[0]!.opened_at.toISOString()).toBe(later.toISOString());
   });
 
+  it('a reopen after two refusals starts again at 1 (the count is not carried over) and the case is open', async () => {
+    await db.query(`delete from ops.case where dedupe_key = 'subaccount-quota'`);
+    const { service } = build();
+    full();
+    await refused(service.open({ partyId: uuidv7(), purpose: PURPOSE }, NOW));
+    await refused(service.open({ partyId: uuidv7(), purpose: PURPOSE }, new Date(NOW.getTime() + 60_000)));
+    expect((await quotaCase()).rows[0]!.payload).toEqual({ refused: 2 });
+    await resolveQuotaCase();
+    await refused(service.open({ partyId: uuidv7(), purpose: PURPOSE }, new Date(NOW.getTime() + 3_600_000)));
+    const c = await quotaCase();
+    expect(c.rows).toHaveLength(1);
+    expect(c.rows[0]).toMatchObject({ status: 'open', payload: { refused: 1 } });
+  });
+
+  it('a refusal while ops is investigating bumps the count and leaves the status investigating', async () => {
+    await db.query(`delete from ops.case where dedupe_key = 'subaccount-quota'`);
+    const { service } = build();
+    full();
+    await refused(service.open({ partyId: uuidv7(), purpose: PURPOSE }, NOW));
+    await db.query(`update ops.case set status = 'investigating' where dedupe_key = 'subaccount-quota'`);
+    await refused(service.open({ partyId: uuidv7(), purpose: PURPOSE }, new Date(NOW.getTime() + 60_000)));
+    const c = await quotaCase();
+    expect(c.rows).toHaveLength(1);
+    expect(c.rows[0]).toMatchObject({ status: 'investigating', payload: { refused: 2 } });
+    expect(c.rows[0]!.opened_at.toISOString()).toBe(NOW.toISOString());
+  });
+
   it('other port errors still propagate unchanged and open no quota case', async () => {
     await db.query(`delete from ops.case where dedupe_key = 'subaccount-quota'`);
     const port = new SpySim();
