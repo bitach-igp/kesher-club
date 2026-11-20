@@ -128,3 +128,24 @@ describe('token lifecycle webhooks (TST-CRD-007)', () => {
     expect(() => parseTokenEvent({ eventId: 'x', type: 'token.moved', tokenId: 't', cardId: 'c', wallet: 'apple', deviceId: 'd' })).toThrow(/Unknown token event type/);
   });
 });
+
+describe('detailsTokenProvisioning (TST-CRD-006)', () => {
+  // Vectors from node:crypto computed outside the code: sha256 base64url of `${token}:${nonce}` and of `${wallet}:${nonce}`.
+  const source = detailsTokenProvisioning({ showDetailsToken: () => Promise.resolve({ token: 'tok_abc' }) } as unknown as CardIssuingPort);
+
+  it('derives the pass data, activation data and ephemeral key exactly', async () => {
+    const p = await source.payload({ processorCardId: 'pc_1', wallet: 'apple', deviceId: 'dev-1', clientData: { nonce: 'n-1' } });
+    expect(p).toEqual({
+      encryptedPassData: 'YXBwbGU6ZGV2LTE6dG9rX2FiYw',
+      activationData: 'iMa9BQQBPiyiirrCgbuaahvBJNZ52sDF4a9pFioj3CM',
+      ephemeralPublicKey: 'EPh65djPqFpGHQMHVoQx0nVeMIBuHVuOy8rp3Y0iq98',
+    });
+  });
+
+  it('treats a missing nonce as the empty string', async () => {
+    const p = await source.payload({ processorCardId: 'pc_1', wallet: 'apple', deviceId: 'dev-1', clientData: {} });
+    expect(p.activationData).toBe('mfndUOWeoNgaHh4VHIt-s1_x9T8Nl5ollVklkifhHbQ');
+    expect(p.ephemeralPublicKey).toBe('Ne0y9FKijGZabqEuLcsWvsAA73npyNwwKjVSn7ByO-E');
+  });
+});
+
