@@ -24,7 +24,7 @@
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
 import { applyBps, DomainError, fromWire, money, sub, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
-import { applyRate, FundingAccountError, FundingError, type FundingAccountPort, type CreditResult, type FundingCreditPort, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
+import { applyRate, FundingAccountError, FundingError, type FundingAccountPort, type FundingCreditPort, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import type { Database } from '../db.ts';
@@ -36,10 +36,9 @@ import { entityOf, linkRef, refOf } from '../ops/external-ref.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
 import { holdKey, releaseKey, settleKey } from '../transfers/journal-keys.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
-import { isOwnerFailedMarker } from './sub-account-markers.ts';
-import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF } from './sub-accounts.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
-import { creditCase, openCreditCase, openReturnedCase, openUnknownLoadCase, unknownLoadOpen } from './load-cases.ts';
+import { openReturnedCase, openUnknownLoadCase, unknownLoadOpen } from './load-cases.ts';
+import { creditAttemptState, creditKey, creditMayHaveMoved, creditStep, recordCreditBegan, recordCreditOutcome, type CreditOutcome } from './load-credit.ts';
 import { credited, conversionMetadata, eventIdOf, institutionMetadata, journalKind, loadState, mapFundingError, markupOf } from './load-model.ts';
 import {
   ACH_FLAG, applyVendorState, FUNDING_PROVIDER, HELD_RECHECK_MS, HOLD_JOURNAL_KIND, INSTITUTION_DEPOSIT_JOURNAL_KIND, LOAD_JOURNAL_KIND, LOAD_METHODS, PURSE_CURRENCIES, RELEASE_JOURNAL_KIND, runLoad, WALLET_FLAG,
@@ -52,39 +51,9 @@ export { ACH_FLAG, applyVendorState, FUNDING_PROVIDER, HELD_RECHECK_MS, HOLD_JOU
 export type { LoadActivities, LoadInput, LoadRun, LoadState, LoadView };
 export { loadState };
 export { holdKey, releaseKey, settleKey };
-/** The vendor credit's key (T-0705): a refusal is final for its key at the vendor, so a retry after one is the next `n`. */
-export const creditKey = (workflowId: string, n: number): string => `${workflowId}:credit:${n}`;
-/** What the vendor answered to a credit attempt (the stored outcome suffix). */
-export type CreditOutcome = 'credited' | 'pending' | 'refused';
-/** `ops.external_ref` row type noting that credit attempt `n` of a transfer was begun (its external id is the credit key). */
-const creditMarkerType = (n: number): string => `funding_credit:${n}`;
-/** The outcome of attempt `n` (external id `{creditKey}:{credited|pending|refused}`), written once after the vendor answered; absent after a crash in between. */
-const creditDoneType = (n: number): string => `funding_credit_done:${n}`;
-interface CreditAttempt {
-  transferId: string;
-  provider: string;
-  attempt: number;
-}
-
-/** Writes the `began` marker of a credit attempt, before the vendor is called, so a crash between the vendor's answer and our journal leaves a trace (T-0742). Idempotent. */
-export async function recordCreditBegan(db: Database, a: CreditAttempt & { workflowId: string }): Promise<void> {
-  await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditMarkerType(a.attempt), a.transferId, a.provider, creditKey(a.workflowId, a.attempt)]);
-}
-
-/** Writes the outcome of a credit attempt. The FIRST outcome wins: a second violates unique (entity_type, entity_id, provider) and is dropped, so a `pending` that later turns credited or refused stays `pending` (conservative: it can only open a case, never hide one). */
-export async function recordCreditOutcome(db: Database, a: CreditAttempt & { workflowId: string; outcome: CreditOutcome }): Promise<void> {
-  await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditDoneType(a.attempt), a.transferId, a.provider, `${creditKey(a.workflowId, a.attempt)}:${a.outcome}`]);
-}
-
-/** What our own records say of a credit attempt: whether it began, and its outcome when one was written. A stored suffix that is none of the three reads as `pending` (the conservative answer: money may have moved). */
-export async function creditAttemptState(db: Database, a: CreditAttempt): Promise<{ began: boolean; outcome?: CreditOutcome }> {
-  const rows = await db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [a.transferId, a.provider, [creditMarkerType(a.attempt), creditDoneType(a.attempt)]]);
-  if (!rows.rows.some((r) => r.entity_type === creditMarkerType(a.attempt))) return { began: false };
-  const done = rows.rows.find((r) => r.entity_type === creditDoneType(a.attempt));
-  if (!done) return { began: true };
-  const suffix = done.external_id.slice(done.external_id.lastIndexOf(':') + 1);
-  return { began: true, outcome: suffix === 'credited' || suffix === 'refused' ? suffix : 'pending' };
-}
+// The credit phase moved to load-credit.ts (T-0766); its public names are re-exported so every importer keeps importing from here.
+export { creditAttemptState, creditKey, recordCreditBegan, recordCreditOutcome };
+export type { CreditOutcome };
 
 interface Deps {
   db: Database;
@@ -448,96 +417,15 @@ export class LoadService implements LoadActivities {
     return unknownLoadOpen(this.d.db, transferId);
   }
 
-  private async creditCase(transferId: string): Promise<{ open: boolean; attempt: number }> {
-    return creditCase(this.d.db, transferId);
-  }
-
   /**
-   * The vendor credit before the journal (T-0705, ADR-018 A4/M1). True when the journal may post: no credit port (the journals every
-   * other vendor posts), or the vendor answered `credited`. False leaves the load where it is and posts nothing: `pending` (a load the
-   * vendor still holds, or an answer not final yet) is retried by the next sweep with the SAME key, a refusal opens one `load_credit_refused`
-   * case and stops until people resolve it, and the retry after that takes the next key `{wf}:credit:{n}`, `n` read from the case.
-   * A thrown outage leaves everything as it was. The credit is per load at the vendor, so a crash after it and before the journal
-   * calls it again, is answered `credited`, and the one journal follows.
+   * The vendor credit before the journal (T-0705): the step itself is `creditStep` in load-credit.ts (T-0766); this adds what it says
+   * happened to the `credits` and `refusals` counters the sweep report reads. True when the journal may post.
    */
   private async creditStep(transfer: Transfer, vendor: VendorLoad | undefined, now: Date): Promise<boolean> {
-    const port = this.d.credit;
-    if (transfer.kind !== 'load' || !vendor) return true;
-    // A sub-account whose owner the vendor refused is not credited (T-0763), with or without a credit port: this is the one place every path
-    // (webhook, sweep, release) passes before a load's journal. It runs ahead of the credit-case and account gates, so a failed owner never
-    // opens a `load_credit_refused` case either, and unlike them it writes no `began` marker: no attempt number is spent, nobody has to
-    // resolve a case, and the next cycle reads the marker again and goes on with the same key once it is gone.
-    if (await this.ownerBlock(transfer, now)) return false;
-    if (!port) return true;
-    const found = await this.creditCase(transfer.id);
-    if (found.open) return false;
-    // Not `succeeded` (an ACH the vendor still holds, even past our hold date when its clock lags ours): nothing to credit yet, no case.
-    if (vendor.status !== 'succeeded') return false;
-    const attempt = found.attempt + 1;
-    const accountRef = await this.memberAccountRef(transfer);
-    if (!accountRef) {
-      await this.openCreditCase(transfer, vendor.loadId, 'NO_ACCOUNT', attempt, now);
-      return false;
-    }
-    // A stored ref skipped the account gate when the load began: an account frozen or closed since is checked again here (T-0740 review).
-    const blocked = await this.accountBlock(accountRef);
-    if (blocked) {
-      await this.openCreditCase(transfer, vendor.loadId, blocked, attempt, now);
-      return false;
-    }
-    // Written before the call, so a crash between the vendor's `credited` and our journal leaves a trace a later return can find (T-0742).
-    await recordCreditBegan(this.d.db, { transferId: transfer.id, workflowId: transfer.idempotencyKey, provider: this.d.provider, attempt });
-    let result: CreditResult;
-    try {
-      result = await port.creditWallet({ loadId: vendor.loadId, accountRef, amount: transfer.amount }, creditKey(transfer.idempotencyKey, attempt));
-    } catch (e) {
-      // An outage moved nothing: the same key is sent again next cycle. A request the vendor will never accept (a USD-only credit asked for an
-      // ILS load, a load it does not know) is a case for people, once, not an error every cycle.
-      if (e instanceof FundingError && (e.code === 'VALIDATION_FAILED' || e.code === 'UNKNOWN_LOAD')) {
-        await this.openCreditCase(transfer, vendor.loadId, e.code, attempt, now);
-        return false;
-      }
-      throw mapFundingError(e);
-    }
-    // The FIRST outcome of an attempt wins: a second one violates unique (entity_type, entity_id, provider) and is dropped by `on conflict do nothing`.
-    // A `pending` that later turns credited or refused stays `pending`, which is conservative: it can only open a case, never hide one.
-    await recordCreditOutcome(this.d.db, { transferId: transfer.id, workflowId: transfer.idempotencyKey, provider: this.d.provider, attempt, outcome: result.status });
-    if (result.status === 'credited') {
-      this.credits += 1;
-      return true;
-    }
-    // `NOT_SUCCEEDED` after a `succeeded` read is the vendor's read flapping, not a refusal: retried with the same key, no case.
-    if (result.status === 'refused' && result.reasonCode !== 'NOT_SUCCEEDED') await this.openCreditCase(transfer, vendor.loadId, result.reasonCode ?? 'REFUSED', attempt, now);
-    return false;
-  }
-
-  /** True when the load's purse is a sub-account whose owner failed (the `o:{party}:failed` marker of this provider); opens the one owner case for staff (the key sub-accounts.ts used) if it is not there. */
-  private async ownerBlock(transfer: Transfer, now: Date): Promise<boolean> {
-    const party = transfer.toPartyId;
-    if (party === undefined) return false;
-    const r = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = $1 and entity_id = $2 and provider = $3`, [SUBACCOUNT_OWNER_REF, party, this.d.provider]);
-    if (!r.rows.some((x) => isOwnerFailedMarker(party, x.external_id))) return false;
-    await openCase(this.d.db, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(party), severity: 'medium', payload: { partyId: party }, now });
-    return true;
-  }
-
-  private async memberAccountRef(transfer: Transfer): Promise<string | undefined> {
-    const ref = await this.d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = 'funding_account' and entity_id = $1 and provider = $2`, [transfer.toPartyId, this.d.provider]);
-    return ref.rows[0]?.external_id;
-  }
-
-  /** The reason code when the member's wallet account at the vendor is no longer open (read now, never trusted from the stored ref); undefined when it is open or the binding cannot say. */
-  private async accountBlock(accountRef: string): Promise<string | undefined> {
-    const accounts = this.d.fundingAccounts;
-    if (!accounts) return undefined;
-    try {
-      const view = await accounts.account(accountRef);
-      return view.status === 'open' ? undefined : `ACCOUNT_${view.status.toUpperCase()}`;
-    } catch (e) {
-      if (e instanceof FundingAccountError && e.code === 'UNKNOWN_ACCOUNT') return 'UNKNOWN_ACCOUNT';
-      if (e instanceof FundingAccountError && e.code === 'PROVIDER_UNAVAILABLE') throw new DomainError('PROVIDER_UNAVAILABLE', 'Funding is temporarily unavailable; try again with the same key');
-      throw e;
-    }
+    const r = await creditStep(this.d, transfer, vendor, now);
+    if (r.credited) this.credits += 1;
+    if (r.refused) this.refusals += 1;
+    return r.proceed;
   }
 
   /**
@@ -550,19 +438,11 @@ export class LoadService implements LoadActivities {
     if (transfer.kind !== 'load') return undefined;
     const vendorId = await this.vendorLoadOf(transfer.id);
     if (!vendorId) return undefined;
-    const found = await this.creditCase(transfer.id);
-    if (found.open) return undefined;
-    const attempt = found.attempt + 1;
-    const state = await creditAttemptState(this.d.db, { transferId: transfer.id, provider: this.d.provider, attempt });
-    return state.began && state.outcome !== 'refused' ? vendorId : undefined;
+    return creditMayHaveMoved(this.d, transfer, vendorId);
   }
 
   private async openReturnedCase(transfer: Transfer, loadId: string, failureCode: string, stage: 'after_release' | 'before_journal', now: Date): Promise<void> {
     await openReturnedCase(this.d.db, transfer, loadId, failureCode, stage, now);
-  }
-
-  private async openCreditCase(transfer: Transfer, loadId: string, reasonCode: string, attempt: number, now: Date): Promise<void> {
-    if (await openCreditCase(this.d.db, transfer, loadId, reasonCode, attempt, now)) this.refusals += 1;
   }
 
   private async openUnknownLoadCase(transfer: Transfer, loadId: string, now: Date): Promise<void> {
