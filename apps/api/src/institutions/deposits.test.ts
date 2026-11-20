@@ -287,4 +287,3 @@ describe('paymentReference (T-0614)', () => {
     expect(paymentReference('0190A1B2-C3D4-7E5F-8A6B-7C8D9E0F1A2B')).toBe('KC-801R6ANQ');
   });
 });
-

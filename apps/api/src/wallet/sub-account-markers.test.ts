@@ -46,6 +46,14 @@ describe('sub-account marker grammar (T-0762)', () => {
     expect(parsePurposeMarker(`p:${P}:${h}\n`)).toBeUndefined();
   });
 
+  it('takes exactly 16 hex: 15 and 17 are rejected, and purposeMarker always writes 16', () => {
+    const h = hash16('a');
+    expect(parsePurposeMarker(`p:${P}:${h.slice(0, 15)}`)).toBeUndefined();
+    expect(parsePurposeMarker(`p:${P}:${h}0`)).toBeUndefined();
+    expect(purposeMarker(P, 'a').split(':').pop()).toHaveLength(16);
+    expect(parsePurposeMarker(purposeMarker(P, 'a'))?.hash).toHaveLength(16);
+  });
+
   it('a party id that contains ":" round-trips (the doc comment says it may; the hash is the last 16 hex)', () => {
     const party = 'org:42:member';
     expect(parsePurposeMarker(purposeMarker(party, 'dues'))).toEqual({ partyId: party, hash: hash16('dues') });

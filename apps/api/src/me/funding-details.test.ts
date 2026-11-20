@@ -155,4 +155,3 @@ describe('TST-WAL-002: the funding details', () => {
     });
   });
 });
-

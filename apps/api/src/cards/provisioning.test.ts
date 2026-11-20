@@ -148,4 +148,3 @@ describe('detailsTokenProvisioning (TST-CRD-006)', () => {
     expect(p.ephemeralPublicKey).toBe('Ne0y9FKijGZabqEuLcsWvsAA73npyNwwKjVSn7ByO-E');
   });
 });
-
