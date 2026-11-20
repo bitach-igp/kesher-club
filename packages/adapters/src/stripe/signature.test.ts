@@ -94,6 +94,16 @@ describe('verifyStripeSignature fixed vectors', () => {
     expect(ok(`t=${t},v1=${flipped}`)).toBe('MISMATCH');
   });
 
+  it('a short but valid-hex v1 is refused as no signature and does not throw', () => {
+    expect(ok(`t=${t},v1=abcd`)).toBe('NO_SIGNATURE');
+    expect(ok(`t=${t},v1=${V1.slice(0, 32)}`)).toBe('NO_SIGNATURE');
+    expect(ok(`t=${t},v1=${V1}ab`)).toBe('NO_SIGNATURE');
+  });
+
+  it('accepts an uppercase-hex v1 (the verifier lower-cases candidates on purpose)', () => {
+    expect(ok(`t=${t},v1=${V1.toUpperCase()}`)).toBeUndefined();
+  });
+
   describe('several v1 values (secret rotation): any one valid value verifies, wherever it sits', () => {
     it('valid first, invalid second', () => {
       expect(ok(`t=${t},v1=${V1},v1=${BAD}`)).toBeUndefined();

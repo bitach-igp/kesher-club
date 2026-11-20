@@ -48,9 +48,10 @@ describe('Crowded webhook signature', () => {
   });
 });
 
-// Fixed vectors. Computed OUTSIDE this code base with node's crypto and (cross-checked) with openssl, from Crowded's documented header
-// (docs/vendors/crowded/api-inventory.md section 5.2; postman export "Signature Verification"): `X-Webhook-Signature: sha256=<hex>`,
-// HMAC-SHA256 of the RAW request body keyed by the webhook secret; no timestamp.
+// Fixed vectors. Computed OUTSIDE this code base with node's crypto and (cross-checked) with openssl. The header form
+// `X-Webhook-Signature: sha256=<signature>` is from the Crowded postman export ("Signature Verification") and
+// docs/vendors/crowded/README.md answers-log Q10; docs/vendors/crowded/api-inventory.md section 5.2 supplies only "HMAC-SHA256 of the
+// raw request body (JSON string) using your webhook secret" and "no timestamp in the signature".
 // Recompute:
 //   printf '%s' "$BODY" | openssl dgst -sha256 -hmac crowded_vec_secret_A -hex
 //   node -e "console.log(require('crypto').createHmac('sha256','crowded_vec_secret_A').update(BODY).digest('hex'))"
