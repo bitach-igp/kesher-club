@@ -24,13 +24,17 @@ interface Kind {
   name: string;
   kind: string;
   key: (id: string) => string;
-  open: (t: Transfer, now: Date) => Promise<boolean | void>;
+  open: (t: Transfer, now: Date, loadId?: string) => Promise<boolean | void>;
 }
 const KINDS: Kind[] = [
-  { name: 'load_credit_refused', kind: 'load_credit_refused', key: creditCaseKey, open: (t, now) => openCreditCase(db, t, 'ld_1', 'NO_ACCOUNT', 1, now) },
-  { name: 'load_returned_after_release', kind: 'load_returned_after_release', key: returnedCaseKey, open: (t, now) => openReturnedCase(db, t, 'ld_1', 'RETURNED', 'after_release', now) },
-  { name: 'load_unknown', kind: 'load_unknown', key: unknownLoadKey, open: (t, now) => openUnknownLoadCase(db, t, 'ld_1', now) },
+  { name: 'load_credit_refused', kind: 'load_credit_refused', key: creditCaseKey, open: (t, now, loadId = 'ld_1') => openCreditCase(db, t, loadId, 'NO_ACCOUNT', 1, now) },
+  { name: 'load_returned_after_release', kind: 'load_returned_after_release', key: returnedCaseKey, open: (t, now, loadId = 'ld_1') => openReturnedCase(db, t, loadId, 'RETURNED', 'after_release', now) },
+  { name: 'load_unknown', kind: 'load_unknown', key: unknownLoadKey, open: (t, now, loadId = 'ld_1') => openUnknownLoadCase(db, t, loadId, now) },
 ];
+
+const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+/** The first phone-like digit run (10 or more digits, an optional leading +) left in `text` once the uuids it legitimately carries are removed: a uuid's last segment can hold 10+ decimal digits by chance, so it must not count. */
+const phoneLike = (text: string): string | undefined => text.replace(UUID, '').match(/\+?\d{10,}/)?.[0];
 
 const rowOf = async (key: string) => (await db.query<{ kind: string; severity: string; status: string; payload: Record<string, unknown> }>(`select kind, severity, status, payload from ops.case where dedupe_key = $1`, [key])).rows;
 
@@ -76,9 +80,25 @@ describe.each(KINDS)('$name case (T-0765, TST-WAL-003)', (k) => {
     await k.open(t, NOW);
     const text = JSON.stringify((await rowOf(k.key(t.id)))[0]!.payload);
     expect(text).not.toContain('@');
-    expect(text).not.toMatch(/\+?\d{10,}/);
+    expect(phoneLike(text)).toBeUndefined();
     expect(text).toContain(t.id);
     expect(text).toContain('10000');
+  });
+
+  it('the phone check ignores a uuid with a long digit run but still flags a real number in the payload', async () => {
+    const longRun = '01900000-0000-7000-8000-222222222222';
+    const quiet = { ...transferOf(), id: longRun, toPartyId: longRun } as Transfer;
+    await k.open(quiet, NOW);
+    const quietText = JSON.stringify((await rowOf(k.key(longRun)))[0]!.payload);
+    expect(quietText).toContain('222222222222');
+    expect(phoneLike(quietText)).toBeUndefined();
+    for (const number of ['+972501234567', '0501234567']) {
+      const leaky = transferOf();
+      await k.open(leaky, NOW, number);
+      const text = JSON.stringify((await rowOf(k.key(leaky.id)))[0]!.payload);
+      expect(text).toContain(number);
+      expect(phoneLike(text)).toBe(number);
+    }
   });
 });
 
