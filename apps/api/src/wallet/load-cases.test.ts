@@ -109,4 +109,42 @@ describe('the shared reopen helper and the readers (T-0765)', () => {
     await db.query(`update ops.case set status = 'dismissed' where dedupe_key = $1`, [unknownLoadKey(t.id)]);
     expect(await unknownLoadOpen(db, t.id)).toBe(false);
   });
+
+  it('unknownLoadOpen counts an investigating case as open (people have it, nobody has decided)', async () => {
+    const t = transferOf();
+    await openUnknownLoadCase(db, t, 'ld_1', NOW);
+    await db.query(`update ops.case set status = 'investigating' where dedupe_key = $1`, [unknownLoadKey(t.id)]);
+    expect(await unknownLoadOpen(db, t.id)).toBe(true);
+    await db.query(`update ops.case set status = 'resolved' where dedupe_key = $1`, [unknownLoadKey(t.id)]);
+    expect(await unknownLoadOpen(db, t.id)).toBe(false);
+  });
+
+  it('creditCase reads an investigating case as open, and a row with no payload.attempt as attempt 1', async () => {
+    const t = transferOf();
+    await db.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at) values ($1, 'load_credit_refused', $2, 'high', 'investigating', '{}'::jsonb, $3)`, [uuidv7(NOW), creditCaseKey(t.id), NOW]);
+    expect(await creditCase(db, t.id)).toEqual({ open: true, attempt: 1 });
+    await db.query(`update ops.case set status = 'resolved' where dedupe_key = $1`, [creditCaseKey(t.id)]);
+    expect(await creditCase(db, t.id)).toEqual({ open: false, attempt: 1 });
+  });
+});
+
+// The three dedupe-key prefixes are stored data: an open case, a reopen and the sweeps read the case by this exact string, so a renamed
+// prefix would strand every case already in ops.case. Pinned as literals, not through the helpers.
+describe('the literal case keys (T-0765 review)', () => {
+  it('are load-unknown:, load-credit: and load-returned: followed by the transfer id', () => {
+    expect(unknownLoadKey('x')).toBe('load-unknown:x');
+    expect(creditCaseKey('x')).toBe('load-credit:x');
+    expect(returnedCaseKey('x')).toBe('load-returned:x');
+  });
+
+  it.each([
+    ['load_credit_refused', 'load-credit:', (t: Transfer) => openCreditCase(db, t, 'ld_1', 'NO_ACCOUNT', 1, NOW)],
+    ['load_returned_after_release', 'load-returned:', (t: Transfer) => openReturnedCase(db, t, 'ld_1', 'RETURNED', 'after_release', NOW)],
+    ['load_unknown', 'load-unknown:', (t: Transfer) => openUnknownLoadCase(db, t, 'ld_1', NOW)],
+  ] as const)('%s is stored under %s{transferId}', async (kind, prefix, open) => {
+    const t = transferOf();
+    await open(t);
+    const rows = (await db.query<{ kind: string }>(`select kind from ops.case where dedupe_key = $1`, [`${prefix}${t.id}`])).rows;
+    expect(rows).toEqual([{ kind }]);
+  });
 });

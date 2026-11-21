@@ -19,7 +19,7 @@ import { applyVendorState, creditAttemptState, creditKey, HELD_RECHECK_MS, holdK
 import { seedTransfer } from '../test-seed.ts';
 import { openCase } from '../ops/cases.ts';
 import { ownerFailedMarker } from './sub-account-markers.ts';
-import { OWNER_FAILED_CASE, ownerCaseKey } from './sub-accounts.ts';
+import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF } from './sub-accounts.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -1635,5 +1635,107 @@ describe('the export surface of wallet/loads (T-0764)', () => {
       'LoadService', 'PURSE_CURRENCIES', 'RELEASE_JOURNAL_KIND', 'WALLET_FLAG', 'applyVendorState', 'creditAttemptState', 'creditKey', 'fundingAccountKey',
       'holdKey', 'loadState', 'recordCreditBegan', 'recordCreditOutcome', 'releaseKey', 'runLoad', 'settleKey',
     ]);
+  });
+});
+
+// The order of the early returns in the vendor credit step (T-0766, TST-WAL-003; T-0763 put the owner block ahead of the no-credit-port
+// return and the account gates). Every query and vendor call is recorded as a label, so a reorder of the kind/vendor guard, the owner block,
+// the port guard, the credit-case check, the succeeded check, the account gates, the began marker or the vendor call changes a trace here.
+describe('the order of the early returns in the credit step (T-0766)', () => {
+  const party = uuidv7(NOW);
+  const ref = 'acct_order_1';
+  interface World {
+    ownerFailed?: boolean;
+    credit?: { status: string; attempt?: number };
+    accountRef?: boolean;
+    accountStatus?: string;
+  }
+  const run = async (w: World, o: { port?: boolean; kind?: string; vendor?: Partial<VendorLoad> | null } = {}) => {
+    const trace: string[] = [];
+    const fake = {
+      async query(text: string, params: readonly unknown[] = []) {
+        let rows: unknown[] = [];
+        if (text.includes('from ops.external_ref') && params[0] === SUBACCOUNT_OWNER_REF) {
+          trace.push('owner-markers');
+          rows = w.ownerFailed ? [{ external_id: `o:${party}:failed` }] : [];
+        } else if (text.includes("entity_type = 'funding_account'")) {
+          trace.push('account-ref');
+          rows = w.accountRef === false ? [] : [{ external_id: ref }];
+        } else if (text.startsWith('select status, payload from ops.case')) {
+          trace.push('credit-case');
+          rows = w.credit ? [{ status: w.credit.status, payload: w.credit.attempt === undefined ? {} : { attempt: w.credit.attempt } }] : [];
+        } else if (text.startsWith('insert into ops.case')) {
+          trace.push(params[1] === OWNER_FAILED_CASE ? 'owner-case' : `credit-case-open:${String(params[1])}:${String(params[2])}:${(params[4] as { reasonCode?: string }).reasonCode ?? ''}:${(params[4] as { attempt?: number }).attempt ?? ''}`);
+          rows = [{ id: 'row' }];
+        } else if (text.startsWith('insert into ops.external_ref')) {
+          trace.push(String(params[0]).startsWith('funding_credit_done') ? `outcome:${String(params[0])}` : `began:${String(params[0])}`);
+        } else {
+          trace.push(`unexpected: ${text}`);
+        }
+        return { rows, rowCount: rows.length };
+      },
+      transaction: () => Promise.reject(new Error('no transaction expected')),
+    };
+    const port = {
+      async creditWallet(_i: unknown, key: string) {
+        trace.push(`vendor-call:${key}`);
+        return { status: 'credited' as const };
+      },
+    };
+    const fundingAccounts = {
+      async account() {
+        trace.push('account-gate');
+        return { status: w.accountStatus ?? 'open' };
+      },
+    };
+    const svc = new LoadService({ db: fake, port: {} as FundingPort, ...(o.port === false ? {} : { credit: port as never }), fundingAccounts: fundingAccounts as never, ledger: {} as never, accounts: {} as never, transfers: {} as never, memberships: {} as never, flags: {} as never, provider: 'p' } as never);
+    const transfer = { id: 'tr_1', kind: o.kind ?? 'load', toPartyId: party, idempotencyKey: 'order-key-0001', amount: money(10000n, 'USD') };
+    const vendor = o.vendor === null ? undefined : { loadId: 'ld_1', status: 'succeeded', ...o.vendor };
+    const proceed = await (svc as unknown as { creditStep(t: unknown, v: unknown, n: Date): Promise<boolean> }).creditStep(transfer, vendor, NOW);
+    return { proceed, trace, svc };
+  };
+
+  it('guard first: a deposit, or no vendor load, returns true before anything is read, owner failed or not', async () => {
+    expect(await run({ ownerFailed: true }, { kind: 'deposit' })).toMatchObject({ proceed: true, trace: [] });
+    expect(await run({ ownerFailed: true }, { vendor: null })).toMatchObject({ proceed: true, trace: [] });
+  });
+
+  it('owner block second: a failed owner stops the step with or without a credit port, ahead of the credit case, the succeeded check and the account', async () => {
+    const stacked = { ownerFailed: true, credit: { status: 'open' }, accountRef: false };
+    expect(await run(stacked, { vendor: { status: 'processing' } })).toMatchObject({ proceed: false, trace: ['owner-markers', 'owner-case'] });
+    expect(await run(stacked, { port: false })).toMatchObject({ proceed: false, trace: ['owner-markers', 'owner-case'] });
+  });
+
+  it('port guard third: a clean owner and no credit port returns true having read only the owner markers', async () => {
+    expect(await run({ credit: { status: 'open' }, accountRef: false }, { port: false, vendor: { status: 'processing' } })).toMatchObject({ proceed: true, trace: ['owner-markers'] });
+  });
+
+  it('credit-case check fourth: an open (or investigating) case stops the step before the succeeded check and the account', async () => {
+    for (const status of ['open', 'investigating']) {
+      expect(await run({ credit: { status }, accountRef: false }, { vendor: { status: 'processing' } })).toMatchObject({ proceed: false, trace: ['owner-markers', 'credit-case'] });
+    }
+  });
+
+  it('succeeded check fifth: a vendor load that has not succeeded stops the step before the account and writes no case', async () => {
+    expect(await run({ accountRef: false }, { vendor: { status: 'processing' } })).toMatchObject({ proceed: false, trace: ['owner-markers', 'credit-case'] });
+  });
+
+  it('account gates sixth: no account ref opens NO_ACCOUNT, a blocked account opens ACCOUNT_FROZEN, both before the began marker and the vendor call', async () => {
+    expect(await run({ accountRef: false })).toMatchObject({ proceed: false, trace: ['owner-markers', 'credit-case', 'account-ref', 'credit-case-open:load_credit_refused:load-credit:tr_1:NO_ACCOUNT:1'] });
+    expect(await run({ accountStatus: 'frozen', credit: { status: 'resolved', attempt: 2 } })).toMatchObject({ proceed: false, trace: ['owner-markers', 'credit-case', 'account-ref', 'account-gate', 'credit-case-open:load_credit_refused:load-credit:tr_1:ACCOUNT_FROZEN:3'] });
+  });
+
+  it('began marker seventh, then the vendor call under the attempt key, then the outcome', async () => {
+    const r = await run({});
+    expect(r).toMatchObject({ proceed: true });
+    expect(r.trace).toEqual(['owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:funding_credit:1', 'vendor-call:order-key-0001:credit:1', 'outcome:funding_credit_done:1']);
+    expect(r.svc.creditedCount).toBe(1);
+    expect(r.svc.refusedCount).toBe(0);
+  });
+
+  it('counts a new refusal once on the service: NO_ACCOUNT bumps refusedCount, not creditedCount', async () => {
+    const r = await run({ accountRef: false });
+    expect(r.svc.refusedCount).toBe(1);
+    expect(r.svc.creditedCount).toBe(0);
   });
 });
