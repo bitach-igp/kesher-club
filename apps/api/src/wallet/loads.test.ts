@@ -6,7 +6,7 @@
 // currency it converts at the club rate, priced once, and a missing or stale rate refuses it before the
 // vendor is asked. Over the funding simulator and PGlite with a real passkey and step-up.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { money, uuidv7 } from '@kesher/domain';
+import { DomainError, money, uuidv7 } from '@kesher/domain';
 import { FundingAccountError, FundingAccountSimulator, FundingError, FundingSimulator, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
@@ -14,9 +14,12 @@ import { StaticFlags } from '../billing/capabilities.ts';
 import { FakeStripe, StripeFundingAdapter } from '@kesher/adapters';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
+import type { Database } from '../db.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import type { Transfer } from '../transfers/service.ts';
 import { applyVendorState, creditAttemptState, creditKey, HELD_RECHECK_MS, holdKey, loadState, LoadService, recordCreditBegan, recordCreditOutcome, releaseKey, runLoad, settleKey, type CreditOutcome, type LoadView } from './loads.ts';
 import { seedTransfer } from '../test-seed.ts';
+import { creditMayHaveMoved } from './load-credit.ts';
 import { openCase } from '../ops/cases.ts';
 import { ownerFailedMarker } from './sub-account-markers.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF } from './sub-accounts.ts';
@@ -1650,7 +1653,7 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     accountRef?: boolean;
     accountStatus?: string;
   }
-  const run = async (w: World, o: { port?: boolean; kind?: string; vendor?: Partial<VendorLoad> | null } = {}) => {
+  const run = async (w: World, o: { port?: boolean; kind?: string; vendor?: Partial<VendorLoad> | null; result?: { status: string; reasonCode?: string }; error?: unknown } = {}) => {
     const trace: string[] = [];
     const fake = {
       async query(text: string, params: readonly unknown[] = []) {
@@ -1668,7 +1671,7 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
           trace.push(params[1] === OWNER_FAILED_CASE ? 'owner-case' : `credit-case-open:${String(params[1])}:${String(params[2])}:${(params[4] as { reasonCode?: string }).reasonCode ?? ''}:${(params[4] as { attempt?: number }).attempt ?? ''}`);
           rows = [{ id: 'row' }];
         } else if (text.startsWith('insert into ops.external_ref')) {
-          trace.push(String(params[0]).startsWith('funding_credit_done') ? `outcome:${String(params[0])}` : `began:${String(params[0])}`);
+          trace.push(String(params[0]).startsWith('funding_credit_done') ? `outcome:${String(params[0])}=${String(params[3])}` : `began:${String(params[0])}`);
         } else {
           trace.push(`unexpected: ${text}`);
         }
@@ -1679,7 +1682,8 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     const port = {
       async creditWallet(_i: unknown, key: string) {
         trace.push(`vendor-call:${key}`);
-        return { status: 'credited' as const };
+        if (o.error !== undefined) throw o.error;
+        return o.result ?? { status: 'credited' as const };
       },
     };
     const fundingAccounts = {
@@ -1691,8 +1695,14 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     const svc = new LoadService({ db: fake, port: {} as FundingPort, ...(o.port === false ? {} : { credit: port as never }), fundingAccounts: fundingAccounts as never, ledger: {} as never, accounts: {} as never, transfers: {} as never, memberships: {} as never, flags: {} as never, provider: 'p' } as never);
     const transfer = { id: 'tr_1', kind: o.kind ?? 'load', toPartyId: party, idempotencyKey: 'order-key-0001', amount: money(10000n, 'USD') };
     const vendor = o.vendor === null ? undefined : { loadId: 'ld_1', status: 'succeeded', ...o.vendor };
-    const proceed = await (svc as unknown as { creditStep(t: unknown, v: unknown, n: Date): Promise<boolean> }).creditStep(transfer, vendor, NOW);
-    return { proceed, trace, svc };
+    let proceed: boolean | undefined;
+    let error: unknown;
+    try {
+      proceed = await (svc as unknown as { creditStep(t: unknown, v: unknown, n: Date): Promise<boolean> }).creditStep(transfer, vendor, NOW);
+    } catch (e) {
+      error = e;
+    }
+    return { proceed, error, trace, svc };
   };
 
   it('guard first: a deposit, or no vendor load, returns true before anything is read, owner failed or not', async () => {
@@ -1704,6 +1714,10 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     const stacked = { ownerFailed: true, credit: { status: 'open' }, accountRef: false };
     expect(await run(stacked, { vendor: { status: 'processing' } })).toMatchObject({ proceed: false, trace: ['owner-markers', 'owner-case'] });
     expect(await run(stacked, { port: false })).toMatchObject({ proceed: false, trace: ['owner-markers', 'owner-case'] });
+    // An owner block is neither a credit nor a refusal: both counters the sweep report reads stay 0.
+    const blocked = await run(stacked);
+    expect(blocked.svc.refusedCount).toBe(0);
+    expect(blocked.svc.creditedCount).toBe(0);
   });
 
   it('port guard third: a clean owner and no credit port returns true having read only the owner markers', async () => {
@@ -1728,7 +1742,7 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
   it('began marker seventh, then the vendor call under the attempt key, then the outcome', async () => {
     const r = await run({});
     expect(r).toMatchObject({ proceed: true });
-    expect(r.trace).toEqual(['owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:funding_credit:1', 'vendor-call:order-key-0001:credit:1', 'outcome:funding_credit_done:1']);
+    expect(r.trace).toEqual(['owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:funding_credit:1', 'vendor-call:order-key-0001:credit:1', 'outcome:funding_credit_done:1=order-key-0001:credit:1:credited']);
     expect(r.svc.creditedCount).toBe(1);
     expect(r.svc.refusedCount).toBe(0);
   });
@@ -1737,5 +1751,71 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     const r = await run({ accountRef: false });
     expect(r.svc.refusedCount).toBe(1);
     expect(r.svc.creditedCount).toBe(0);
+  });
+
+  it('a refusal writes its outcome before it opens the credit case, and counts once (a mutant that opens the case first, or writes no outcome, fails)', async () => {
+    const r = await run({}, { result: { status: 'refused', reasonCode: 'INSUFFICIENT_LIMIT' } });
+    expect(r).toMatchObject({ proceed: false });
+    expect(r.trace).toEqual([
+      'owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:funding_credit:1', 'vendor-call:order-key-0001:credit:1',
+      'outcome:funding_credit_done:1=order-key-0001:credit:1:refused', 'credit-case-open:load_credit_refused:load-credit:tr_1:INSUFFICIENT_LIMIT:1',
+    ]);
+    expect(r.svc.refusedCount).toBe(1);
+    expect(r.svc.creditedCount).toBe(0);
+  });
+
+  it('a refusal that carries no reason code is stored with the default REFUSED', async () => {
+    const r = await run({}, { result: { status: 'refused' } });
+    expect(r.trace.at(-1)).toBe('credit-case-open:load_credit_refused:load-credit:tr_1:REFUSED:1');
+    expect(r.svc.refusedCount).toBe(1);
+  });
+
+  it('a `pending` vendor answer writes its outcome, opens no case and moves neither counter', async () => {
+    const r = await run({}, { result: { status: 'pending' } });
+    expect(r.proceed).toBe(false);
+    expect(r.trace.at(-1)).toBe('outcome:funding_credit_done:1=order-key-0001:credit:1:pending');
+    expect(r.trace.some((t) => t.startsWith('credit-case-open'))).toBe(false);
+    expect(r.svc.creditedCount).toBe(0);
+    expect(r.svc.refusedCount).toBe(0);
+  });
+
+  it('NOT_SUCCEEDED is the vendor read flapping: its outcome is written as refused, no case opens and refusedCount does not move', async () => {
+    const r = await run({}, { result: { status: 'refused', reasonCode: 'NOT_SUCCEEDED' } });
+    expect(r.proceed).toBe(false);
+    expect(r.trace.at(-1)).toBe('outcome:funding_credit_done:1=order-key-0001:credit:1:refused');
+    expect(r.trace.some((t) => t.startsWith('credit-case-open'))).toBe(false);
+    expect(r.svc.refusedCount).toBe(0);
+    expect(r.svc.creditedCount).toBe(0);
+  });
+
+  it('a provider outage on the credit call surfaces as the mapped DomainError, writes no outcome and no case', async () => {
+    const raw = new FundingError('PROVIDER_UNAVAILABLE', 'vendor down');
+    const r = await run({}, { error: raw });
+    expect(r.error).not.toBe(raw);
+    expect(r.error).toBeInstanceOf(DomainError);
+    expect(r.error).toMatchObject({ code: 'PROVIDER_UNAVAILABLE', message: 'Funding is temporarily unavailable; try again with the same key' });
+    expect(r.trace.at(-1)).toBe('vendor-call:order-key-0001:credit:1');
+    expect(r.svc.refusedCount).toBe(0);
+  });
+});
+
+describe('creditMayHaveMoved reads the credit case before the attempt records (T-0766)', () => {
+  const transfer = { id: 'tr_1', idempotencyKey: 'order-key-0001' } as unknown as Transfer;
+  const dbWith = (caseStatus: string | undefined): Database => ({
+    async query(text: string) {
+      const rows: unknown[] = text.startsWith('select status, payload from ops.case')
+        ? caseStatus === undefined ? [] : [{ status: caseStatus, payload: { attempt: 0 } }]
+        : [{ entity_type: 'funding_credit:1', external_id: 'order-key-0001:credit:1' }, { entity_type: 'funding_credit_done:1', external_id: 'order-key-0001:credit:1:credited' }];
+      return { rows, rowCount: rows.length };
+    },
+  }) as unknown as Database;
+
+  it('returns the vendor load id when no case is open and the attempt began and was credited', async () => {
+    expect(await creditMayHaveMoved({ db: dbWith(undefined), provider: 'p' }, transfer, 'ld_1')).toBe('ld_1');
+  });
+
+  it('returns undefined while a credit case is open or investigating, whatever the attempt records say', async () => {
+    expect(await creditMayHaveMoved({ db: dbWith('open'), provider: 'p' }, transfer, 'ld_1')).toBeUndefined();
+    expect(await creditMayHaveMoved({ db: dbWith('investigating'), provider: 'p' }, transfer, 'ld_1')).toBeUndefined();
   });
 });

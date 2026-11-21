@@ -23,23 +23,24 @@
 // `runLoad` is the deterministic workflow body, pure over `LoadActivities`, so Temporal (ADR-002) can
 // host it unchanged; `LoadService` is both the activities and the HTTP-facing entry. The vendor's
 // client secret leaves in the response and is never stored or logged.
-import { applyBps, DomainError, fromWire, money, sub, toWire, type Currency, type Money, type Posting } from '@kesher/domain';
-import { applyRate, FundingAccountError, FundingError, type FundingAccountPort, type FundingCreditPort, type FundingMethod, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
+import { DomainError, fromWire, toWire, type Currency, type Posting } from '@kesher/domain';
+import { FundingError, type FundingAccountPort, type FundingCreditPort, type FundingPort, type Load as VendorLoad } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import type { Database } from '../db.ts';
 import type { RateService } from '../fx/rates.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostedJournal, PostgresLedger } from '../ledger/post.ts';
-import { openCase } from '../ops/cases.ts';
 import { entityOf, linkRef, refOf } from '../ops/external-ref.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
 import { holdKey, releaseKey, settleKey } from '../transfers/journal-keys.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import type { WebhookVerifier } from '../webhooks/verify.ts';
+import { contactRef, ensureFundingAccount, fundingAccountKey, type FundingDetails } from './load-accounts.ts';
 import { openReturnedCase, openUnknownLoadCase, unknownLoadOpen } from './load-cases.ts';
 import { creditAttemptState, creditKey, creditMayHaveMoved, creditStep, recordCreditBegan, recordCreditOutcome, type CreditOutcome } from './load-credit.ts';
-import { credited, conversionMetadata, eventIdOf, institutionMetadata, journalKind, loadState, mapFundingError, markupOf } from './load-model.ts';
+import { credited, conversionMetadata, eventIdOf, institutionMetadata, journalKind, loadState, mapFundingError } from './load-model.ts';
+import { destination, legs, parse, price } from './load-pricing.ts';
 import {
   ACH_FLAG, applyVendorState, FUNDING_PROVIDER, HELD_RECHECK_MS, HOLD_JOURNAL_KIND, INSTITUTION_DEPOSIT_JOURNAL_KIND, LOAD_JOURNAL_KIND, LOAD_METHODS, PURSE_CURRENCIES, RELEASE_JOURNAL_KIND, runLoad, WALLET_FLAG,
   type LoadActivities, type LoadInput, type LoadRun, type LoadState, type LoadView,
@@ -54,6 +55,9 @@ export { holdKey, releaseKey, settleKey };
 // The credit phase moved to load-credit.ts (T-0766); its public names are re-exported so every importer keeps importing from here.
 export { creditAttemptState, creditKey, recordCreditBegan, recordCreditOutcome };
 export type { CreditOutcome };
+// The funding-account step and the pricing, legs and parsing moved to load-accounts.ts and load-pricing.ts (T-0767); the public names stay exported from here.
+export { fundingAccountKey };
+export type { FundingDetails };
 
 interface Deps {
   db: Database;
@@ -76,20 +80,6 @@ interface Deps {
   /** The funding binding's credit capability (T-0705, found by `isFundingCreditPort`). Without it a load posts the journals it always posted. */
   credit?: FundingCreditPort;
 }
-
-export interface FundingDetails {
-  firstName: string;
-  lastName: string;
-  email: string;
-  /** E.164. */
-  mobile: string;
-  dateOfBirth?: string;
-}
-
-/** The idempotency key of a member's funding account at the vendor: stable per party, so a retry is the same account. */
-export const fundingAccountKey = (partyId: string): string => `funding-account:${partyId}`;
-const FUNDING_REF_TYPES = ['funding_contact', 'funding_account'] as const;
-const BLOCKED_ACCOUNT_STATUSES = ['rejected', 'archived', 'frozen', 'closed'];
 
 export class LoadService implements LoadActivities {
   private readonly d: Deps;
@@ -152,9 +142,7 @@ export class LoadService implements LoadActivities {
   }
 
   private async contactRef(partyId: string): Promise<string> {
-    const ref = await refOf(this.d.db, 'funding_contact', partyId, this.d.provider);
-    if (ref === undefined) throw new DomainError('FEATURE_OFF', 'Your funding account is not set up yet');
-    return ref;
+    return contactRef(this.d, partyId);
   }
 
   /**
@@ -163,29 +151,7 @@ export class LoadService implements LoadActivities {
    * refs are written. The vendor is the KYC authority: a rejected, archived, frozen or closed answer refuses the load, naming the status only.
    */
   private async ensureFundingAccount(partyId: string, now: Date): Promise<void> {
-    const { fundingAccounts, details } = this.d;
-    if (!fundingAccounts || !details) throw new DomainError('FEATURE_OFF', 'Hosted loads are not enabled yet');
-    const have = await this.d.db.query<{ entity_type: string }>(`select entity_type from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [partyId, this.d.provider, [...FUNDING_REF_TYPES]]);
-    if (FUNDING_REF_TYPES.every((t) => have.rows.some((r) => r.entity_type === t))) return;
-    const d = await details.read(partyId);
-    if (!d) throw new DomainError('VALIDATION_FAILED', 'Your funding details are needed first', { detailsRequired: true });
-    let ensured;
-    try {
-      ensured = await fundingAccounts.ensureAccount({ partyId, firstName: d.firstName, lastName: d.lastName, email: d.email, mobile: d.mobile, ...(d.dateOfBirth ? { dateOfBirth: d.dateOfBirth } : {}) }, fundingAccountKey(partyId));
-    } catch (e) {
-      if (!(e instanceof FundingAccountError)) throw e;
-      if (e.code === 'PROVIDER_UNAVAILABLE') throw new DomainError('PROVIDER_UNAVAILABLE', 'Funding is temporarily unavailable; try again with the same key');
-      if (e.code === 'DUPLICATE_MOBILE' || e.code === 'PARTY_CONFLICT' || e.code === 'IDEMPOTENCY_CONFLICT') {
-        // For people: the case carries the party and the code, never a name, number or vendor text.
-        await openCase(this.d.db, { kind: 'load_account_conflict', dedupeKey: fundingAccountKey(partyId), severity: 'medium', payload: { partyId, code: e.code }, now });
-        throw new DomainError('IDEMPOTENCY_CONFLICT', 'Your funding account could not be set up; support has been told');
-      }
-      throw new DomainError('VALIDATION_FAILED', 'Your funding details were not accepted', { detailsRequired: true });
-    }
-    if (!('accountRef' in ensured) || BLOCKED_ACCOUNT_STATUSES.includes(ensured.status)) throw new DomainError('FEATURE_OFF', `Your funding account is ${ensured.status}`);
-    for (const [type, ref] of [['funding_contact', ensured.contactRef], ['funding_account', ensured.accountRef]] as const) {
-      await linkRef(this.d.db, { entityType: type, entityId: partyId, provider: this.d.provider, externalId: ref });
-    }
+    await ensureFundingAccount(this.d, partyId, now);
   }
 
   async link(transfer: Transfer, load: VendorLoad): Promise<void> {
@@ -485,15 +451,7 @@ export class LoadService implements LoadActivities {
    * be a free conversion that undercuts the convert screen.
    */
   private async price(input: LoadInput, now: Date): Promise<TransferConversion | undefined> {
-    const purse = input.purse ?? input.amount.currency;
-    if (purse === input.amount.currency) return undefined;
-    if (!this.d.rates || !this.d.markups) throw new DomainError('PROVIDER_UNAVAILABLE', 'Loads into another currency are not available right now');
-    const rate = await this.d.rates.rateFor(input.amount.currency, purse, now);
-    const markupBps = await this.d.markups.markupFor(input.memberPartyId);
-    const gross = money(applyRate(input.amount.minor, rate.rateScaled), purse);
-    const received = sub(gross, applyBps(gross, markupBps));
-    if (received.minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'The amount is too small to convert');
-    return { received, rateId: rate.rateId, rateVersion: rate.version, rateScaled: rate.rateScaled, markupBps };
+    return price(this.d, input, now);
   }
 
   /**
@@ -503,65 +461,15 @@ export class LoadService implements LoadActivities {
    * currency; the gap to the vendor's real rate is fx_position's to carry.
    */
   private async legs(transfer: Transfer, into: 'wallet' | 'pending'): Promise<Posting[]> {
-    const { minor, currency } = transfer.amount;
-    const partner = await this.d.accounts.systemAccount('partner_settlement', currency);
-    const c = transfer.conversion;
-    if (!c) {
-      const dest = await this.destination(transfer, into, currency);
-      return [
-        { accountId: partner, currency, amountMinor: minor },
-        { accountId: dest, currency, amountMinor: -minor },
-      ];
-    }
-    const to = c.received.currency;
-    const dest = await this.destination(transfer, into, to);
-    const markup = markupOf(transfer, c);
-    return [
-      { accountId: partner, currency, amountMinor: minor },
-      { accountId: await this.d.accounts.systemAccount('fx_position', currency), currency, amountMinor: -minor },
-      { accountId: await this.d.accounts.systemAccount('fx_position', to), currency: to, amountMinor: c.received.minor + markup },
-      { accountId: dest, currency: to, amountMinor: -c.received.minor },
-      ...(markup > 0n ? [{ accountId: await this.d.accounts.systemAccount('fee_income', to), currency: to, amountMinor: -markup }] : []),
-    ];
+    return legs(this.d, transfer, into);
   }
 
   /** Where a load lands: the member's wallet or pending purse, or for an institution's pull its own account or its hold. */
   private destination(transfer: Transfer, into: 'wallet' | 'pending', currency: Currency): Promise<string> {
-    const owner = transfer.toPartyId!;
-    if (transfer.kind !== 'deposit') return this.d.accounts.memberAccount(owner, into, currency);
-    return into === 'wallet' ? this.d.accounts.institutionAccount(owner, currency) : this.d.accounts.institutionHoldAccount(owner, currency);
+    return destination(this.d, transfer, into, currency);
   }
 
   private async parse(payerPartyId: string, body: unknown): Promise<LoadInput> {
-    const b = (body ?? {}) as { memberPartyId?: unknown; amount?: unknown; method?: unknown; paymentMethodId?: unknown; purseCurrency?: unknown };
-    if (typeof b.memberPartyId !== 'string' || !b.memberPartyId) throw new DomainError('VALIDATION_FAILED', 'memberPartyId is required');
-    if (b.method === 'ach' && !(await this.d.flags.isOn(ACH_FLAG))) throw new DomainError('FEATURE_OFF', 'Bank loads are not enabled yet');
-    // `hosted` is accepted only here, behind the account gate; its request fields and consent are T-0714.
-    if (b.method === 'hosted') {
-      if (b.memberPartyId !== payerPartyId) throw new DomainError('FORBIDDEN', 'You can load your own purse with a hosted payment');
-      if (!this.d.fundingAccounts || !this.d.details) throw new DomainError('FEATURE_OFF', 'Hosted loads are not enabled yet');
-    } else if (b.method === 'rtp') throw new DomainError('FEATURE_OFF', 'Instant bank loads are not enabled yet');
-    if (typeof b.method !== 'string' || (b.method !== 'ach' && b.method !== 'hosted' && !LOAD_METHODS.includes(b.method as FundingMethod))) throw new DomainError('VALIDATION_FAILED', `method must be one of ${[...LOAD_METHODS, 'ach'].join(', ')}`);
-    let amount: Money;
-    try {
-      amount = fromWire(b.amount as { minor: string; currency: string });
-    } catch {
-      throw new DomainError('VALIDATION_FAILED', 'amount must be { minor, currency } in USD or ILS');
-    }
-    if (amount.minor <= 0n) throw new DomainError('VALIDATION_FAILED', 'Amount must be positive');
-    if (b.paymentMethodId !== undefined && typeof b.paymentMethodId !== 'string') throw new DomainError('VALIDATION_FAILED', 'paymentMethodId must be a string');
-    if (b.purseCurrency !== undefined && !PURSE_CURRENCIES.includes(b.purseCurrency as Currency)) throw new DomainError('VALIDATION_FAILED', `purseCurrency must be one of ${PURSE_CURRENCIES.join(', ')}`);
-    if (b.memberPartyId !== payerPartyId) {
-      const m = await this.d.memberships.forMember(b.memberPartyId);
-      if (!m || m.funderPartyId !== payerPartyId || m.status !== 'active') throw new DomainError('FORBIDDEN', 'You can load your own purse or one you fund');
-    }
-    return {
-      payerPartyId,
-      memberPartyId: b.memberPartyId,
-      method: b.method as FundingMethod,
-      amount,
-      ...(typeof b.paymentMethodId === 'string' ? { paymentMethodId: b.paymentMethodId } : {}),
-      ...(b.purseCurrency !== undefined ? { purse: b.purseCurrency as Currency } : {}),
-    };
+    return parse(this.d, payerPartyId, body);
   }
 }
