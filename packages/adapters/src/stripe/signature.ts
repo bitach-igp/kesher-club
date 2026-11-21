@@ -31,6 +31,8 @@ export interface VerifyInput {
 export function verifyStripeSignature(input: VerifyInput): SignatureFailure | undefined {
   const { header, rawBody, secret, nowSeconds } = input;
   const tolerance = input.toleranceSeconds ?? DEFAULT_TOLERANCE_SECONDS;
+  // An empty secret is a key anyone can sign with: refuse before looking at the header, so no delivery can verify under it.
+  if (secret === '') return 'MISMATCH';
   if (!header) return 'NO_SIGNATURE';
   let timestamp: number | undefined;
   const candidates: string[] = [];
