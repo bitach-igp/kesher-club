@@ -2,6 +2,7 @@
 // tiers), TST-AGT-006 (T2 → pending intent, no
 // journal), TST-AGT-007 (untrusted wrapping), TST-AGT-008 (revoke → 401 within 60 s),
 // TST-AGT-009 (60/min). The port's agentGatewayContract runs first against this gateway.
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { SignJWT, exportJWK, generateKeyPair, type CryptoKey } from 'jose';
 import { money, uuidv7 } from '@kesher/domain';
@@ -9,7 +10,6 @@ import { AuthSimulator } from '@kesher/ports';
 import { agentGatewayContract } from '@kesher/ports/contracts';
 import { InMemoryIdentityRepository } from '../auth/repository.ts';
 import { StepUpService } from '../auth/step-up.ts';
-import { makeRequest } from '../http.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { IntentService } from '../intents/service.ts';
 import { TransferService } from '../transfers/service.ts';
@@ -17,7 +17,7 @@ import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { McpTokenValidator } from './auth.ts';
 import { allowedRedirectUri, CimdRegistry, isPublicAddress } from './cimd.ts';
 import { McpGateway } from './gateway.ts';
-import { metadataHandler, metadataUrl } from './metadata.ts';
+import { metadataUrl, protectedResourceMetadata } from './metadata.ts';
 import type { ToolContext } from './tools/registry.ts';
 
 const RESOURCE = 'https://api.kesher.example/mcp';
@@ -95,9 +95,12 @@ agentGatewayContract('api /mcp', () => gateway, {
 describe('/mcp specifics', () => {
   it('serves the metadata document at the RFC 9728 path with the scope list (TST-AGT-001)', async () => {
     expect(metadataUrl(RESOURCE)).toBe('https://api.kesher.example/.well-known/oauth-protected-resource/mcp');
-    const res = await metadataHandler({ resource: RESOURCE, authorizationServers: [AS] })(makeRequest({ method: 'GET', path: '/.well-known/oauth-protected-resource/mcp', now }));
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ resource: RESOURCE, authorization_servers: [AS], scopes_supported: expect.arrayContaining(['balances:read', 'p2p:propose']) });
+    // The served route is McpHttp's (mcp/http.test.ts drives it through dispatch); this pins the document it serves.
+    expect(protectedResourceMetadata({ resource: RESOURCE, authorizationServers: [AS] })).toMatchObject({ resource: RESOURCE, authorization_servers: [AS], scopes_supported: expect.arrayContaining(['balances:read', 'p2p:propose']) });
+  });
+
+  it('metadata.ts keeps no second metadata handler: McpHttp is the only server of the document (T-0783)', () => {
+    expect(readFileSync(new URL('./metadata.ts', import.meta.url), 'utf8')).not.toContain('metadataHandler');
   });
 
   it('a token whose scopes exceed the grant is trimmed to the grant; a token for another subject is refused (TST-AGT-002)', async () => {

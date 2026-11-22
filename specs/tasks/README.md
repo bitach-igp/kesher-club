@@ -403,7 +403,7 @@
 | [T-0780](T-0780.md) | BIL | WIRE OR DELETE: `DunningService` has no production caller and no Stripe billing webhook feeds it (B) | — | later (scoped 2026-11-19) · decision first (with T-0736, T-0737) |
 | [T-0781](T-0781.md) | SETUP | DELETED: generic `standardWebhooksVerifier`, `stripeVerifier`, `hmacVerifier` were bound nowhere and carried bugs; live Stripe funding receiver now has a forged/stale-signature guard (B, security flag) | — | done 2026-11-20 (built, merged #374) |
 | [T-0782](T-0782.md) | SETUP | WIRE OR DELETE: `makeRequest` is test-only; move it to a test helper (B) | — | later (scoped 2026-11-19) · decision first |
-| [T-0783](T-0783.md) | AGT | WIRE OR DELETE: `metadataHandler` is a test-only duplicate; `McpHttp` serves the metadata (B) | REQ-AGT-001 | later (scoped 2026-11-19) · decision first |
+| [T-0783](T-0783.md) | AGT | DELETED: `metadataHandler` was a test-only duplicate; `McpHttp` serves the metadata (B) | REQ-AGT-001 | done 2026-11-22 (built, PR open) |
 | [T-0784](T-0784.md) | PAY | WIRE OR DELETE: `canTransition` is test-only; the state machine is enforced through `next()` (B, money-state flag) | — | later (scoped 2026-11-19) · decision first |
 | [T-0785](T-0785.md) | AUTH | WIRE OR DELETE: the org identity port and the WorkOS webhook check have no caller; REQ-AUTH-008 unwired (B, security flag) | REQ-AUTH-008 | later (scoped 2026-11-19) · decision first |
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
