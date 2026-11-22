@@ -27,5 +27,3 @@ export function next(from: TransferState, event: TransferEvent): TransferState {
   if (!to) throw new DomainError('IDEMPOTENCY_CONFLICT', `Cannot ${event} a transfer that is ${from}`);
   return to;
 }
-
-export const canTransition = (from: TransferState, event: TransferEvent): boolean => TRANSITIONS[from][event] !== undefined;

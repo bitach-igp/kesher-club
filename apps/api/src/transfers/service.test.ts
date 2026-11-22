@@ -1,12 +1,13 @@
 // T-0205: transfer state machine + transactional outbox. Also exercises THR-04 (double submit
 // never creates two transfers) at the service layer; the HTTP layer is TST-PAY-005.
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { isPgError } from '../db.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { OutboxPublisher, type OutboxMessage } from './outbox.ts';
 import { TransferService } from './service.ts';
-import { canTransition, next, TERMINAL_STATES, type TransferEvent, type TransferState } from './state-machine.ts';
+import { next, TERMINAL_STATES, type TransferEvent, type TransferState } from './state-machine.ts';
 import { seedTransfer } from '../test-seed.ts';
 
 let db: TestDatabase;
@@ -20,19 +21,53 @@ beforeAll(async () => {
 afterAll(async () => db.close());
 
 describe('state machine', () => {
+  const states: TransferState[] = ['created', 'submitted', 'pending', 'pending_hold', 'settled', 'failed', 'reversed', 'cancelled'];
+  const events: TransferEvent[] = ['submit', 'hold', 'release_hold', 'cancel', 'settle', 'fail', 'reverse'];
+  // The documented machine (state-machine.ts header, SEQ-06), written out independently of the code's map.
+  const LEGAL: Record<string, TransferState> = {
+    'created submit': 'submitted', 'created cancel': 'cancelled', 'created fail': 'failed',
+    'submitted hold': 'pending_hold', 'submitted settle': 'settled', 'submitted fail': 'failed',
+    'pending settle': 'settled', 'pending fail': 'failed',
+    'pending_hold release_hold': 'pending', 'pending_hold cancel': 'cancelled', 'pending_hold fail': 'failed',
+    'settled reverse': 'reversed',
+  };
+
   it('follows SEQ-06 and refuses every other transition', () => {
-    expect(next('created', 'submit')).toBe('submitted');
-    expect(next('submitted', 'hold')).toBe('pending_hold');
-    expect(next('pending_hold', 'release_hold')).toBe('pending');
-    expect(next('pending', 'settle')).toBe('settled');
-    expect(next('settled', 'reverse')).toBe('reversed');
-    expect(next('pending_hold', 'cancel')).toBe('cancelled');
-    const states: TransferState[] = ['created', 'submitted', 'pending', 'pending_hold', 'settled', 'failed', 'reversed', 'cancelled'];
-    const events: TransferEvent[] = ['submit', 'hold', 'release_hold', 'cancel', 'settle', 'fail', 'reverse'];
-    for (const s of TERMINAL_STATES) for (const e of events) if (!(s === 'settled' && e === 'reverse')) expect(canTransition(s, e), `${s} ${e}`).toBe(false);
+    expect(Object.keys(LEGAL).length).toBe(12);
+    for (const s of states) for (const e of events) {
+      const to = LEGAL[`${s} ${e}`];
+      if (to) expect(next(s, e), `${s} ${e}`).toBe(to);
+      else expect(() => next(s, e), `${s} ${e}`).toThrow(/Cannot/);
+    }
+    // terminal states refuse everything except settled + reverse
+    for (const s of TERMINAL_STATES) for (const e of events) if (!(s === 'settled' && e === 'reverse')) expect(() => next(s, e), `${s} ${e}`).toThrow(/Cannot/);
     expect(() => next('settled', 'settle')).toThrow(/Cannot settle/);
-    expect(() => next('created', 'settle')).toThrow();
-    expect(states.length).toBe(8);
+  });
+
+  it('TransferService.apply, the live path, takes every legal (state, event) pair and refuses every other with IDEMPOTENCY_CONFLICT, leaving the row, history and outbox untouched (T-0784)', async () => {
+    const t = new Date('2026-11-02T10:00:00Z');
+    for (const s of states) for (const e of events) {
+      const id = uuidv7(t);
+      await seedTransfer(db, { id, kind: 'load', state: s, market: 'IL', at: t });
+      const outbox = async () => (await db.query<{ n: number }>(`select count(*)::int as n from ops.outbox where aggregate_id = $1`, [id])).rows[0]!.n;
+      const events0 = async () => (await db.query<{ n: number }>('select count(*)::int as n from ops.transfer_event where transfer_id = $1', [id])).rows[0]!.n;
+      const to = LEGAL[`${s} ${e}`];
+      if (to) {
+        const out = await transfers.apply(id, e, t, e === 'hold' ? { holdReleasesAt: new Date(t.getTime() + 7_200_000) } : {});
+        expect(out.state, `${s} ${e}`).toBe(to);
+        expect(await events0(), `${s} ${e} history`).toBe(1);
+        expect(await outbox(), `${s} ${e} outbox`).toBe(1);
+      } else {
+        await expect(transfers.apply(id, e, t), `${s} ${e}`).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+        expect((await transfers.get(id))!.state, `${s} ${e} unchanged`).toBe(s);
+        expect(await events0(), `${s} ${e} history`).toBe(0);
+        expect(await outbox(), `${s} ${e} outbox`).toBe(0);
+      }
+    }
+  });
+
+  it('state-machine.ts exports no canTransition predicate: next() is the one gate (T-0784)', () => {
+    expect(readFileSync(new URL('./state-machine.ts', import.meta.url), 'utf8')).not.toContain('canTransition');
   });
 });
 
