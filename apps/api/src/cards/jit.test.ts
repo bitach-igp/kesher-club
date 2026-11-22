@@ -2,15 +2,16 @@
 // POST /jit/card-authorizations, every decline reason, the hold journal on approval, replay, the
 // plan's card entitlement, the velocity rule, and the fail-closed paths (a throw, a slow dependency).
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { DomainError, money, uuidv7 } from '@kesher/domain';
+import { DomainError, money, uuidv7, type Money } from '@kesher/domain';
 import { type CardIssuingPort, type CardIssuingSimulator, type JitAuthorizationRequest } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
+import type { Database } from '../db.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { CARD_SPEND_ENTITLEMENT, DECISION_BUDGET_MS, holdKey, JitService, VELOCITY_LIMIT_PER_MINUTE } from './jit.ts';
+import { CARD_SPEND_ENTITLEMENT, DECISION_BUDGET_MS, firstSpendLimitHit, holdKey, JitService, VELOCITY_LIMIT_PER_MINUTE, type SpendLimitHit } from './jit.ts';
 import { AGENT_PURCHASE_ACTION, agentGrantIdFor } from '../intents/service.ts';
 import { provisionAuthorisationSystemAccounts } from '../ledger/accounts.ts';
 import { controlsToWire, DEFAULT_VIRTUAL_CONTROLS } from './service.ts';
@@ -509,5 +510,284 @@ describe('the authorisation never creates an account (T-0413)', () => {
     const r = await authorize({ card: olgaCard, amount: 2_000n });
     expect(r.body).toEqual({ result: 'DECLINED', reason: 'TIMEOUT' });
     expect(await accountCount()).toBe(before);
+  });
+});
+
+// T-0774: the daily and monthly held-sum reads become one read-only query. The decision and its reason
+// code must not move, so the table below was written against the sequential code first and passes on it.
+describe('spend limits: characterization table (T-0774, TST-CRD-003)', () => {
+  const N = new Date('2026-11-15T12:00:00Z'); // "now": mid-month, mid-day
+  const DAY = new Date('2026-11-15T00:00:00Z'); // start of the UTC day
+  const MONTH = new Date('2026-11-01T00:00:00Z'); // start of the UTC month
+  const ago = (base: Date, ms: number): Date => new Date(base.getTime() + ms);
+  const H = 3_600_000;
+  type Seed = [minor: bigint, at: Date];
+  interface Row { name: string; funds?: bigint; daily?: [bigint, 'ILS' | 'USD']; monthly?: [bigint, 'ILS' | 'USD']; seeds: Seed[]; amount: bigint; now?: Date; expect: string }
+
+  async function fresh(funds = 10_000_000n) {
+    const party = uuidv7(NOW);
+    const s = await app.services.kyc.start(party, 'T2', `kyc:${party}`, NOW);
+    await dispatch(app, { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: `evt:${party}`, sessionId: s.sessionId, status: 'approved' }), now: NOW });
+    const c = (await db.query<{ id: string; processor_card_id: string }>(`select id, processor_card_id from cards.card where party_id = $1`, [party])).rows[0]!;
+    const w = await app.services.accounts.memberAccount(party, 'wallet', 'ILS');
+    const p = await app.services.accounts.memberAccount(party, 'pending', 'ILS');
+    // Huge funds come from a purse of their own: the shared partner account's balance cache is a bigint and would overflow.
+    const partner = funds > 1_000_000_000_000n ? await app.services.accounts.memberAccount(uuidv7(NOW), 'wallet', 'ILS') : await app.services.accounts.systemAccount('partner_settlement', 'ILS');
+    await app.services.ledger.post({ idempotencyKey: `load:${party}`, kind: 'load', postings: [{ accountId: partner, currency: 'ILS', amountMinor: funds }, { accountId: w, currency: 'ILS', amountMinor: -funds }] });
+    return { party, card: c.id, processor: c.processor_card_id, wallet: w, pending: p };
+  }
+  const hold = (f: { card: string; wallet: string; pending: string }, minor: bigint, at: Date, tag: string) =>
+    app.services.ledger.post({ idempotencyKey: `seed:${f.card}:${tag}`, kind: 'auth_hold', effectiveAt: at, metadata: { cardId: f.card }, postings: [{ accountId: f.wallet, currency: 'ILS', amountMinor: minor }, { accountId: f.pending, currency: 'ILS', amountMinor: -minor }] });
+  const limits = (f: { card: string }, r: Pick<Row, 'daily' | 'monthly'>) =>
+    db.query(`update cards.card set controls = $2 where id = $1`, [f.card, JSON.stringify(controlsToWire({ ...DEFAULT_VIRTUAL_CONTROLS, ...(r.daily ? { dailyLimit: money(r.daily[0], r.daily[1]) } : {}), ...(r.monthly ? { monthlyLimit: money(r.monthly[0], r.monthly[1]) } : {}) }))]);
+  const ask = (f: { processor: string }, amount: bigint, now: Date) =>
+    app.services.jit.decide({ authId: uuidv7(now), cardId: f.processor, amount: money(amount, 'ILS'), merchant: MERCHANT, channel: 'pos', receivedAt: now.toISOString() }, now);
+  const reasonOf = (d: { approve: boolean; reason?: string }): string => (d.approve ? 'APPROVED' : (d.reason ?? ''));
+
+  const LIM = 'LIMIT_EXCEEDED';
+  const BIG_SEEDS: Seed[] = [[4_000_000_000_000_000_001n, ago(N, -H)], [4_000_000_000_000_000_003n, ago(N, -2 * H)]];
+  const BIG_HELD = 8_000_000_000_000_000_004n;
+  const BIG_FUNDS = 9_000_000_000_000_000_000n;
+  const rows: Row[] = [
+    // Held sums above 2^53 (and near 2^63): a BigInt(Number(x)) slip rounds these and flips the verdict.
+    { name: 'held sums above 2^53: daily exactly at the limit is approved', funds: BIG_FUNDS, daily: [BIG_HELD + 100n, 'ILS'], seeds: BIG_SEEDS, amount: 100n, expect: 'APPROVED' },
+    { name: 'held sums above 2^53: daily one under the limit is declined', funds: BIG_FUNDS, daily: [BIG_HELD + 99n, 'ILS'], seeds: BIG_SEEDS, amount: 100n, expect: LIM },
+    { name: 'held sums above 2^53: monthly exactly at the limit is approved', funds: BIG_FUNDS, monthly: [BIG_HELD + 100n, 'ILS'], seeds: BIG_SEEDS, amount: 100n, expect: 'APPROVED' },
+    { name: 'held sums above 2^53: monthly one under the limit is declined', funds: BIG_FUNDS, monthly: [BIG_HELD + 99n, 'ILS'], seeds: BIG_SEEDS, amount: 100n, expect: LIM },
+    { name: 'held sums above 2^53: a limit of 2^63-1 approves', funds: BIG_FUNDS, daily: [9_223_372_036_854_775_807n, 'ILS'], monthly: [9_223_372_036_854_775_807n, 'ILS'], seeds: BIG_SEEDS, amount: 100n, expect: 'APPROVED' },
+    { name: 'held sums above 2^53: yesterday\'s big holds are monthly only', funds: BIG_FUNDS, daily: [1_000n, 'ILS'], monthly: [BIG_HELD + 99n, 'ILS'], seeds: BIG_SEEDS.map(([m, at]) => [m, ago(at, -24 * H)] as Seed), amount: 100n, expect: LIM },
+    { name: 'no limits set: approved whatever is held', seeds: [[5_000n, N]], amount: 1_000n, expect: 'APPROVED' },
+    { name: 'daily exactly at the limit is approved', daily: [2_000n, 'ILS'], seeds: [[1_800n, ago(N, -H)]], amount: 200n, expect: 'APPROVED' },
+    { name: 'daily one minor over is declined', daily: [2_000n, 'ILS'], seeds: [[1_800n, ago(N, -H)]], amount: 201n, expect: LIM },
+    { name: 'monthly exactly at the limit is approved', monthly: [2_000n, 'ILS'], seeds: [[1_800n, ago(MONTH, 5 * H)]], amount: 200n, expect: 'APPROVED' },
+    { name: 'monthly one minor over is declined', monthly: [2_000n, 'ILS'], seeds: [[1_800n, ago(MONTH, 5 * H)]], amount: 201n, expect: LIM },
+    { name: 'both set, daily under and monthly over: declined', daily: [1_000n, 'ILS'], monthly: [3_000n, 'ILS'], seeds: [[2_900n, ago(N, -24 * H)]], amount: 500n, expect: LIM },
+    { name: 'both set, daily over and monthly under: declined', daily: [1_000n, 'ILS'], monthly: [10_000n, 'ILS'], seeds: [[800n, N]], amount: 300n, expect: LIM },
+    { name: 'both set and both over: declined', daily: [1_000n, 'ILS'], monthly: [1_500n, 'ILS'], seeds: [[2_000n, ago(N, -H)]], amount: 100n, expect: LIM },
+    { name: 'both set and neither over: approved', daily: [1_000n, 'ILS'], monthly: [10_000n, 'ILS'], seeds: [[500n, ago(N, -H)], [2_000n, ago(N, -48 * H)]], amount: 400n, expect: 'APPROVED' },
+    { name: 'a hold from yesterday counts to the monthly sum', monthly: [2_000n, 'ILS'], seeds: [[1_900n, ago(N, -24 * H)]], amount: 101n, expect: LIM },
+    { name: 'a hold from yesterday does not count to the daily sum', daily: [1_900n, 'ILS'], seeds: [[1_900n, ago(N, -24 * H)]], amount: 1_900n, expect: 'APPROVED' },
+    { name: 'a hold exactly at the day start is in the daily window (at the limit approves)', daily: [1_000n, 'ILS'], seeds: [[900n, DAY]], amount: 100n, expect: 'APPROVED' },
+    { name: 'a hold exactly at the day start is in the daily window (one over declines)', daily: [1_000n, 'ILS'], seeds: [[900n, DAY]], amount: 101n, expect: LIM },
+    { name: 'a hold 1 ms before the day start is not in the daily window', daily: [1_000n, 'ILS'], seeds: [[900n, ago(DAY, -1)]], amount: 1_000n, expect: 'APPROVED' },
+    { name: 'a hold exactly at the month start is in the monthly window', monthly: [1_000n, 'ILS'], seeds: [[900n, MONTH]], amount: 101n, expect: LIM },
+    { name: 'a hold 1 ms before the month start is not in the monthly window', monthly: [1_000n, 'ILS'], seeds: [[900n, ago(MONTH, -1)]], amount: 1_000n, expect: 'APPROVED' },
+    { name: 'a hold from last month (expired out of both windows) counts to neither', daily: [1_000n, 'ILS'], monthly: [1_000n, 'ILS'], seeds: [[999_999n, new Date('2026-10-20T10:00:00Z')]], amount: 1_000n, expect: 'APPROVED' },
+    { name: 'on the 1st at 00:00 UTC a hold is in both windows (daily trips)', now: new Date('2026-11-01T09:00:00Z'), daily: [1_000n, 'ILS'], monthly: [100_000n, 'ILS'], seeds: [[900n, MONTH]], amount: 101n, expect: LIM },
+    { name: 'on the 1st at 00:00 UTC a hold is in both windows (monthly trips)', now: new Date('2026-11-01T09:00:00Z'), daily: [100_000n, 'ILS'], monthly: [1_000n, 'ILS'], seeds: [[900n, MONTH]], amount: 101n, expect: LIM },
+    { name: 'on the 1st the day before month start (last month) counts to neither', now: new Date('2026-11-01T09:00:00Z'), daily: [1_000n, 'ILS'], monthly: [1_000n, 'ILS'], seeds: [[900n, ago(MONTH, -1)]], amount: 1_000n, expect: 'APPROVED' },
+    { name: 'a hold dated after now still counts (no upper bound)', daily: [1_000n, 'ILS'], seeds: [[900n, ago(N, H)]], amount: 101n, expect: LIM },
+    { name: 'limits in another currency than the authorisation are ignored', daily: [1n, 'USD'], monthly: [1n, 'USD'], seeds: [[5_000n, N]], amount: 100n, expect: 'APPROVED' },
+    { name: 'a daily limit in the other currency is ignored while a same-currency monthly one applies', daily: [1n, 'USD'], monthly: [1_000n, 'ILS'], seeds: [[900n, N]], amount: 101n, expect: LIM },
+  ];
+
+  it.each(rows)('$name', async (r) => {
+    const f = await fresh(r.funds);
+    await limits(f, r);
+    for (const [i, [minor, at]] of r.seeds.entries()) await hold(f, minor, at, String(i));
+    const out = await ask(f, r.amount, r.now ?? N);
+    expect(reasonOf(out.decision)).toBe(r.expect);
+  });
+
+  it('the limits are checked before the purse: over the limit and over the balance is LIMIT_EXCEEDED, within the limit it is INSUFFICIENT_FUNDS', async () => {
+    const f = await fresh(10_000n);
+    await limits(f, { daily: [1_000n, 'ILS'] });
+    expect(reasonOf((await ask(f, 50_000n, N)).decision)).toBe(LIM);
+    await limits(f, {});
+    expect(reasonOf((await ask(f, 5_000_000n, N)).decision)).toBe('INSUFFICIENT_FUNDS');
+  });
+
+  it('the velocity rule still declines on ten holds in the last minute with limits set and not reached', async () => {
+    const f = await fresh();
+    await limits(f, { daily: [1_000_000n, 'ILS'], monthly: [1_000_000n, 'ILS'] });
+    for (let i = 0; i < VELOCITY_LIMIT_PER_MINUTE; i++) await hold(f, 1n, ago(N, -10_000), `v${i}`);
+    expect(reasonOf((await ask(f, 1n, N)).decision)).toBe(LIM);
+  });
+
+  it("another card's holds, this card's holds on another purse and other journal kinds on this purse are not in the sum", async () => {
+    const f = await fresh();
+    const other = await fresh();
+    const usdPending = await app.services.accounts.memberAccount(f.party, 'pending', 'USD');
+    const usdWallet = await app.services.accounts.memberAccount(f.party, 'wallet', 'USD');
+    await limits(f, { daily: [1_000n, 'ILS'], monthly: [1_000n, 'ILS'] });
+    await hold(other, 50_000n, N, 'x'); // the other card's own purse
+    await app.services.ledger.post({ idempotencyKey: `seed:${f.card}:usd`, kind: 'auth_hold', effectiveAt: N, metadata: { cardId: f.card }, postings: [{ accountId: usdWallet, currency: 'USD', amountMinor: 50_000n }, { accountId: usdPending, currency: 'USD', amountMinor: -50_000n }] });
+    await app.services.ledger.post({ idempotencyKey: `seed:${f.card}:settle`, kind: 'card_settle', effectiveAt: N, metadata: { cardId: f.card }, postings: [{ accountId: f.wallet, currency: 'ILS', amountMinor: 50_000n }, { accountId: f.pending, currency: 'ILS', amountMinor: -50_000n }] });
+    expect(reasonOf((await ask(f, 1_000n, N)).decision)).toBe('APPROVED');
+  });
+});
+
+describe('spend limits: reads per authorisation (T-0774)', () => {
+  const N = new Date('2026-11-15T12:00:00Z');
+  const heldSums = (log: string[]): string[] => log.filter((t) => /sum\(-p\.amount_minor\)/.test(t));
+  async function withSpy(daily: bigint | undefined, monthly: bigint | undefined) {
+    const party = uuidv7(NOW);
+    const s = await app.services.kyc.start(party, 'T2', `kyc:${party}`, NOW);
+    await dispatch(app, { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: `evt:${party}`, sessionId: s.sessionId, status: 'approved' }), now: NOW });
+    const c = (await db.query<{ id: string; processor_card_id: string }>(`select id, processor_card_id from cards.card where party_id = $1`, [party])).rows[0]!;
+    const w = await app.services.accounts.memberAccount(party, 'wallet', 'ILS');
+    const partner = await app.services.accounts.systemAccount('partner_settlement', 'ILS');
+    await app.services.ledger.post({ idempotencyKey: `load:${party}`, kind: 'load', postings: [{ accountId: partner, currency: 'ILS', amountMinor: 100_000n }, { accountId: w, currency: 'ILS', amountMinor: -100_000n }] });
+    await db.query(`update cards.card set controls = $2 where id = $1`, [c.id, JSON.stringify(controlsToWire({ ...DEFAULT_VIRTUAL_CONTROLS, ...(daily ? { dailyLimit: money(daily, 'ILS') } : {}), ...(monthly ? { monthlyLimit: money(monthly, 'ILS') } : {}) }))]);
+    const log: string[] = [];
+    const spy = { query: ((text: string, params?: readonly unknown[]) => { log.push(text); return db.query(text, params); }) as Database['query'], transaction: db.transaction.bind(db) } as Database;
+    const jit = new JitService({ db: spy, port: sim, ledger: app.services.ledger, accounts: app.services.accounts, memberships: app.services.memberships, entitlements: app.services.entitlements, plans: app.services.plans, flags: app.services.flags, intents: app.services.intents });
+    const decide = (amount: bigint) => jit.decide({ authId: uuidv7(N), cardId: c.processor_card_id, amount: money(amount, 'ILS'), merchant: MERCHANT, channel: 'pos', receivedAt: N.toISOString() }, N);
+    return { log, decide };
+  }
+
+  it('no limit set: no held-sum query at all', async () => {
+    const t = await withSpy(undefined, undefined);
+    expect((await t.decide(100n)).decision).toMatchObject({ approve: true });
+    expect(heldSums(t.log)).toHaveLength(0);
+  });
+  it('only a daily limit: one held-sum query', async () => {
+    const t = await withSpy(10_000n, undefined);
+    expect((await t.decide(100n)).decision).toMatchObject({ approve: true });
+    expect(heldSums(t.log)).toHaveLength(1);
+  });
+  it('only a monthly limit: one held-sum query', async () => {
+    const t = await withSpy(undefined, 10_000n);
+    expect((await t.decide(100n)).decision).toMatchObject({ approve: true });
+    expect(heldSums(t.log)).toHaveLength(1);
+  });
+  it('both limits: one held-sum query, whether the answer is approve or decline, and it only reads', async () => {
+    for (const amount of [100n, 50_000n]) {
+      const t = await withSpy(10_000n, 20_000n);
+      const holds = (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal`)).rows[0]!.n;
+      const out = await t.decide(amount);
+      expect(out.decision.approve).toBe(amount === 100n);
+      const sums = heldSums(t.log);
+      expect(sums).toHaveLength(1);
+      expect(sums[0]).not.toMatch(/\b(insert|update|delete|for\s+(update|share))\b/i);
+      // A decline writes nothing; an approval writes exactly its own hold.
+      const after = (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal`)).rows[0]!.n;
+      expect(after - holds).toBe(out.decision.approve ? 1 : 0);
+    }
+  });
+});
+
+describe('spend limits: old and new agree over random ledger states (T-0774)', () => {
+  const N = new Date('2026-11-15T12:00:00Z');
+  const startDay = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const startMonth = (d: Date) => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+  // The sequential code this card replaces, kept here verbatim as the reference: two reads, daily first.
+  const heldSince = async (cardId: string, pendingAccount: string, from: Date): Promise<bigint> => {
+    const r = await db.query<{ held: string }>(
+      `select coalesce(sum(-p.amount_minor), 0)::text as held from ledger.journal j join ledger.posting p on p.journal_id = j.id
+        where j.kind = 'auth_hold' and j.metadata->>'cardId' = $1 and p.account_id = $2 and j.effective_at >= $3`,
+      [cardId, pendingAccount, from],
+    );
+    return BigInt(r.rows[0]?.held ?? '0');
+  };
+  const legacy = async (i: { cardId: string; pendingAccount: string; now: Date; amount: Money; dailyLimit?: Money; monthlyLimit?: Money }): Promise<SpendLimitHit | undefined> => {
+    const currency = i.amount.currency;
+    if (i.dailyLimit && i.dailyLimit.currency === currency) {
+      if ((await heldSince(i.cardId, i.pendingAccount, startDay(i.now))) + i.amount.minor > i.dailyLimit.minor) return 'daily';
+    }
+    if (i.monthlyLimit && i.monthlyLimit.currency === currency) {
+      if ((await heldSince(i.cardId, i.pendingAccount, startMonth(i.now))) + i.amount.minor > i.monthlyLimit.minor) return 'monthly';
+    }
+    return undefined;
+  };
+
+  // mulberry32: a seeded generator, so a failure names a seed that replays.
+  const rng = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+
+  it('the same verdict, the same first limit, for 150 seeded ledger states and limit settings', async () => {
+    const party = uuidv7(NOW);
+    const wallet = await app.services.accounts.memberAccount(party, 'wallet', 'ILS');
+    const pending = await app.services.accounts.memberAccount(party, 'pending', 'ILS');
+    const otherPending = await app.services.accounts.memberAccount(party, 'pending', 'USD');
+    const otherWallet = await app.services.accounts.memberAccount(party, 'wallet', 'USD');
+    // Instants that sit on and around both window edges, plus ordinary ones.
+    const instants = [startMonth(N), startDay(N), N].flatMap((e) => [-1, 0, 1].map((d) => new Date(e.getTime() + d))).concat([new Date('2026-10-31T23:59:59Z'), new Date('2026-11-14T12:00:00Z'), new Date('2026-11-15T11:59:00Z'), new Date('2026-11-20T00:00:00Z'), new Date('2026-09-01T00:00:00Z')]);
+    const tally = { daily: 0, monthly: 0, none: 0 };
+    let n = 0;
+    for (let seed = 1; seed <= 150; seed++) {
+      const r = rng(seed);
+      const pick = <T>(xs: readonly T[]): T => xs[Math.floor(r() * xs.length)]!;
+      const cardId = `card-diff-${seed}`;
+      let day = 0n;
+      let month = 0n;
+      const holds = Math.floor(r() * 6);
+      for (let k = 0; k < holds; k++) {
+        const at = pick(instants);
+        const minor = BigInt(1 + Math.floor(r() * 900));
+        const kind = r() < 0.15 ? 'card_settle' : 'auth_hold'; // a non-hold journal on the same purse is never summed
+        const onOtherCard = r() < 0.15;
+        const onOtherPurse = r() < 0.15;
+        const [w, p, cur] = onOtherPurse ? [otherWallet, otherPending, 'USD' as const] : [wallet, pending, 'ILS' as const];
+        await app.services.ledger.post({ idempotencyKey: `diff:${seed}:${k}`, kind, effectiveAt: at, metadata: { cardId: onOtherCard ? `${cardId}-other` : cardId }, postings: [{ accountId: w, currency: cur, amountMinor: minor }, { accountId: p, currency: cur, amountMinor: -minor }] });
+        if (kind === 'auth_hold' && !onOtherCard && !onOtherPurse) {
+          if (at >= startMonth(N)) month += minor;
+          if (at >= startDay(N)) day += minor;
+        }
+      }
+      const amount = BigInt(1 + Math.floor(r() * 500));
+      // Limits sit on the edge of what the state allows more often than not.
+      const edge = (held: bigint) => pick([held + amount - 1n, held + amount, held + amount + 1n, held + amount + BigInt(Math.floor(r() * 1_000))]);
+      const lim = (held: bigint): Money | undefined => {
+        const x = r();
+        if (x < 0.2) return undefined;
+        return money(x < 0.3 ? 1n : edge(held), x < 0.4 ? 'USD' : 'ILS'); // some in another currency
+      };
+      const input = { cardId, pendingAccount: pending, now: N, amount: money(amount, 'ILS'), ...(() => { const d = lim(day); return d ? { dailyLimit: d } : {}; })(), ...(() => { const m = lim(month); return m ? { monthlyLimit: m } : {}; })() };
+      const expected = await legacy(input);
+      const got = await firstSpendLimitHit(db, input);
+      expect({ seed, got }).toEqual({ seed, got: expected });
+      tally[expected ?? 'none']++;
+      n++;
+    }
+    // The generator reaches every outcome, so agreement is not agreement on "approve".
+    expect(n).toBe(150);
+    expect(tally.daily).toBeGreaterThan(10);
+    expect(tally.monthly).toBeGreaterThan(10);
+    expect(tally.none).toBeGreaterThan(10);
+  }, 120_000);
+
+  it('the same verdict with held sums above 2^53 and limits on the edge, up to 2^63-1', async () => {
+    const edges = [0n, 1n, 2n, 1_023n, 1_025n];
+    for (let seed = 1; seed <= 20; seed++) {
+      const r = rng(1000 + seed);
+      const party = uuidv7(NOW); // fresh purses: the balance cache is a bigint and each state holds ~8e18
+      const w = await app.services.accounts.memberAccount(party, 'wallet', 'ILS');
+      const p = await app.services.accounts.memberAccount(party, 'pending', 'ILS');
+      const cardId = `card-diff-big-${seed}`;
+      let day = 0n;
+      let month = 0n;
+      for (let k = 0; k < 2; k++) {
+        const minor = 4_000_000_000_000_000_000n + BigInt(Math.floor(r() * 1_000_000)) * 2n + 1n;
+        const at = k === 0 ? new Date(N.getTime() - 3_600_000) : new Date(N.getTime() - (r() < 0.5 ? 3_600_000 : 36 * 3_600_000));
+        await app.services.ledger.post({ idempotencyKey: `diffbig:${seed}:${k}`, kind: 'auth_hold', effectiveAt: at, metadata: { cardId }, postings: [{ accountId: w, currency: 'ILS', amountMinor: minor }, { accountId: p, currency: 'ILS', amountMinor: -minor }] });
+        if (at >= startMonth(N)) month += minor;
+        if (at >= startDay(N)) day += minor;
+      }
+      const amount = BigInt(1 + Math.floor(r() * 500));
+      const cap = 9_223_372_036_854_775_807n;
+      const near = (held: bigint): bigint => { const v = held + amount - 3n + edges[Math.floor(r() * edges.length)]!; return v > cap ? cap : v; };
+      const input = { cardId, pendingAccount: p, now: N, amount: money(amount, 'ILS'), dailyLimit: money(near(day), 'ILS'), monthlyLimit: money(near(month), 'ILS') };
+      const expected = await legacy(input);
+      expect({ seed, got: await firstSpendLimitHit(db, input) }).toEqual({ seed, got: expected });
+      // The oracle too, in exact bigint arithmetic.
+      const oracle = day + amount > input.dailyLimit.minor ? 'daily' : month + amount > input.monthlyLimit.minor ? 'monthly' : undefined;
+      expect({ seed, expected }).toEqual({ seed, expected: oracle });
+    }
+  }, 120_000);
+
+  it('an authorisation in dollars sees only the dollar purse and dollar limits', async () => {
+    const party = uuidv7(NOW);
+    const w = await app.services.accounts.memberAccount(party, 'wallet', 'USD');
+    const p = await app.services.accounts.memberAccount(party, 'pending', 'USD');
+    await app.services.ledger.post({ idempotencyKey: `diff:usd:${party}`, kind: 'auth_hold', effectiveAt: N, metadata: { cardId: 'card-diff-usd' }, postings: [{ accountId: w, currency: 'USD', amountMinor: 900n }, { accountId: p, currency: 'USD', amountMinor: -900n }] });
+    for (const [daily, monthly] of [[money(1_000n, 'USD'), undefined], [money(1_000n, 'ILS'), undefined], [undefined, money(1_000n, 'USD')], [money(1_000n, 'USD'), money(5_000n, 'USD')]] as const) {
+      const input = { cardId: 'card-diff-usd', pendingAccount: p, now: N, amount: money(101n, 'USD'), ...(daily ? { dailyLimit: daily } : {}), ...(monthly ? { monthlyLimit: monthly } : {}) };
+      expect(await firstSpendLimitHit(db, input)).toBe(await legacy(input));
+    }
   });
 });

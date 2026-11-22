@@ -15,7 +15,7 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { EntitlementService } from '../billing/entitlements.ts';
 import type { MembershipService } from '../billing/memberships.ts';
 import type { PlanService } from '../billing/plans.ts';
-import type { Database } from '../db.ts';
+import type { Database, SqlClient } from '../db.ts';
 import type { AppliedRate, RateService } from '../fx/rates.ts';
 import { rateString } from '../fx/service.ts';
 import type { AccountService } from '../ledger/accounts.ts';
@@ -185,14 +185,8 @@ export class JitService {
     // the decision is a TIMEOUT decline.
     const pending = row.pending_id ?? (await this.d.accounts.findMemberAccount(card.party_id, 'pending', currency));
 
-    if (controls.dailyLimit && controls.dailyLimit.currency === currency) {
-      const spent = await this.heldSince(card.id, pending, startOfUtcDay(now));
-      if (spent + req.amount.minor > controls.dailyLimit.minor) return done(decline('LIMIT_EXCEEDED'));
-    }
-    if (controls.monthlyLimit && controls.monthlyLimit.currency === currency) {
-      const spent = await this.heldSince(card.id, pending, startOfUtcMonth(now));
-      if (spent + req.amount.minor > controls.monthlyLimit.minor) return done(decline('LIMIT_EXCEEDED'));
-    }
+    // One read for both windows, daily first (T-0774); either answers LIMIT_EXCEEDED. Nothing is read when no limit applies.
+    if (await firstSpendLimitHit(this.d.db, { cardId: card.id, pendingAccount: pending, now, amount: req.amount, ...(controls.dailyLimit ? { dailyLimit: controls.dailyLimit } : {}), ...(controls.monthlyLimit ? { monthlyLimit: controls.monthlyLimit } : {}) })) return done(decline('LIMIT_EXCEEDED'));
 
     const funding = await this.funding(card.party_id, req, row, now);
     if (!funding) return done(decline('INSUFFICIENT_FUNDS'));
@@ -313,16 +307,33 @@ export class JitService {
       { accountId: pending, currency, amountMinor: -minor },
     ];
   }
+}
 
-  /** Minor units held on this card's pending purse since `from` (the credit side of each hold). */
-  private async heldSince(cardId: string, pendingAccount: string, from: Date): Promise<bigint> {
-    const r = await this.d.db.query<{ held: string }>(
-      `select coalesce(sum(-p.amount_minor), 0)::text as held from ledger.journal j join ledger.posting p on p.journal_id = j.id
-        where j.kind = 'auth_hold' and j.metadata->>'cardId' = $1 and p.account_id = $2 and j.effective_at >= $3`,
-      [cardId, pendingAccount, from],
-    );
-    return BigInt(r.rows[0]?.held ?? '0');
-  }
+export type SpendLimitHit = 'daily' | 'monthly';
+
+/**
+ * The first spend limit the authorisation would break, the daily one before the monthly one, or undefined.
+ * A limit applies only in the authorisation's currency. One read-only statement sums what this card already
+ * holds on its pending purse: from the start of the UTC month, and (`filter`) from the start of the UTC day,
+ * which is never before it. No limit applying means no query. The caller maps either hit to LIMIT_EXCEEDED.
+ */
+export async function firstSpendLimitHit(
+  db: SqlClient,
+  i: { cardId: string; pendingAccount: string; now: Date; amount: Money; dailyLimit?: Money; monthlyLimit?: Money },
+): Promise<SpendLimitHit | undefined> {
+  const daily = i.dailyLimit && i.dailyLimit.currency === i.amount.currency ? i.dailyLimit : undefined;
+  const monthly = i.monthlyLimit && i.monthlyLimit.currency === i.amount.currency ? i.monthlyLimit : undefined;
+  if (!daily && !monthly) return undefined;
+  const r = await db.query<{ day_held: string; month_held: string }>(
+    `select coalesce(sum(-p.amount_minor), 0)::text as month_held,
+            coalesce(sum(-p.amount_minor) filter (where j.effective_at >= $4), 0)::text as day_held
+       from ledger.journal j join ledger.posting p on p.journal_id = j.id
+      where j.kind = 'auth_hold' and j.metadata->>'cardId' = $1 and p.account_id = $2 and j.effective_at >= $3`,
+    [i.cardId, i.pendingAccount, startOfUtcMonth(i.now), startOfUtcDay(i.now)],
+  );
+  if (daily && BigInt(r.rows[0]?.day_held ?? '0') + i.amount.minor > daily.minor) return 'daily';
+  if (monthly && BigInt(r.rows[0]?.month_held ?? '0') + i.amount.minor > monthly.minor) return 'monthly';
+  return undefined;
 }
 
 interface LookupRow {

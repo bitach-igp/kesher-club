@@ -394,7 +394,7 @@
 | [T-0771](T-0771.md) | SETUP | DESIGN: capability properties on port bindings replace provider-name branching in registry.ts; first slice scoped (A6) | — | later (scoped 2026-11-19) · design; slice 1 on acceptance |
 | [T-0772](T-0772.md) | SETUP | One `isUuidShape` in `@kesher/domain` replaces 28 loose UUID regex copies in apps/api (A7) | — | done by #371 (`isUuidShape`) |
 | [T-0773](T-0773.md) | SETUP | The mobile and console UUID regex copies use `isUuidShape` (A7) | — | done by #371 (`isUuidShape`) |
-| [T-0774](T-0774.md) | CRD | Card authorisation: daily and monthly held-sum reads become one read-only query (A8) | — | later (scoped 2026-11-19) · independent |
+| [T-0774](T-0774.md) | CRD | Card authorisation: daily and monthly held-sum reads become one read-only query (A8) | — | done (PR for T-0774): one read-only held-sum query (`firstSpendLimitHit`), daily first |
 | [T-0775](T-0775.md) | INS | Identity `findUsers(ids)`: staff lists and customer lists read users in one query (A8) | — | later (scoped 2026-11-19) · independent |
 | [T-0776](T-0776.md) | WAL | `DisplayNameService.getMany` for `listMemberships` (A8) | — | later (scoped 2026-11-19) · independent; `TransferService.getMany` came with #366, `DisplayNameService.getMany` does not exist yet |
 | [T-0777](T-0777.md) | NOT | Outbound events: `messages()` reads attempts concurrently (A8) | — | later (scoped 2026-11-19) · independent |
