@@ -8,7 +8,7 @@ import { createMetrics, uuidv7 } from '@kesher/domain';
 import { BankError, type BankPort } from '@kesher/ports';
 import { bankCreditVerifier } from '../institutions/deposits.ts';
 import { isPgError } from '../db.ts';
-import { makeRequest } from '../http.ts';
+import { makeRequest } from '../test-http.ts';
 import { AccountService } from '../ledger/accounts.ts';
 import { PostgresLedger } from '../ledger/post.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
