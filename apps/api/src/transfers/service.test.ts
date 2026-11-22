@@ -23,7 +23,11 @@ afterAll(async () => db.close());
 describe('state machine', () => {
   const states: TransferState[] = ['created', 'submitted', 'pending', 'pending_hold', 'settled', 'failed', 'reversed', 'cancelled'];
   const events: TransferEvent[] = ['submit', 'hold', 'release_hold', 'cancel', 'settle', 'fail', 'reverse'];
-  // The documented machine (state-machine.ts header, SEQ-06), written out independently of the code's map.
+  // The 12 legal pairs, written out independently of the code's map from the state-machine.ts header plus the production
+  // callers of apply: submit/settle/fail (loads, p2p, payouts, fx, closure), hold/release_hold (loads, p2p/holds, p2p/send,
+  // payouts), cancel from pending_hold (p2p/holds, payouts), reverse (settled). created->cancel is justified by REQ-PAY-003
+  // and the existing cancel test; created->fail and pending_hold->fail are used by the senders' failure paths. The header
+  // itself does not list those three.
   const LEGAL: Record<string, TransferState> = {
     'created submit': 'submitted', 'created cancel': 'cancelled', 'created fail': 'failed',
     'submitted hold': 'pending_hold', 'submitted settle': 'settled', 'submitted fail': 'failed',
@@ -56,6 +60,8 @@ describe('state machine', () => {
         const out = await transfers.apply(id, e, t, e === 'hold' ? { holdReleasesAt: new Date(t.getTime() + 7_200_000) } : {});
         expect(out.state, `${s} ${e}`).toBe(to);
         expect(await events0(), `${s} ${e} history`).toBe(1);
+        expect((await db.query<{ from_state: string; to_state: string }>('select from_state, to_state from ops.transfer_event where transfer_id = $1', [id])).rows, `${s} ${e} history states`).toEqual([{ from_state: s, to_state: to }]);
+        expect((await db.query<{ type: string }>('select type from ops.outbox where aggregate_id = $1', [id])).rows, `${s} ${e} outbox type`).toEqual([{ type: `transfer.${to}` }]);
         expect(await outbox(), `${s} ${e} outbox`).toBe(1);
       } else {
         await expect(transfers.apply(id, e, t), `${s} ${e}`).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
