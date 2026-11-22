@@ -2,7 +2,7 @@
 // 72 h) and a replay UI. Given a 500 from the receiver, retries at 5 s, 5 m, 30 m, 2 h, 8 h, 24 h.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
-import { EventsSimulator, RETRY_SCHEDULE_MS, fixedClock, type AdvanceableClock } from '@kesher/ports';
+import { EventsSimulator, RETRY_SCHEDULE_MS, fixedClock, type AdvanceableClock, type DeliveryAttempt, type EventsPort } from '@kesher/ports';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { SimulatorHost } from '@kesher/simulators';
 import { createApp, type App } from '../app.ts';
@@ -281,5 +281,120 @@ describe('webhook endpoint routes (T-0688, REQ-NOT-002)', () => {
     expect((await hdb.query<{ url: string }>('select url from notify.outbound_endpoint where endpoint_id = $1', [(one.body as Created).endpointId])).rows[0]!.url).toBe('https://hooks.ohr.example/Norm');
     const other = await call(on, 'POST', e, tok['rivka']!, { url: 'https://other.ohr.example/x', eventTypes: ['collection.paid'] }, 'create-reuse-001');
     expect(other).toMatchObject({ status: 409, body: { code: 'IDEMPOTENCY_CONFLICT' } });
+  });
+});
+
+// T-0777: messages() reads every message's attempts concurrently; the result order and the error that surfaces
+// stay what the one-by-one loop gave (the first failing message in list order, whatever the timing).
+describe('messages() reads attempts concurrently (T-0777)', () => {
+  type Row = { messageId: string; eventType: string; sentAt: string; attempts: readonly DeliveryAttempt[] };
+  let nextOutbox = 900_000;
+  const attempt = (messageId: string, n: number): DeliveryAttempt => ({ attemptId: `${messageId}:${n}`, messageId, attemptNumber: n, status: 'succeeded' }) as unknown as DeliveryAttempt;
+  /** Seeds `count` messages for a fresh institution, newest first by sent_at; returns their ids in list order. */
+  const seed = async (count: number): Promise<{ inst: string; ids: string[] }> => {
+    const inst = uuidv7();
+    await db.query(`insert into org.institution (id, name, market) values ($1, 'Seed', 'IL')`, [inst]);
+    const ids: string[] = [];
+    for (let i = 0; i < count; i++) {
+      const id = `msg_${inst.slice(-6)}_${String(i).padStart(3, '0')}`;
+      ids.push(id);
+      // i = 0 is the newest, so list order equals seed order.
+      await db.query('insert into notify.outbound_message (message_id, outbox_id, institution_id, event_type, sent_at) values ($1, $2, $3, $4, $5)', [id, nextOutbox++, inst, i % 2 ? 'collection.paid' : 'payout.status_changed', new Date(Date.UTC(2026, 10, 1, 12, 0, 0) - i * 60_000)]);
+    }
+    return { inst, ids };
+  };
+  const portOf = (listAttempts: (id: string) => Promise<readonly DeliveryAttempt[]>): EventsPort => ({ listAttempts }) as unknown as EventsPort;
+  /** The loop as it was before T-0777, kept as the oracle for the differential test. */
+  const oldMessages = async (port: EventsPort, inst: string, limit = 50): Promise<Row[]> => {
+    const r = await db.query<{ message_id: string; event_type: string; sent_at: string | Date }>('select message_id, event_type, sent_at from notify.outbound_message where institution_id = $1 order by sent_at desc limit $2', [inst, limit]);
+    const out: Row[] = [];
+    for (const m of r.rows) out.push({ messageId: m.message_id, eventType: m.event_type, sentAt: new Date(m.sent_at).toISOString(), attempts: await port.listAttempts(m.message_id) });
+    return out;
+  };
+  const attemptsFor = (id: string, i: number): DeliveryAttempt[] => Array.from({ length: [0, 1, 3][i % 3]! }, (_, n) => attempt(id, n + 1));
+  const settle = async <T>(p: Promise<T>): Promise<{ ok: T } | { err: unknown }> => p.then((ok) => ({ ok }), (err: unknown) => ({ err }));
+  const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+  it('returns items newest first with each message\'s own attempts, for zero, one and three attempts', async () => {
+    const { inst, ids } = await seed(7);
+    const byId = new Map(ids.map((id, i) => [id, attemptsFor(id, i)]));
+    // Resolve in reverse of list order so a result built in completion order would be wrong.
+    const port = portOf(async (id) => { await delay((ids.length - ids.indexOf(id)) * 3); return byId.get(id)!; });
+    const got = await new OutboundEventsService(db, port).messages(inst);
+    expect(got.map((m) => m.messageId)).toEqual(ids);
+    expect(got.map((m) => m.attempts.length)).toEqual([0, 1, 3, 0, 1, 3, 0]);
+    expect(got.map((m) => m.attempts)).toEqual(ids.map((id) => byId.get(id)));
+    expect(got[0]).toMatchObject({ eventType: 'payout.status_changed', sentAt: '2026-11-01T12:00:00.000Z' });
+  });
+
+  it('honours the limit and answers [] without a port read for an institution with no messages', async () => {
+    const { inst, ids } = await seed(5);
+    const asked: string[] = [];
+    const port = portOf(async (id) => { asked.push(id); return []; });
+    const svc2 = new OutboundEventsService(db, port);
+    expect((await svc2.messages(inst, 3)).map((m) => m.messageId)).toEqual(ids.slice(0, 3));
+    expect([...asked].sort()).toEqual(ids.slice(0, 3).sort());
+    asked.length = 0;
+    expect(await svc2.messages(uuidv7())).toEqual([]);
+    expect(asked).toEqual([]);
+  });
+
+  it('a port read that rejects rejects the call with that error', async () => {
+    const { inst, ids } = await seed(4);
+    const boom = new Error('port down');
+    const port = portOf(async (id) => { if (id === ids[2]) throw boom; return []; });
+    await expect(new OutboundEventsService(db, port).messages(inst)).rejects.toBe(boom);
+  });
+
+  it('with two failing reads the first in list order surfaces, even when the later one fails first, and a synchronous throw counts the same', async () => {
+    const { inst, ids } = await seed(5);
+    const slowEarly = new Error('index 1, slow');
+    const fastLate = new Error('index 3, fast');
+    const slow = portOf(async (id) => {
+      if (id === ids[1]) { await delay(25); throw slowEarly; }
+      if (id === ids[3]) throw fastLate;
+      return [];
+    });
+    await expect(new OutboundEventsService(db, slow).messages(inst)).rejects.toBe(slowEarly);
+    const syncEarly = new Error('index 0, sync');
+    const sync = portOf((id) => { if (id === ids[0]) throw syncEarly; if (id === ids[4]) return Promise.reject(new Error('index 4')); return Promise.resolve([]); });
+    await expect(new OutboundEventsService(db, sync).messages(inst)).rejects.toBe(syncEarly);
+  });
+
+  it('starts every attempts read before the first one resolves (concurrency)', async () => {
+    const { inst, ids } = await seed(50);
+    const started: string[] = [];
+    const gates: (() => void)[] = [];
+    const port = portOf((id) => new Promise<readonly DeliveryAttempt[]>((resolve) => { started.push(id); gates.push(() => resolve([attempt(id, 1)])); }));
+    const pending = new OutboundEventsService(db, port).messages(inst);
+    try {
+      await delay(30);
+      expect(started.length).toBe(50);
+    } finally {
+      for (const g of gates) g();
+    }
+    const got = await pending;
+    expect(got.map((m) => m.messageId)).toEqual(ids);
+    expect(started.length).toBe(50); // each message read exactly once
+    expect(new Set(started).size).toBe(50);
+  });
+
+  it('differential: the old one-by-one loop and messages() agree on results and on the surfacing error', async () => {
+    const { inst, ids } = await seed(9);
+    const scenarios: { name: string; port: EventsPort }[] = [
+      { name: 'all resolve, staggered', port: portOf(async (id) => { await delay((ids.indexOf(id) % 3) * 4); return attemptsFor(id, ids.indexOf(id)); }) },
+      { name: 'all empty', port: portOf(async () => []) },
+      { name: 'one rejects', port: portOf(async (id) => { if (id === ids[5]) throw new Error('five'); return []; }) },
+      { name: 'two reject, later one first', port: portOf(async (id) => { if (id === ids[2]) { await delay(20); throw new Error('two'); } if (id === ids[6]) throw new Error('six'); return []; }) },
+      { name: 'first rejects', port: portOf(async (id) => { if (id === ids[0]) throw new Error('zero'); return []; }) },
+    ];
+    for (const { name, port } of scenarios) {
+      for (const limit of [50, 4]) {
+        const was = await settle(oldMessages(port, inst, limit));
+        const now = await settle(new OutboundEventsService(db, port).messages(inst, limit));
+        if ('err' in was) expect(now, `${name} limit ${limit}`).toEqual({ err: was.err });
+        else expect(JSON.stringify(now), `${name} limit ${limit}`).toBe(JSON.stringify(was));
+      }
+    }
   });
 });
