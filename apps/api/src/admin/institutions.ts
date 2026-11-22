@@ -142,10 +142,11 @@ export class InstitutionAdmin {
   async staff(institutionId: string, now: Date): Promise<{ items: InstitutionStaffMember[]; pendingGrants: ApprovalRequest[] }> {
     await this.requireInstitution(institutionId);
     const rows = await this.db.query<StaffRow>('select party_id, institution_id, role, active, created_at from org.staff where institution_id = $1 order by active desc, created_at, party_id', [institutionId]);
-    const items = await Promise.all(rows.rows.map(async (r) => {
-      const user = await this.identity.findUser(r.party_id);
+    const users = await this.identity.findUsers(rows.rows.map((r) => r.party_id));
+    const items = rows.rows.map((r) => {
+      const user = users.get(r.party_id);
       return { ...toStaff(r), ...(user ? { phoneMasked: maskPhone(user.phone) } : {}) };
-    }));
+    });
     const open = await this.db.query<{ id: string }>(
       `select id from ops.approval_request where kind = 'staff_grant' and status = 'awaiting_second_approval' and expires_at > $2 and payload->>'institutionId' = $1 order by created_at`,
       [institutionId, now],
