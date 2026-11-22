@@ -17,3 +17,16 @@ Steps (from repo root, PowerShell on Windows unless stated):
 14. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with ledger at 33 migrations. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1` (the seq defaults to 0). Step 7 prints `INSERT 0 0` (the primary key repeats; the first row is kept). Step 8 fails with a duplicate key violation on `workflow_marker_kind_claim_key` (a claim taken by another subject). Step 9 prints `INSERT 0 3` (the same value for two subjects, and at two seqs, under one kind; NULL claims). Step 10 fails with a check violation on `workflow_marker_seq_check`. Step 11 prints 4 rows: the one `membership_lost_key` row with claim `check-key-076800` and three `credit_outcome` rows with a null claim. Step 12 fails with `permission denied for table workflow_marker`. Step 13 fails with `permission denied for table workflow_marker`.
 Report back: the console output of steps 4 to 13.
+
+## Result
+PASS, 2026-11-22 23:10 Asia/Jerusalem, Windows PC runner worktree at 390b1fb, Docker 29.9.2, postgres:16.
+- First attempt: the 8 s sleep in step 2 was too short (step 3 psql: socket not ready, so step 4 failed with role "club_app" does not exist). Container removed and the steps rerun from step 1 with a pg_isready wait after step 2; nothing else changed.
+- Step 4: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent; atlas_ledger revisions: 33, max 0033, no errors. (Console capture of step 4 timed out on the bridge; the revision table and step 5 confirm it.)
+- Step 5: `No migration files to execute` for every schema, all `ok`.
+- Step 6: INSERT 0 1. Step 7: INSERT 0 0.
+- Step 8: ERROR duplicate key value violates unique constraint "workflow_marker_kind_claim_key" (Key (kind, claim)=(membership_lost_key, check-key-076800) already exists).
+- Step 9: INSERT 0 3.
+- Step 10: ERROR new row for relation "workflow_marker" violates check constraint "workflow_marker_seq_check".
+- Step 11: 4 rows: credit_outcome …76802 seq 1 and 2, …76803 seq 1 (claim null); membership_lost_key …76800 seq 0 lost, claim check-key-076800.
+- Steps 12 and 13: ERROR permission denied for table workflow_marker.
+- Step 14: kesher-pg removed.
