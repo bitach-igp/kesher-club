@@ -16,3 +16,18 @@ Steps (from repo root, PowerShell on Windows unless stated):
 13. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, with ledger at 33 migrations. Step 5 reports no pending migrations. Step 6 prints `INSERT 0 1`. Step 7 prints `INSERT 0 0` (the primary key repeats; the first value is kept). Step 8 fails with a duplicate key violation on `workflow_marker_kind_value_key` (the same value for another subject under the same kind). Step 9 fails with a check violation on `workflow_marker_seq_check`. Step 10 prints one row, `membership_lost_key | ...76800 | 0 | check-key-076800`. Step 11 fails with `permission denied for table workflow_marker`. Step 12 fails with `permission denied for table workflow_marker`.
 Report back: the console output of steps 4 to 12.
+
+## Result
+PASS, 2026-11-22 22:07 (Asia/Jerusalem), Kesher desktop checker on Zvi's PC. Runner worktree at fc71cb9 (cards/T-0768-workflow-marker-table), Docker 29.9.2 (Docker Desktop was not running; started it, no settings changed), postgres:16.
+
+- Step 3 (roles.sql): exit 0.
+- Step 4: exit 0; ledger "Migrating to version 0033 (33 migrations in total)", 0033 creates ops.workflow_marker and grants select, insert to club_app; `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent.
+- Step 5: exit 0; "No migration files to execute" for all nine schemas, `ok` for all nine.
+- Step 6: `SET` / `INSERT 0 1`.
+- Step 7: `SET` / `INSERT 0 0`.
+- Step 8: `ERROR:  duplicate key value violates unique constraint "workflow_marker_kind_value_key"` (Key (kind, value)=(membership_lost_key, check-key-076800) already exists).
+- Step 9: `ERROR:  new row for relation "workflow_marker" violates check constraint "workflow_marker_seq_check"`.
+- Step 10: one row, `membership_lost_key | 00000000-0000-7000-8000-000000076800 | 0 | check-key-076800`.
+- Step 11: `ERROR:  permission denied for table workflow_marker`.
+- Step 12: `ERROR:  permission denied for table workflow_marker`.
+- Step 13: container `kesher-pg` removed.
