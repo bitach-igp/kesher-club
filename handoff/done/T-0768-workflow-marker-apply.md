@@ -31,3 +31,5 @@ PASS, 2026-11-22 22:07 (Asia/Jerusalem), Kesher desktop checker on Zvi's PC. Run
 - Step 11: `ERROR:  permission denied for table workflow_marker`.
 - Step 12: `ERROR:  permission denied for table workflow_marker`.
 - Step 13: container `kesher-pg` removed.
+
+Superseded by -2 (shape changed to unique (kind, claim)); see handoff/desktop/T-0768-workflow-marker-apply-2.md.

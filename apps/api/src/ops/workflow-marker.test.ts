@@ -115,9 +115,10 @@ describe('ops.workflow_marker store', () => {
   it('stamps created_at as timestamptz', async () => {
     const id = uuidv7(now);
     await putMarker(db, { kind: 'stamp_kind', subjectId: id, value: 'stamp-v' });
-    const r = await db.query<{ t: string; created: boolean }>(
-      `select pg_typeof(created_at)::text as t, created_at is not null as created from ops.workflow_marker where kind = 'stamp_kind' and subject_id = $1`, [id]);
-    expect(r.rows[0]).toEqual({ t: 'timestamp with time zone', created: true });
+    const r = await db.query<{ t: string; age_s: number }>(
+      `select pg_typeof(created_at)::text as t, abs(extract(epoch from (now() - created_at)))::float8 as age_s from ops.workflow_marker where kind = 'stamp_kind' and subject_id = $1`, [id]);
+    expect(r.rows[0]?.t).toBe('timestamp with time zone');
+    expect(r.rows[0]?.age_s).toBeLessThan(5);
   });
 
   it('grants club_app select and insert only: markers are write-once', async () => {
