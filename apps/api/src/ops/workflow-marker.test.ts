@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { findByValue, getMarker, getMarkers, putMarker } from './workflow-marker.ts';
+import { findByClaim, getMarker, getMarkers, putMarker } from './workflow-marker.ts';
 
 // TST-WAL-003: our own workflow markers are write-once rows in ops.workflow_marker (T-0768).
 describe('ops.workflow_marker store', () => {
@@ -53,24 +53,53 @@ describe('ops.workflow_marker store', () => {
     expect(await getMarker(db, 'kind_two', b)).toBeUndefined();
   });
 
-  it('finds a subject by (kind, value) and nothing under another kind', async () => {
+  it('finds a subject by (kind, claim) and nothing under another kind or an unclaimed value', async () => {
     const id = uuidv7(now);
-    await putMarker(db, { kind: 'membership_lost_key', subjectId: id, value: 'lost-key-1234' });
-    expect(await findByValue(db, 'membership_lost_key', 'lost-key-1234')).toBe(id);
-    expect(await findByValue(db, 'other_kind', 'lost-key-1234')).toBeUndefined();
-    expect(await findByValue(db, 'membership_lost_key', 'no-such-key')).toBeUndefined();
+    await putMarker(db, { kind: 'membership_lost_key', subjectId: id, value: 'lost', claim: 'lost-key-1234' });
+    expect(await findByClaim(db, 'membership_lost_key', 'lost-key-1234')).toBe(id);
+    expect(await findByClaim(db, 'other_kind', 'lost-key-1234')).toBeUndefined();
+    expect(await findByClaim(db, 'membership_lost_key', 'no-such-key')).toBeUndefined();
+    expect(await findByClaim(db, 'membership_lost_key', 'lost')).toBeUndefined();
   });
 
-  it('refuses a second subject with the same value under the same kind, and leaves no row', async () => {
+  it('lets two subjects hold the same value under one kind, and one subject the same value at two seqs', async () => {
+    const a = uuidv7(now);
+    const b = uuidv7(now);
+    expect(await putMarker(db, { kind: 'credit_outcome', subjectId: a, seq: 1, value: 'credited' })).toBe(true);
+    expect(await putMarker(db, { kind: 'credit_outcome', subjectId: b, seq: 1, value: 'credited' })).toBe(true);
+    expect(await putMarker(db, { kind: 'credit_outcome', subjectId: a, seq: 2, value: 'credited' })).toBe(true);
+    expect(await getMarker(db, 'credit_outcome', b, 1)).toBe('credited');
+    expect((await getMarkers(db, 'credit_outcome', a, [1, 2])).size).toBe(2);
+  });
+
+  it('refuses a claim taken by another subject (false, nothing written), and a repeat of subject and seq (false)', async () => {
     const first = uuidv7(now);
     const second = uuidv7(now);
-    expect(await putMarker(db, { kind: 'unique_kind', subjectId: first, value: 'dup-value' })).toBe(true);
-    // on conflict do nothing: the (kind, value) unique index answers false, same as a repeat of the primary key.
-    expect(await putMarker(db, { kind: 'unique_kind', subjectId: second, value: 'dup-value' })).toBe(false);
-    expect(await getMarker(db, 'unique_kind', second)).toBeUndefined();
-    expect(await findByValue(db, 'unique_kind', 'dup-value')).toBe(first);
-    // The same value under another kind is fine.
-    expect(await putMarker(db, { kind: 'unique_kind_b', subjectId: second, value: 'dup-value' })).toBe(true);
+    expect(await putMarker(db, { kind: 'claim_kind', subjectId: first, value: 'v1', claim: 'dup-claim' })).toBe(true);
+    expect(await putMarker(db, { kind: 'claim_kind', subjectId: second, value: 'v2', claim: 'dup-claim' })).toBe(false);
+    expect(await getMarker(db, 'claim_kind', second)).toBeUndefined();
+    expect(await findByClaim(db, 'claim_kind', 'dup-claim')).toBe(first);
+    expect(await putMarker(db, { kind: 'claim_kind', subjectId: first, value: 'v3', claim: 'other-claim' })).toBe(false);
+    expect(await getMarker(db, 'claim_kind', first)).toBe('v1');
+    // The same claim under another kind is fine.
+    expect(await putMarker(db, { kind: 'claim_kind_b', subjectId: second, value: 'v2', claim: 'dup-claim' })).toBe(true);
+    // The table itself refuses a duplicate claim.
+    await expect(db.query(`insert into ops.workflow_marker (kind, subject_id, value, claim) values ('claim_kind', $1, 'x', 'dup-claim')`, [uuidv7(now)])).rejects.toThrow(/unique|duplicate/i);
+  });
+
+  it('never collides on NULL claims', async () => {
+    const kind = 'null_claim_kind';
+    expect(await putMarker(db, { kind, subjectId: uuidv7(now), value: 'same' })).toBe(true);
+    expect(await putMarker(db, { kind, subjectId: uuidv7(now), value: 'same' })).toBe(true);
+    await db.query(`insert into ops.workflow_marker (kind, subject_id, value, claim) values ($1, $2, 'x', null), ($1, $3, 'x', null)`, [kind, uuidv7(now), uuidv7(now)]);
+  });
+
+  it('defaults seq to 0 at the table', async () => {
+    const id = uuidv7(now);
+    await db.query(`insert into ops.workflow_marker (kind, subject_id, value) values ('default_seq_kind', $1, 'v')`, [id]);
+    expect(await getMarker(db, 'default_seq_kind', id, 0)).toBe('v');
+    const r = await db.query<{ seq: number }>(`select seq from ops.workflow_marker where kind = 'default_seq_kind' and subject_id = $1`, [id]);
+    expect(r.rows[0]?.seq).toBe(0);
   });
 
   it('rejects a negative seq', async () => {

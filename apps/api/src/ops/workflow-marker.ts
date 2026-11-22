@@ -1,7 +1,7 @@
 import type { SqlClient } from '../db.ts';
 
 // Our own workflow markers live in ops.workflow_marker, not in ops.external_ref (which holds vendor ids only).
-// A marker is write-once: first writer wins on (kind, subject_id, seq) and on (kind, value); club_app has no update or delete.
+// A marker is write-once: first writer wins on (kind, subject_id, seq) and on (kind, claim); club_app has no update or delete.
 // Values are party ids, keys and hashes, never PII.
 
 export interface MarkerPut {
@@ -10,11 +10,16 @@ export interface MarkerPut {
   /** Defaults to 0; a marker per attempt uses the attempt number. */
   seq?: number;
   value: string;
+  /** A key one subject may take once per kind (a lost-race key); omitted markers never collide on it. */
+  claim?: string;
 }
 
-/** Records the marker; one that already exists (either key) is left alone. True iff a row was inserted. */
+/**
+ * Records the marker, first writer wins (on conflict do nothing). True iff a row was inserted. False means the (kind, subject, seq)
+ * is already written OR the claim is taken by another subject; a caller that needs to tell which must follow up with getMarker.
+ */
 export async function putMarker(db: SqlClient, m: MarkerPut): Promise<boolean> {
-  const r = await db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value) values ($1, $2, $3, $4) on conflict do nothing`, [m.kind, m.subjectId, m.seq ?? 0, m.value]);
+  const r = await db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value, claim) values ($1, $2, $3, $4, $5) on conflict do nothing`, [m.kind, m.subjectId, m.seq ?? 0, m.value, m.claim ?? null]);
   return r.rowCount > 0;
 }
 
@@ -31,8 +36,8 @@ export async function getMarkers(db: SqlClient, kind: string, subjectId: string,
   return new Map(r.rows.map((row) => [row.seq, row.value]));
 }
 
-/** The subject this value is recorded for under this kind, if any. */
-export async function findByValue(db: SqlClient, kind: string, value: string): Promise<string | undefined> {
-  const r = await db.query<{ subject_id: string }>('select subject_id from ops.workflow_marker where kind = $1 and value = $2', [kind, value]);
+/** The subject that holds this claim under this kind, if any. */
+export async function findByClaim(db: SqlClient, kind: string, claim: string): Promise<string | undefined> {
+  const r = await db.query<{ subject_id: string }>('select subject_id from ops.workflow_marker where kind = $1 and claim = $2', [kind, claim]);
   return r.rows[0]?.subject_id;
 }
