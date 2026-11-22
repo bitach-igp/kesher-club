@@ -522,7 +522,7 @@ describe('spend limits: characterization table (T-0774, TST-CRD-003)', () => {
   const ago = (base: Date, ms: number): Date => new Date(base.getTime() + ms);
   const H = 3_600_000;
   type Seed = [minor: bigint, at: Date];
-  interface Row { name: string; daily?: [bigint, 'ILS' | 'USD']; monthly?: [bigint, 'ILS' | 'USD']; seeds: Seed[]; amount: bigint; now?: Date; expect: string }
+  interface Row { name: string; funds?: bigint; daily?: [bigint, 'ILS' | 'USD']; monthly?: [bigint, 'ILS' | 'USD']; seeds: Seed[]; amount: bigint; now?: Date; expect: string }
 
   async function fresh(funds = 10_000_000n) {
     const party = uuidv7(NOW);
@@ -531,7 +531,8 @@ describe('spend limits: characterization table (T-0774, TST-CRD-003)', () => {
     const c = (await db.query<{ id: string; processor_card_id: string }>(`select id, processor_card_id from cards.card where party_id = $1`, [party])).rows[0]!;
     const w = await app.services.accounts.memberAccount(party, 'wallet', 'ILS');
     const p = await app.services.accounts.memberAccount(party, 'pending', 'ILS');
-    const partner = await app.services.accounts.systemAccount('partner_settlement', 'ILS');
+    // Huge funds come from a purse of their own: the shared partner account's balance cache is a bigint and would overflow.
+    const partner = funds > 1_000_000_000_000n ? await app.services.accounts.memberAccount(uuidv7(NOW), 'wallet', 'ILS') : await app.services.accounts.systemAccount('partner_settlement', 'ILS');
     await app.services.ledger.post({ idempotencyKey: `load:${party}`, kind: 'load', postings: [{ accountId: partner, currency: 'ILS', amountMinor: funds }, { accountId: w, currency: 'ILS', amountMinor: -funds }] });
     return { party, card: c.id, processor: c.processor_card_id, wallet: w, pending: p };
   }
@@ -544,7 +545,17 @@ describe('spend limits: characterization table (T-0774, TST-CRD-003)', () => {
   const reasonOf = (d: { approve: boolean; reason?: string }): string => (d.approve ? 'APPROVED' : (d.reason ?? ''));
 
   const LIM = 'LIMIT_EXCEEDED';
+  const BIG_SEEDS: Seed[] = [[4_000_000_000_000_000_001n, ago(N, -H)], [4_000_000_000_000_000_003n, ago(N, -2 * H)]];
+  const BIG_HELD = 8_000_000_000_000_000_004n;
+  const BIG_FUNDS = 9_000_000_000_000_000_000n;
   const rows: Row[] = [
+    // Held sums above 2^53 (and near 2^63): a BigInt(Number(x)) slip rounds these and flips the verdict.
+    { name: 'held sums above 2^53: daily exactly at the limit is approved', funds: BIG_FUNDS, daily: [BIG_HELD + 100n, 'ILS'], seeds: BIG_SEEDS, amount: 100n, expect: 'APPROVED' },
+    { name: 'held sums above 2^53: daily one under the limit is declined', funds: BIG_FUNDS, daily: [BIG_HELD + 99n, 'ILS'], seeds: BIG_SEEDS, amount: 100n, expect: LIM },
+    { name: 'held sums above 2^53: monthly exactly at the limit is approved', funds: BIG_FUNDS, monthly: [BIG_HELD + 100n, 'ILS'], seeds: BIG_SEEDS, amount: 100n, expect: 'APPROVED' },
+    { name: 'held sums above 2^53: monthly one under the limit is declined', funds: BIG_FUNDS, monthly: [BIG_HELD + 99n, 'ILS'], seeds: BIG_SEEDS, amount: 100n, expect: LIM },
+    { name: 'held sums above 2^53: a limit of 2^63-1 approves', funds: BIG_FUNDS, daily: [9_223_372_036_854_775_807n, 'ILS'], monthly: [9_223_372_036_854_775_807n, 'ILS'], seeds: BIG_SEEDS, amount: 100n, expect: 'APPROVED' },
+    { name: 'held sums above 2^53: yesterday\'s big holds are monthly only', funds: BIG_FUNDS, daily: [1_000n, 'ILS'], monthly: [BIG_HELD + 99n, 'ILS'], seeds: BIG_SEEDS.map(([m, at]) => [m, ago(at, -24 * H)] as Seed), amount: 100n, expect: LIM },
     { name: 'no limits set: approved whatever is held', seeds: [[5_000n, N]], amount: 1_000n, expect: 'APPROVED' },
     { name: 'daily exactly at the limit is approved', daily: [2_000n, 'ILS'], seeds: [[1_800n, ago(N, -H)]], amount: 200n, expect: 'APPROVED' },
     { name: 'daily one minor over is declined', daily: [2_000n, 'ILS'], seeds: [[1_800n, ago(N, -H)]], amount: 201n, expect: LIM },
@@ -571,7 +582,7 @@ describe('spend limits: characterization table (T-0774, TST-CRD-003)', () => {
   ];
 
   it.each(rows)('$name', async (r) => {
-    const f = await fresh();
+    const f = await fresh(r.funds);
     await limits(f, r);
     for (const [i, [minor, at]] of r.seeds.entries()) await hold(f, minor, at, String(i));
     const out = await ask(f, r.amount, r.now ?? N);
@@ -738,6 +749,35 @@ describe('spend limits: old and new agree over random ledger states (T-0774)', (
     expect(tally.daily).toBeGreaterThan(10);
     expect(tally.monthly).toBeGreaterThan(10);
     expect(tally.none).toBeGreaterThan(10);
+  }, 120_000);
+
+  it('the same verdict with held sums above 2^53 and limits on the edge, up to 2^63-1', async () => {
+    const edges = [0n, 1n, 2n, 1_023n, 1_025n];
+    for (let seed = 1; seed <= 20; seed++) {
+      const r = rng(1000 + seed);
+      const party = uuidv7(NOW); // fresh purses: the balance cache is a bigint and each state holds ~8e18
+      const w = await app.services.accounts.memberAccount(party, 'wallet', 'ILS');
+      const p = await app.services.accounts.memberAccount(party, 'pending', 'ILS');
+      const cardId = `card-diff-big-${seed}`;
+      let day = 0n;
+      let month = 0n;
+      for (let k = 0; k < 2; k++) {
+        const minor = 4_000_000_000_000_000_000n + BigInt(Math.floor(r() * 1_000_000)) * 2n + 1n;
+        const at = k === 0 ? new Date(N.getTime() - 3_600_000) : new Date(N.getTime() - (r() < 0.5 ? 3_600_000 : 36 * 3_600_000));
+        await app.services.ledger.post({ idempotencyKey: `diffbig:${seed}:${k}`, kind: 'auth_hold', effectiveAt: at, metadata: { cardId }, postings: [{ accountId: w, currency: 'ILS', amountMinor: minor }, { accountId: p, currency: 'ILS', amountMinor: -minor }] });
+        if (at >= startMonth(N)) month += minor;
+        if (at >= startDay(N)) day += minor;
+      }
+      const amount = BigInt(1 + Math.floor(r() * 500));
+      const cap = 9_223_372_036_854_775_807n;
+      const near = (held: bigint): bigint => { const v = held + amount - 3n + edges[Math.floor(r() * edges.length)]!; return v > cap ? cap : v; };
+      const input = { cardId, pendingAccount: p, now: N, amount: money(amount, 'ILS'), dailyLimit: money(near(day), 'ILS'), monthlyLimit: money(near(month), 'ILS') };
+      const expected = await legacy(input);
+      expect({ seed, got: await firstSpendLimitHit(db, input) }).toEqual({ seed, got: expected });
+      // The oracle too, in exact bigint arithmetic.
+      const oracle = day + amount > input.dailyLimit.minor ? 'daily' : month + amount > input.monthlyLimit.minor ? 'monthly' : undefined;
+      expect({ seed, expected }).toEqual({ seed, expected: oracle });
+    }
   }, 120_000);
 
   it('an authorisation in dollars sees only the dollar purse and dollar limits', async () => {
