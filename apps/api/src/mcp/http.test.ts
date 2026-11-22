@@ -68,6 +68,21 @@ describe('TST-AGT-001/002: /mcp over HTTP (T-1013)', () => {
     expect(meta.body).toMatchObject({ resource: RESOURCE, authorization_servers: [ISSUER], bearer_methods_supported: ['header'] });
   });
 
+  it('serves the protected-resource metadata on both RFC 9728 paths: 200, JSON, cacheable, scopes and authorization server, no secrets, GET only (TST-AGT-001, T-0783)', async () => {
+    for (const path of ['/.well-known/oauth-protected-resource/mcp', '/.well-known/oauth-protected-resource']) {
+      const res = await dispatch(app, { method: 'GET', url: path, headers: {}, rawBody: '', now: NOW });
+      expect(res.status).toBe(200);
+      expect(res.headers).toMatchObject({ 'content-type': 'application/json', 'cache-control': 'public, max-age=3600' });
+      expect(res.body).toEqual({ resource: RESOURCE, authorization_servers: [ISSUER], scopes_supported: expect.arrayContaining(['balances:read', 'p2p:propose', 'card:freeze']), bearer_methods_supported: ['header'] });
+      // Public discovery document: nothing but the four RFC 9728 members, and no key, token or secret material.
+      const text = JSON.stringify(res.body);
+      expect(Object.keys(res.body as object).sort()).toEqual(['authorization_servers', 'bearer_methods_supported', 'resource', 'scopes_supported']);
+      expect(text).not.toMatch(/secret|private|password|BEGIN |eyJ|"d":/i);
+      const post = await dispatch(app, { method: 'POST', url: path, headers: {}, rawBody: '{}', now: NOW });
+      expect(post).toMatchObject({ status: 405, headers: { allow: 'GET' } });
+    }
+  });
+
   it('refuses a token bound to another audience, and a member token', async () => {
     expect((await rpc({ jsonrpc: '2.0', id: 1, method: 'tools/list' }, await tokenFor('all', ISSUER))).status).toBe(401);
     const memberToken = (await app.services.tokens.issue({ partyId: member, deviceId: 'phone', roles: ['member'] })).accessToken;
