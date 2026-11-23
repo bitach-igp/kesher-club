@@ -7,7 +7,7 @@
 // so the bundler inlines it and drops the development branch, the demo personas and their seeded
 // passkeys from every other bundle. Nothing the API answers can switch it.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Linking, Pressable, View } from 'react-native';
+import { Linking, Pressable, StyleSheet, View } from 'react-native';
 import { Slot, useGlobalSearchParams, useRootNavigationState, useRouter as useExpoRouter, useSegments, type Href as ExpoHref } from 'expo-router';
 import { uuidv7 } from '@kesher/domain';
 import { createClient } from '@kesher/sdk';
@@ -185,7 +185,7 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
 function HeldFrame() {
   const th = useTheme();
   return (
-    <View testID="appearance-held" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, padding: th.space[4], backgroundColor: th.color.bg.canvas }}>
+    <View testID="appearance-held" style={{ ...StyleSheet.absoluteFillObject, padding: th.space[4], backgroundColor: th.color.bg.canvas }}>
       <Skeleton />
     </View>
   );

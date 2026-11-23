@@ -23,7 +23,16 @@ describe('console layout styles (T-0675)', () => {
   });
 
   it('keeps lang and dir on <html>', () => {
-    expect(layout).toMatch(/<html lang=\{locale\} dir=\{dirOf\(locale\)\}>/);
+    expect(layout).toMatch(/<html lang=\{locale\} dir=\{dirOf\(locale\)\} \{\.\.\.htmlThemeAttr\(theme\)\}>/);
+  });
+
+  it('renders the member appearance on <html> on the server (T-1022): the helper is spread, resolved per request, and there is no script, no localStorage and no raw HTML', () => {
+    expect(layout).toMatch(/import \{[^}]*\bhtmlThemeAttr\b[^}]*\} from '\.\.\/src\/theme\.ts';/);
+    expect(layout).toMatch(/const theme = await resolveTheme\(/);
+    expect(layout).not.toMatch(/<script\b/);
+    expect(layout).not.toMatch(/localStorage|sessionStorage/);
+    expect(layout).not.toMatch(/dangerouslySetInnerHTML/);
+    expect(layout).not.toMatch(/data-theme/);
   });
 
   it('the stylesheet has no colour literal: every colour is a token variable', () => {

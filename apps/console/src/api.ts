@@ -100,9 +100,10 @@ export function institutionApi(baseUrl: string, accessToken: string, stepUpToken
  * The API as the signed-in person themselves, for I01 (T-0633): someone with no institution yet applies with
  * their member token. Nothing here reaches institution data.
  */
-export function memberApi(baseUrl: string, accessToken: string) {
+export function memberApi(baseUrl: string, accessToken: string, opts: { fetch?: typeof fetch } = {}) {
   const c = createClient({
     baseUrl,
+    ...(opts.fetch ? { fetch: opts.fetch } : {}),
     getAccessToken: () => accessToken,
     newIdempotencyKey: () => {
       throw new Error('Every console call that takes an idempotency key names it');
@@ -110,6 +111,9 @@ export function memberApi(baseUrl: string, accessToken: string) {
   });
   return {
     capabilities: () => c.get('/me/capabilities'),
+    /** The account's appearance and receiving currency (T-1020); the layout reads it on every page, with a signal that ends a slow call (T-1022). */
+    preferences: (signal?: AbortSignal) => c.get('/me/preferences', signal ? { signal } : {}),
+    setTheme: (theme: Schemas['Preferences']['theme']) => c.patch('/me/preferences', { body: { theme } }),
     myApplication: () => c.get('/me/institution-application'),
     createApplication: (body: Schemas['InstitutionApplicationRequest'], idempotencyKey: string) => c.post('/institution-applications', { body, idempotencyKey }),
     addSignatory: (id: string, body: { fullName: string; roles: ('board' | 'control' | 'signatory')[]; self?: boolean }, idempotencyKey: string) => c.post('/institution-applications/{id}/signatories', { path: { id }, body, idempotencyKey }),
