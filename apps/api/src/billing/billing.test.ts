@@ -3,7 +3,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
 import { BillingSimulator } from '@kesher/ports';
-import { makeRequest } from '../http.ts';
+import { makeRequest } from '../test-http.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { capabilitiesHandler, StaticFlags } from './capabilities.ts';
 import { EntitlementService, periodStart } from './entitlements.ts';

@@ -2,7 +2,8 @@
 // refresh, TST-AUTH-006 step-up, TST-AUTH-003 recovery, all through the operationId handlers.
 import { describe, expect, it } from 'vitest';
 import { AuthSimulator, NotifySimulator, SIM_OTP_CODE, SimPasskeyDevice, fixedClock, type AdvanceableClock, type PasskeyRegistrationOptions, type PasskeyAuthenticationOptions } from '@kesher/ports';
-import { makeRequest, type HttpRequest, type HttpResponse } from '../http.ts';
+import { type HttpRequest, type HttpResponse } from '../http.ts';
+import { makeRequest } from '../test-http.ts';
 import { authHandlers, bearerMiddleware } from './handlers.ts';
 import { InMemoryIdentityRepository } from './repository.ts';
 import { OtpService } from './otp.ts';

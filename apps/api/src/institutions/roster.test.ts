@@ -2,7 +2,7 @@
 // commits. Given 120 rows with 2 invalid, nothing imports and the report lists rows 17 and 88.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
-import { makeRequest } from '../http.ts';
+import { makeRequest } from '../test-http.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { importRosterHandler, RosterService } from './roster.ts';
 
