@@ -15,6 +15,14 @@ export const CURRENCIES: readonly Currency[] = ['USD', 'ILS'];
 export const SYSTEM_OWNER = '00000000-0000-7000-8000-000000000000';
 
 const CREDIT_NORMAL = new Set<AccountType>(['wallet', 'pending', 'institution_master', 'addon_payable', 'payout_reserve']);
+const normalSide = (type: AccountType): 'C' | 'D' => (CREDIT_NORMAL.has(type) ? 'C' : 'D');
+
+interface Slot {
+  type: AccountType;
+  currency: Currency;
+}
+/** A member's four accounts in the order provisioning has always walked them: each currency, wallet before pending. */
+const MEMBER_SLOTS: readonly Slot[] = CURRENCIES.flatMap((currency) => (['wallet', 'pending'] as const).map((type): Slot => ({ type, currency })));
 
 /**
  * Inserts the account unless it exists and says whether this call inserted it; concurrent callers converge on one row and exactly one
@@ -26,12 +34,58 @@ export async function ensureAccountRowReport(db: Database, ownerPartyId: string,
   if (found.rows[0]) return { id: found.rows[0].id, created: false };
   const id = uuidv7();
   try {
-    await db.query('insert into ledger.account (id, owner_party_id, type, currency, normal_side) values ($1, $2, $3, $4, $5)', [id, ownerPartyId, type, currency, CREDIT_NORMAL.has(type) ? 'C' : 'D']);
+    await db.query('insert into ledger.account (id, owner_party_id, type, currency, normal_side) values ($1, $2, $3, $4, $5)', [id, ownerPartyId, type, currency, normalSide(type)]);
     return { id, created: true };
   } catch (e) {
     if (isPgError(e, PG.UNIQUE_VIOLATION)) return { ...(await ensureAccountRowReport(db, ownerPartyId, type, currency)), created: false };
     throw e;
   }
+}
+
+/** The ids of the owner's accounts for these slots, in slot order, `undefined` where one does not exist. One read; it writes nothing. */
+async function findAccountRows(db: Database, ownerPartyId: string, slots: readonly Slot[]): Promise<(string | undefined)[]> {
+  const rows = slots.map((_, i) => `($${i * 3 + 2}::int, $${i * 3 + 3}::ledger.account_type, $${i * 3 + 4}::ledger.currency)`).join(', ');
+  const r = await db.query<{ ord: number; id: string }>(
+    `select w.ord, a.id from (values ${rows}) as w(ord, type, currency)
+       join ledger.account a on a.owner_party_id = $1::uuid and a.type = w.type and a.currency = w.currency`,
+    [ownerPartyId, ...slots.flatMap((s, i) => [i, s.type, s.currency])],
+  );
+  const byOrd = new Map(r.rows.map((x) => [x.ord, x.id]));
+  return slots.map((_, i) => byOrd.get(i));
+}
+
+/**
+ * The owner's accounts for these slots, in slot order, creating the missing ones, in one statement: the whole set is inserted in slot
+ * order with `on conflict do nothing` (rows that exist are left untouched), and the result is read back from what was inserted and what
+ * was there. A concurrent creator's row can be invisible to that statement (it commits after the statement's snapshot but before our
+ * insert is decided), so a slot left without an id is read again; ledger rows are never deleted, so it is there by then. Every caller
+ * walks the slots in the same order, so concurrent batches never wait on each other in a cycle.
+ */
+async function ensureAccountRows(db: Database, ownerPartyId: string, slots: readonly Slot[]): Promise<string[]> {
+  const fresh = slots.map(() => uuidv7());
+  const rows = slots.map((_, i) => `($${i * 5 + 2}::int, $${i * 5 + 3}::ledger.account_type, $${i * 5 + 4}::ledger.currency, $${i * 5 + 5}::uuid, $${i * 5 + 6}::char(1))`).join(', ');
+  const params = [ownerPartyId, ...slots.flatMap((s, i) => [i, s.type, s.currency, fresh[i]!, normalSide(s.type)])];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const r = await db.query<{ ord: number; id: string | null }>(
+      `with want (ord, type, currency, id, side) as (values ${rows}),
+            ins as (
+              insert into ledger.account (id, owner_party_id, type, currency, normal_side)
+              select w.id, $1::uuid, w.type, w.currency, w.side from want w order by w.ord
+              on conflict (owner_party_id, type, currency) do nothing
+              returning id, type, currency
+            )
+       select w.ord, coalesce(i.id, a.id) as id
+         from want w
+         left join ins i on i.type = w.type and i.currency = w.currency
+         left join ledger.account a on a.owner_party_id = $1::uuid and a.type = w.type and a.currency = w.currency`,
+      params,
+    );
+    const byOrd = new Map(r.rows.map((x) => [x.ord, x.id]));
+    let ids = slots.map((_, i) => byOrd.get(i) ?? undefined);
+    if (ids.some((id) => id === undefined)) ids = await findAccountRows(db, ownerPartyId, slots);
+    if (ids.every((id) => id !== undefined)) return ids as string[];
+  }
+  throw new Error('ledger accounts could not be provisioned');
 }
 
 async function ensureAccountRow(db: Database, ownerPartyId: string, type: AccountType, currency: Currency): Promise<string> {
@@ -82,11 +136,8 @@ export class AccountService {
 
   /** Creates wallet + pending in every currency; safe to call again (unique constraint). */
   async provisionMember(partyId: string): Promise<LedgerAccount[]> {
-    const out: LedgerAccount[] = [];
-    for (const currency of CURRENCIES) {
-      for (const type of ['wallet', 'pending'] as const) out.push(await this.ensure(partyId, type, currency));
-    }
-    return out;
+    const ids = await ensureAccountRows(this.db, partyId, MEMBER_SLOTS);
+    return MEMBER_SLOTS.map((s, i): LedgerAccount => ({ id: ids[i]!, ownerPartyId: partyId, type: s.type, currency: s.currency }));
   }
 
   async memberAccount(partyId: string, type: 'wallet' | 'pending', currency: Currency): Promise<string> {
@@ -140,14 +191,21 @@ export class AccountService {
   }
 
   async purses(partyId: string): Promise<Purse[]> {
+    // Read first and write only what is missing: a purse read needs no right to insert once the accounts exist.
+    let found = await findAccountRows(this.db, partyId, MEMBER_SLOTS);
+    if (found.some((id) => id === undefined)) found = await ensureAccountRows(this.db, partyId, MEMBER_SLOTS);
     const out: Purse[] = [];
-    for (const currency of CURRENCIES) {
-      const wallet = await this.ensure(partyId, 'wallet', currency);
-      const pending = await this.ensure(partyId, 'pending', currency);
+    for (const [i, currency] of CURRENCIES.entries()) {
+      const wallet = found[i * 2]!;
+      const pending = found[i * 2 + 1]!;
       // Credit-normal: negate ledger balances to show what the member owns.
-      const available = -(await this.ledger.balance(wallet.id, currency));
-      const holds = -(await this.ledger.balance(pending.id, currency));
-      out.push({ id: wallet.id, currency, settled: money(available + holds, currency), holds: money(holds, currency), available: money(available, currency), overdrawn: available < 0n });
+      // Both reads start together; if both fail, the wallet's error surfaces, as when they ran one after the other.
+      const [walletRead, pendingRead] = await Promise.allSettled([this.ledger.balance(wallet, currency), this.ledger.balance(pending, currency)]);
+      if (walletRead.status === 'rejected') throw walletRead.reason;
+      if (pendingRead.status === 'rejected') throw pendingRead.reason;
+      const available = -walletRead.value;
+      const holds = -pendingRead.value;
+      out.push({ id: wallet, currency, settled: money(available + holds, currency), holds: money(holds, currency), available: money(available, currency), overdrawn: available < 0n });
     }
     return out;
   }
