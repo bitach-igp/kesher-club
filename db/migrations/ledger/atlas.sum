@@ -1,4 +1,4 @@
-h1:nbZ2eM6866mczzvSQtuE+QpOShct4QaMS0+EPii7f3U=
+h1:3DGIP163PwBEvzmRHZHHkH3GWU1mFKZI3PR6yrxvmy8=
 0001_init.sql h1:ZrrdW7mXkbbIJynu5sFLd2v9tyEB7eNKAr5IFKdeREU=
 0002_ops_cases.sql h1:bRigLmpekJbcbckrtq4u+CpvpxE74ykwBAn5BYDGWXA=
 0003_transfers.sql h1:bJpjeMI+oWyJCk+436SDn0P19BEr8y5kUFEbdFsYWiU=
@@ -32,3 +32,4 @@ h1:nbZ2eM6866mczzvSQtuE+QpOShct4QaMS0+EPii7f3U=
 0031_outbox_attempts.sql h1:R6f4w1v/8vpsnyhSLokvHxndB25VBNccidBXkxLyJ3I=
 0032_load_last_asked.sql h1:0xk21gA3ZBiHW5MELXUr6iEb36LctS/0RjjAAQG3LbA=
 0033_workflow_marker.sql h1:tYsQxegBJv6RDOZw7rhECDI4hBWSwEybCf6MP1wnCQc=
+0034_workflow_marker_delete.sql h1:k2SY5J5YvtO+UkfYipcDLYYA8vUieRLaOXLJK1PAZcE=

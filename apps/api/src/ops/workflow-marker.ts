@@ -1,7 +1,9 @@
 import type { SqlClient } from '../db.ts';
 
 // Our own workflow markers live in ops.workflow_marker, not in ops.external_ref (which holds vendor ids only).
-// A marker is write-once: first writer wins on (kind, subject_id, seq) and on (kind, claim); club_app has no update or delete.
+// A marker is write-once: first writer wins on (kind, subject_id, seq) and on (kind, claim); club_app has no update. The one exception is a
+// failed-owner marker (kind `subaccount_owner:{provider}`), which staff clear once the owner is fixed (T-0787, `clearMarker`): the table
+// grants delete, and a BEFORE DELETE trigger refuses every other kind.
 // Values are party ids, keys and hashes, never PII.
 
 export interface MarkerPut {
@@ -40,4 +42,17 @@ export async function getMarkers(db: SqlClient, kind: string, subjectId: string,
 export async function findByClaim(db: SqlClient, kind: string, claim: string): Promise<string | undefined> {
   const r = await db.query<{ subject_id: string }>('select subject_id from ops.workflow_marker where kind = $1 and claim = $2', [kind, claim]);
   return r.rows[0]?.subject_id;
+}
+
+/** The only kind prefix that may be cleared (a failed-owner marker); the table's delete trigger enforces the same rule. */
+export const CLEARABLE_KIND_PREFIX = 'subaccount_owner:';
+
+/**
+ * Deletes a failed-owner marker (T-0787). True iff a row was deleted; false when none exists (idempotent). Any other kind throws before the
+ * database is touched: credit, lost-key, payee and purpose markers are write-once (and the table's trigger refuses them as well).
+ */
+export async function clearMarker(db: SqlClient, m: { kind: string; subjectId: string; seq?: number }): Promise<boolean> {
+  if (!m.kind.startsWith(CLEARABLE_KIND_PREFIX)) throw new Error('clearMarker: only a failed-owner marker may be cleared');
+  const r = await db.query('delete from ops.workflow_marker where kind = $1 and subject_id = $2 and seq = $3', [m.kind, m.subjectId, m.seq ?? 0]);
+  return r.rowCount > 0;
 }
