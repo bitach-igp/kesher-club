@@ -2,7 +2,6 @@
 // shape so every module is unit-testable without sockets, and the NestJS (ADR-001) binding is one
 // adapter file. Errors become RFC 9457 problem+json through DomainError (packages/domain).
 import { DomainError, ERROR_CODES } from '@kesher/domain';
-import { randomUUID } from 'node:crypto';
 
 export interface Principal {
   /** `staff` for admin-console tokens (ADR-013); absent or `member` for member tokens. */
@@ -103,12 +102,6 @@ export const route =
       return { ...p, headers: { 'x-trace-id': req.traceId, ...p.headers } };
     }
   };
-
-/** Builds a request for tests and adapters; fills trace id and clock. */
-export function makeRequest<B>(partial: Partial<HttpRequest<B>> & { method: HttpRequest['method']; path: string }): HttpRequest<B> {
-  const headers = Object.fromEntries(Object.entries(partial.headers ?? {}).map(([k, v]) => [k.toLowerCase(), v]));
-  return { params: {}, query: {}, body: undefined as B, traceId: randomUUID(), now: new Date(), ...partial, headers };
-}
 
 export const requirePrincipal = (req: HttpRequest): Principal => {
   if (!req.principal) throw new DomainError('UNAUTHENTICATED', 'Sign in required');

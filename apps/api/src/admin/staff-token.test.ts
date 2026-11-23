@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { fixedClock } from '@kesher/ports';
-import { makeRequest } from '../http.ts';
+import { makeRequest } from '../test-http.ts';
 import { looksLikeStaffToken, requireStaff, STAFF_AUDIENCE, STAFF_ISSUER, staffBearerMiddleware, staffPartyId, StaffTokenVerifier } from './staff-token.ts';
 
 const NOW = new Date('2026-11-01T09:00:00Z');
