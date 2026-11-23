@@ -169,3 +169,107 @@ describe('the database refuses a second open membership for a member (T-0313)', 
   });
 });
 
+
+// T-0770: the lost-race key. `lostKeys` is the one place that names where it is stored: ops.workflow_marker (claim = the key) since
+// T-0770, with rows written before it in ops.external_ref still honoured.
+const lostKeys = {
+  async count(key: string): Promise<number> {
+    return (await db.query<{ n: number }>(`select count(*)::int as n from ops.workflow_marker where kind = 'membership_lost_key' and claim = $1`, [key])).rows[0]!.n;
+  },
+  async countOld(key: string): Promise<number> {
+    return (await db.query<{ n: number }>(`select count(*)::int as n from ops.external_ref where entity_type = 'membership_lost_key' and external_id = $1`, [key])).rows[0]!.n;
+  },
+  async plant(key: string): Promise<void> {
+    await db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value, claim) values ('membership_lost_key', $1, 0, 'lost', $2)`, [uuidv7(NOW), key]);
+  },
+  async plantOld(key: string): Promise<void> {
+    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('membership_lost_key', $1, 'stripe', $2)`, [uuidv7(NOW), key]);
+  },
+};
+const endLost = (key: string, memberParty: string) => (app.services.memberships as unknown as { endLostSubscription(k: string, m: string, s: string, n: Date): Promise<void> }).endLostSubscription(key, memberParty, `sub_${uuidv7(NOW)}`, NOW);
+
+describe('the lost-race key (T-0770)', () => {
+  it('a key is remembered once however many lost races name it: the first writer wins and the second is quiet', async () => {
+    const cancel = vi.spyOn(billing, 'cancel').mockResolvedValue(undefined as never);
+    const key = `lost-twice-${uuidv7(NOW)}`;
+    await endLost(key, people['gil']!.partyId);
+    await endLost(key, people['eli']!.partyId);
+    expect(await lostKeys.count(key)).toBe(1);
+    expect(await lostKeys.countOld(key)).toBe(0);
+    expect(cancel).toHaveBeenCalledTimes(2);
+    cancel.mockRestore();
+  });
+
+  it('a remembered key is refused before any vendor call, and a key nobody lost is not refused for that reason', async () => {
+    const create = vi.spyOn(billing, 'createSubscription');
+    const key = `lost-planted-${uuidv7(NOW)}`;
+    await lostKeys.plant(key);
+    const make = (k: string, member: string) => app.services.memberships.create({ idempotencyKey: k, memberPartyId: people[member]!.partyId, funderPartyId: people['ben']!.partyId, funderEmail: 'ben@example.com', planCode: 'demo-club-us' }, NOW);
+    await expect(make(key, 'tal')).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', message: expect.stringContaining('That request was refused because the member already had a membership') });
+    expect(create).not.toHaveBeenCalled();
+    const other = await make(`lost-not-planted-${uuidv7(NOW)}`, 'tal').then(() => 'made', (e: unknown) => (e as Error).message);
+    expect(other).not.toContain('That request was refused because');
+    create.mockRestore();
+  });
+
+  const REFUSED = 'That request was refused because the member already had a membership';
+  const attempt = async (key: string) => {
+    const create = vi.spyOn(billing, 'createSubscription');
+    const r = await app.services.memberships.create({ idempotencyKey: key, memberPartyId: people['tal']!.partyId, funderPartyId: people['ben']!.partyId, funderEmail: 'ben@example.com', planCode: 'demo-club-us' }, NOW).then(() => 'made', (e: unknown) => (e as Error).message);
+    const calls = create.mock.calls.length;
+    create.mockRestore();
+    return { refusedAsLost: r.startsWith(REFUSED), vendorCalls: calls };
+  };
+  it.each([
+    ['neither', false, false, false],
+    ['the old row only (written before T-0770)', false, true, true],
+    ['the new marker only', true, false, true],
+    ['both present', true, true, true],
+  ])('a retry of a key with %s is refused as lost: %s', async (_name, fresh, old, refusedAsLost) => {
+    const key = `lost-combo-${uuidv7(NOW)}`;
+    if (fresh) await lostKeys.plant(key);
+    if (old) await lostKeys.plantOld(key);
+    const r = await attempt(key);
+    expect(r.refusedAsLost).toBe(refusedAsLost);
+    if (refusedAsLost) expect(r.vendorCalls).toBe(0);
+  });
+
+  it('a key already remembered in the old table stays quiet when a lost race names it again: the new marker is written once, never twice', async () => {
+    const cancel = vi.spyOn(billing, 'cancel').mockResolvedValue(undefined as never);
+    const key = `lost-old-then-new-${uuidv7(NOW)}`;
+    await lostKeys.plantOld(key);
+    await endLost(key, people['gil']!.partyId);
+    await endLost(key, people['eli']!.partyId);
+    expect(await lostKeys.count(key)).toBe(1);
+    expect(await lostKeys.countOld(key)).toBe(1);
+    cancel.mockRestore();
+  });
+});
+
+describe('the lost-race key against a reference model (T-0770 differential)', () => {
+  const isLost = (key: string) => (app.services.memberships as unknown as { isLostKey(k: string): Promise<boolean> }).isLostKey(key);
+  it('300 random histories: a key reads as lost iff an old row or a lost race named it, and each lost race writes the new marker at most once', async () => {
+    const cancel = vi.spyOn(billing, 'cancel').mockResolvedValue(undefined as never);
+    let seed = 0x770;
+    const rnd = (n: number) => { seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff; return seed % n; };
+    const members = [people['gil']!.partyId, people['eli']!.partyId];
+    for (let i = 0; i < 300; i++) {
+      const keys = Array.from({ length: 4 }, (_, k) => `diff-lost-${i}-${k}-${uuidv7(NOW)}`);
+      const old = new Set<string>();
+      for (const k of keys) if (rnd(3) === 0) { old.add(k); await lostKeys.plantOld(k); }
+      const lost = new Set<string>();
+      for (let o = 0, n = rnd(6); o < n; o++) {
+        const k = keys[rnd(4)]!;
+        await endLost(k, members[rnd(2)]!);
+        lost.add(k);
+        for (const q of keys) {
+          expect(await isLost(q)).toBe(old.has(q) || lost.has(q));
+          expect(await lostKeys.count(q)).toBe(lost.has(q) ? 1 : 0);
+          expect(await lostKeys.countOld(q)).toBe(old.has(q) ? 1 : 0);
+        }
+      }
+      for (const q of keys) expect(await isLost(q)).toBe(old.has(q) || lost.has(q));
+    }
+    cancel.mockRestore();
+  }, 120_000);
+});

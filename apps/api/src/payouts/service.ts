@@ -18,6 +18,7 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { openCase } from '../ops/cases.ts';
 import { entityOf, linkRef, refOf } from '../ops/external-ref.ts';
+import { getMarker, putMarker } from '../ops/workflow-marker.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
 import type { Transfer, TransferService } from '../transfers/service.ts';
@@ -29,6 +30,8 @@ import type { KybGate } from '../institutions/kyb-gate.ts';
 import type { PayoutAccounts } from '../institutions/payout-account.ts';
 
 export const PAYOUT_FLAG = 'payouts.nium';
+/** `ops.workflow_marker` kind linking a payout (the transfer) to its payee (T-0770; value = the payee id). Older payouts keep an `ops.external_ref` `payee` row (`{payeeId}:{transferId}`), still read as a fallback. */
+const PAYEE_KIND = 'payout_payee';
 export const PAYOUT_PROVIDER = 'payout';
 export const PAYOUT_JOURNAL_KIND = 'payout';
 export const COOL_OFF_MS = 24 * 60 * 60_000;
@@ -272,7 +275,7 @@ export class PayoutService implements PayoutActivities {
   async begin(input: PayoutInput, workflowId: string, now: Date): Promise<Transfer> {
     const t = await this.d.transfers.create({ idempotencyKey: workflowId, kind: 'payout', fromPartyId: input.partyId, amount: input.amount, note: input.reference }, now);
     if (t.kind !== 'payout') throw new DomainError('IDEMPOTENCY_CONFLICT', 'This Idempotency-Key already names another operation');
-    await linkRef(this.d.db, { entityType: 'payee', entityId: t.id, provider: 'payee', externalId: `${input.payeeId}:${t.id}` });
+    await putMarker(this.d.db, { kind: PAYEE_KIND, subjectId: t.id, seq: 0, value: input.payeeId });
     // An institution payout's approval is asked for now, before any cool-off, so it records who asked (T-0628):
     // the worker's sweep rebuilds the requester from it, and without it named the institution, which let the
     // person who asked approve their own withdrawal. The request counts as their approval; a cool-off still
@@ -600,8 +603,9 @@ export class PayoutService implements PayoutActivities {
               p.name, p.iban_last4
          from ops.transfer t
          left join ops.approval_request a on a.kind = 'payout' and a.subject = t.id::text
-         left join ops.external_ref x on x.entity_type = 'payee' and x.provider = 'payee' and x.entity_id = t.id
-         left join ops.payee p on p.id::text = split_part(x.external_id, ':', 1)
+         left join ops.workflow_marker x on x.kind = '${PAYEE_KIND}' and x.subject_id = t.id and x.seq = 0
+         left join ops.external_ref o on x.subject_id is null and o.entity_type = 'payee' and o.provider = 'payee' and o.entity_id = t.id
+         left join ops.payee p on p.id::text = coalesce(x.value, split_part(o.external_id, ':', 1))
         where t.kind = 'payout' and t.from_party_id = $1
           and ($2::timestamptz is null or (t.created_at, t.id) < ($2::timestamptz, $3::uuid))
           and ($5::uuid is null or t.id = $5::uuid)
@@ -688,6 +692,8 @@ export class PayoutService implements PayoutActivities {
   }
 
   private async payeeIdOf(transferId: string): Promise<string | undefined> {
+    const marked = await getMarker(this.d.db, PAYEE_KIND, transferId);
+    if (marked !== undefined) return marked;
     return (await refOf(this.d.db, 'payee', transferId, 'payee'))?.split(':')[0];
   }
 

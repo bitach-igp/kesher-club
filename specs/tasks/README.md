@@ -390,7 +390,7 @@
 | [T-0767](T-0767.md) | WAL | Split `loads.ts` 4/4: funding-account provisioning and pricing/parsing move out (A5) | — | later (built, merged) · after T-0764 |
 | [T-0768](T-0768.md) | WAL | `ops.workflow_marker` table (ledger migration 0033), store module and desktop apply request (A4) | — | later (built, PR open) · after T-0761, T-0762; desktop apply pending |
 | [T-0769](T-0769.md) | WAL | The credit markers move from `ops.external_ref` to `ops.workflow_marker` (A4) | — | later (built, PR open) · after T-0761, T-0768 PASS |
-| [T-0770](T-0770.md) | WAL | The sub-account, lost-key and payee markers move to `ops.workflow_marker` (A4) | — | later (scoped 2026-11-19) · after T-0762, T-0768 PASS |
+| [T-0770](T-0770.md) | WAL | The sub-account, lost-key and payee markers move to `ops.workflow_marker` (A4) | — | later (built, PR open; old lost-key and payee rows still read) · after T-0762, T-0768 PASS |
 | [T-0771](T-0771.md) | SETUP | DESIGN: capability properties on port bindings replace provider-name branching in registry.ts; first slice scoped (A6) | — | later (scoped 2026-11-19) · design; slice 1 on acceptance |
 | [T-0772](T-0772.md) | SETUP | One `isUuidShape` in `@kesher/domain` replaces 28 loose UUID regex copies in apps/api (A7) | — | done by #371 (`isUuidShape`) |
 | [T-0773](T-0773.md) | SETUP | The mobile and console UUID regex copies use `isUuidShape` (A7) | — | done by #371 (`isUuidShape`) |

@@ -8,6 +8,7 @@ import { BillingError, type BillingPort } from '@kesher/ports';
 import { isPgError, PG, type Database } from '../db.ts';
 import { openCase } from '../ops/cases.ts';
 import { linkRef, refOf } from '../ops/external-ref.ts';
+import { findByClaim, putMarker } from '../ops/workflow-marker.ts';
 import type { MembershipRef } from './entitlements.ts';
 import type { PlanService } from './plans.ts';
 
@@ -37,6 +38,9 @@ interface Row {
   created_at: string | Date;
 }
 
+/** `ops.workflow_marker` kind of a key whose subscription a lost race ended (T-0770); the claim is the key. */
+const LOST_KEY_KIND = 'membership_lost_key';
+
 export class MembershipService {
   private readonly db: Database;
   private readonly plans: PlanService;
@@ -58,7 +62,7 @@ export class MembershipService {
     if (existing && existing.funderPartyId !== input.funderPartyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'That idempotency key was used for another request');
     if (existing) return existing;
     // A key whose subscription was ended because the member was taken is never sent to the vendor again: the vendor would replay the ended one.
-    if ((await this.db.query(`select 1 from ops.external_ref where entity_type = 'membership_lost_key' and external_id = $1`, [input.idempotencyKey])).rows[0]) {
+    if (await this.isLostKey(input.idempotencyKey)) {
       throw new DomainError('IDEMPOTENCY_CONFLICT', 'That request was refused because the member already had a membership; use a new Idempotency-Key');
     }
     // Before any vendor call, so the common conflict never starts a subscription (the index below settles the true race).
@@ -127,11 +131,21 @@ export class MembershipService {
   }
 
   /**
+   * Whether this key's subscription was ended by a lost race. T-0770: the marker lives in ops.workflow_marker (claim = the key); rows written
+   * before it, in ops.external_ref (`membership_lost_key`, provider `stripe`), are still honoured, so a retry of such a key never reaches the vendor.
+   */
+  private async isLostKey(key: string): Promise<boolean> {
+    if ((await findByClaim(this.db, LOST_KEY_KIND, key)) !== undefined) return true;
+    return (await this.db.query(`select 1 from ops.external_ref where entity_type = 'membership_lost_key' and external_id = $1`, [key])).rows[0] !== undefined;
+  }
+
+  /**
    * The subscription a lost race made is ended at once. The key is remembered (so a retry is refused rather than replaying the ended
    * subscription) and, if the vendor could not be told, a case is opened: that subscription would keep billing with no membership.
    */
   private async endLostSubscription(key: string, memberPartyId: string, subscriptionId: string, now: Date): Promise<void> {
-    await linkRef(this.db, { entityType: 'membership_lost_key', entityId: uuidv7(now), provider: 'stripe', externalId: key });
+    // The key is the claim: a key is remembered once (first writer wins), whichever subject (a throwaway id) took it.
+    await putMarker(this.db, { kind: LOST_KEY_KIND, subjectId: uuidv7(now), value: 'lost', claim: key });
     try {
       await this.billing.cancel(subscriptionId, 'now', `lost:${createHash('sha256').update(key).digest('hex').slice(0, 40)}`);
     } catch (e) {
