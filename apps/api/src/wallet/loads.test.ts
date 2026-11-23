@@ -1147,7 +1147,7 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
         const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
         const ctl = { returned: false, dieOnOutcome: false, dieOnPost: false };
         const port: FundingPort = { createLoad: (i, k) => t.sim.createLoad(i, k), getLoad: async (id) => { const l = await t.sim.getLoad(id); return ctl.returned ? { ...l, status: 'failed', failureCode: 'RETURNED' } : l; }, refund: (i, k) => t.sim.refund(i, k), getRefund: (id) => t.sim.getRefund(id), parseWebhook: (h, b) => t.sim.parseWebhook(h, b) };
-        const flaky = new Proxy(db, { get: (target, prop) => (prop === 'query' ? (async (text: string, params?: readonly unknown[]) => { if (ctl.dieOnOutcome && String(params?.[0]).startsWith('funding_credit_done:')) { ctl.dieOnOutcome = false; throw new Error('outcome write failed'); } return (target.query as (t: string, p?: readonly unknown[]) => Promise<unknown>)(text, params); }) : Reflect.get(target, prop, target)) }) as typeof db;
+        const flaky = new Proxy(db, { get: (target, prop) => (prop === 'query' ? (async (text: string, params?: readonly unknown[]) => { if (ctl.dieOnOutcome && params?.[0] === 'credit_outcome') { ctl.dieOnOutcome = false; throw new Error('outcome write failed'); } return (target.query as (t: string, p?: readonly unknown[]) => Promise<unknown>)(text, params); }) : Reflect.get(target, prop, target)) }) as typeof db;
         const ledger = new Proxy(s.ledger, { get: (target, prop) => (prop === 'post' && ctl.dieOnPost ? async () => { ctl.dieOnPost = false; throw new Error('crash before the journal'); } : Reflect.get(target, prop, target)) }) as typeof s.ledger;
         const svc = new LoadService({ db: flaky, port, credit: t.sim as Required<FundingSimulator>, ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
         const sweep = async () => { for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER); };
@@ -1209,7 +1209,7 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
 
     describe('characterization: the credit markers a real credit step leaves, byte for byte (T-0761)', () => {
       /** Every credit marker row of a load, as `type=external_id`, in a stable order. */
-      const markers = async (key: string) => (await db.query<{ entity_type: string; external_id: string }>(`select r.entity_type, r.external_id from ops.external_ref r join ops.transfer t on r.entity_id = t.id where t.idempotency_key = $1 and r.entity_type like 'funding_credit%' order by r.entity_type`, [key])).rows.map((r) => `${r.entity_type}=${r.external_id}`);
+      const markers = async (key: string) => (await db.query<{ kind: string; seq: number; value: string }>(`select m.kind, m.seq, m.value from ops.workflow_marker m join ops.transfer t on m.subject_id = t.id where t.idempotency_key = $1 and m.kind in ('credit_began', 'credit_outcome') order by m.kind, m.seq`, [key])).rows.map((r) => `${r.kind}:${r.seq}=${r.value}`);
       const sweepOf = async (svc: { stale(n: Date, a: number): Promise<{ id: string }[]>; vendorLoadOf(id: string): Promise<string | undefined>; applyVendorLoad(l: string, n: Date): Promise<unknown> }) => { for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER); };
       const returnedCaseCount = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ops.case c join ops.transfer t on c.dedupe_key = 'load-returned:' || t.id where t.idempotency_key = $1`, [key])).rows[0]!.n;
       /** A service whose vendor reads a return once `ctl.returned` is set; the credit goes to the simulator. */
@@ -1241,10 +1241,10 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
         const key = 'char-began-0001';
         t.sim.outageNext();
         await expect(t.svc.request(t.party, t.body, key, NOW)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
-        expect(await markers(key)).toEqual([`funding_credit:1=${key}:credit:1`]);
+        expect(await markers(key)).toEqual([`credit_began:1=${key}:credit:1`]);
         await sweepOf(t.svc);
         expect(t.spy.mock.calls.map((c) => c[1])).toEqual([`${key}:credit:1`, `${key}:credit:1`]);
-        expect(await markers(key)).toEqual([`funding_credit:1=${key}:credit:1`, `funding_credit_done:1=${key}:credit:1:credited`]);
+        expect(await markers(key)).toEqual([`credit_began:1=${key}:credit:1`, `credit_outcome:1=credited`]);
         expect(await journals(key)).toBe(1);
 
         const u = await build();
@@ -1262,8 +1262,10 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
         const t = await build();
         const key = 'char-credited-1';
         await t.svc.request(t.party, t.body, key, NOW);
-        const expected = [`funding_credit:1=${key}:credit:1`, `funding_credit_done:1=${key}:credit:1:credited`];
+        const expected = [`credit_began:1=${key}:credit:1`, `credit_outcome:1=credited`];
         expect(await markers(key)).toEqual(expected);
+        // T-0769: a credit writes no funding_credit row to ops.external_ref any more.
+        expect((await db.query(`select 1 from ops.external_ref r join ops.transfer t on r.entity_id = t.id where t.idempotency_key = $1 and r.entity_type like 'funding_credit%'`, [key])).rows.length).toBe(0);
         await t.svc.request(t.party, t.body, key, NOW);
         await sweepOf(t.svc);
         expect(await markers(key)).toEqual(expected);
@@ -1275,11 +1277,11 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
         const key = 'char-pending-01';
         t.sim.pendNext();
         await t.svc.request(t.party, t.body, key, NOW);
-        expect(await markers(key)).toEqual([`funding_credit:1=${key}:credit:1`, `funding_credit_done:1=${key}:credit:1:pending`]);
+        expect(await markers(key)).toEqual([`credit_began:1=${key}:credit:1`, `credit_outcome:1=pending`]);
         await sweepOf(t.svc);
         expect(t.spy.mock.calls.map((c) => c[1])).toEqual([`${key}:credit:1`, `${key}:credit:1`]);
         expect(await journals(key)).toBe(1);
-        expect(await markers(key)).toEqual([`funding_credit:1=${key}:credit:1`, `funding_credit_done:1=${key}:credit:1:pending`]);
+        expect(await markers(key)).toEqual([`credit_began:1=${key}:credit:1`, `credit_outcome:1=pending`]);
 
         const u = await build();
         const key2 = 'char-pending-02';
@@ -1295,7 +1297,7 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
         const key = 'char-refused-01';
         t.sim.failNext('ACCOUNT_UNAVAILABLE');
         await t.svc.request(t.party, t.body, key, NOW);
-        expect(await markers(key)).toEqual([`funding_credit:1=${key}:credit:1`, `funding_credit_done:1=${key}:credit:1:refused`]);
+        expect(await markers(key)).toEqual([`credit_began:1=${key}:credit:1`, `credit_outcome:1=refused`]);
         expect(await caseRows(key)).toMatchObject([{ status: 'open', payload: { attempt: 1 } }]);
         t.ctl.returned = true;
         await sweepOf(t.svc);
@@ -1311,7 +1313,7 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
         await db.query(`update ops.case set status = 'resolved' where dedupe_key = 'load-credit:' || $1`, [(await t.s.transfers.byKey(key))!.id]);
         await sweepOf(t.svc);
         expect(t.spy.mock.calls.map((c) => c[1])).toEqual([`${key}:credit:1`, `${key}:credit:2`]);
-        expect(await markers(key)).toEqual([`funding_credit:1=${key}:credit:1`, `funding_credit:2=${key}:credit:2`, `funding_credit_done:1=${key}:credit:1:refused`, `funding_credit_done:2=${key}:credit:2:credited`]);
+        expect(await markers(key)).toEqual([`credit_began:1=${key}:credit:1`, `credit_began:2=${key}:credit:2`, `credit_outcome:1=refused`, `credit_outcome:2=credited`]);
         expect(await journals(key)).toBe(1);
       });
 
@@ -1333,7 +1335,7 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
         await db.query(`update ops.case set status = 'resolved' where dedupe_key = 'load-credit:' || $1`, [(await u.s.transfers.byKey(key2))!.id]);
         u.sim.outageNext();
         await expect(sweepOf(u.svc)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
-        expect(await markers(key2)).toEqual([`funding_credit:1=${key2}:credit:1`, `funding_credit:2=${key2}:credit:2`, `funding_credit_done:1=${key2}:credit:1:refused`]);
+        expect(await markers(key2)).toEqual([`credit_began:1=${key2}:credit:1`, `credit_began:2=${key2}:credit:2`, `credit_outcome:1=refused`]);
         u.ctl.returned = true;
         await sweepOf(u.svc);
         expect(await returnedCaseCount(key2)).toBe(1);
@@ -1395,7 +1397,8 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
 describe('the typed credit-marker functions (T-0761)', () => {
   const fresh = () => ({ transferId: uuidv7(NOW), workflowId: `typed-${uuidv7(NOW)}`, provider: 'typed-marker-provider' });
   const read = (a: { transferId: string; provider: string }, attempt = 1) => creditAttemptState(db, { transferId: a.transferId, provider: a.provider, attempt });
-  const stored = async (transferId: string) => (await db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 and entity_type like 'funding_credit%' order by entity_type`, [transferId])).rows;
+  const stored = async (transferId: string) => (await db.query<{ kind: string; seq: number; value: string }>(`select kind, seq, value from ops.workflow_marker where subject_id = $1 order by kind, seq`, [transferId])).rows;
+  const legacyRows = async (transferId: string) => (await db.query(`select 1 from ops.external_ref where entity_id = $1 and entity_type like 'funding_credit%'`, [transferId])).rows.length;
 
   it('no rows reads { began: false }', async () => {
     const a = fresh();
@@ -1406,7 +1409,7 @@ describe('the typed credit-marker functions (T-0761)', () => {
     const a = fresh();
     await recordCreditBegan(db, { ...a, attempt: 1 });
     expect(await read(a)).toEqual({ began: true });
-    expect(await stored(a.transferId)).toEqual([{ entity_type: 'funding_credit:1', external_id: `${a.workflowId}:credit:1` }]);
+    expect(await stored(a.transferId)).toEqual([{ kind: 'credit_began', seq: 1, value: `${a.workflowId}:credit:1` }]);
     await recordCreditBegan(db, { ...a, attempt: 1 });
     expect(await stored(a.transferId)).toHaveLength(1);
   });
@@ -1417,9 +1420,10 @@ describe('the typed credit-marker functions (T-0761)', () => {
     await recordCreditOutcome(db, { ...a, attempt: 1, outcome });
     expect(await read(a)).toEqual({ began: true, outcome });
     expect(await stored(a.transferId)).toEqual([
-      { entity_type: 'funding_credit:1', external_id: creditKey(a.workflowId, 1) },
-      { entity_type: 'funding_credit_done:1', external_id: `${creditKey(a.workflowId, 1)}:${outcome}` },
+      { kind: 'credit_began', seq: 1, value: creditKey(a.workflowId, 1) },
+      { kind: 'credit_outcome', seq: 1, value: outcome },
     ]);
+    expect(await legacyRows(a.transferId)).toBe(0);
   });
 
   it('an outcome with no marker is not a began attempt', async () => {
@@ -1431,7 +1435,7 @@ describe('the typed credit-marker functions (T-0761)', () => {
   it('a stored suffix that is none of the three reads as pending', async () => {
     const a = fresh();
     await recordCreditBegan(db, { ...a, attempt: 1 });
-    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_credit_done:1', $1, $2, $3)`, [a.transferId, a.provider, `${creditKey(a.workflowId, 1)}:refused_later`]);
+    await db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value) values ('credit_outcome', $1, 1, 'refused_later')`, [a.transferId]);
     expect(await read(a)).toEqual({ began: true, outcome: 'pending' });
   });
 
@@ -1442,19 +1446,52 @@ describe('the typed credit-marker functions (T-0761)', () => {
     await recordCreditOutcome(db, { ...a, attempt: 1, outcome: 'credited' });
     expect(await read(a)).toEqual({ began: true, outcome: 'pending' });
     await recordCreditOutcome(db, { ...a, attempt: 1, outcome: 'refused' });
-    expect((await stored(a.transferId)).filter((r) => r.entity_type === 'funding_credit_done:1')).toHaveLength(1);
+    expect((await stored(a.transferId)).filter((r) => r.kind === 'credit_outcome' && r.seq === 1)).toHaveLength(1);
   });
 
-  it('attempts and providers are separate: attempt 2 does not see attempt 1, another provider sees nothing', async () => {
+  it('attempts and transfers are separate: attempt 2 does not see attempt 1, another transfer sees nothing', async () => {
     const a = fresh();
     await recordCreditBegan(db, { ...a, attempt: 1 });
     await recordCreditOutcome(db, { ...a, attempt: 1, outcome: 'refused' });
     expect(await read(a, 2)).toEqual({ began: false });
-    expect(await read({ transferId: a.transferId, provider: 'other-provider' })).toEqual({ began: false });
+    // T-0769: the marker is keyed by the transfer id, which implies the provider, so the provider argument no longer scopes the read.
+    expect(await read({ transferId: a.transferId, provider: 'other-provider' })).toEqual({ began: true, outcome: 'refused' });
+    expect(await read({ transferId: uuidv7(NOW), provider: a.provider })).toEqual({ began: false });
     await recordCreditBegan(db, { ...a, attempt: 2 });
     expect(await read(a, 2)).toEqual({ began: true });
     expect(await read(a, 1)).toEqual({ began: true, outcome: 'refused' });
   });
+});
+
+describe('the credit markers against a reference model (T-0769 differential: green on external_ref and on workflow_marker)', () => {
+  type Op = { op: 'began' | 'pending' | 'credited' | 'refused'; attempt: number };
+  /** The reference: first writer wins per (kind, attempt); an outcome without a began marker reads as not begun. */
+  const model = (ops: Op[], attempt: number): { began: boolean; outcome?: CreditOutcome } => {
+    const began = new Set<number>();
+    const out = new Map<number, CreditOutcome>();
+    for (const o of ops) {
+      if (o.op === 'began') began.add(o.attempt);
+      else if (!out.has(o.attempt)) out.set(o.attempt, o.op);
+    }
+    if (!began.has(attempt)) return { began: false };
+    const outcome = out.get(attempt);
+    return outcome ? { began: true, outcome } : { began: true };
+  };
+  it('400 random write sequences (1,600 reads) read back exactly as the model says, for every attempt', async () => {
+    let seed = 0x7a69;
+    const rnd = (n: number) => { seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff; return seed % n; };
+    const kinds: Op['op'][] = ['began', 'pending', 'credited', 'refused'];
+    for (let i = 0; i < 400; i++) {
+      const a = { transferId: uuidv7(NOW), workflowId: `diff-${uuidv7(NOW)}`, provider: 'diff-provider' };
+      const ops: Op[] = Array.from({ length: rnd(8) }, () => ({ op: kinds[rnd(4)]!, attempt: 1 + rnd(3) }));
+      for (const o of ops) {
+        if (o.op === 'began') await recordCreditBegan(db, { ...a, attempt: o.attempt });
+        else await recordCreditOutcome(db, { ...a, attempt: o.attempt, outcome: o.op });
+      }
+      const states = await Promise.all([1, 2, 3, 4].map((n) => creditAttemptState(db, { transferId: a.transferId, provider: a.provider, attempt: n })));
+      states.forEach((st, k) => expect(st).toEqual(model(ops, k + 1)));
+    }
+  }, 120_000);
 });
 
 describe('the failed-owner rule is enforced on the credit path (T-0763, TST-WAL-003, TST-WAL-002)', () => {
@@ -1485,7 +1522,7 @@ describe('the failed-owner rule is enforced on the credit path (T-0763, TST-WAL-
   };
   const ownerCases = async (party: string) => (await db.query<{ kind: string; severity: string; status: string; payload: Record<string, unknown> }>(`select kind, severity, status, payload from ops.case where dedupe_key = $1`, [ownerCaseKey(party)])).rows;
   const creditCases = async (key: string) => (await db.query(`select 1 from ops.case c join ops.transfer t on c.dedupe_key = 'load-credit:' || t.id where t.idempotency_key = $1`, [key])).rows.length;
-  const creditMarkers = async (key: string) => (await db.query(`select r.entity_type from ops.external_ref r join ops.transfer t on r.entity_id = t.id where t.idempotency_key = $1 and r.entity_type like 'funding_credit%'`, [key])).rows.length;
+  const creditMarkers = async (key: string) => (await db.query(`select 1 from ops.workflow_marker m join ops.transfer t on m.subject_id = t.id where t.idempotency_key = $1 and m.kind in ('credit_began', 'credit_outcome')`, [key])).rows.length;
   const settleJournals = async (key: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [settleKey(key)])).rows[0]!.n;
   const balance = async (party: string) => (await app.services.accounts.purses(party)).find((p) => p.currency === 'USD')!.available.minor;
 
@@ -1670,8 +1707,8 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
         } else if (text.startsWith('insert into ops.case')) {
           trace.push(params[1] === OWNER_FAILED_CASE ? 'owner-case' : `credit-case-open:${String(params[1])}:${String(params[2])}:${(params[4] as { reasonCode?: string }).reasonCode ?? ''}:${(params[4] as { attempt?: number }).attempt ?? ''}`);
           rows = [{ id: 'row' }];
-        } else if (text.startsWith('insert into ops.external_ref')) {
-          trace.push(String(params[0]).startsWith('funding_credit_done') ? `outcome:${String(params[0])}=${String(params[3])}` : `began:${String(params[0])}`);
+        } else if (text.startsWith('insert into ops.workflow_marker')) {
+          trace.push(params[0] === 'credit_outcome' ? `outcome:${String(params[0])}:${String(params[2])}=${String(params[3])}` : `began:${String(params[0])}:${String(params[2])}=${String(params[3])}`);
         } else {
           trace.push(`unexpected: ${text}`);
         }
@@ -1742,7 +1779,7 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
   it('began marker seventh, then the vendor call under the attempt key, then the outcome', async () => {
     const r = await run({});
     expect(r).toMatchObject({ proceed: true });
-    expect(r.trace).toEqual(['owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:funding_credit:1', 'vendor-call:order-key-0001:credit:1', 'outcome:funding_credit_done:1=order-key-0001:credit:1:credited']);
+    expect(r.trace).toEqual(['owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:credit_began:1=order-key-0001:credit:1', 'vendor-call:order-key-0001:credit:1', 'outcome:credit_outcome:1=credited']);
     expect(r.svc.creditedCount).toBe(1);
     expect(r.svc.refusedCount).toBe(0);
   });
@@ -1757,8 +1794,8 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     const r = await run({}, { result: { status: 'refused', reasonCode: 'INSUFFICIENT_LIMIT' } });
     expect(r).toMatchObject({ proceed: false });
     expect(r.trace).toEqual([
-      'owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:funding_credit:1', 'vendor-call:order-key-0001:credit:1',
-      'outcome:funding_credit_done:1=order-key-0001:credit:1:refused', 'credit-case-open:load_credit_refused:load-credit:tr_1:INSUFFICIENT_LIMIT:1',
+      'owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:credit_began:1=order-key-0001:credit:1', 'vendor-call:order-key-0001:credit:1',
+      'outcome:credit_outcome:1=refused', 'credit-case-open:load_credit_refused:load-credit:tr_1:INSUFFICIENT_LIMIT:1',
     ]);
     expect(r.svc.refusedCount).toBe(1);
     expect(r.svc.creditedCount).toBe(0);
@@ -1773,7 +1810,7 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
   it('a `pending` vendor answer writes its outcome, opens no case and moves neither counter', async () => {
     const r = await run({}, { result: { status: 'pending' } });
     expect(r.proceed).toBe(false);
-    expect(r.trace.at(-1)).toBe('outcome:funding_credit_done:1=order-key-0001:credit:1:pending');
+    expect(r.trace.at(-1)).toBe('outcome:credit_outcome:1=pending');
     expect(r.trace.some((t) => t.startsWith('credit-case-open'))).toBe(false);
     expect(r.svc.creditedCount).toBe(0);
     expect(r.svc.refusedCount).toBe(0);
@@ -1782,7 +1819,7 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
   it('NOT_SUCCEEDED is the vendor read flapping: its outcome is written as refused, no case opens and refusedCount does not move', async () => {
     const r = await run({}, { result: { status: 'refused', reasonCode: 'NOT_SUCCEEDED' } });
     expect(r.proceed).toBe(false);
-    expect(r.trace.at(-1)).toBe('outcome:funding_credit_done:1=order-key-0001:credit:1:refused');
+    expect(r.trace.at(-1)).toBe('outcome:credit_outcome:1=refused');
     expect(r.trace.some((t) => t.startsWith('credit-case-open'))).toBe(false);
     expect(r.svc.refusedCount).toBe(0);
     expect(r.svc.creditedCount).toBe(0);
@@ -1802,10 +1839,10 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
 describe('creditMayHaveMoved reads the credit case before the attempt records (T-0766)', () => {
   const transfer = { id: 'tr_1', idempotencyKey: 'order-key-0001' } as unknown as Transfer;
   const dbWith = (caseStatus: string | undefined): Database => ({
-    async query(text: string) {
+    async query(text: string, params: readonly unknown[] = []) {
       const rows: unknown[] = text.startsWith('select status, payload from ops.case')
         ? caseStatus === undefined ? [] : [{ status: caseStatus, payload: { attempt: 0 } }]
-        : [{ entity_type: 'funding_credit:1', external_id: 'order-key-0001:credit:1' }, { entity_type: 'funding_credit_done:1', external_id: 'order-key-0001:credit:1:credited' }];
+        : [{ value: params[0] === 'credit_outcome' ? 'credited' : 'order-key-0001:credit:1' }];
       return { rows, rowCount: rows.length };
     },
   }) as unknown as Database;

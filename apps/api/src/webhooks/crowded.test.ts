@@ -724,7 +724,7 @@ describe('a failed-owner sub-account is credited by neither the webhook nor the 
   const state = async (id: string) => (await app.services.transfers.get(id))!.state;
   const journals = async (wf: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [settleKey(wf)])).rows[0]!.n;
   const callsFor = (wf: string) => spy.mock.calls.filter((c) => String(c[1]).startsWith(`${wf}:credit:`)).map((c) => c[1]);
-  const markers = async (id: string) => (await db.query(`select 1 from ops.external_ref where entity_id = $1 and entity_type like 'funding_credit%'`, [id])).rows.length;
+  const markers = async (id: string) => (await db.query(`select 1 from ops.workflow_marker where subject_id = $1 and kind in ('credit_began', 'credit_outcome')`, [id])).rows.length;
   const cases = async (party: string, transferId: string) => ({
     owner: (await db.query<{ severity: string; payload: unknown; kind: string }>(`select kind, severity, payload from ops.case where dedupe_key = $1`, [ownerCaseKey(party)])).rows,
     credit: (await db.query(`select 1 from ops.case where dedupe_key = $1`, [`load-credit:${transferId}`])).rows.length,

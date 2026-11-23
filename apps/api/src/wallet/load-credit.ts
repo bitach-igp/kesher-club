@@ -1,5 +1,5 @@
 // The vendor credit step of a load (T-0766, split from loads.ts): the credit keys and the typed markers that record an attempt (T-0761,
-// T-0742), the failed-owner block (T-0763), the account gate, the credit before the journal (T-0705, ADR-018 A4/M1) and the read of whether
+// T-0742; in ops.workflow_marker since T-0769), the failed-owner block (T-0763), the account gate, the credit before the journal (T-0705, ADR-018 A4/M1) and the read of whether
 // the vendor may already hold a load's money. Moved from LoadService with the SQL, the keys, the ordering of the early returns and the
 // error text unchanged. The step takes the narrow slice of `Deps` it uses and returns `{ proceed, credited, refused }`; `LoadService` keeps
 // the `credits` and `refusals` counters the sweep report reads and adds what the step says happened.
@@ -7,6 +7,7 @@ import { DomainError } from '@kesher/domain';
 import { FundingAccountError, FundingError, type CreditResult, type FundingAccountPort, type FundingCreditPort, type Load as VendorLoad } from '@kesher/ports';
 import type { Database } from '../db.ts';
 import { openCase } from '../ops/cases.ts';
+import { getMarker, putMarker } from '../ops/workflow-marker.ts';
 import type { Transfer } from '../transfers/service.ts';
 import { creditCase, openCreditCase } from './load-cases.ts';
 import { mapFundingError } from './load-model.ts';
@@ -17,40 +18,39 @@ import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF } from './sub-acc
 export const creditKey = (workflowId: string, n: number): string => `${workflowId}:credit:${n}`;
 /** What the vendor answered to a credit attempt (the stored outcome suffix). */
 export type CreditOutcome = 'credited' | 'pending' | 'refused';
-/** `ops.external_ref` row type noting that credit attempt `n` of a transfer was begun (its external id is the credit key). */
-const creditMarkerType = (n: number): string => `funding_credit:${n}`;
-/** The outcome of attempt `n` (external id `{creditKey}:{credited|pending|refused}`), written once after the vendor answered; absent after a crash in between. */
-const creditDoneType = (n: number): string => `funding_credit_done:${n}`;
+/** `ops.workflow_marker` kind noting that credit attempt `seq` of a transfer began (T-0769); the value is the credit key. */
+const CREDIT_BEGAN = 'credit_began';
+/** The outcome of attempt `seq` (value `credited|pending|refused`), written once after the vendor answered; absent after a crash in between. */
+const CREDIT_OUTCOME = 'credit_outcome';
 interface CreditAttempt {
   transferId: string;
+  /** Kept for the callers; the markers are keyed by the transfer id, which implies the provider (T-0769). */
   provider: string;
   attempt: number;
 }
 
 /** Writes the `began` marker of a credit attempt, before the vendor is called, so a crash between the vendor's answer and our journal leaves a trace (T-0742). Idempotent. */
 export async function recordCreditBegan(db: Database, a: CreditAttempt & { workflowId: string }): Promise<void> {
-  await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditMarkerType(a.attempt), a.transferId, a.provider, creditKey(a.workflowId, a.attempt)]);
+  await putMarker(db, { kind: CREDIT_BEGAN, subjectId: a.transferId, seq: a.attempt, value: creditKey(a.workflowId, a.attempt) });
 }
 
-/** Writes the outcome of a credit attempt. The FIRST outcome wins: a second violates unique (entity_type, entity_id, provider) and is dropped, so a `pending` that later turns credited or refused stays `pending` (conservative: it can only open a case, never hide one). */
+/** Writes the outcome of a credit attempt. The FIRST outcome wins (write-once on (kind, transfer, attempt)): a `pending` that later turns credited or refused stays `pending` (conservative: it can only open a case, never hide one). */
 export async function recordCreditOutcome(db: Database, a: CreditAttempt & { workflowId: string; outcome: CreditOutcome }): Promise<void> {
-  await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4) on conflict do nothing`, [creditDoneType(a.attempt), a.transferId, a.provider, `${creditKey(a.workflowId, a.attempt)}:${a.outcome}`]);
+  await putMarker(db, { kind: CREDIT_OUTCOME, subjectId: a.transferId, seq: a.attempt, value: a.outcome });
 }
 
-/** What our own records say of a credit attempt: whether it began, and its outcome when one was written. A stored suffix that is none of the three reads as `pending` (the conservative answer: money may have moved). */
+/** What our own records say of a credit attempt: whether it began, and its outcome when one was written. A stored value that is none of the three reads as `pending` (the conservative answer: money may have moved). */
 export async function creditAttemptState(db: Database, a: CreditAttempt): Promise<{ began: boolean; outcome?: CreditOutcome }> {
-  const rows = await db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [a.transferId, a.provider, [creditMarkerType(a.attempt), creditDoneType(a.attempt)]]);
-  if (!rows.rows.some((r) => r.entity_type === creditMarkerType(a.attempt))) return { began: false };
-  const done = rows.rows.find((r) => r.entity_type === creditDoneType(a.attempt));
-  if (!done) return { began: true };
-  const suffix = done.external_id.slice(done.external_id.lastIndexOf(':') + 1);
-  return { began: true, outcome: suffix === 'credited' || suffix === 'refused' ? suffix : 'pending' };
+  if ((await getMarker(db, CREDIT_BEGAN, a.transferId, a.attempt)) === undefined) return { began: false };
+  const done = await getMarker(db, CREDIT_OUTCOME, a.transferId, a.attempt);
+  if (done === undefined) return { began: true };
+  return { began: true, outcome: done === 'credited' || done === 'refused' ? done : 'pending' };
 }
 
 /** The part of `LoadService`'s dependencies the credit phase reads. */
 export interface CreditDeps {
   db: Database;
-  /** Registry provider name, the key space of ops.external_ref. */
+  /** Registry provider name, the key space of the vendor refs in ops.external_ref (the credit markers no longer use it). */
   provider: string;
   fundingAccounts?: FundingAccountPort | undefined;
   credit?: FundingCreditPort | undefined;
@@ -106,7 +106,7 @@ export async function creditStep(d: CreditDeps, transfer: Transfer, vendor: Vend
     if (e instanceof FundingError && (e.code === 'VALIDATION_FAILED' || e.code === 'UNKNOWN_LOAD')) return refuse(vendor.loadId, e.code, attempt);
     throw mapFundingError(e);
   }
-  // The FIRST outcome of an attempt wins: a second one violates unique (entity_type, entity_id, provider) and is dropped by `on conflict do nothing`.
+  // The FIRST outcome of an attempt wins: a second one hits the primary key (kind, subject, seq) and is dropped by `on conflict do nothing`.
   // A `pending` that later turns credited or refused stays `pending`, which is conservative: it can only open a case, never hide one.
   await recordCreditOutcome(d.db, { transferId: transfer.id, workflowId: transfer.idempotencyKey, provider: d.provider, attempt, outcome: result.status });
   if (result.status === 'credited') return { proceed: true, credited: true, refused: false };
