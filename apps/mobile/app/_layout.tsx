@@ -23,7 +23,7 @@ import { activeTab, ParamsProvider, RouterProvider, TABS, type Router } from '..
 import { AuthenticatorProvider, seededAuthenticator, webAuthnAuthenticator, type Authenticator, type SeededDevice } from '../src/passkeys.ts';
 import { installId, memorySession, SessionProvider, type Session } from '../src/session.ts';
 import { ThemeOverrideProvider, useTheme } from '../src/theme.ts';
-import { createSharedAppearance, overrideOf, SharedAppearanceProvider, type SharedAppearance } from './settings/appearance.model.ts';
+import { asTheme, createSharedAppearance, overrideOf, resetSharedAppearance, SharedAppearanceProvider, type SharedAppearance } from './settings/appearance.model.ts';
 import { webDevice, type BrowserNavigator } from '../src/web-device.ts';
 
 export const SIGN_IN_HREF = '/(auth)/sign-in';
@@ -105,17 +105,26 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
   const [released, setReleased] = useState(false);
   useEffect(() => {
     if (!signedIn) {
-      shared.store.set({ theme: 'system' });
+      resetSharedAppearance(shared);
       setReleased(false);
       return;
     }
     let live = true;
+    // A choice the member makes (or a read the Appearance screen does) while this one is late wins over it.
+    const began = shared.store.get();
     const release = () => live && setReleased(true);
     const timer = setTimeout(release, APPEARANCE_HOLD_MS);
-    deps.api.preferences.get().then(
+    // A stub or demo double may throw at once or have no preferences at all: that is a failed read, not a crash.
+    let read: Promise<unknown>;
+    try {
+      read = Promise.resolve(deps.api.preferences.get());
+    } catch (e) {
+      read = Promise.reject(e);
+    }
+    read.then(
       (p) => {
         if (!live) return;
-        shared.store.set({ theme: p.theme });
+        if (shared.store.get() === began) shared.store.patch({ theme: asTheme((p as { theme?: unknown } | undefined)?.theme) });
         release();
       },
       release,
@@ -133,7 +142,7 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
     router.replace(target);
   }, [ready, target, router]);
   return (
-    <ThemeOverrideProvider value={held ? undefined : overrideOf(theme)}>
+    <ThemeOverrideProvider value={held || !signedIn ? undefined : overrideOf(theme)}>
       <LocaleProvider value={deps.locale}>
         <ApiProvider value={deps.api}>
           <SharedAppearanceProvider value={shared}>
@@ -144,16 +153,20 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
                     <DeviceProvider value={deps.device}>
                       <RouterProvider value={router}>
                         <ParamsProvider value={params}>
-                          {held ? (
-                            <HeldFrame />
-                          ) : (
-                            <>
-                              {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
-                              <Chrome signedIn={signedIn} segments={segments} router={router}>
-                                {children}
-                              </Chrome>
-                            </>
-                          )}
+                          <View style={{ flex: 1 }}>
+                          {/* While held the screen stays mounted (the router's Slot keeps its place and the sign-in redirect lands), but covered, inert and hidden from screen readers. */}
+                          <View
+                            style={{ flex: 1, opacity: held ? 0 : 1 }}
+                            pointerEvents={held ? 'none' : 'auto'}
+                            {...(held ? { 'aria-hidden': true, accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' as const } : {})}
+                          >
+                            {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
+                            <Chrome signedIn={signedIn} segments={segments} router={router}>
+                              {children}
+                            </Chrome>
+                          </View>
+                          {held ? <HeldFrame /> : null}
+                          </View>
                         </ParamsProvider>
                       </RouterProvider>
                     </DeviceProvider>
@@ -172,7 +185,7 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
 function HeldFrame() {
   const th = useTheme();
   return (
-    <View testID="appearance-held" style={{ flex: 1, padding: th.space[4], backgroundColor: th.color.bg.canvas }}>
+    <View testID="appearance-held" style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, padding: th.space[4], backgroundColor: th.color.bg.canvas }}>
       <Skeleton />
     </View>
   );

@@ -20,6 +20,13 @@ export function overrideOf(theme: Theme): ThemeMode | undefined {
 
 export interface SharedAppearanceState {
   theme: Theme;
+  /** Bumped when the signed-in member changes (sign-out), so an answer for the previous member cannot land. */
+  generation: number;
+}
+
+/** A stored value of an unexpected shape (a stub, an older server) is `system`, never `undefined`. */
+export function asTheme(value: unknown): Theme {
+  return value === 'light' || value === 'dark' ? value : 'system';
 }
 
 /** The one stored choice the whole app reads; `system` until a signed-in member's preference is known. */
@@ -28,7 +35,12 @@ export interface SharedAppearance {
 }
 
 export function createSharedAppearance(): SharedAppearance {
-  return { store: createStore<SharedAppearanceState>({ theme: 'system' }) };
+  return { store: createStore<SharedAppearanceState>({ theme: 'system', generation: 0 }) };
+}
+
+/** Sign-out: back to `system`, and every save or read still in flight for the previous member is orphaned. */
+export function resetSharedAppearance(shared: SharedAppearance): void {
+  shared.store.set((s) => ({ theme: 'system', generation: s.generation + 1 }));
 }
 
 const SharedAppearanceContext = createContext<SharedAppearance | undefined>(undefined);
@@ -59,15 +71,23 @@ export interface AppearanceModel {
 
 export function createAppearanceModel(deps: { preferences: PreferencesApi; shared: SharedAppearance }): AppearanceModel {
   const { shared } = deps;
+  /** Writes to the shared store only while the member who started them is still signed in. */
+  const writer = () => {
+    const generation = shared.store.get().generation;
+    return (theme: Theme) => {
+      if (shared.store.get().generation === generation) shared.store.patch({ theme });
+    };
+  };
   const store = createStore<AppearanceState>({ status: 'idle', theme: shared.store.get().theme, saving: false });
   return {
     store,
     async load() {
       store.patch({ status: 'loading', error: undefined });
+      const share = writer();
       try {
         const p = await deps.preferences.get();
         store.patch({ status: 'ready', theme: p.theme });
-        shared.store.patch({ theme: p.theme });
+        share(p.theme);
       } catch {
         store.patch({ status: 'error', error: 'common.error.generic' });
       }
@@ -77,14 +97,15 @@ export function createAppearanceModel(deps: { preferences: PreferencesApi; share
       if (s.saving || value === s.theme) return;
       const previous = s.theme;
       store.patch({ theme: value, saving: true, notice: undefined, error: undefined });
-      shared.store.patch({ theme: value });
+      const share = writer();
+      share(value);
       try {
         const p = await deps.preferences.set({ theme: value });
         store.patch({ theme: p.theme, saving: false, notice: 'appearance.saved' });
-        shared.store.patch({ theme: p.theme });
+        share(p.theme);
       } catch {
         store.patch({ theme: previous, saving: false, error: 'appearance.saveFailed' });
-        shared.store.patch({ theme: previous });
+        share(previous);
       }
     },
   };

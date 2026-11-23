@@ -4,7 +4,7 @@
 // that the root layout reads.
 import { describe, expect, it } from 'vitest';
 import type { Preferences, PreferencesApi, ReceiveCurrency, Theme } from '../../src/api.ts';
-import { APPEARANCE_OPTIONS, createAppearanceModel, createSharedAppearance, overrideOf } from './appearance.model.ts';
+import { APPEARANCE_OPTIONS, asTheme, createAppearanceModel, createSharedAppearance, overrideOf, resetSharedAppearance } from './appearance.model.ts';
 
 function fakePreferences(opts: { failSet?: boolean; failGet?: boolean; initial?: Preferences } = {}) {
   let current: Preferences = opts.initial ?? { receiveCurrency: 'as_sent', theme: 'system' };
@@ -52,7 +52,7 @@ describe('Appearance (TST-UX-003)', () => {
 
   it('a failed load sets the generic error and leaves the shared mode alone', async () => {
     const shared = createSharedAppearance();
-    shared.store.set({ theme: 'light' });
+    shared.store.patch({ theme: 'light' });
     const m = createAppearanceModel({ preferences: fakePreferences({ failGet: true }).api, shared });
     await m.load();
     expect(m.store.get()).toMatchObject({ status: 'error', error: 'common.error.generic' });
@@ -127,5 +127,34 @@ describe('Appearance (TST-UX-003)', () => {
     expect(m.store.get().error).toBeUndefined();
     refusing.gate.release!();
     await p2;
+  });
+
+  it('a save answered or refused after the member signed out never reaches the shared store', async () => {
+    for (const failSet of [false, true]) {
+      const shared = createSharedAppearance();
+      const { api, gate } = fakePreferences({ failSet, initial: { receiveCurrency: 'as_sent', theme: 'light' } });
+      const m = createAppearanceModel({ preferences: api, shared });
+      await m.load();
+      const pending = m.choose('dark');
+      expect(shared.store.get().theme).toBe('dark');
+      resetSharedAppearance(shared);
+      gate.release!();
+      await pending;
+      expect([failSet, shared.store.get().theme]).toEqual([failSet, 'system']);
+    }
+  });
+
+  it('a load answered after sign-out never reaches the shared store', async () => {
+    const shared = createSharedAppearance();
+    const prefs: PreferencesApi = { get: async () => ({ receiveCurrency: 'as_sent', theme: 'dark' }), set: async () => Promise.reject(new Error('no')) };
+    const m = createAppearanceModel({ preferences: prefs, shared });
+    const loading = m.load();
+    resetSharedAppearance(shared);
+    await loading;
+    expect(shared.store.get().theme).toBe('system');
+  });
+
+  it('asTheme turns anything that is not light or dark into system', () => {
+    expect([asTheme('light'), asTheme('dark'), asTheme('system'), asTheme(undefined), asTheme('sepia'), asTheme(null)]).toEqual(['light', 'dark', 'system', 'system', 'system', 'system']);
   });
 });

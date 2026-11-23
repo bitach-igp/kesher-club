@@ -2,6 +2,7 @@
 // T-0033: the root layout routes on the session, and the authenticator is chosen by the build alone: a
 // development build signs as a picked demo persona, every other build uses the platform's WebAuthn even
 // when the API sends the simulator's options. The config refuses plain http anywhere but localhost.
+import { useEffect } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuthSimulator, type PasskeyAuthenticationOptions, type PasskeyRegistrationOptions } from '@kesher/ports';
@@ -353,19 +354,18 @@ describe('the member\'s appearance reaches every screen (T-1021, TST-UX-003)', (
     let answer!: (p: { receiveCurrency: 'as_sent'; theme: 'dark' }) => void;
     stored(deps, () => new Promise((r) => (answer = r as typeof answer)));
     signIn(deps);
-    const seen: (string | null)[] = [];
-    const Spy = () => {
-      seen.push('app');
-      return <Probe />;
-    };
-    render(<RootLayoutView deps={deps} router={memoryRouter('/')} segments={['(tabs)', 'home']}><Spy /></RootLayoutView>);
+    render(<RootLayoutView deps={deps} router={memoryRouter('/')} segments={['(tabs)', 'home']}><Probe /></RootLayoutView>);
     expect(screen.getByTestId('appearance-held')).toBeTruthy();
-    expect(screen.queryByTestId('probe')).toBeNull();
-    expect(seen).toEqual([]); // no content, so no frame of the app in the wrong mode
+    // The screen stays mounted under the frame, in the system mode, hidden from screen readers and inert.
+    expect(mode()).toBe('light');
+    const hidden = screen.getByTestId('probe').closest('[aria-hidden="true"]') as HTMLElement;
+    expect(hidden).toBeTruthy();
+    expect(getComputedStyle(hidden).opacity).toBe('0');
+    expect(getComputedStyle(hidden).pointerEvents).toBe('none');
     await act(async () => answer({ receiveCurrency: 'as_sent', theme: 'dark' }));
     expect(screen.queryByTestId('appearance-held')).toBeNull();
+    expect(screen.getByTestId('probe').closest('[aria-hidden="true"]')).toBeNull();
     expect(mode()).toBe('dark');
-    expect(seen.length).toBeGreaterThan(0);
     expect(deps.appearance.store.get().theme).toBe('dark');
   });
 
@@ -374,7 +374,7 @@ describe('the member\'s appearance reaches every screen (T-1021, TST-UX-003)', (
     const { theme } = await import('@kesher/tokens');
     systemScheme('dark');
     const deps = createRootDeps(config);
-    deps.appearance.store.set({ theme: 'light' }); // a stale value must not paint
+    deps.appearance.store.patch({ theme: 'light' }); // a stale value must not paint
     stored(deps, () => new Promise(() => undefined));
     signIn(deps);
     render(<RootLayoutView deps={deps} router={memoryRouter('/')} segments={['(tabs)', 'home']} />);
@@ -402,6 +402,170 @@ describe('the member\'s appearance reaches every screen (T-1021, TST-UX-003)', (
       await act(async () => void vi.advanceTimersByTime(60_000));
       expect(mode()).toBe('dark');
       expect(deps.appearance.store.get().theme).toBe('system');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the screen under the held frame is not unmounted and remounted: the router\'s Slot keeps its place', async () => {
+    const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+    systemScheme('light');
+    const deps = createRootDeps(config);
+    let answer!: (p: { receiveCurrency: 'as_sent'; theme: 'dark' }) => void;
+    stored(deps, () => new Promise((r) => (answer = r as typeof answer)));
+    signIn(deps);
+    const lifecycle: string[] = [];
+    const Slotlike = () => {
+      useEffect(() => {
+        lifecycle.push('mount');
+        return () => void lifecycle.push('unmount');
+      }, []);
+      return null;
+    };
+    render(<RootLayoutView deps={deps} router={memoryRouter('/')} segments={['(tabs)', 'home']}><Slotlike /></RootLayoutView>);
+    await act(async () => answer({ receiveCurrency: 'as_sent', theme: 'dark' }));
+    expect(lifecycle).toEqual(['mount']);
+  });
+
+  it('a read that throws at once, a double with no preferences, and an answer with no theme all render in the system mode', async () => {
+    const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+    const Probe = await probes();
+    systemScheme('dark');
+    const cases: Record<string, (deps: Deps) => void> = {
+      'throws at once': (deps) => stored(deps, () => { throw new Error('stub'); }),
+      'no preferences': (deps) => void (deps.api = { ...deps.api, preferences: undefined as never }),
+      'no theme': (deps) => stored(deps, (async () => ({ receiveCurrency: 'as_sent' })) as never),
+      'nothing at all': (deps) => stored(deps, (async () => undefined) as never),
+      'not a theme': (deps) => stored(deps, (async () => ({ receiveCurrency: 'as_sent', theme: 'sepia' })) as never),
+    };
+    for (const [name, arrange] of Object.entries(cases)) {
+      const deps = createRootDeps(config);
+      arrange(deps);
+      signIn(deps);
+      render(<RootLayoutView deps={deps} router={memoryRouter('/')} segments={['(tabs)', 'home']}><Probe /></RootLayoutView>);
+      await act(async () => undefined);
+      expect([name, screen.queryByTestId('appearance-held')]).toEqual([name, null]);
+      expect([name, mode()]).toEqual([name, 'dark']);
+      expect([name, deps.appearance.store.get().theme]).toEqual([name, 'system']);
+      cleanup();
+    }
+  });
+
+  it('a late read does not overwrite a choice the member already made and saved', async () => {
+    vi.useFakeTimers();
+    try {
+      const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+      const { createAppearanceModel } = await import('./settings/appearance.model.ts');
+      const Probe = await probes();
+      systemScheme('light');
+      const deps = createRootDeps(config);
+      let answer!: (p: { receiveCurrency: 'as_sent'; theme: 'light' }) => void;
+      stored(deps, () => new Promise((r) => (answer = r as typeof answer)));
+      signIn(deps);
+      render(<RootLayoutView deps={deps} router={memoryRouter('/')} segments={['(tabs)', 'home']}><Probe /></RootLayoutView>);
+      await act(async () => void vi.advanceTimersByTime(1500));
+      const model = createAppearanceModel({ preferences: { get: async () => ({ receiveCurrency: 'as_sent', theme: 'system' }), set: async (p) => ({ receiveCurrency: 'as_sent', theme: 'system', ...p }) }, shared: deps.appearance });
+      await act(async () => model.choose('dark'));
+      expect(mode()).toBe('dark');
+      await act(async () => answer({ receiveCurrency: 'as_sent', theme: 'light' })); // the stale read, from before the choice
+      expect(mode()).toBe('dark');
+      expect(deps.appearance.store.get().theme).toBe('dark');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a save that answers, or is refused, after sign-out leaves the shared store at system for the next member', async () => {
+    for (const outcome of ['answers', 'refused'] as const) {
+      const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+      const { createAppearanceModel } = await import('./settings/appearance.model.ts');
+      const Probe = await probes();
+      systemScheme('light');
+      const deps = createRootDeps(config);
+      stored(deps, answers('light'));
+      signIn(deps);
+      const router = memoryRouter('/');
+      const view = (segments: string[]) => <RootLayoutView deps={deps} router={router} segments={segments}><Probe /></RootLayoutView>;
+      const { rerender } = render(view(['(tabs)', 'home']));
+      await act(async () => undefined);
+      let settle!: () => void;
+      const model = createAppearanceModel({
+        preferences: {
+          get: async () => ({ receiveCurrency: 'as_sent', theme: 'light' }),
+          set: (p) => new Promise((resolve, reject) => (settle = () => (outcome === 'answers' ? resolve({ receiveCurrency: 'as_sent', theme: p.theme ?? 'system' }) : reject(new Error('refused'))))),
+        },
+        shared: deps.appearance,
+      });
+      await act(async () => model.load());
+      let saving!: Promise<void>;
+      act(() => void (saving = model.choose('dark')));
+      expect(mode()).toBe('dark');
+      deps.session.signOut();
+      rerender(view(['(auth)', 'sign-in']));
+      expect(mode()).toBe('light');
+      await act(async () => {
+        settle();
+        await saving;
+      });
+      expect([outcome, deps.appearance.store.get().theme]).toEqual([outcome, 'system']);
+      expect([outcome, mode()]).toEqual([outcome, 'light']);
+      // The next member starts from system.
+      stored(deps, answers('system'));
+      signIn(deps);
+      rerender(view(['(tabs)', 'home']));
+      expect(mode()).toBe('light');
+      await act(async () => undefined);
+      expect([outcome, deps.appearance.store.get().theme]).toEqual([outcome, 'system']);
+      cleanup();
+    }
+  });
+
+  it('the sign-in screen never paints a frame in the previous member\'s mode on sign-out', async () => {
+    const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+    const { useThemeMode } = await import('../src/theme.ts');
+    systemScheme('light');
+    const deps = createRootDeps(config);
+    stored(deps, answers('dark'));
+    signIn(deps);
+    const router = memoryRouter('/');
+    const frames: string[] = [];
+    const Probe = () => {
+      frames.push(useThemeMode());
+      return null;
+    };
+    const view = (segments: string[]) => <RootLayoutView deps={deps} router={router} segments={segments}><Probe /></RootLayoutView>;
+    const { rerender } = render(view(['(tabs)', 'home']));
+    await act(async () => undefined);
+    expect(frames[frames.length - 1]).toBe('dark');
+    frames.length = 0;
+    deps.session.signOut();
+    rerender(view(['(auth)', 'sign-in']));
+    expect(frames.length).toBeGreaterThan(0);
+    expect(frames).not.toContain('dark');
+  });
+
+  it('no timer is left behind after sign-out or unmount', async () => {
+    vi.useFakeTimers();
+    try {
+      const { RootLayoutView, createRootDeps } = await layoutFor('preview');
+      systemScheme('light');
+      const deps = createRootDeps(config);
+      stored(deps, () => new Promise(() => undefined));
+      const router = memoryRouter('/');
+      const view = (segments: string[]) => <RootLayoutView deps={deps} router={router} segments={segments} />;
+      const { rerender, unmount } = render(view(['(auth)', 'sign-in']));
+      expect(vi.getTimerCount()).toBe(0);
+      signIn(deps);
+      rerender(view(['(tabs)', 'home']));
+      expect(vi.getTimerCount()).toBe(1);
+      deps.session.signOut();
+      rerender(view(['(auth)', 'sign-in']));
+      expect(vi.getTimerCount()).toBe(0);
+      signIn(deps);
+      rerender(view(['(tabs)', 'home']));
+      expect(vi.getTimerCount()).toBe(1);
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
@@ -499,7 +663,7 @@ describe('the member\'s appearance reaches every screen (T-1021, TST-UX-003)', (
     const { RootLayoutView, createRootDeps } = await layoutFor('development');
     systemScheme('dark');
     const signedOut = createRootDeps(config);
-    signedOut.appearance.store.set({ theme: 'light' }); // not reachable signed out in practice: even so the member is reset
+    signedOut.appearance.store.patch({ theme: 'light' }); // not reachable signed out in practice: even so the member is reset
     const Probe = await probes();
     const { unmount } = render(<RootLayoutView deps={signedOut} router={memoryRouter('/')} segments={['(auth)', 'sign-in']}><Probe /></RootLayoutView>);
     await act(async () => undefined);
