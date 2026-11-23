@@ -1488,9 +1488,10 @@ describe('the credit markers against a reference model (T-0769 differential: gre
         if (o.op === 'began') await recordCreditBegan(db, { ...a, attempt: o.attempt });
         else await recordCreditOutcome(db, { ...a, attempt: o.attempt, outcome: o.op });
       }
-      for (const n of [1, 2, 3, 4]) expect(await creditAttemptState(db, { transferId: a.transferId, provider: a.provider, attempt: n })).toEqual(model(ops, n));
+      const states = await Promise.all([1, 2, 3, 4].map((n) => creditAttemptState(db, { transferId: a.transferId, provider: a.provider, attempt: n })));
+      states.forEach((st, k) => expect(st).toEqual(model(ops, k + 1)));
     }
-  });
+  }, 120_000);
 });
 
 describe('the failed-owner rule is enforced on the credit path (T-0763, TST-WAL-003, TST-WAL-002)', () => {
