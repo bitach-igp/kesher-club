@@ -1,7 +1,7 @@
 # @kesher/tokens
 
-Design tokens for Kesher Club (spec Tab 2, "Jerusalem stone and night sky"), compiled by
-Style Dictionary 5. Task T-0006.
+Design tokens for Kesher Club (spec Tab 2; the Night Market palette since T-1019), compiled by
+Style Dictionary 5. Tasks T-0006, T-1019.
 
 **Change a token here and it changes everywhere.** `tokens.json` is the only place a colour,
 size, radius, shadow, duration or type style is defined. Web, console, admin and mobile all read
@@ -48,9 +48,85 @@ Package exports: `@kesher/tokens` (theme + helpers), `@kesher/tokens/css`, `@kes
 - Amounts always set tabular figures (`typography.moneyHero`, `moneyHeroSymbol`) and never rely
   on colour alone: `money.in` is paired with "+" and `money.out` with "-".
 
-## Known spec discrepancy
+## Night Market palette and contrast claims (T-1019, REQ-UX-001)
 
-`color.border.strong` is documented at 3.06:1 (non-text, 3:1). That holds for the light value on
-`bg.surface`; the dark value `#5D677B` reaches 3.21:1 on `bg.canvas` but only 2.86:1 on
-`bg.surface`. The spec value is kept and the test pins the measured number; raising the dark value
-is a spec change.
+One theme, two modes. Night Market is dark-native: its cyan `#04F7E8` is 1.36:1 on white, so the
+**light** face is brand navy (`color.action.primary` `#293B8F`, 9.92:1 on white) on a cool light
+canvas, and the **dark** face is Night Market (canvas `#010235`, surface `#0B1247`, action cyan
+`#04F7E8`). The two action values are fixed by REQ-UX-001; every other value is a starting value that
+`src/contrast.test.ts` may move. The test holds the claims below; change a colour and the table
+together, never silently. Ratios are WCAG 2.1, rounded to two decimals.
+
+New in T-1019: `color.facet.{blue,orange,magenta,yellow}` (facet text uses blue, orange and magenta;
+`facet.yellow` is a fill only, never text on a light surface); `color.accent.cyan` is a dark-led
+fill (its light value is the navy action as a conservative starting value and ships as the light
+CSS variable). `color.accent.gold` is removed (no consumer in `apps/` or `packages/`).
+
+Text pairs (4.5:1 in both modes):
+
+| Pair (fg on bg) | Light | Dark |
+| --- | --- | --- |
+| `text.primary` on `bg.canvas` | 14.66:1 | 17.49:1 |
+| `text.primary` on `bg.surface` | 15.75:1 | 15.57:1 |
+| `text.primary` on `bg.sunken` | 13.62:1 | 18.12:1 |
+| `text.primary` on `bg.stone` | 12.56:1 | 13.09:1 |
+| `text.primary` on `action.primarySubtle` | 13.11:1 | 12.81:1 |
+| `text.secondary` on `bg.canvas` | 5.71:1 | 8.78:1 |
+| `text.secondary` on `bg.surface` | 6.13:1 | 7.82:1 |
+| `text.onAction` on `action.primary` | 9.92:1 | 14.58:1 |
+| `text.onAction` on `action.primaryHover` | 12.41:1 | 16.01:1 |
+| `action.primary` on `bg.surface` | 9.92:1 | 12.98:1 |
+| `action.primary` on `bg.canvas` | 9.23:1 | 14.58:1 |
+| `action.primary` on `action.primarySubtle` | 8.26:1 | 10.68:1 |
+| `status.success` on `bg.surface` | 5.38:1 | 8.54:1 |
+| `status.warning` on `bg.surface` | 5.17:1 | 9.61:1 |
+| `status.danger` on `bg.surface` | 5.52:1 | 7.72:1 |
+| `status.success` on `bg.canvas` | 5.00:1 | 9.59:1 |
+| `status.warning` on `bg.canvas` | 4.81:1 | 10.80:1 |
+| `status.danger` on `bg.canvas` | 5.14:1 | 8.67:1 |
+| `status.success` on `status.successSubtle` | 4.80:1 | 6.49:1 |
+| `status.warning` on `status.warningSubtle` | 4.65:1 | 7.23:1 |
+| `status.danger` on `status.dangerSubtle` | 4.90:1 | 6.07:1 |
+| `money.in` on `bg.surface` | 5.38:1 | 8.54:1 |
+| `money.in` on `bg.canvas` | 5.00:1 | 9.59:1 |
+| `money.out` on `bg.surface` | 15.75:1 | 15.57:1 |
+| `money.out` on `bg.canvas` | 14.66:1 | 17.49:1 |
+| `facet.blue` on `bg.surface` | 5.64:1 | 6.47:1 |
+| `facet.blue` on `bg.canvas` | 5.25:1 | 7.27:1 |
+| `facet.orange` on `bg.surface` | 6.06:1 | 6.77:1 |
+| `facet.orange` on `bg.canvas` | 5.64:1 | 7.61:1 |
+| `facet.magenta` on `bg.surface` | 7.57:1 | 5.98:1 |
+| `facet.magenta` on `bg.canvas` | 7.05:1 | 6.72:1 |
+
+Non-text pairs (3:1 in both modes; `accent.cyan` and `facet.yellow` are fills, `text.disabled` is
+exempt from the AA text rule because it is for disabled labels only, but it is documented and held to the 3:1 non-text rule here):
+
+| Pair (fg on bg) | Light | Dark |
+| --- | --- | --- |
+| `border.strong` on `bg.surface` | 3.26:1 | 3.10:1 |
+| `border.strong` on `bg.canvas` | 3.03:1 | 3.48:1 |
+| `border.focus` on `bg.surface` | 4.82:1 | 12.98:1 |
+| `border.focus` on `bg.canvas` | 4.48:1 | 14.58:1 |
+| `accent.blue` on `bg.surface` | 4.82:1 | 6.85:1 |
+| `accent.blue` on `bg.canvas` | 4.48:1 | 7.69:1 |
+| `accent.sky` on `bg.surface` | n/a (fill; pinned `#9ADBF6`) | 3.72:1 |
+| `accent.sky` on `bg.canvas` | n/a (fill; pinned `#9ADBF6`) | 4.18:1 |
+| `accent.cyan` on `bg.surface` | 9.92:1 | 12.98:1 |
+| `accent.cyan` on `bg.canvas` | 9.23:1 | 14.58:1 |
+| `facet.yellow` on `bg.surface` | 4.92:1 | 11.99:1 |
+| `facet.yellow` on `bg.canvas` | 4.58:1 | 13.46:1 |
+| `text.disabled` on `bg.surface` | 3.06:1 | 3.10:1 |
+
+`color.border.strong` has no discrepancy any more: it meets 3:1 on both `bg.surface` and
+`bg.canvas` in both modes, and the test asserts the plain 3:1, not a pinned number. Text laid over
+`overlay.scrim` (`text.onAction` over the light scrim, `text.primary` over the dark one, composited
+over canvas and surface) keeps 4.5:1. `border.default` is the one colour with no claim (decorative
+hairline; listed in the test's `EXEMPT` map with that reason). A coverage guard in the test fails when a
+colour token is neither asserted nor exempt.
+
+Values the gate moved from the card's starting list (record of why):
+
+| Token | Starting value | Final | Why |
+| --- | --- | --- | --- |
+| `color.border.strong` (light) | `#8A94A6` | `#858FA2` | `#8A94A6` is 3.06:1 on surface but 2.85:1 on canvas; the plain 3:1 claim on both surfaces needs 3.03:1 on canvas |
+| `color.overlay.scrim` (light) | alpha .48 (`#0102357A`) | alpha .55 (`#0102358C`) | white text over the .48 scrim on canvas is 3.80:1 (3.56:1 on surface), below 4.5:1; at nominal .55 it would be 4.80:1 / 4.54:1; the shipped byte `0x8C` is .549 and measures 4.79:1 on canvas and 4.52:1 on surface. The scrim has no consumer yet, so this move is precautionary rather than driven by a shipped screen |
