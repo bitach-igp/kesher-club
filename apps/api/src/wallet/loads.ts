@@ -398,7 +398,8 @@ export class LoadService implements LoadActivities {
    * The vendor load id when the vendor may already hold this load's money in the member's wallet without our journal, else undefined. Reads
    * only our own records and calls no vendor: attempt `n` (the next after the credit case's) has a `began` marker, written before the call,
    * and its outcome row is `credited` or `pending`, or missing (a crash between the call and the outcome: the vendor may have credited).
-   * A `refused` outcome, no marker, or an open credit case (the last attempt was refused, no later key sent) means no money moved.
+   * A `refused` outcome, no marker, or an open credit case (the last attempt was refused, no later key sent) means no money moved: a refusal is
+   * final for its key at the vendor, so a `refused` outcome means no money moved under that key.
    */
   private async creditMayHaveMoved(transfer: Transfer): Promise<string | undefined> {
     if (transfer.kind !== 'load') return undefined;
