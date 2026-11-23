@@ -22,6 +22,7 @@ import { seedTransfer } from '../test-seed.ts';
 import { CASE_AFTER_NOT_SUCCEEDED, creditMayHaveMoved, recordCreditFlap } from './load-credit.ts';
 import { honestCreditVendor } from './honest-credit-vendor.ts';
 import { openCase } from '../ops/cases.ts';
+import { OpsCases } from '../admin/cases.ts';
 import { ownerFailedMarker } from './sub-account-markers.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey, ownerKind } from './sub-accounts.ts';
 
@@ -1900,6 +1901,70 @@ describe('the failed-owner rule is enforced on the credit path (T-0763, TST-WAL-
     expect((await t.svc.request(t.party, t.body, key, NOW)).state).toBe('settled');
     expect(t.spy).toHaveBeenCalledTimes(1);
     expect(await ownerCases(t.party)).toEqual([]);
+  });
+
+  // T-0788: staff resolve or dismiss the owner case through OpsCases (the admin decision path); resolving clears the marker in the decision's transaction.
+  const staff = { subject: 'ops-a', partyId: uuidv7(NOW), role: 'ops' };
+  const ownerCaseId = async (party: string) => (await db.query<{ id: string }>(`select id from ops.case where dedupe_key = $1`, [ownerCaseKey(party)])).rows[0]!.id;
+  const hasMarker = async (provider: string, party: string) => (await db.query(`select 1 from ops.workflow_marker where kind = $1 and subject_id = $2`, [ownerKind(provider), party])).rows.length === 1;
+
+  it('staff resolving the owner case lets the next credit through: marker gone, one credit under the same key, one journal, balance equals the load (T-0788)', async () => {
+    const t = await setup();
+    const key = 'owner-resolve-001';
+    await t.marker(ownerFailedMarker(t.party));
+    await t.svc.request(t.party, t.body, key, NOW);
+    expect(t.spy).not.toHaveBeenCalled();
+    await new OpsCases(db, app.services.audit, t.provider).decide(await ownerCaseId(t.party), 'resolved', 'Owner re-invited', staff, NOW);
+    expect(await hasMarker(t.provider, t.party)).toBe(false);
+    await t.sweep();
+    expect(t.spy).toHaveBeenCalledTimes(1);
+    expect(t.spy.mock.calls[0]![1]).toBe(`${key}:credit:1`);
+    expect(await settleJournals(key)).toBe(1);
+    expect(await balance(t.party)).toBe(10_000n);
+    expect((await ownerCases(t.party))[0]!.status).toBe('resolved');
+    await t.sweep();
+    expect(t.spy).toHaveBeenCalledTimes(1);
+  });
+
+  it('dismissing the owner case keeps the marker, so credits stay blocked, and the next blocked load REOPENS the case with the dismissal kept in its payload (T-0788)', async () => {
+    const t = await setup();
+    const key = 'owner-dismiss-001';
+    await t.marker(ownerFailedMarker(t.party));
+    await t.svc.request(t.party, t.body, key, NOW);
+    await new OpsCases(db, app.services.audit, t.provider).decide(await ownerCaseId(t.party), 'dismissed', 'Not now', staff, NOW);
+    expect(await hasMarker(t.provider, t.party)).toBe(true);
+    expect((await ownerCases(t.party))[0]!.status).toBe('dismissed');
+    await t.sweep();
+    expect(t.spy).not.toHaveBeenCalled();
+    expect(await settleJournals(key)).toBe(0);
+    const rows = await ownerCases(t.party);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: OWNER_FAILED_CASE, status: 'open', payload: { partyId: t.party, reopened: { was: 'dismissed' } } });
+    // Open again: a further blocked cycle neither duplicates nor rewrites it.
+    await t.sweep();
+    expect(await ownerCases(t.party)).toEqual(rows);
+  });
+
+  it('a case resolved while the marker still stands (no provider configured, so nothing cleared) reopens on the next blocked load instead of leaving a silent block (T-0788)', async () => {
+    const t = await setup();
+    await t.marker(ownerFailedMarker(t.party));
+    await t.svc.request(t.party, t.body, 'owner-silent-001', NOW);
+    await new OpsCases(db, app.services.audit).decide(await ownerCaseId(t.party), 'resolved', 'Done', staff, NOW);
+    await t.sweep();
+    expect(t.spy).not.toHaveBeenCalled();
+    expect((await ownerCases(t.party))[0]!.status).toBe('open');
+  });
+
+  it('resolving party A\'s case never unblocks party B under the same provider (T-0788)', async () => {
+    const a = await setup();
+    const b = await setup();
+    await a.marker(ownerFailedMarker(a.party));
+    await a.svc.request(a.party, a.body, 'owner-iso-a0001', NOW);
+    // B's marker under A's provider name: a different party, same provider.
+    await a.marker(ownerFailedMarker(b.party), b.party);
+    await new OpsCases(db, app.services.audit, a.provider).decide(await ownerCaseId(a.party), 'resolved', 'A fixed', staff, NOW);
+    expect(await hasMarker(a.provider, a.party)).toBe(false);
+    expect(await hasMarker(a.provider, b.party)).toBe(true);
   });
 
   it('another member\'s failed owner does not block this member', async () => {

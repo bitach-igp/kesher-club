@@ -7,7 +7,7 @@ import { money, type Money } from '@kesher/domain';
 import type { AdminActor, DepositRail, OpsCase, OpsCaseFilter, OpsCaseKind, OpsCaseStatus } from '../data/types.ts';
 
 /** The queue's order: money with no owner first, then what the bank statement disagrees with, then the proofs. */
-export const KINDS: readonly OpsCaseKind[] = ['suspense', 'deposit_not_on_statement', 'payout_account_mismatch', 'balance_break', 'system_total_break', 'unbalanced_journal', 'kyb_application'];
+export const KINDS: readonly OpsCaseKind[] = ['suspense', 'deposit_not_on_statement', 'payout_account_mismatch', 'balance_break', 'system_total_break', 'unbalanced_journal', 'kyb_application', 'subaccount_owner_failed'];
 export const STATUSES: readonly OpsCaseStatus[] = ['open', 'investigating', 'resolved', 'dismissed'];
 
 export const KIND_WORDS: Record<OpsCaseKind, { label: string; hint: string }> = {
@@ -18,6 +18,7 @@ export const KIND_WORDS: Record<OpsCaseKind, { label: string; hint: string }> = 
   system_total_break: { label: 'Books do not balance', hint: 'The ledger as a whole does not sum to zero in a currency.' },
   unbalanced_journal: { label: 'Unbalanced journal', hint: 'A journal whose postings do not sum to zero.' },
   kyb_application: { label: 'Organisation applied', hint: 'A self-serve application waits for KYB review. Run the checks and decide on the institution\'s KYB page, then resolve this case.' },
+  subaccount_owner_failed: { label: 'Member owner refused', hint: 'The vendor refused a member sub-account owner, so loads to it wait uncredited. Fix or re-invite the owner at the vendor, then resolve this case: that lets the loads be credited. Dismissing keeps them blocked and the case reopens when the next load is blocked.' },
 };
 
 export const STATUS_WORDS: Record<OpsCaseStatus, string> = { open: 'Open', investigating: 'Being worked', resolved: 'Resolved', dismissed: 'Dismissed' };

@@ -192,7 +192,7 @@ describe('overridesFromConfig (T-0659)', () => {
     const warnings: string[] = [];
     expect(overridesFromConfig({ ...full, PROVIDER_INSTITUTION_BANKING: 'sim', CROWDED_BINDING: 'live' }, db, (m) => warnings.push(m))).toEqual({});
     expect(warnings).toEqual([IGNORED_LIVE_BINDING_WARNING]);
-    expect(crowdedWebhookSecrets({ ...full, PROVIDER_INSTITUTION_BANKING: 'sim' })).toEqual([]);
+    expect(crowdedWebhookSecrets(createRegistry('sim', systemClock(), overridesFromConfig({ ...full, PROVIDER_INSTITUTION_BANKING: 'sim' }, db)).registry, 'US')).toEqual([]);
   });
 
   it('on crowded it passes the config through and the webhook secrets in order', () => {
@@ -200,7 +200,7 @@ describe('overridesFromConfig (T-0659)', () => {
     const o = overridesFromConfig(full, db).institutionBanking!;
     expect(o).toMatchObject({ provider: 'crowded', baseUrl: BASE });
     expect(o.token.reveal()).toBe(TOKEN);
-    expect(crowdedWebhookSecrets(full)).toEqual([CURRENT, PREVIOUS]);
+    expect(crowdedWebhookSecrets(createRegistry('sim', systemClock(), overridesFromConfig(full, db)).registry, 'US')).toEqual([CURRENT, PREVIOUS]);
   });
 
   it('maps CROWDED_BINDING to the binding mode: sandbox by default and for any URL, live only when set to live, with the warning', () => {
@@ -650,5 +650,102 @@ describe('provider.error for every resolved port (T-0689)', () => {
     simulators.registry.register('scratch', 'acme', () => ({ call: () => Promise.reject(boom) }));
     simulators.registry.bind({ capability: 'scratch', market: 'IL', provider: 'acme', mode: 'sim' });
     await expect(registry.resolve<{ call: () => Promise<never> }>('scratch', 'IL').call()).rejects.toBe(boom);
+  });
+});
+
+// T-0771 slice 1: the Crowded webhook secrets come from the binding's capability, not from comparing a provider name.
+// `oracle` is the pre-slice rule, kept here verbatim so the table below proves old and new resolve identically.
+describe('binding capabilities: webhook secrets (T-0771 slice 1)', () => {
+  type Choice = 'sim' | 'crowded';
+  const SECRET_SETS: readonly (readonly string[])[] = [[CURRENT], [CURRENT, PREVIOUS], []];
+  const bindings = ['unset', 'sandbox', 'live'] as const;
+  const cfg = (choice: Choice, secrets: readonly string[], binding: (typeof bindings)[number]) => ({
+    PROVIDER_INSTITUTION_BANKING: choice,
+    CROWDED_BASE_URL: BASE,
+    CROWDED_API_TOKEN: new Secret(TOKEN),
+    CROWDED_WEBHOOK_SECRETS: secrets.map((s) => new Secret(s)),
+    ...(binding === 'unset' ? {} : { CROWDED_BINDING: binding }),
+  });
+  type Cfg = ReturnType<typeof cfg>;
+  const oracle = (config: Cfg): string[] => (config.PROVIDER_INSTITUTION_BANKING === 'crowded' ? (config.CROWDED_WEBHOOK_SECRETS ?? []).map((s) => s.reveal()) : []);
+  const noDb = { async query() { throw new Error('no db in this test'); } } as unknown as SqlClient;
+  const build = (config: Cfg) => createRegistry('sim', systemClock(), overridesFromConfig(config, noDb)).registry;
+  // The function under test, as the processes call it.
+  const secretsOf = (_config: Cfg, registry: ReturnType<typeof build>, market: (typeof MARKETS)[number]): string[] => crowdedWebhookSecrets(registry, market);
+  const cells = function* () {
+    for (const choice of ['sim', 'crowded'] as const) for (const secrets of SECRET_SETS.filter((s) => choice === 'sim' || s.length > 0)) for (const binding of bindings) yield { choice, secrets, binding, config: cfg(choice, secrets, binding) };
+  };
+
+  it('characterization: every (choice x secrets x binding x market) cell resolves the receiver secrets as the oracle says', () => {
+    let n = 0;
+    for (const { choice, secrets, binding, config } of cells()) {
+      const registry = build(config);
+      for (const market of MARKETS) {
+        expect(secretsOf(config, registry, market), `${choice}/${secrets.length}/${binding}/${market}`).toEqual(oracle(config));
+        n += 1;
+      }
+    }
+    expect(n).toBe((3 + 2) * 3 * 2); // sim: 3 secret sets, crowded: the 2 non-empty ones; 3 bindings; 2 markets
+  });
+
+  it('characterization: which port is bound, in which mode, and what an unbound or unregistered capability does', () => {
+    for (const market of MARKETS) {
+      expect(build(cfg('sim', [CURRENT], 'unset')).bindingFor('institution-banking', market)).toMatchObject({ provider: 'simulator', mode: 'sim' });
+      expect(build(cfg('crowded', [CURRENT], 'unset')).bindingFor('institution-banking', market)).toMatchObject({ provider: 'crowded', mode: 'sandbox' });
+      expect(build(cfg('crowded', [CURRENT], 'live')).bindingFor('institution-banking', market)).toMatchObject({ provider: 'crowded', mode: 'live' });
+      // CROWDED_BINDING=live on the simulator binds nothing live.
+      expect(build(cfg('sim', [CURRENT], 'live')).bindingFor('institution-banking', market)).toMatchObject({ provider: 'simulator', mode: 'sim' });
+      expect(build(cfg('sim', [CURRENT], 'unset')).bindingFor('not-a-capability', market)).toBeUndefined();
+      expect(() => build(cfg('sim', [CURRENT], 'unset')).resolve('not-a-capability', market)).toThrow(`Capability not-a-capability is not bound for ${market}`);
+      const { registry: plain, simulators } = createRegistry('sim', systemClock(), {});
+      expect(() => simulators.registry.bind({ capability: 'institution-banking', market, provider: 'nobody', mode: 'sim' })).toThrow('No adapter registered for institution-banking/nobody');
+      expect(plain.bindingFor('funding', market)).toEqual({ capability: 'funding', market, provider: 'simulator', mode: 'sim' });
+    }
+  });
+
+  it('differential: the binding carries the secrets exactly when the oracle says there are some, and only on institution-banking', () => {
+    for (const { choice, secrets, config } of cells()) {
+      const registry = build(config);
+      for (const market of MARKETS) {
+        expect(registry.bindingFor('institution-banking', market)?.webhook?.secrets).toEqual(choice === 'crowded' ? secrets : undefined);
+        for (const { capability } of PORTS.filter((p) => p.capability !== 'institution-banking')) expect(registry.bindingFor(capability, market)?.webhook).toBeUndefined();
+      }
+    }
+  });
+
+  it('a binding that carries no capability, or a market that is unbound, reads as no secrets (fails closed)', () => {
+    const { registry, simulators } = createRegistry('sim', systemClock(), {});
+    simulators.registry.register('scratch', 'x', () => ({}));
+    simulators.registry.bind({ capability: 'institution-banking', market: 'IL', provider: 'simulator', mode: 'sim' });
+    expect(crowdedWebhookSecrets(registry, 'IL')).toEqual([]);
+    expect(crowdedWebhookSecrets({ bindingFor: () => undefined }, 'US')).toEqual([]);
+    expect(crowdedWebhookSecrets({ bindingFor: (capability, market) => ({ capability, market, provider: 'crowded', mode: 'live' }) }, 'US')).toEqual([]);
+  });
+
+  it('the answer is a copy: mutating it cannot change what the binding carries', () => {
+    const registry = build(cfg('crowded', [CURRENT, PREVIOUS], 'unset'));
+    crowdedWebhookSecrets(registry, 'US').push('evil');
+    expect(crowdedWebhookSecrets(registry, 'US')).toEqual([CURRENT, PREVIOUS]);
+  });
+
+  it('the secrets are read per market: a binding on one market answers for that market only', () => {
+    const { registry, simulators } = createRegistry('sim', systemClock(), {});
+    simulators.registry.register('institution-banking', 'x', () => ({}));
+    simulators.registry.bind({ capability: 'institution-banking', market: 'US', provider: 'x', mode: 'sim', webhook: { secrets: ['us-secret'] } });
+    simulators.registry.bind({ capability: 'institution-banking', market: 'IL', provider: 'x', mode: 'sim', webhook: { secrets: ['il-secret'] } });
+    expect(crowdedWebhookSecrets(registry, 'US')).toEqual(['us-secret']);
+    expect(crowdedWebhookSecrets(registry, 'IL')).toEqual(['il-secret']);
+  });
+
+  it('every non-banking binding (stripe, esim, notify, the marketplace set) is exactly as before: provider and mode only', () => {
+    const registry = bind({ ...cfg('crowded', [CURRENT], 'unset'), ...chosen, ...stripeSet, ...smsSet }).registry;
+    expect(registry.bindingFor('funding', 'US')).toMatchObject({ provider: 'stripe' });
+    expect(registry.bindingFor('esim', 'IL')).toMatchObject({ provider: 'airalo' });
+    for (const market of MARKETS) {
+      for (const { capability } of PORTS.filter((p) => p.capability !== 'institution-banking')) {
+        const b = registry.bindingFor(capability, market);
+        if (b) expect(Object.keys(b).sort()).toEqual(['capability', 'market', 'mode', 'provider']);
+      }
+    }
   });
 });

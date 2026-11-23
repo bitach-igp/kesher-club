@@ -9,6 +9,11 @@ export interface Binding {
   market: Market;
   provider: string;
   mode: Mode;
+  /**
+   * What the bound provider receives webhooks with (T-0771). A consumer asks the binding instead of comparing a provider's name:
+   * no `webhook` means nothing is configured and every delivery is refused. Never serialise a binding whole; the secrets are live.
+   */
+  webhook?: { secrets: readonly string[] };
 }
 
 export type Factory<P> = (mode: Mode) => P;
