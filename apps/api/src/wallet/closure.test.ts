@@ -5,8 +5,8 @@
 // vendor confirms; money with no load behind it waits on a payout; a closed account no longer signs in.
 import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { money, Secret, uuidv7 } from '@kesher/domain';
-import { FederatedIdPError, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock } from '@kesher/ports';
+import { money, Secret, toWire, uuidv7 } from '@kesher/domain';
+import { FederatedIdPError, FundingError, fixedClock, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { createPiiCipher } from '../crypto/pii.ts';
 import { generateSigningKey } from '../auth/tokens.ts';
@@ -15,6 +15,7 @@ import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { refundKey, refundSettleKey, type ClosureView } from './closure.ts';
+import { refOf } from '../ops/external-ref.ts';
 import { runLoad } from './loads.ts';
 
 let db: TestDatabase;
@@ -335,5 +336,279 @@ describe('T-0692: closing revokes the Apple token', () => {
     expect(revokeCalls().filter((c) => c.refreshToken === TOKEN && c.provider === 'apple').length).toBe(before + 1);
     erase.mockRestore();
     spy.mockRestore();
+  });
+});
+
+// T-0778: status resolves the pending refunds' vendor ids with one external_ref query, and nothing else changes.
+describe('T-0778: closure status reads the pending refunds\' vendor ids in one query', () => {
+  type Fate = 'pending' | 'settle' | 'fail' | 'noref';
+  interface Spec {
+    amounts: bigint[];
+    fates: Fate[];
+    /** Index of the load whose getRefund throws PROVIDER_UNAVAILABLE. */
+    throwAt?: number | undefined;
+  }
+  interface Setup {
+    m: Member;
+    loadIds: string[];
+    vendorIds: string[];
+    vendorLoadIds: string[];
+  }
+  let phoneSeq = 0;
+  const nextPhone = () => `+1212555${String(9000 + phoneSeq++)}`;
+  const service = () => app.services.closure;
+
+  /** A member with one pm_slowrefund load per amount, closed once so every load has a pending refund; then each refund meets its fate. */
+  async function setup(spec: Spec): Promise<Setup> {
+    const m = await register(nextPhone());
+    const loadIds: string[] = [];
+    const vendorLoadIds: string[] = [];
+    for (const [i, amount] of spec.amounts.entries()) {
+      const l = await load(m, amount, 'pm_slowrefund', `t0778-${m.partyId}-${i}`);
+      loadIds.push(l.transfer.id);
+      vendorLoadIds.push((await app.services.loads.vendorLoadOf(l.transfer.id))!);
+    }
+    const vendorIds: string[] = [];
+    if (spec.amounts.length > 0) {
+      expect((await service().close(m.partyId, NOW)).state).toBe('refunding');
+      for (const [i, loadId] of loadIds.entries()) {
+        const t = (await app.services.transfers.byKey(refundKey(m.partyId, loadId)))!;
+        // The refunds were created at one clock reading, so their order is a tie on id; pin it to newest load first.
+        await db.query(`update ops.transfer set created_at = $2::timestamptz where id = $1`, [t.id, new Date(NOW.getTime() + (loadIds.length - 1 - i) * 1_000).toISOString()]);
+        const vendorId = (await refOf(db, 'refund', t.id, 'simulator'))!;
+        vendorIds.push(vendorId);
+        const fate = spec.fates[i]!;
+        if (fate === 'settle') host.simulators.funding.settleRefund(vendorId);
+        if (fate === 'fail') host.simulators.funding.settleRefund(vendorId, 'failed');
+        if (fate === 'noref') await db.query(`delete from ops.external_ref where entity_type = 'refund' and entity_id = $1`, [t.id]);
+      }
+    }
+    return { m, loadIds, vendorIds, vendorLoadIds };
+  }
+
+  /** The pre-change body of ClosureService.status, verbatim but for the ref lookup going through refOf. */
+  async function legacyStatus(partyId: string): Promise<ClosureView> {
+    const s = service() as unknown as {
+      d: { db: typeof db; port: { getRefund(id: string): Promise<unknown> }; provider: string; identity: { findUser(id: string): Promise<{ status: string } | undefined> } };
+      refundTransfers(partyId: string): Promise<{ id: string; state: string }[]>;
+      applyRefund(t: unknown, refund: unknown, now: Date): Promise<unknown>;
+      settle(partyId: string, now: Date): Promise<ClosureView>;
+      view(partyId: string, state: string, now: Date): Promise<ClosureView>;
+    };
+    const user = await s.d.identity.findUser(partyId);
+    if (!user) throw new Error('NOT_FOUND');
+    if (user.status === 'closed') return s.view(partyId, 'closed', NOW);
+    const pending = (await s.refundTransfers(partyId)).filter((t) => t.state === 'submitted');
+    if (pending.length === 0) return s.view(partyId, 'open', NOW);
+    for (const t of pending) {
+      const refundId = await refOf(s.d.db, 'refund', t.id, s.d.provider);
+      if (refundId) await s.applyRefund(t, await s.d.port.getRefund(refundId), NOW);
+    }
+    return s.settle(partyId, NOW);
+  }
+
+  /** Runs status (new or the legacy body) and returns everything observable about the outcome, ids replaced by their position. */
+  async function observe(which: 'new' | 'legacy', su: Setup, throwAt?: number | undefined) {
+    const { m, loadIds, vendorIds, vendorLoadIds } = su;
+    const funding = host.simulators.funding;
+    const original = funding.getRefund.bind(funding);
+    const calls: string[] = [];
+    const spy = vi.spyOn(funding, 'getRefund').mockImplementation(async (id: string) => {
+      calls.push(id);
+      if (throwAt !== undefined && id === vendorIds[throwAt]) throw new FundingError('PROVIDER_UNAVAILABLE', 'vendor down');
+      return original(id);
+    });
+    let outcome: { view: ClosureView } | { error: string };
+    try {
+      outcome = { view: which === 'new' ? await service().status(m.partyId, NOW) : await legacyStatus(m.partyId) };
+    } catch (e) {
+      outcome = { error: `${(e as { code?: string }).code ?? ''}|${(e as Error).message}` };
+    } finally {
+      spy.mockRestore();
+    }
+    const transfers = await Promise.all(loadIds.map(async (id) => (await app.services.transfers.byKey(refundKey(m.partyId, id)))!));
+    const names = new Map<string, string>([[m.partyId, 'P']]);
+    loadIds.forEach((id, i) => names.set(id, `L${i}`));
+    transfers.forEach((t, i) => names.set(t.id, `R${i}`));
+    vendorIds.forEach((id, i) => names.set(id, `V${i}`));
+    vendorLoadIds.forEach((id, i) => names.set(id, `VL${i}`));
+    const norm = (v: unknown) => {
+      let j = JSON.stringify(v);
+      for (const [from, to] of names) j = j.split(from).join(to);
+      return JSON.parse(j) as unknown;
+    };
+    const ids = transfers.map((t) => t.id);
+    const events = (await db.query<{ transfer_id: string; from_state: string | null; to_state: string; reason: string | null }>(`select transfer_id, from_state, to_state, reason from ops.transfer_event where transfer_id = any($1::uuid[]) order by id`, [ids])).rows;
+    const journalRows = (await db.query<{ id: string; idempotency_key: string; kind: string; transfer_id: string; effective_at: string; metadata: unknown }>(`select j.id, j.idempotency_key, j.kind, j.transfer_id, j.effective_at::text, j.metadata from ledger.journal j where j.kind = 'refund' and j.transfer_id = any($1::uuid[]) order by (select min(p.id) from ledger.posting p where p.journal_id = j.id)`, [ids])).rows;
+    const journals = [];
+    for (const j of journalRows) {
+      const postings = (await db.query<{ type: string; currency: string; amount_minor: string }>(`select a.type::text, p.currency::text, p.amount_minor::text from ledger.posting p join ledger.account a on a.id = p.account_id where p.journal_id = $1 order by p.id`, [j.id])).rows;
+      journals.push({ key: j.idempotency_key, kind: j.kind, transfer: j.transfer_id, effectiveAt: j.effective_at, metadata: j.metadata, postings });
+    }
+    const refs = (await db.query<{ entity_id: string; external_id: string }>(`select entity_id, external_id from ops.external_ref where entity_type = 'refund' and entity_id = any($1::uuid[]) order by external_id`, [ids])).rows;
+    const audits = (await db.query<{ action: string; payload: unknown }>(`select action, payload from audit.entry where subject = $1 order by id`, [m.partyId])).rows;
+    return norm({
+      outcome,
+      calls,
+      transfers: transfers.map((t) => ({ state: t.state, failureCode: t.failureCode ?? null, amount: toWire(t.amount), settled: t.journalId !== undefined })),
+      events,
+      journals,
+      refs,
+      audits: audits.map((a) => ({ action: a.action, payload: a.payload })),
+      userStatus: (await app.services.identity.findUser(m.partyId))!.status,
+      purses: (await app.services.accounts.purses(m.partyId)).map((p) => ({ c: p.currency, a: p.available.minor.toString(), h: p.holds.minor.toString() })),
+    }) as { outcome: { view?: ClosureView; error?: string }; calls: string[]; journals: { key: string }[]; transfers: { state: string }[]; events: unknown[]; audits: unknown[]; userStatus: string; refs: unknown[]; purses: unknown[] };
+  }
+
+  /** Counts statements that read ops.external_ref while `fn` runs. */
+  async function refQueries(fn: () => Promise<unknown>): Promise<number> {
+    const spy = vi.spyOn(db, 'query');
+    try {
+      await fn();
+      return spy.mock.calls.filter((c) => /external_ref/.test(String(c[0]))).length;
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  // ---- characterization: green before and after ----
+
+  it('three submitted refunds, one without a ref: the other two are asked at the vendor and applied in refund order; the closure keeps refunding', async () => {
+    const su = await setup({ amounts: [1_100n, 2_200n, 3_300n], fates: ['settle', 'noref', 'settle'] });
+    const o = await observe('new', su);
+    expect(o.outcome.view).toMatchObject({ state: 'refunding' });
+    // Refunds were created newest load first (L2, L1, L0); the vendor is asked in that order and the one without a ref is skipped.
+    expect(o.calls).toEqual(['V2', 'V0']);
+    expect(o.transfers.map((t) => t.state)).toEqual(['settled', 'submitted', 'settled']);
+    expect(o.journals.map((j) => j.key)).toEqual([`${refundSettleKey(`closure:P:L2`)}`, `${refundSettleKey(`closure:P:L0`)}`]);
+    expect(o.userStatus).toBe('active');
+    // The same call again is a replay: nothing new is posted, the same two are asked again.
+    const again = await observe('new', su);
+    expect(again.journals).toEqual(o.journals);
+    expect(again.events).toEqual(o.events);
+    expect(again.outcome).toEqual(o.outcome);
+    // The two settled refunds are not asked about again, and the one without a ref never is.
+    expect(again.calls).toEqual([]);
+  });
+
+  it('only a refund link under this provider and entity type counts: a link elsewhere is a refund without a ref', async () => {
+    const su = await setup({ amounts: [1_000n, 2_000n], fates: ['settle', 'settle'] });
+    const t0 = (await app.services.transfers.byKey(refundKey(su.m.partyId, su.loadIds[0]!)))!;
+    const t1 = (await app.services.transfers.byKey(refundKey(su.m.partyId, su.loadIds[1]!)))!;
+    // L0's refund keeps only a link under another provider; L1's keeps only a link of another entity type.
+    await db.query(`update ops.external_ref set provider = 'other-vendor' where entity_type = 'refund' and entity_id = $1`, [t0.id]);
+    await db.query(`update ops.external_ref set entity_type = 'transfer' where entity_type = 'refund' and entity_id = $1`, [t1.id]);
+    const o = await observe('new', su);
+    expect(o.calls).toEqual([]);
+    expect(o.transfers.map((t) => t.state)).toEqual(['submitted', 'submitted']);
+    expect(o.outcome.view).toMatchObject({ state: 'refunding' });
+  });
+
+  it('every refund confirmed: the account closes once, with one audit entry', async () => {
+    const su = await setup({ amounts: [900n, 1_800n], fates: ['settle', 'settle'] });
+    const o = await observe('new', su);
+    expect(o.outcome.view).toMatchObject({ state: 'closed', refunds: [{ state: 'settled' }, { state: 'settled' }] });
+    expect(o.userStatus).toBe('closed');
+    expect(o.audits.filter((a) => (a as { action: string }).action === 'account.closed')).toHaveLength(1);
+  });
+
+  it('one refund the vendor refuses fails its transfer and blocks the closure; a pending one stays submitted', async () => {
+    const su = await setup({ amounts: [700n, 1_400n, 2_100n], fates: ['fail', 'pending', 'settle'] });
+    const o = await observe('new', su);
+    expect(o.transfers.map((t) => t.state)).toEqual(['failed', 'submitted', 'settled']);
+    expect(o.outcome.view).toMatchObject({ state: 'refunding' });
+    expect(o.calls).toEqual(['V2', 'V1', 'V0']);
+  });
+
+  it('a vendor error on the second refund propagates after the first was applied; the third is not asked; a retry finishes', async () => {
+    const su = await setup({ amounts: [600n, 1_200n, 1_800n], fates: ['settle', 'settle', 'settle'] });
+    const o = await observe('new', su, 1);
+    expect(o.outcome.error).toBe('PROVIDER_UNAVAILABLE|vendor down');
+    expect(o.calls).toEqual(['V2', 'V1']);
+    expect(o.transfers.map((t) => t.state)).toEqual(['submitted', 'submitted', 'settled']);
+    const retry = await observe('new', su);
+    expect(retry.outcome.view).toMatchObject({ state: 'closed' });
+    expect(retry.transfers.map((t) => t.state)).toEqual(['settled', 'settled', 'settled']);
+    expect(retry.journals).toHaveLength(3);
+  });
+
+  it('one pending refund, and none at all, report the same as before', async () => {
+    const one = await setup({ amounts: [1_000n], fates: ['settle'] });
+    expect((await observe('new', one)).outcome.view).toMatchObject({ state: 'closed', refunds: [{ state: 'settled' }] });
+    const none = await setup({ amounts: [], fates: [] });
+    const o = await observe('new', none, undefined);
+    expect(o.outcome.view).toMatchObject({ state: 'open', refunds: [] });
+    expect(o.calls).toEqual([]);
+  });
+
+  // ---- statement count ----
+
+  it('status with three submitted refunds, one without a ref, issues one external_ref query', async () => {
+    const su = await setup({ amounts: [1_100n, 2_200n, 3_300n], fates: ['settle', 'noref', 'settle'] });
+    expect(await refQueries(() => service().status(su.m.partyId, NOW))).toBe(1);
+  });
+
+  it('one submitted refund: one external_ref query', async () => {
+    const su = await setup({ amounts: [1_500n], fates: ['pending'] });
+    expect(await refQueries(() => service().status(su.m.partyId, NOW))).toBe(1);
+  });
+
+  it('a closed account and an account with no pending refunds issue no external_ref query', async () => {
+    const none = await setup({ amounts: [], fates: [] });
+    expect(await refQueries(() => service().status(none.m.partyId, NOW))).toBe(0);
+    const done = await setup({ amounts: [800n], fates: ['settle'] });
+    await service().status(done.m.partyId, NOW);
+    expect((await app.services.identity.findUser(done.m.partyId))!.status).toBe('closed');
+    expect(await refQueries(() => service().status(done.m.partyId, NOW))).toBe(0);
+    // The vendor refused the only refund: it failed, the account stays open, and nothing is pending any more.
+    const blocked = await setup({ amounts: [800n], fates: ['fail'] });
+    await service().status(blocked.m.partyId, NOW);
+    expect(await refQueries(() => service().status(blocked.m.partyId, NOW))).toBe(0);
+  });
+
+  // ---- differential: the new status against the pre-change body, over random scenarios ----
+
+  it('matches the pre-change status byte for byte over random scenarios (views, calls, journals, events, refs, errors)', { timeout: 120_000 }, async () => {
+    // mulberry32: a small seeded generator, so a failing scenario replays.
+    let seed = 0x778;
+    const rnd = (n: number) => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return (((t ^ (t >>> 14)) >>> 0) % n);
+    };
+    const fateOf = (): Fate => (['pending', 'settle', 'fail', 'noref'] as const)[rnd(4)]!;
+    const seen = { empty: 0, closed: 0, refunding: 0, blocked: 0, error: 0, settledThenOpen: 0, noref: 0, many: 0 };
+    for (let run = 0; run < 24; run++) {
+      const n = run === 0 ? 0 : 1 + rnd(5);
+      const amounts = Array.from({ length: n }, () => BigInt(500 + rnd(9_000)));
+      const fates = Array.from({ length: n }, fateOf);
+      const throwAt = n > 0 && rnd(3) === 0 ? rnd(n) : undefined;
+      const spec: Spec = { amounts, fates, throwAt };
+      const a = await setup(spec);
+      const b = await setup(spec);
+      const viaNew = await observe('new', a, throwAt);
+      const viaOld = await observe('legacy', b, throwAt);
+      expect(viaNew, JSON.stringify({ run, amounts: amounts.map(String), fates, throwAt })).toEqual(viaOld);
+      // And once more (a replay, or the retry after an error): still identical, down to the vendor calls it makes.
+      const replayNew = await observe('new', a);
+      expect(replayNew, JSON.stringify({ run, replay: true })).toEqual(await observe('legacy', b));
+      if (n === 0) seen.empty++;
+      if (n >= 3) seen.many++;
+      if (viaNew.outcome.error) seen.error++;
+      else seen[viaNew.outcome.view!.state as 'closed' | 'refunding' | 'blocked']++;
+      if (fates.includes('noref')) seen.noref++;
+      if (viaNew.transfers.some((t) => t.state === 'settled') && viaNew.transfers.some((t) => t.state === 'submitted')) seen.settledThenOpen++;
+    }
+    // The generator must reach every branch, or the comparison proves little.
+    expect(seen.empty).toBeGreaterThan(0);
+    expect(seen.closed).toBeGreaterThan(0);
+    expect(seen.refunding).toBeGreaterThan(0);
+    expect(seen.blocked + seen.error).toBeGreaterThan(0);
+    expect(seen.error).toBeGreaterThan(0);
+    expect(seen.noref).toBeGreaterThan(0);
+    expect(seen.settledThenOpen).toBeGreaterThan(0);
+    expect(seen.many).toBeGreaterThan(0);
   });
 });
