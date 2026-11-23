@@ -65,7 +65,7 @@ export async function main(env: Record<string, string | undefined>, opts: Worker
     // T-0043: prod may leave a port on its simulator only while every flag it gates is off (registry default and store).
     await assertProdSimulatorsSafe(config.APP_ENV, registry, config.MARKET, new FlagService(db, new ApprovalService(db), new AuditService(db)));
     const app = createApp({
-      refuseFlagsOnSimulators: config.APP_ENV === 'prod', db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), clock, crowdedWebhookSecrets: crowdedWebhookSecrets(config) });
+      refuseFlagsOnSimulators: config.APP_ENV === 'prod', db, registry, market: config.MARKET, signingKey, issuer: config.TOKEN_ISSUER, identity: new PostgresIdentityRepository(db, pii), clock, crowdedWebhookSecrets: crowdedWebhookSecrets(registry, config.MARKET) });
     const jobs = (opts.buildJobs ?? defaultJobs)({ app, db, registry, market: config.MARKET, clock, runs: pgRunLog(db), catalogue });
     const scheduler = new Scheduler(jobs, advisoryLock(locks, config.MARKET), emit);
     scheduler.start();

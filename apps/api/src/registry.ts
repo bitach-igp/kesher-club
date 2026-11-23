@@ -353,7 +353,7 @@ export function createRegistry(
     simulators.registry.register('institution-banking', CROWDED_PROVIDER, () => adapter);
     const bindingMode = banking.binding ?? 'sandbox';
     if (bindingMode === 'live') banking.warn?.(LIVE_BINDING_WARNING);
-    for (const market of ['US', 'IL'] as const) simulators.registry.bind({ capability: 'institution-banking', market, provider: CROWDED_PROVIDER, mode: bindingMode });
+    for (const market of ['US', 'IL'] as const) simulators.registry.bind({ capability: 'institution-banking', market, provider: CROWDED_PROVIDER, mode: bindingMode, webhook: { secrets } });
     providers['institution-banking'] = 'crowded';
   }
   // The marketplace and identity ports (T-0042). Each is bound in sandbox mode, whatever the base URL: going live is a
@@ -613,7 +613,7 @@ export function overridesFromConfig(config: ProviderConfig, db: SqlClient, warn?
   return { ...marketplace, institutionBanking: { provider: 'crowded', baseUrl, token, webhookSecrets, binding: config.CROWDED_BINDING === 'live' ? 'live' : 'sandbox', ...(warn ? { warn } : {}), keys: (now) => new PostgresVendorKeyLedger(db, CROWDED_PROVIDER, now) } };
 }
 
-/** The Crowded webhook secrets the receiver verifies with: the configured ones on `crowded`, none otherwise (every delivery is refused, as before). */
-export function crowdedWebhookSecrets(config: ProviderConfig): string[] {
-  return config.PROVIDER_INSTITUTION_BANKING === 'crowded' ? (config.CROWDED_WEBHOOK_SECRETS ?? []).map((s) => s.reveal()) : [];
+/** The Crowded webhook secrets the receiver verifies with: what the institution-banking binding carries, none when it carries none (every delivery is refused, as before). */
+export function crowdedWebhookSecrets(registry: Pick<ProviderRegistry, 'bindingFor'>, market: Market): string[] {
+  return [...(registry.bindingFor('institution-banking', market)?.webhook?.secrets ?? [])];
 }
