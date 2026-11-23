@@ -185,7 +185,7 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
 function HeldFrame() {
   const th = useTheme();
   return (
-    <View testID="appearance-held" style={{ ...StyleSheet.absoluteFillObject, padding: th.space[4], backgroundColor: th.color.bg.canvas }}>
+    <View testID="appearance-held" style={{ ...StyleSheet.absoluteFill, padding: th.space[4], backgroundColor: th.color.bg.canvas }}>
       <Skeleton />
     </View>
   );
