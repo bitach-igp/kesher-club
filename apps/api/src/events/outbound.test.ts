@@ -361,6 +361,19 @@ describe('messages() reads attempts concurrently (T-0777)', () => {
     await expect(new OutboundEventsService(db, sync).messages(inst)).rejects.toBe(syncEarly);
   });
 
+  it('an earlier slow async rejection beats a later synchronous throw', async () => {
+    const { inst, ids } = await seed(5);
+    const early = new Error('index 1, slow async');
+    const port = portOf((id) => {
+      if (id === ids[1]) return delay(25).then(() => { throw early; });
+      if (id === ids[3]) throw new Error('index 3, sync');
+      return Promise.resolve([]);
+    });
+    await expect(new OutboundEventsService(db, port).messages(inst)).rejects.toBe(early);
+    const was = await settle(oldMessages(port, inst));
+    expect(was).toEqual({ err: early });
+  });
+
   it('starts every attempts read before the first one resolves (concurrency)', async () => {
     const { inst, ids } = await seed(50);
     const started: string[] = [];
