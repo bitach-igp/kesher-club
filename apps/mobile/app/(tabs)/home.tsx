@@ -94,6 +94,7 @@ export function HomeView({ model }: { model: HomeModel }) {
       {row.length ? <QuickRow items={row.map((q) => ({ key: q.action, label: t(q.label, locale), href: q.href }))} onGo={(href) => router.push(href)} /> : null}
       <Card testID="home-settings">
         <ListRow title={t('home.receiveIn', locale)} onPress={model.goReceiveIn} testID="home-receive-in" />
+        <ListRow title={t('home.appearance', locale)} onPress={model.goAppearance} testID="home-appearance" />
         {/* Member text, shown as written. */}
         <ListRow title={t('home.yourName', locale)} subtitle={s.displayName ?? t('home.yourName.notSet', locale)} onPress={model.goName} testID="home-your-name" />
         <ListRow title={t('legal.entry', locale)} subtitle={t('legal.entry.hint', locale)} onPress={() => router.push(LEGAL_SETTINGS_HREF)} last testID="home-legal" />

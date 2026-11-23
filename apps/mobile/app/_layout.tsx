@@ -7,12 +7,12 @@
 // so the bundler inlines it and drops the development branch, the demo personas and their seeded
 // passkeys from every other bundle. Nothing the API answers can switch it.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { Linking, Pressable, View } from 'react-native';
+import { Linking, Pressable, StyleSheet, View } from 'react-native';
 import { Slot, useGlobalSearchParams, useRootNavigationState, useRouter as useExpoRouter, useSegments, type Href as ExpoHref } from 'expo-router';
 import { uuidv7 } from '@kesher/domain';
 import { createClient } from '@kesher/sdk';
 import { ApiProvider, sdkApi, type Api, type SavedPaymentMethod } from '../src/api.ts';
-import { TabBar, Txt } from '../src/components/index.ts';
+import { Skeleton, TabBar, Txt } from '../src/components/index.ts';
 import { buildEnv, parseMobileConfig, type MobileConfig } from '../src/config.ts';
 import { DeviceProvider, type Device } from '../src/device.ts';
 import { LocaleProvider, t, useLocale, type Locale } from '../src/i18n.ts';
@@ -22,7 +22,8 @@ import { useStore } from '../src/model.ts';
 import { activeTab, ParamsProvider, RouterProvider, TABS, type Router } from '../src/navigation.ts';
 import { AuthenticatorProvider, seededAuthenticator, webAuthnAuthenticator, type Authenticator, type SeededDevice } from '../src/passkeys.ts';
 import { installId, memorySession, SessionProvider, type Session } from '../src/session.ts';
-import { useTheme } from '../src/theme.ts';
+import { ThemeOverrideProvider, useTheme } from '../src/theme.ts';
+import { asTheme, createSharedAppearance, overrideOf, resetSharedAppearance, SharedAppearanceProvider, type SharedAppearance } from './settings/appearance.model.ts';
 import { webDevice, type BrowserNavigator } from '../src/web-device.ts';
 
 export const SIGN_IN_HREF = '/(auth)/sign-in';
@@ -51,7 +52,12 @@ export interface RootDeps {
   /** Held while the member owes a consent (T-0062). */
   consent: ConsentGate;
   personas?: PersonaPicker | undefined;
+  /** The member's stored appearance (T-1021): `system` until a signed-in member's preference is read. */
+  appearance: SharedAppearance;
 }
+
+/** How long a signed-in launch waits for the stored appearance before it renders in the system mode (T-1021). */
+export const APPEARANCE_HOLD_MS = 1500;
 
 /** Where the member belongs for these segments, or undefined to stay; `resume` replaces Home after sign-in. */
 export function guard(signedIn: boolean, segments: readonly string[], resume?: string, consentPending = false): string | undefined {
@@ -91,6 +97,44 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
   if (!signedIn) resume.current = resumable(segments, params) ?? resume.current;
   const pendingConsent = useStore(deps.consent).pending;
   const target = guard(signedIn, segments, resume.current, pendingConsent);
+  // The stored appearance (T-1021): read once per sign-in, held back for at most APPEARANCE_HOLD_MS behind a neutral
+  // system-themed frame, and written to the shared store even when it arrives later (the mode then switches once).
+  // Signed out there is no account, so the system decides and the store goes back to `system`.
+  const shared = deps.appearance;
+  const theme = useStore(shared.store).theme;
+  const [released, setReleased] = useState(false);
+  useEffect(() => {
+    if (!signedIn) {
+      resetSharedAppearance(shared);
+      setReleased(false);
+      return;
+    }
+    let live = true;
+    // A choice the member makes (or a read the Appearance screen does) while this one is late wins over it.
+    const began = shared.store.get();
+    const release = () => live && setReleased(true);
+    const timer = setTimeout(release, APPEARANCE_HOLD_MS);
+    // A stub or demo double may throw at once or have no preferences at all: that is a failed read, not a crash.
+    let read: Promise<unknown>;
+    try {
+      read = Promise.resolve(deps.api.preferences.get());
+    } catch (e) {
+      read = Promise.reject(e);
+    }
+    read.then(
+      (p) => {
+        if (!live) return;
+        if (shared.store.get() === began) shared.store.patch({ theme: asTheme((p as { theme?: unknown } | undefined)?.theme) });
+        release();
+      },
+      release,
+    );
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [signedIn, shared, deps.api]);
+  const held = signedIn && !released;
   // expo-router refuses to navigate before its root navigator has mounted.
   useEffect(() => {
     if (!ready || !target) return;
@@ -98,28 +142,52 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
     router.replace(target);
   }, [ready, target, router]);
   return (
-    <LocaleProvider value={deps.locale}>
-      <ApiProvider value={deps.api}>
-        <ConsentGateProvider value={deps.consent}>
-          <SessionProvider value={deps.session}>
-            <AuthenticatorProvider value={deps.authenticator}>
-              <OpenerProvider value={deps.opener}>
-                <DeviceProvider value={deps.device}>
-                  <RouterProvider value={router}>
-                    <ParamsProvider value={params}>
-                      {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
-                      <Chrome signedIn={signedIn} segments={segments} router={router}>
-                        {children}
-                      </Chrome>
-                    </ParamsProvider>
-                  </RouterProvider>
-                </DeviceProvider>
-              </OpenerProvider>
-            </AuthenticatorProvider>
-          </SessionProvider>
-        </ConsentGateProvider>
-      </ApiProvider>
-    </LocaleProvider>
+    <ThemeOverrideProvider value={held || !signedIn ? undefined : overrideOf(theme)}>
+      <LocaleProvider value={deps.locale}>
+        <ApiProvider value={deps.api}>
+          <SharedAppearanceProvider value={shared}>
+            <ConsentGateProvider value={deps.consent}>
+              <SessionProvider value={deps.session}>
+                <AuthenticatorProvider value={deps.authenticator}>
+                  <OpenerProvider value={deps.opener}>
+                    <DeviceProvider value={deps.device}>
+                      <RouterProvider value={router}>
+                        <ParamsProvider value={params}>
+                          <View style={{ flex: 1 }}>
+                          {/* While held the screen stays mounted (the router's Slot keeps its place and the sign-in redirect lands), but covered, inert and hidden from screen readers. */}
+                          <View
+                            style={{ flex: 1, opacity: held ? 0 : 1 }}
+                            pointerEvents={held ? 'none' : 'auto'}
+                            {...(held ? { 'aria-hidden': true, accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' as const } : {})}
+                          >
+                            {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
+                            <Chrome signedIn={signedIn} segments={segments} router={router}>
+                              {children}
+                            </Chrome>
+                          </View>
+                          {held ? <HeldFrame /> : null}
+                          </View>
+                        </ParamsProvider>
+                      </RouterProvider>
+                    </DeviceProvider>
+                  </OpenerProvider>
+                </AuthenticatorProvider>
+              </SessionProvider>
+            </ConsentGateProvider>
+          </SharedAppearanceProvider>
+        </ApiProvider>
+      </LocaleProvider>
+    </ThemeOverrideProvider>
+  );
+}
+
+/** Shown while a signed-in launch waits for the stored appearance: the loading skeleton on the system canvas, no content. */
+function HeldFrame() {
+  const th = useTheme();
+  return (
+    <View testID="appearance-held" style={{ ...StyleSheet.absoluteFill, padding: th.space[4], backgroundColor: th.color.bg.canvas }}>
+      <Skeleton />
+    </View>
   );
 }
 
@@ -243,6 +311,7 @@ export function createRootDeps(config: MobileConfig, platform: Platform = {}): R
     locale: platform.language?.startsWith('he') ? 'he' : 'en',
     device: webDevice(platform.navigator),
     consent: createConsentGate(),
+    appearance: createSharedAppearance(),
     ...(loadPersonas ? { personas: { load: loadPersonas, current: () => persona, choose: (key: string) => void (persona = key) } } : {}),
   };
 }

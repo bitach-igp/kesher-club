@@ -145,6 +145,8 @@ describe('the model', () => {
     expect(router.current()).toBe('/card');
     m.goReceiveIn();
     expect(router.current()).toBe('/settings/currency');
+    m.goAppearance();
+    expect(router.current()).toBe('/settings/appearance');
     m.goName();
     expect(router.current()).toBe('/settings/name');
     m.goWallet('a-ils');

@@ -74,6 +74,7 @@ export interface HomeDeps {
   walletHref?: string;
   proposalsHref?: string;
   receiveInHref?: string;
+  appearanceHref?: string;
   nameHref?: string;
 }
 
@@ -227,6 +228,8 @@ export interface HomeModel {
   goVerify(): void;
   /** M33: which currency money sent to the member lands in. A preference, so it shows whatever the service status. */
   goReceiveIn(): void;
+  /** REQ-UX-003: System, Light or Dark. */
+  goAppearance(): void;
   /** "Your name": the name others see when they pay the member. */
   goName(): void;
   goCard(): void;
@@ -332,6 +335,9 @@ export function createHomeModel(deps: HomeDeps): HomeModel {
     },
     goReceiveIn() {
       deps.router.push(deps.receiveInHref ?? '/settings/currency');
+    },
+    goAppearance() {
+      deps.router.push(deps.appearanceHref ?? '/settings/appearance');
     },
     goName() {
       deps.router.push(deps.nameHref ?? '/settings/name');
