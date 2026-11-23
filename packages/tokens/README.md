@@ -99,7 +99,7 @@ Text pairs (4.5:1 in both modes):
 | `facet.magenta` on `bg.canvas` | 7.05:1 | 6.72:1 |
 
 Non-text pairs (3:1 in both modes; `accent.cyan` and `facet.yellow` are fills, `text.disabled` is
-exempt from AA and only documented):
+exempt from the AA text rule because it is for disabled labels only, but it is documented and held to the 3:1 non-text rule here):
 
 | Pair (fg on bg) | Light | Dark |
 | --- | --- | --- |
@@ -129,4 +129,4 @@ Values the gate moved from the card's starting list (record of why):
 | Token | Starting value | Final | Why |
 | --- | --- | --- | --- |
 | `color.border.strong` (light) | `#8A94A6` | `#858FA2` | `#8A94A6` is 3.06:1 on surface but 2.85:1 on canvas; the plain 3:1 claim on both surfaces needs 3.03:1 on canvas |
-| `color.overlay.scrim` (light) | alpha .48 (`#0102357A`) | alpha .55 (`#0102358C`) | white text over the .48 scrim on canvas is 3.80:1 (3.56:1 on surface), below 4.5:1; .55 gives 4.80:1 / 4.54:1 |
+| `color.overlay.scrim` (light) | alpha .48 (`#0102357A`) | alpha .55 (`#0102358C`) | white text over the .48 scrim on canvas is 3.80:1 (3.56:1 on surface), below 4.5:1; at nominal .55 it would be 4.80:1 / 4.54:1; the shipped byte `0x8C` is .549 and measures 4.79:1 on canvas and 4.52:1 on surface. The scrim has no consumer yet, so this move is precautionary rather than driven by a shipped screen |

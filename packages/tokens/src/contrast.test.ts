@@ -112,6 +112,11 @@ const colourLeaves = (o: unknown, path = ''): string[] =>
   typeof o === 'string' ? [path] : Object.entries(o as Record<string, unknown>).flatMap(([k, v]) => colourLeaves(v, path ? `${path}.${k}` : k));
 
 describe('WCAG helpers', () => {
+  it('pins the AA thresholds: 4.5:1 for text and 3:1 for non-text', () => {
+    expect(WCAG_AA_TEXT).toBe(4.5);
+    expect(WCAG_AA_NON_TEXT).toBe(3);
+  });
+
   it('black on white is 21:1 and a colour on itself is 1:1', () => {
     expect(contrastRatio('#000000', '#FFFFFF')).toBeCloseTo(21, 5);
     expect(contrastRatio('#FFFFFF', '#000000')).toBeCloseTo(21, 5);
@@ -185,7 +190,7 @@ describe('Night Market non-text contrast (3:1)', () => {
     }
   }
 
-  it('text.disabled is exempt from AA but still documented at 3.06:1 (light, on surface)', () => {
+  it('text.disabled is exempt from the AA text rule (disabled labels) but is documented and held to the 3:1 non-text rule, 3.06:1 light on surface', () => {
     expect(contrastRatio(light.color.text.disabled, light.color.bg.surface)).toBeGreaterThanOrEqual(3.06 - 0.005);
   });
 
