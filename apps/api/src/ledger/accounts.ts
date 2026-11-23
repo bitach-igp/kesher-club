@@ -58,8 +58,11 @@ async function findAccountRows(db: Database, ownerPartyId: string, slots: readon
  * The owner's accounts for these slots, in slot order, creating the missing ones, in one statement: the whole set is inserted in slot
  * order with `on conflict do nothing` (rows that exist are left untouched), and the result is read back from what was inserted and what
  * was there. A concurrent creator's row can be invisible to that statement (it commits after the statement's snapshot but before our
- * insert is decided), so a slot left without an id is read again; ledger rows are never deleted, so it is there by then. Every caller
- * walks the slots in the same order, so concurrent batches never wait on each other in a cycle.
+ * insert is decided), so a slot left without an id is read again; ledger rows are never deleted, so it is there by then.
+ *
+ * Deadlock invariant: every multi-row insert walks MEMBER_SLOTS in the same order (the `order by w.ord` below), so concurrent batches queue
+ * on the first contested row and never wait on each other in a cycle. A future caller that inserts account rows inside a transaction, or
+ * in any other slot order, could deadlock against these batches: keep the order, or take the rows one statement at a time.
  */
 async function ensureAccountRows(db: Database, ownerPartyId: string, slots: readonly Slot[]): Promise<string[]> {
   const fresh = slots.map(() => uuidv7());
@@ -134,7 +137,11 @@ export class AccountService {
     this.ledger = ledger;
   }
 
-  /** Creates wallet + pending in every currency; safe to call again (unique constraint). */
+  /**
+   * Creates wallet + pending in every currency; safe to call again (unique constraint). It always issues an INSERT (a no-op
+   * `on conflict do nothing` when all four rows exist), so the role needs INSERT on ledger.account, unlike `purses`, which reads first.
+   * Production callers run as club_app, which has it; today only tests call this.
+   */
   async provisionMember(partyId: string): Promise<LedgerAccount[]> {
     const ids = await ensureAccountRows(this.db, partyId, MEMBER_SLOTS);
     return MEMBER_SLOTS.map((s, i): LedgerAccount => ({ id: ids[i]!, ownerPartyId: partyId, type: s.type, currency: s.currency }));

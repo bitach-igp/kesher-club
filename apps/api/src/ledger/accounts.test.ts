@@ -266,6 +266,45 @@ describe('T-0779: batched account provisioning', () => {
     expect(await rowsOf(missing)).toEqual([]);
   });
 
+  it('never returns another owner\'s account: with other parties\' rows of the same type and currency newer than the target\'s partial state', async () => {
+    const ownerOf = async (ids: string[]) => (await db.query<{ owner_party_id: string }>(`select owner_party_id from ledger.account where id = any($1::uuid[])`, [ids])).rows.map((r) => r.owner_party_id);
+    for (const mask of [0, 1, 2, 5, 6, 9, 10, 13, 14, 15]) {
+      const target = uuidv7();
+      const existing = await seed(target, LOOP.map((_, i) => i).filter((i) => (mask >> i) & 1));
+      // Two other parties, fully provisioned after the target's partial state, so their rows are the newest of every type and currency.
+      const others = [uuidv7(), uuidv7()];
+      for (const o of others) await accounts.provisionMember(o);
+      const foreign = new Set((await Promise.all(others.map(async (o) => (await rowsOf(o)).map((r) => r.id)))).flat());
+      const viaProvision = await accounts.provisionMember(target);
+      expect(viaProvision.map((a) => a.id).some((id) => foreign.has(id))).toBe(false);
+      expect(new Set(await ownerOf(viaProvision.map((a) => a.id)))).toEqual(new Set([target]));
+      for (const [i, id] of existing) expect(viaProvision[i]!.id).toBe(id);
+      // purses on a second partial member (read-first path, then the batch) and on the completed one.
+      const target2 = uuidv7();
+      await seed(target2, LOOP.map((_, i) => i).filter((i) => (mask >> i) & 1));
+      for (const who of [target, target2]) {
+        const purses = await accounts.purses(who);
+        expect(new Set(await ownerOf(purses.map((p) => p.id)))).toEqual(new Set([who]));
+        expect(purses.some((p) => foreign.has(p.id))).toBe(false);
+      }
+      // The same through the fallback read.
+      const target3 = uuidv7();
+      await seed(target3, LOOP.map((_, i) => i).filter((i) => (mask >> i) & 1));
+      let hidden = false;
+      const w = watched(async (text, r) => {
+        if (!hidden && /with want/.test(text)) {
+          hidden = true;
+          return { ...r, rows: [], rowCount: 0 } as never;
+        }
+        return r;
+      });
+      const viaFallback = await w.service.provisionMember(target3);
+      expect(hidden).toBe(true);
+      expect(new Set(await ownerOf(viaFallback.map((a) => a.id)))).toEqual(new Set([target3]));
+      expect(viaFallback.some((a) => foreign.has(a.id))).toBe(false);
+    }
+  });
+
   // ---- statement counts: red before the change ----
 
   it('provisionMember issues one statement for a fresh member, a partially provisioned one and a complete one', async () => {
