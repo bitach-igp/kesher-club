@@ -9,7 +9,9 @@ import { dirOf, localeFrom, t } from '../src/i18n.ts';
 import { showsDeposits } from '../src/deposits.ts';
 import { showsUsBanking } from '../src/us-banking.ts';
 import { showsAccount } from '../src/statement.ts';
-import { decodeLanding, LANDING_HEADER } from '../src/session.ts';
+import { ACCESS_HEADER, decodeLanding, LANDING_HEADER } from '../src/session.ts';
+import { memberApi } from '../src/api.ts';
+import { htmlThemeAttr, resolveTheme } from '../src/theme.ts';
 
 export const metadata = { title: 'Kesher Club institution console' };
 // Pages render per request and read config then, never at build.
@@ -21,8 +23,12 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   const locale = localeFrom(h.get('accept-language'));
   const landing = decodeLanding(h.get(LANDING_HEADER));
   const signedIn = landing.kind === 'dashboard';
+  // The member's appearance, read on the server for this request (T-1022): the proxy's resolved access token is used for the one call and
+  // never rendered. Signed out (no token) makes no call; a failure or a slow API renders system (no attribute).
+  const access = h.get(ACCESS_HEADER) ?? undefined;
+  const theme = await resolveTheme(async (signal) => (access ? memberApi(cfg.CONSOLE_API_URL, access).preferences(signal) : undefined), access !== undefined);
   return (
-    <html lang={locale} dir={dirOf(locale)}>
+    <html lang={locale} dir={dirOf(locale)} {...htmlThemeAttr(theme)}>
       <body>
         <div className={`banner ${cfg.CONSOLE_ENVIRONMENT}`} role="status">
           {cfg.CONSOLE_ENVIRONMENT.toUpperCase()} · Kesher Club institution console
@@ -39,6 +45,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             {showsUsBanking(landing) ? <a href="/us-banking">{t('nav.usbank', locale)}</a> : null}
             <a href="/team">{t('nav.team', locale)}</a>
             {landing.kind === 'dashboard' && showsAccount(landing.role) ? <a href="/account">{t('nav.account', locale)}</a> : null}
+            <a href="/appearance">{t('nav.appearance', locale)}</a>
           </nav>
         ) : null}
         <main>{children}</main>
