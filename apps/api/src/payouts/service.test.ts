@@ -734,4 +734,133 @@ describe('T-0554: an institution payout whose approval is rejected or runs out e
     expect(await journalCount(`${settleKey(key)}:reversal`)).toBe(1);
     expect(await journalCount(`${key}:unreserve`)).toBe(1);
   });
+
+  // T-0770: the payee link of a payout. `store` is the one place that names where the link lives: ops.workflow_marker (kind payout_payee,
+  // subject the transfer, value the payee id) since T-0770; `old` is the ops.external_ref row of payouts begun before it.
+  const store = {
+    async markerOf(transferId: string): Promise<string | undefined> {
+      return (await db.query<{ value: string }>(`select value from ops.workflow_marker where kind = 'payout_payee' and subject_id = $1 and seq = 0`, [transferId])).rows[0]?.value;
+    },
+    async count(transferId: string): Promise<number> {
+      return (await db.query<{ n: number }>(`select count(*)::int as n from ops.workflow_marker where kind = 'payout_payee' and subject_id = $1`, [transferId])).rows[0]!.n;
+    },
+    async oldCount(transferId: string): Promise<number> {
+      return (await db.query<{ n: number }>(`select count(*)::int as n from ops.external_ref where entity_type = 'payee' and entity_id = $1`, [transferId])).rows[0]!.n;
+    },
+    async drop(transferId: string): Promise<void> {
+      await db.query(`delete from ops.workflow_marker where kind = 'payout_payee' and subject_id = $1`, [transferId]);
+    },
+    async plant(transferId: string, payeeId: string): Promise<void> {
+      await db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value) values ('payout_payee', $1, 0, $2)`, [transferId, payeeId]);
+    },
+    async dropOld(transferId: string): Promise<void> {
+      await db.query(`delete from ops.external_ref where entity_type = 'payee' and entity_id = $1`, [transferId]);
+    },
+    async plantOld(transferId: string, payeeId: string): Promise<void> {
+      await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('payee', $1, 'payee', $2)`, [transferId, `${payeeId}:${transferId}`]);
+    },
+  };
+  const listed = async (inst: string) => (await app.services.payouts.listForInstitution(inst, requester, undefined, 20)).items.map((i) => ({ id: i.transfer.id, payee: i.payee }));
+
+  describe('T-0770: the payee link of a payout', () => {
+    it('begin records one payee link per payout; the institution list shows that payee, newest first, and a payout with no link shows an empty payee', async () => {
+      const inst = await funded(1_000_000n);
+      await ask(inst, `po-link-a-${inst}`, 100_000n);
+      advance(1000);
+      await ask(inst, `po-link-b-${inst}`, 100_000n);
+      advance(1000);
+      await ask(inst, `po-link-c-${inst}`, 100_000n);
+      const [c, b, a] = await listed(inst);
+      expect([a, b, c].every((x) => x !== undefined)).toBe(true);
+      const payeeId = (await db.query<{ id: string }>(`select id from ops.payee where party_id = $1`, [inst])).rows[0]!.id;
+      for (const x of [a!, b!, c!]) {
+        expect(await store.count(x.id)).toBe(1);
+        expect(await store.oldCount(x.id)).toBe(0);
+        expect(await store.markerOf(x.id)).toBe(payeeId);
+        expect(x.payee).toEqual({ name: 'Yeshivat Example', ibanLast4: '9999' });
+      }
+      const before = await listed(inst);
+      await store.drop(b!.id);
+      const after = await listed(inst);
+      expect(after.map((x) => x.id)).toEqual(before.map((x) => x.id));
+      expect(after.find((x) => x.id === b!.id)!.payee).toEqual({ name: '', ibanLast4: '' });
+      expect(after.filter((x) => x.id !== b!.id).every((x) => x.payee.name === 'Yeshivat Example')).toBe(true);
+      // The single read (one payout) agrees with the list.
+      expect((await app.services.payouts.institutionPayout(inst, a!.id, requester)).payee).toEqual({ name: 'Yeshivat Example', ibanLast4: '9999' });
+    });
+
+    it('the worker rebuilds the payout input from the link, and a payout with no link at all is NOT_FOUND', async () => {
+      const inst = await funded(1_000_000n);
+      await ask(inst, `po-link-in-${inst}`, 100_000n);
+      const t = (await app.services.transfers.byKey(`po-link-in-${inst}`))!;
+      const payeeId = (await db.query<{ id: string }>(`select id from ops.payee where party_id = $1`, [inst])).rows[0]!.id;
+      expect((await app.services.payouts.inputFor(t)).payeeId).toBe(payeeId);
+      await store.drop(t.id);
+      await expect(app.services.payouts.inputFor(t)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      await store.plant(t.id, payeeId);
+      expect((await app.services.payouts.inputFor(t)).payeeId).toBe(payeeId);
+    });
+
+    // Payouts begun before T-0770 have only the old ops.external_ref row; they keep their payee in the list, the worker's input and settle.
+    const second = async (inst: string) => {
+      const id = uuidv7(now);
+      await db.query(`insert into ops.payee (id, party_id, iban, iban_last4, name, bank_code, validated_at, created_at) values ($1, $2, $3, '4321', 'Other Payee', null, $4, $4)`, [id, inst, IL3, now]);
+      return id;
+    };
+    it.each([
+      ['neither', false, false, 'none'],
+      ['the old row only', false, true, 'first'],
+      ['the new marker only', true, false, 'first'],
+      ['both: the new marker wins', true, true, 'second'],
+    ] as const)('the list, the one-payout read and the worker input with %s', async (_n, fresh, old, who) => {
+      const inst = await funded(1_000_000n);
+      await ask(inst, `po-dual-${inst}`, 100_000n);
+      const t = (await app.services.transfers.byKey(`po-dual-${inst}`))!;
+      const first = (await db.query<{ id: string }>(`select id from ops.payee where party_id = $1 and iban = $2`, [inst, IL])).rows[0]!.id;
+      const other = await second(inst);
+      await store.drop(t.id);
+      await store.dropOld(t.id);
+      // 'first' is the payee the payout was made to; in the "both" case the old row names the OTHER payee and the new marker the first.
+      if (fresh) await store.plant(t.id, first);
+      if (old) await store.plantOld(t.id, who === 'second' ? other : first);
+      const expectedName = who === 'none' ? '' : 'Yeshivat Example';
+      const item = (await listed(inst)).find((x) => x.id === t.id)!;
+      expect(item.payee).toEqual(who === 'none' ? { name: '', ibanLast4: '' } : { name: expectedName, ibanLast4: '9999' });
+      expect((await app.services.payouts.institutionPayout(inst, t.id, requester)).payee).toEqual(item.payee);
+      if (who === 'none') await expect(app.services.payouts.inputFor(t)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      else expect((await app.services.payouts.inputFor(t)).payeeId).toBe(first);
+    });
+
+    it('300 random marker states over six payouts: the list shows the new marker\'s payee, else the old row\'s, else none, in the same order, however the markers are mixed', async () => {
+      const inst = await funded(1_000_000n);
+      const ids: string[] = [];
+      for (let k = 0; k < 6; k++) {
+        advance(1000);
+        await ask(inst, `po-diff-${k}-${inst}`, 10_000n);
+        ids.push((await app.services.transfers.byKey(`po-diff-${k}-${inst}`))!.id);
+      }
+      const first = (await db.query<{ id: string }>(`select id from ops.payee where party_id = $1 and iban = $2`, [inst, IL])).rows[0]!.id;
+      const other = await second(inst);
+      const names = new Map([[first, { name: 'Yeshivat Example', ibanLast4: '9999' }], [other, { name: 'Other Payee', ibanLast4: '4321' }]]);
+      const order = (await listed(inst)).map((x) => x.id);
+      let seed = 0x7770;
+      const rnd = (n: number) => { seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff; return seed % n; };
+      for (let i = 0; i < 300; i++) {
+        const expected = new Map<string, { name: string; ibanLast4: string }>();
+        for (const id of ids) {
+          await store.drop(id);
+          await store.dropOld(id);
+          const fresh = [undefined, first, other][rnd(3)];
+          const old = [undefined, first, other][rnd(3)];
+          if (fresh) await store.plant(id, fresh);
+          if (old) await store.plantOld(id, old);
+          const win = fresh ?? old;
+          expected.set(id, win ? names.get(win)! : { name: '', ibanLast4: '' });
+        }
+        const got = await listed(inst);
+        expect(got.map((x) => x.id)).toEqual(order);
+        for (const x of got) expect(x.payee).toEqual(expected.get(x.id));
+      }
+    }, 120_000);
+  });
 });

@@ -12,7 +12,7 @@ import type { Transfer } from '../transfers/service.ts';
 import { creditCase, openCreditCase } from './load-cases.ts';
 import { mapFundingError } from './load-model.ts';
 import { isOwnerFailedMarker } from './sub-account-markers.ts';
-import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF } from './sub-accounts.ts';
+import { OWNER_FAILED_CASE, ownerCaseKey, ownerKind } from './sub-accounts.ts';
 
 /** The vendor credit's key (T-0705): a refusal is final for its key at the vendor, so a retry after one is the next `n`. */
 export const creditKey = (workflowId: string, n: number): string => `${workflowId}:credit:${n}`;
@@ -115,12 +115,11 @@ export async function creditStep(d: CreditDeps, transfer: Transfer, vendor: Vend
   return { proceed: false, credited: false, refused: false };
 }
 
-/** True when the load's purse is a sub-account whose owner failed (the `o:{party}:failed` marker of this provider); opens the one owner case for staff (the key sub-accounts.ts used) if it is not there. */
+/** True when the load's purse is a sub-account whose owner failed (the `o:{party}:failed` marker of this provider, kind `subaccount_owner:{provider}` in ops.workflow_marker since T-0770); opens the one owner case for staff (the key sub-accounts.ts used) if it is not there. */
 async function ownerBlock(d: CreditDeps, transfer: Transfer, now: Date): Promise<boolean> {
   const party = transfer.toPartyId;
   if (party === undefined) return false;
-  const r = await d.db.query<{ external_id: string }>(`select external_id from ops.external_ref where entity_type = $1 and entity_id = $2 and provider = $3`, [SUBACCOUNT_OWNER_REF, party, d.provider]);
-  if (!r.rows.some((x) => isOwnerFailedMarker(party, x.external_id))) return false;
+  if (!isOwnerFailedMarker(party, await getMarker(d.db, ownerKind(d.provider), party))) return false;
   await openCase(d.db, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(party), severity: 'medium', payload: { partyId: party }, now });
   return true;
 }

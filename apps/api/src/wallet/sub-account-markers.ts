@@ -1,6 +1,6 @@
-// Our own markers in ops.external_ref (T-0762): not vendor refs, so they live here and not in @kesher/ports. The stored strings are fixed:
-//   `o:{partyId}:failed`                          the owner the vendor refused (entity type `funding_subaccount_owner`)
-//   `p:{partyId}:{16 hex of sha256(purpose)}`     the purpose a sub-account was opened for (entity type `funding_subaccount_purpose`)
+// Our own markers (T-0762; in ops.workflow_marker since T-0770): not vendor refs, so they live here and not in @kesher/ports. The stored strings are fixed:
+//   `o:{partyId}:failed`                          the owner the vendor refused (`ops.workflow_marker` kind `subaccount_owner:{provider}`, T-0770)
+//   `p:{partyId}:{16 hex of sha256(purpose)}`     the purpose a sub-account was opened for (`ops.workflow_marker` kind `subaccount_purpose:{provider}`)
 // Callers build and compare through these functions only. The `s:` refs are the port's grammar (`subAccountRef` in @kesher/ports).
 import { createHash } from 'node:crypto';
 
