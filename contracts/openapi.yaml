@@ -4530,7 +4530,7 @@ components:
         escalatedToBank: { type: boolean }
     OpsCaseKind:
       type: string
-      enum: [suspense, deposit_not_on_statement, payout_account_mismatch, balance_break, system_total_break, unbalanced_journal, kyb_application]
+      enum: [suspense, deposit_not_on_statement, payout_account_mismatch, balance_break, system_total_break, unbalanced_journal, kyb_application, subaccount_owner_failed]
     OpsCase:
       type: object
       required: [id, kind, severity, status, summary, payload, openedAt]

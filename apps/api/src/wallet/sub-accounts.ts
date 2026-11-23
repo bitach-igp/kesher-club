@@ -23,7 +23,7 @@ import { DomainError, uuidv7 } from '@kesher/domain';
 import { isMemberSubAccountPort, MemberSubAccountError, type MemberSubAccountStatus, type SubAccountOwner, type SubAccountOwnerStatus } from '@kesher/ports';
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
-import { openCase } from '../ops/cases.ts';
+import { reopenableCase } from './load-cases.ts';
 import { linkRef } from '../ops/external-ref.ts';
 import { getMarker, putMarker } from '../ops/workflow-marker.ts';
 import { normalizePurpose, ownerFailedMarker, purposeHash, purposeMarker } from './sub-account-markers.ts';
@@ -129,7 +129,7 @@ export class SubAccountService {
       if (ensured.ownerStatus === 'failed') await putMarker(tx, { kind: ownerKind(provider), subjectId: partyId, value: ownerFailedMarker(partyId) });
       if (ensured.ownerStatus === 'failed') {
         // For people: the party id and nothing personal, so staff can re-invite.
-        await openCase(tx, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(partyId), severity: 'medium', payload: { partyId }, now });
+        await reopenableCase(tx, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(partyId), severity: 'medium', payload: { partyId }, now });
       }
     });
     return { subAccountRef: ensured.subAccountRef, accountRef: ensured.accountRef, created: true, status: ensured.status, ownerStatus: ensured.ownerStatus };

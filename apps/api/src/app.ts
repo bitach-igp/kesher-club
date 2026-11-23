@@ -405,7 +405,7 @@ export function createApp(o: AppOptions): App {
     ...usFundingHandlers(s.usFunding, s.stepUp, staffOf),
     ...usCollectionsHandlers(s.usCollections, staffOf),
     ...depositHandlers(s.deposits),
-    ...caseHandlers(new OpsCases(o.db, s.audit)),
+    ...caseHandlers(new OpsCases(o.db, s.audit, o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator')),
     ...preferenceHandlers(s.preferences),
     ...displayNameHandlers(s.displayNames),
     ...fundingDetailsHandlers(s.fundingDetails),
