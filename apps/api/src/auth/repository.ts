@@ -107,6 +107,11 @@ export type FederatedLinkResult = 'linked' | 'member_already_linked' | 'subject_
 export interface IdentityRepository {
   findUserByPhone(phone: string): Promise<UserAccount | undefined>;
   findUser(partyId: string): Promise<UserAccount | undefined>;
+  /**
+   * `findUser` for many ids in one read (T-0775): the accounts that exist keyed by party id, in the order
+   * the ids were first asked. An unknown id is absent, a repeated id answers once, an empty list reads nothing.
+   */
+  findUsers(partyIds: readonly string[]): Promise<Map<string, UserAccount>>;
   createUser(user: UserAccount): Promise<UserAccount>;
   setUserStatus(partyId: string, status: UserStatus): Promise<void>;
   /** Replaces the account's roles; sessions keep the roles they were issued with until the next sign-in (T-0924). */
@@ -178,6 +183,14 @@ export class InMemoryIdentityRepository implements IdentityRepository {
   }
   async findUser(partyId: string) {
     return this.users.get(partyId);
+  }
+  async findUsers(partyIds: readonly string[]) {
+    const found = new Map<string, UserAccount>();
+    for (const id of partyIds) {
+      const u = this.users.get(id);
+      if (u) found.set(id, u);
+    }
+    return found;
   }
   async createUser(user: UserAccount) {
     this.users.set(user.partyId, user);

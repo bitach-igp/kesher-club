@@ -8,17 +8,16 @@ const ROLE_NAME: Record<string, string> = { staff: 'Staff', finance: 'Finance', 
 
 export type StaffName = { displayName: string };
 
-export async function staffNames(db: Database, identity: Pick<IdentityRepository, 'findUser'>, partyIds: readonly string[]): Promise<Map<string, StaffName>> {
+export async function staffNames(db: Database, identity: Pick<IdentityRepository, 'findUsers'>, partyIds: readonly string[]): Promise<Map<string, StaffName>> {
   const ids = [...new Set(partyIds)];
   if (ids.length === 0) return new Map();
   const roles = new Map((await db.query<{ party_id: string; role: string }>('select party_id, role from org.staff where party_id = any($1::uuid[]) and active', [ids])).rows.map((x) => [x.party_id, x.role]));
+  const users = await identity.findUsers(ids);
   return new Map(
-    await Promise.all(
-      ids.map(async (id) => {
-        const user = await identity.findUser(id);
-        const label = ROLE_NAME[roles.get(id) ?? ''] ?? 'Former staff';
-        return [id, { displayName: user ? `${label} •••• ${user.phone.slice(-4)}` : label }] as const;
-      }),
-    ),
+    ids.map((id) => {
+      const user = users.get(id);
+      const label = ROLE_NAME[roles.get(id) ?? ''] ?? 'Former staff';
+      return [id, { displayName: user ? `${label} •••• ${user.phone.slice(-4)}` : label }] as const;
+    }),
   );
 }

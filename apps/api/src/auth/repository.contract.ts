@@ -2,8 +2,9 @@
 // in-memory repository the unit tests use and the Postgres one production uses cannot drift apart.
 // Times are full ISO strings with milliseconds, as the auth services write them.
 import { randomUUID } from 'node:crypto';
+import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import type { IdentityRepository, SessionFamily } from './repository.ts';
+import type { IdentityRepository, SessionFamily, UserAccount } from './repository.ts';
 
 const T0 = '2026-10-19T08:00:00.000Z';
 const at = (minutes: number): string => new Date(Date.parse(T0) + minutes * 60_000).toISOString();
@@ -27,6 +28,77 @@ export function identityRepositoryContract(name: string, make: () => Promise<Ide
       expect((await repo.findUser(user.partyId))?.roles).toEqual(['member', 'org_finance']);
       await repo.setUserRoles(user.partyId, ['member']);
       expect((await repo.findUser(user.partyId))?.roles).toEqual(['member']);
+    });
+
+    // T-0775: findUsers is findUser for many ids, in one read.
+    describe('findUsers', () => {
+      const seed = async (repo: IdentityRepository, n: number) => {
+        const users = [];
+        for (let i = 0; i < n; i++) {
+          const u = { partyId: randomUUID(), phone: phone(), status: i % 2 ? ('active' as const) : ('restricted' as const), roles: i % 3 ? ['member'] : ['member', 'org_staff'], createdAt: at(i) };
+          users.push(await repo.createUser(u));
+        }
+        return users;
+      };
+
+      it('answers the same accounts as findUser, the sealed phone opened identically, keyed by party id', async () => {
+        const repo = await make();
+        const users = await seed(repo, 4);
+        const found = await repo.findUsers(users.map((u) => u.partyId));
+        expect(found.size).toBe(4);
+        for (const u of users) {
+          expect(found.get(u.partyId)).toEqual(u);
+          expect(found.get(u.partyId)).toEqual(await repo.findUser(u.partyId));
+        }
+      });
+
+      it('omits an unknown id, reads a repeated id once and keeps the order the ids were first asked', async () => {
+        const repo = await make();
+        const [a, b, c] = (await seed(repo, 3)) as [UserAccount, UserAccount, UserAccount];
+        const unknown = randomUUID();
+        const found = await repo.findUsers([c.partyId, unknown, a.partyId, c.partyId, b.partyId, a.partyId]);
+        expect([...found.keys()]).toEqual([c.partyId, a.partyId, b.partyId]);
+        expect(found.has(unknown)).toBe(false);
+      });
+
+      it('answers an empty map for an empty list or only unknown ids, and does not change what it read', async () => {
+        const repo = await make();
+        const [a] = (await seed(repo, 1)) as [UserAccount];
+        expect((await repo.findUsers([])).size).toBe(0);
+        expect((await repo.findUsers([randomUUID(), randomUUID()])).size).toBe(0);
+        const before = await repo.findUser(a.partyId);
+        await repo.findUsers([a.partyId]);
+        expect(await repo.findUser(a.partyId)).toEqual(before);
+      });
+
+      it('sees a status or roles change the same way findUser does', async () => {
+        const repo = await make();
+        const [a, b] = (await seed(repo, 2)) as [UserAccount, UserAccount];
+        await repo.setUserStatus(a.partyId, 'closed');
+        await repo.setUserRoles(b.partyId, ['member', 'org_admin']);
+        const found = await repo.findUsers([a.partyId, b.partyId]);
+        expect(found.get(a.partyId)).toEqual(await repo.findUser(a.partyId));
+        expect(found.get(b.partyId)).toEqual(await repo.findUser(b.partyId));
+        expect(found.get(a.partyId)?.status).toBe('closed');
+      });
+
+      it('equals the one-by-one reads for any list of known, unknown and repeated ids (differential)', async () => {
+        const repo = await make();
+        const users = await seed(repo, 6);
+        const pool = [...users.map((u) => u.partyId), randomUUID(), randomUUID()];
+        await fc.assert(
+          fc.asyncProperty(fc.array(fc.constantFrom(...pool), { maxLength: 30 }), async (ids) => {
+            const old = new Map<string, NonNullable<Awaited<ReturnType<IdentityRepository['findUser']>>>>();
+            for (const id of ids) {
+              const u = await repo.findUser(id);
+              if (u && !old.has(id)) old.set(id, u);
+            }
+            const found = await repo.findUsers(ids);
+            expect([...found]).toEqual([...old]);
+          }),
+          { numRuns: 40 },
+        );
+      });
     });
 
     it('counts OTP starts per phone from a point in time', async () => {

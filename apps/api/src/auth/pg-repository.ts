@@ -50,6 +50,19 @@ export class PostgresIdentityRepository implements IdentityRepository {
     return r.rows[0] && this.user(r.rows[0]);
   }
 
+  async findUsers(partyIds: readonly string[]): Promise<Map<string, UserAccount>> {
+    const ids = [...new Set(partyIds)];
+    if (ids.length === 0) return new Map();
+    const r = await this.db.query<UserRow>(`select party_id, phone_sealed, status, roles, created_at from identity.user_account where party_id = any($1::uuid[])`, [ids]);
+    const byId = new Map(r.rows.map((row) => [row.party_id, row]));
+    const found = new Map<string, UserAccount>();
+    for (const id of ids) {
+      const row = byId.get(id);
+      if (row) found.set(id, this.user(row));
+    }
+    return found;
+  }
+
   async createUser(user: UserAccount): Promise<UserAccount> {
     await this.db.query(`insert into identity.user_account (party_id, phone_index, phone_sealed, status, roles, created_at) values ($1, $2, $3, $4, $5, $6)`, [
       user.partyId,

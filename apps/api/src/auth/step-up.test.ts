@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { Secret } from '@kesher/domain';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { AuthSimulator, SIM_OTP_CODE, SimPasskeyDevice, fixedClock, type AdvanceableClock } from '@kesher/ports';
-import { makeRequest } from '../http.ts';
+import { makeRequest } from '../test-http.ts';
 import { createPiiCipher } from '../crypto/pii.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { PostgresIdentityRepository } from './pg-repository.ts';

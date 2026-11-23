@@ -50,7 +50,7 @@ export interface AllowanceRunDeps {
   /** The institution a staff member belongs to, if any. */
   staffInstitution(partyId: string): Promise<string | undefined>;
   db: Database;
-  identity: Pick<IdentityRepository, 'findUser'>;
+  identity: Pick<IdentityRepository, 'findUsers'>;
   /** A run that moves money takes a passkey step-up younger than 5 minutes (REQ-AUTH-006); a preview does not. */
   stepUp: StepUpService;
 }

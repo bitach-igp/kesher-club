@@ -1,7 +1,7 @@
 // Customer search and Customer 360 through /admin/customers (T-0907, ADR-013), end to end over the
 // dispatcher and PGlite. The model is assembled from the identity repository, billing, the ledger,
 // ops cases, legal consents, agent grants and the audit chain; it never carries a full phone or a PAN.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { money, uuidv7 } from '@kesher/domain';
@@ -178,5 +178,57 @@ describe('GET /admin/customers/{id} (Customer 360)', () => {
     const member = await app.services.tokens.issue({ partyId: noa, roles: ['member'], deviceId: 'd1' });
     const r = await call(`/v1/admin/customers/${noa}`, member.accessToken);
     expect(r.status).toBe(403);
+  });
+});
+
+// T-0775: a name or invite-email search reads the users it found in one identity read, and answers what it
+// answered when it read them one by one: the order the roster query gave, a roster row whose account is
+// gone left out, a member on two roster rows once.
+describe('GET /admin/customers (name search reads its users together, T-0775)', () => {
+  const T = new Date('2026-10-02T09:00:00Z');
+  const ids = Array.from({ length: 6 }, () => uuidv7(T));
+  const gone = uuidv7(T); // on the roster, no account
+  const tail = (i: number) => String(2000 + i);
+  const rosterOrder = async () => (await db.query<{ member_party_id: string }>(`select distinct member_party_id from org.member where member_party_id is not null and member_name ilike '%zelig tester%' limit 20`)).rows.map((r) => r.member_party_id);
+
+  beforeAll(async () => {
+    for (const [i, id] of ids.entries()) {
+      await identity.createUser({ partyId: id, phone: `+97250300${tail(i)}`, status: i === 2 ? 'restricted' : 'active', roles: ['member'], createdAt: T.toISOString() });
+      await db.query(`insert into org.member (id, institution_id, member_name, member_party_id, status) values ($1, $2, $3, $4, 'active')`, [uuidv7(T), institution, `Zelig Tester ${i}`, id]);
+    }
+    await db.query(`insert into org.member (id, institution_id, member_name, member_party_id, status) values ($1, $2, 'Zelig Tester Gone', $3, 'active')`, [uuidv7(T), institution, gone]);
+    await db.query(`insert into org.member (id, institution_id, member_name, member_party_id, status) values ($1, $2, 'Zelig Tester Again', $3, 'active')`, [uuidv7(T), institution, ids[0]]); // the same member on a second row
+  });
+
+  /** How many times the search went to the identity repository for the users it found. */
+  const reads = async (fn: () => Promise<unknown>): Promise<number> => {
+    const spies = [vi.spyOn(identity, 'findUser'), vi.spyOn(identity, 'findUsers')];
+    await fn();
+    const n = spies.reduce((sum, sp) => sum + sp.mock.calls.length, 0);
+    spies.forEach((sp) => sp.mockRestore());
+    return n;
+  };
+
+  it('answers the roster query\'s order, each member once, without the roster row whose account is gone', async () => {
+    const order = (await rosterOrder()).filter((p) => p !== gone);
+    expect(new Set(order)).toEqual(new Set(ids));
+    const r = await search('zelig tester');
+    expect(r.items.map((c) => c.partyId)).toEqual(order);
+    expect(r.items).toHaveLength(6);
+    expect(r.items.map((c) => [c.status, c.phoneMasked])).toEqual(order.map((p) => [ids.indexOf(p) === 2 ? 'restricted' : 'active', `•••• ${tail(ids.indexOf(p))}`]));
+    expect(JSON.stringify(r)).not.toContain('+97250300');
+  });
+
+  it('answers nothing for a name nobody carries', async () => {
+    expect((await search('zelig nobody')).items).toEqual([]);
+  });
+
+  it('reads the six members it found in one identity read', async () => {
+    expect(await reads(() => search('zelig tester'))).toBe(1);
+  });
+
+  it('leaves the single lookups alone: a phone is found by phone, a party id by one findUser', async () => {
+    expect(await reads(() => search(NOA_PHONE))).toBe(0);
+    expect(await reads(() => search(noa))).toBe(1);
   });
 });
