@@ -37,6 +37,8 @@ export function parseName(input: { firstName?: unknown; lastName?: unknown }): {
   return { firstName, ...(initial ? { lastInitial: initial } : {}) };
 }
 
+interface NameRow { first_name: Uint8Array; last_initial: Uint8Array | null; updated_at: string | Date }
+
 export class DisplayNameService {
   private readonly db: Database;
   private readonly pii: PiiCipher;
@@ -46,8 +48,23 @@ export class DisplayNameService {
   }
 
   async get(partyId: string): Promise<DisplayName> {
-    const r = await this.db.query<{ first_name: Uint8Array; last_initial: Uint8Array | null; updated_at: string | Date }>('select first_name, last_initial, updated_at from identity.member_display_name where party_id = $1', [partyId]);
-    const row = r.rows[0];
+    const r = await this.db.query<NameRow>('select first_name, last_initial, updated_at from identity.member_display_name where party_id = $1', [partyId]);
+    return this.name(r.rows[0]);
+  }
+
+  /**
+   * `get` for many ids in one query (T-0776): each distinct id once, in the order first asked, `{}` for an id with
+   * no row, as `get` answers it. An empty list reads nothing.
+   */
+  async getMany(partyIds: readonly string[]): Promise<Map<string, DisplayName>> {
+    const ids = [...new Set(partyIds)];
+    if (ids.length === 0) return new Map();
+    const r = await this.db.query<NameRow & { party_id: string }>('select party_id, first_name, last_initial, updated_at from identity.member_display_name where party_id = any($1::uuid[])', [ids]);
+    const rows = new Map(r.rows.map((row) => [row.party_id, row]));
+    return new Map(ids.map((id) => [id, this.name(rows.get(id))]));
+  }
+
+  private name(row: NameRow | undefined): DisplayName {
     if (!row) return {};
     const firstName = this.pii.open(row.first_name, FIRST);
     const lastInitial = row.last_initial ? this.pii.open(row.last_initial, INITIAL) : undefined;
