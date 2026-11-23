@@ -8,11 +8,10 @@
 //   4. the refs in ops.external_ref are read: found, the answer is those refs and nobody is asked;
 //   5. the owner details (T-0738's reader) or an invitation email: none is `detailsRequired`.
 // Then ONE port call under `funding-subaccount:{partyId}:{purposeHash}`, a frozen or closed answer refuses (naming the status, writing no refs so
-// a later open asks again), and the refs and markers are written in one transaction `on conflict do nothing` (vendor ids live only in ops.external_ref).
+// a later open asks again), and the refs and markers are written in one transaction `on conflict do nothing` (vendor ids live only in ops.external_ref, our markers in ops.workflow_marker).
 // ops.external_ref is unique per (entity type, party, provider), so one party holds one sub-account ref pair. The pair records the purpose it
-// was opened for as our own marker row (`funding_subaccount_purpose`, `p:{party}:{hash}`; a stretch of "vendor ids only in external_ref",
-// accepted in T-0742, a migration avoided): a replay with another purpose, or a pair with no marker, is IDEMPOTENCY_CONFLICT, never the
-// wrong purpose's refs. A failed owner also leaves `funding_subaccount_owner` (`o:{party}:failed`) for load and credit paths to read.
+// was opened for as our own marker row in ops.workflow_marker (kind `subaccount_purpose:{provider}`, value `p:{party}:{hash}`, T-0770), a replay with another purpose, or a pair with no marker, is IDEMPOTENCY_CONFLICT, never the
+// wrong purpose's refs. A failed owner also leaves `subaccount_owner:{provider}` (`o:{party}:failed`) for load and credit paths to read.
 // The refs are the service's answer, never an HTTP response body.
 // An owner the vendor refused still returns the sub-account and opens one case for staff, with the party id and nothing personal.
 // A full quota (T-0753): the port's QUOTA_EXCEEDED is ONE call, never retried, and answers 503 PROVIDER_UNAVAILABLE with extra.reason
@@ -25,7 +24,8 @@ import { isMemberSubAccountPort, MemberSubAccountError, type MemberSubAccountSta
 import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database } from '../db.ts';
 import { openCase } from '../ops/cases.ts';
-import { linkRef, refOf } from '../ops/external-ref.ts';
+import { linkRef } from '../ops/external-ref.ts';
+import { getMarker, putMarker } from '../ops/workflow-marker.ts';
 import { normalizePurpose, ownerFailedMarker, purposeHash, purposeMarker } from './sub-account-markers.ts';
 
 export { purposeHash };
@@ -45,8 +45,9 @@ export interface OwnerDetailsReader {
   read(partyId: string): Promise<SubAccountOwnerDetails | undefined>;
 }
 
-export const SUBACCOUNT_PURPOSE_REF = 'funding_subaccount_purpose';
-export const SUBACCOUNT_OWNER_REF = 'funding_subaccount_owner';
+/** `ops.workflow_marker` kinds (T-0770; before it these were `funding_subaccount_purpose` / `_owner` rows in ops.external_ref). The marker belongs to one provider's sub-account, so the provider is in the kind. */
+export const purposeKind = (provider: string): string => `subaccount_purpose:${provider}`;
+export const ownerKind = (provider: string): string => `subaccount_owner:${provider}`;
 export const subAccountKey = (partyId: string, purpose: string): string => `funding-subaccount:${partyId}:${purposeHash(purpose)}`;
 const OTHER_PURPOSE = 'This member already has a sub-account for another purpose';
 export const ownerCaseKey = (partyId: string): string => `subaccount-owner:${partyId}`;
@@ -95,13 +96,12 @@ export class SubAccountService {
     const { partyId } = input;
     if (!this.d.eligible || !(await this.d.eligible(partyId))) throw new DomainError('VALIDATION_FAILED', 'This member cannot have a sub-account', { eligibilityRequired: true });
 
-    const have = await db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [partyId, provider, [SUBACCOUNT_REF, SUBACCOUNT_ACCOUNT_REF, SUBACCOUNT_PURPOSE_REF]]);
+    const have = await db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 and provider = $2 and entity_type = any($3)`, [partyId, provider, [SUBACCOUNT_REF, SUBACCOUNT_ACCOUNT_REF]]);
     const sub = have.rows.find((r) => r.entity_type === SUBACCOUNT_REF);
     const acct = have.rows.find((r) => r.entity_type === SUBACCOUNT_ACCOUNT_REF);
     if (sub && acct) {
       // The pair belongs to the purpose it was opened for; a marker that is missing or names another purpose is never guessed at.
-      const marker = have.rows.find((r) => r.entity_type === SUBACCOUNT_PURPOSE_REF);
-      if (marker?.external_id !== purposeMarker(partyId, purpose)) throw new DomainError('IDEMPOTENCY_CONFLICT', OTHER_PURPOSE);
+      if ((await getMarker(db, purposeKind(provider), partyId)) !== purposeMarker(partyId, purpose)) throw new DomainError('IDEMPOTENCY_CONFLICT', OTHER_PURPOSE);
       return { subAccountRef: sub.external_id, accountRef: acct.external_id, created: false };
     }
 
@@ -119,13 +119,14 @@ export class SubAccountService {
     if (BLOCKED.includes(ensured.status)) throw new DomainError('FEATURE_OFF', `Your sub-account is ${ensured.status}`);
 
     // One transaction: the refs, the purpose marker, the owner-failed marker and its case stand or fall together.
-    const rows: Array<readonly [string, string]> = [[SUBACCOUNT_REF, ensured.subAccountRef], [SUBACCOUNT_ACCOUNT_REF, ensured.accountRef], [SUBACCOUNT_PURPOSE_REF, purposeMarker(partyId, purpose)]];
-    if (ensured.ownerStatus === 'failed') rows.push([SUBACCOUNT_OWNER_REF, ownerFailedMarker(partyId)]);
+    const mine = purposeMarker(partyId, purpose);
     await db.transaction(async (tx) => {
-      for (const [type, ref] of rows) await linkRef(tx, { entityType: type, entityId: partyId, provider, externalId: ref });
-      // A racing open for another purpose may have stored its marker first: ours was then skipped, so refuse and roll back.
-      const stored = await refOf(tx, SUBACCOUNT_PURPOSE_REF, partyId, provider);
-      if (stored !== purposeMarker(partyId, purpose)) throw new DomainError('IDEMPOTENCY_CONFLICT', OTHER_PURPOSE);
+      await linkRef(tx, { entityType: SUBACCOUNT_REF, entityId: partyId, provider, externalId: ensured.subAccountRef });
+      await linkRef(tx, { entityType: SUBACCOUNT_ACCOUNT_REF, entityId: partyId, provider, externalId: ensured.accountRef });
+      // A racing open for another purpose may have stored its marker first: putMarker is then false, which also means ours is already
+      // there, so read the stored one; if it is not ours, refuse and roll back.
+      if (!(await putMarker(tx, { kind: purposeKind(provider), subjectId: partyId, value: mine })) && (await getMarker(tx, purposeKind(provider), partyId)) !== mine) throw new DomainError('IDEMPOTENCY_CONFLICT', OTHER_PURPOSE);
+      if (ensured.ownerStatus === 'failed') await putMarker(tx, { kind: ownerKind(provider), subjectId: partyId, value: ownerFailedMarker(partyId) });
       if (ensured.ownerStatus === 'failed') {
         // For people: the party id and nothing personal, so staff can re-invite.
         await openCase(tx, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(partyId), severity: 'medium', payload: { partyId }, now });

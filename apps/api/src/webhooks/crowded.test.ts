@@ -15,6 +15,7 @@ import { createServer, dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { applyVendorState, creditKey, holdKey, settleKey, type LoadInput } from '../wallet/loads.ts';
 import { ownerFailedMarker } from '../wallet/sub-account-markers.ts';
+import { ownerKind } from '../wallet/sub-accounts.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey } from '../wallet/sub-accounts.ts';
 import { classifyCrowdedEvent, CrowdedWebhook, subAccountChapters, type CrowdedEventKind, type CrowdedHandlers } from './crowded.ts';
 import { InboundEventStore } from './store.ts';
@@ -690,6 +691,9 @@ describe('a failed-owner sub-account is credited by neither the webhook nor the 
   }, 60_000);
 
   const ref = (type: string, party: string, externalId: string) => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4)`, [type, party, PROVIDER, externalId]);
+  // T-0770: the failed-owner marker is a workflow marker of kind `subaccount_owner:{provider}`.
+  const ownerMarker = (party: string, value: string) => db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value) values ($1, $2, 0, $3)`, [ownerKind(PROVIDER), party, value]);
+  const dropOwnerMarker = (party: string) => db.query(`delete from ops.workflow_marker where kind = $1 and subject_id = $2`, [ownerKind(PROVIDER), party]);
   async function member(failed: boolean) {
     n += 1;
     const s = app.services;
@@ -699,7 +703,7 @@ describe('a failed-owner sub-account is credited by neither the webhook nor the 
     await s.accounts.provisionMember(party);
     await ref('funding_subaccount', party, subAccountRef(chapter));
     await ref('funding_account', party, `a:${party}`);
-    if (failed) await ref('funding_subaccount_owner', party, ownerFailedMarker(party));
+    if (failed) await ownerMarker(party, ownerFailedMarker(party));
     const amount = money(10_000n, 'USD');
     const t = await s.loads.submit(await s.loads.begin({ payerPartyId: party, memberPartyId: party, method: 'card', amount }, wf, T), T);
     const vendor = await sim.createLoad({ customerId: party, method: 'card', amount, paymentMethodId: 'pm_ok' }, wf);
@@ -755,7 +759,7 @@ describe('a failed-owner sub-account is credited by neither the webhook nor the 
     await sweep();
     await expectUntouched();
     // The owner is fixed (the marker row is gone): the sweep credits once.
-    await db.query(`delete from ops.external_ref where entity_type = 'funding_subaccount_owner' and entity_id = $1`, [m.party]);
+    await dropOwnerMarker(m.party);
     await sweep();
     expect(callsFor(m.wf)).toEqual([creditKey(m.wf, 1)]);
     expect(await journals(m.wf)).toBe(1);
@@ -775,7 +779,7 @@ describe('a failed-owner sub-account is credited by neither the webhook nor the 
     expect(await state(m.transfer.id)).toBe('submitted');
     expect(callsFor(m.wf)).toEqual([]);
     expect(await journals(m.wf)).toBe(0);
-    await db.query(`delete from ops.external_ref where entity_type = 'funding_subaccount_owner' and entity_id = $1`, [m.party]);
+    await dropOwnerMarker(m.party);
     await deliver(m);
     expect(callsFor(m.wf)).toEqual([creditKey(m.wf, 1)]);
     expect(await journals(m.wf)).toBe(1);
@@ -819,6 +823,8 @@ describe('a failed-owner sub-account with no credit port is neither settled nor 
   }, 60_000);
 
   const ref = (type: string, party: string, externalId: string) => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ($1, $2, $3, $4)`, [type, party, PROVIDER, externalId]);
+  const ownerMarker = (party: string, value: string) => db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value) values ($1, $2, 0, $3)`, [ownerKind(PROVIDER), party, value]);
+  const dropOwnerMarker = (party: string) => db.query(`delete from ops.workflow_marker where kind = $1 and subject_id = $2`, [ownerKind(PROVIDER), party]);
   const journals = async (wf: string) => (await db.query<{ n: number }>(`select count(*)::int as n from ledger.journal where idempotency_key = $1`, [settleKey(wf)])).rows[0]!.n;
   const state = async (id: string) => (await app.services.transfers.get(id))!.state;
   const sweep = async () => {
@@ -838,7 +844,7 @@ describe('a failed-owner sub-account with no credit port is neither settled nor 
     await s.accounts.provisionMember(party);
     await ref('funding_subaccount', party, subAccountRef(chapter));
     await ref('funding_account', party, `a:${party}`);
-    await ref('funding_subaccount_owner', party, ownerFailedMarker(party));
+    await ownerMarker(party, ownerFailedMarker(party));
     const amount = money(10_000n, 'USD');
     const tr = await s.loads.submit(await s.loads.begin({ payerPartyId: party, memberPartyId: party, method: 'card', amount }, wf, T), T);
     const vendor = await sim.createLoad({ customerId: party, method: 'card', amount, paymentMethodId: 'pm_ok' }, wf);
@@ -856,7 +862,7 @@ describe('a failed-owner sub-account with no credit port is neither settled nor 
     expect((await s.accounts.purses(party)).find((p) => p.currency === 'USD')?.available.minor ?? 0n).toBe(0n);
     expect((await db.query<{ kind: string }>(`select kind from ops.case where dedupe_key = $1`, [ownerCaseKey(party)])).rows).toEqual([{ kind: OWNER_FAILED_CASE }]);
     expect((await db.query(`select 1 from ops.case where dedupe_key = $1`, [`load-credit:${tr.id}`])).rows).toHaveLength(0);
-    await db.query(`delete from ops.external_ref where entity_type = 'funding_subaccount_owner' and entity_id = $1`, [party]);
+    await dropOwnerMarker(party);
     await drive();
     expect(await state(tr.id)).toBe('settled');
     expect(await journals(wf)).toBe(1);

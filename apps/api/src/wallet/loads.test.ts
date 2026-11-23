@@ -22,7 +22,7 @@ import { seedTransfer } from '../test-seed.ts';
 import { creditMayHaveMoved } from './load-credit.ts';
 import { openCase } from '../ops/cases.ts';
 import { ownerFailedMarker } from './sub-account-markers.ts';
-import { OWNER_FAILED_CASE, ownerCaseKey, SUBACCOUNT_OWNER_REF } from './sub-accounts.ts';
+import { OWNER_FAILED_CASE, ownerCaseKey, ownerKind } from './sub-accounts.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -1508,8 +1508,9 @@ describe('the failed-owner rule is enforced on the credit path (T-0763, TST-WAL-
     await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_account', $1, $3, $2)`, [party, `a:${party}`, provider]);
     const spy = vi.spyOn(sim as Required<FundingSimulator>, 'creditWallet');
     const body = { memberPartyId: party, amount: USD_100, method: 'card', paymentMethodId: 'pm_ok' };
-    const marker = (value: string, entityId = party, prov = provider) => db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_subaccount_owner', $1, $2, $3)`, [entityId, prov, value]);
-    const clear = () => db.query(`delete from ops.external_ref where entity_type = 'funding_subaccount_owner' and entity_id = $1`, [party]);
+    // T-0770: the owner marker is a workflow marker of kind `subaccount_owner:{provider}`, subject the party.
+    const marker = (value: string, entityId = party, prov = provider) => db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value) values ($1, $2, 0, $3)`, [ownerKind(prov), entityId, value]);
+    const clear = () => db.query(`delete from ops.workflow_marker where kind like 'subaccount\\_owner:%' and subject_id = $1`, [party]);
     /** The worker sweep's own steps (stale, read the vendor, apply its state), without the worker package. */
     const sweep = async () => {
       for (const x of await svc.stale(LATER, 0)) {
@@ -1695,9 +1696,9 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     const fake = {
       async query(text: string, params: readonly unknown[] = []) {
         let rows: unknown[] = [];
-        if (text.includes('from ops.external_ref') && params[0] === SUBACCOUNT_OWNER_REF) {
+        if (text.includes('from ops.workflow_marker') && params[0] === ownerKind('p')) {
           trace.push('owner-markers');
-          rows = w.ownerFailed ? [{ external_id: `o:${party}:failed` }] : [];
+          rows = w.ownerFailed ? [{ value: `o:${party}:failed` }] : [];
         } else if (text.includes("entity_type = 'funding_account'")) {
           trace.push('account-ref');
           rows = w.accountRef === false ? [] : [{ external_id: ref }];

@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { DomainError, uuidv7 } from '@kesher/domain';
 import { MemberSubAccountError, MemberSubAccountSimulator, type EnsureSubAccountInput } from '@kesher/ports';
 import { StaticFlags } from '../billing/capabilities.ts';
+import type { SqlClient } from '../db.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { purposeHash, SubAccountService, type OwnerDetailsReader, type SubAccountOwnerDetails } from './sub-accounts.ts';
 
@@ -30,7 +31,7 @@ class SpySim extends MemberSubAccountSimulator {
 
 const shared = new SpySim();
 
-function build(o: { flag?: boolean; purposes?: readonly string[]; details?: SubAccountOwnerDetails | undefined; eligible?: (id: string) => Promise<boolean>; port?: unknown; omitEligible?: boolean } = {}) {
+function build(o: { flag?: boolean; purposes?: readonly string[]; details?: SubAccountOwnerDetails | undefined; eligible?: (id: string) => Promise<boolean>; port?: unknown; omitEligible?: boolean; provider?: string } = {}) {
   // One simulator for the file: its ref sequence stays unique across tests, as vendor ids are (ops.external_ref is keyed on them).
   const sim = shared;
   sim.calls = [];
@@ -49,7 +50,7 @@ function build(o: { flag?: boolean; purposes?: readonly string[]; details?: SubA
     funding: 'port' in o ? o.port : sim,
     details: reader,
     purposes: o.purposes ?? [PURPOSE, 'test-purpose-b'],
-    provider: 'crowded',
+    provider: o.provider ?? 'crowded',
     ...(o.omitEligible ? {} : { eligible: o.eligible ?? (async () => true) }),
   });
   return { sim, service, reads };
@@ -57,6 +58,25 @@ function build(o: { flag?: boolean; purposes?: readonly string[]; details?: SubA
 
 const refs = (id: string) => db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 order by entity_type`, [id]);
 const cases = (id: string) => db.query<{ kind: string; severity: string; dedupe_key: string; payload: unknown }>(`select kind, severity, dedupe_key, payload from ops.case where dedupe_key = $1`, [`subaccount-owner:${id}`]);
+/** T-0770: the one place that names where the purpose and owner markers live (ops.workflow_marker, kind `subaccount_{purpose,owner}:{provider}`). */
+const markers = {
+  async purpose(id: string, provider = 'crowded'): Promise<string | undefined> {
+    return (await db.query<{ value: string }>(`select value from ops.workflow_marker where kind = $1 and subject_id = $2 and seq = 0`, [`subaccount_purpose:${provider}`, id])).rows[0]?.value;
+  },
+  async owner(id: string, provider = 'crowded'): Promise<string | undefined> {
+    return (await db.query<{ value: string }>(`select value from ops.workflow_marker where kind = $1 and subject_id = $2 and seq = 0`, [`subaccount_owner:${provider}`, id])).rows[0]?.value;
+  },
+  async count(id: string): Promise<number> {
+    return (await db.query<{ n: number }>(`select count(*)::int as n from ops.workflow_marker where subject_id = $1 and kind like 'subaccount\\_%'`, [id])).rows[0]!.n;
+  },
+  async plantPurpose(id: string, value: string, provider = 'crowded'): Promise<void> {
+    await db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value) values ($1, $2, 0, $3)`, [`subaccount_purpose:${provider}`, id, value]);
+  },
+};
+/** Rows of the moved marker types left in ops.external_ref (there must be none: T-0770). */
+const oldRows = async (id: string) => (await db.query<{ entity_type: string }>(`select entity_type from ops.external_ref where entity_id = $1 and entity_type in ('funding_subaccount_purpose', 'funding_subaccount_owner')`, [id])).rows;
+/** The vendor refs only (the two the port returns). */
+const vendorRefs = async (id: string) => (await refs(id)).rows.filter((r) => r.entity_type === 'funding_subaccount' || r.entity_type === 'funding_account').map((r) => r.entity_type);
 const refused = async (p: Promise<unknown>) => {
   const e = await p.then(() => undefined, (x: unknown) => x);
   expect(e).toBeInstanceOf(DomainError);
@@ -134,15 +154,17 @@ describe('SubAccountService.open (T-0752)', () => {
     expect((await refs(id)).rows).toEqual([
       { entity_type: 'funding_account', external_id: first.accountRef },
       { entity_type: 'funding_subaccount', external_id: first.subAccountRef },
-      { entity_type: 'funding_subaccount_purpose', external_id: `p:${id}:${purposeHash(PURPOSE)}` },
     ]);
+    expect(await markers.purpose(id)).toBe(`p:${id}:${purposeHash(PURPOSE)}`);
 
     const readsBefore = reads.length;
     const second = await service.open({ partyId: id, purpose: PURPOSE }, NOW);
     expect(sim.calls).toHaveLength(1);
     expect(reads.length).toBe(readsBefore);
     expect(second).toMatchObject({ created: false, subAccountRef: first.subAccountRef, accountRef: first.accountRef });
-    expect((await refs(id)).rows).toHaveLength(3);
+    expect((await refs(id)).rows).toHaveLength(2);
+    expect(await markers.count(id)).toBe(1);
+    expect(await oldRows(id)).toEqual([]);
   });
 
   it('refuses a different purpose for a member who has a sub-account: 409, no port call, nothing written, no purpose echoed', async () => {
@@ -188,10 +210,11 @@ describe('SubAccountService.open (T-0752)', () => {
   it('rolls the refs back when a racing open stored another purpose first (a marker that differs after the write)', async () => {
     const id = uuidv7();
     const { service } = build();
-    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_subaccount_purpose', $1, 'crowded', $2)`, [id, `p:${id}:${purposeHash('test-purpose-b')}`]);
+    await markers.plantPurpose(id, `p:${id}:${purposeHash('test-purpose-b')}`);
     const e = await refused(service.open({ partyId: id, purpose: PURPOSE }, NOW));
     expect(e.code).toBe('IDEMPOTENCY_CONFLICT');
-    expect((await refs(id)).rows.map((r) => r.entity_type)).toEqual(['funding_subaccount_purpose']);
+    expect((await refs(id)).rows).toEqual([]);
+    expect(await markers.purpose(id)).toBe(`p:${id}:${purposeHash('test-purpose-b')}`);
   });
 
   it('matches the purpose without case or edge spaces and sends the configured spelling', async () => {
@@ -236,8 +259,9 @@ describe('SubAccountService.open (T-0752)', () => {
     const { service } = build({ details: { owner: { ...OWNER, email: 'ownerfail@example.test', firstName: 'Zelda', mobile: '+14155550199' } } });
     const r = await service.open({ partyId: id, purpose: PURPOSE }, NOW);
     expect(r).toMatchObject({ status: 'open', ownerStatus: 'failed' });
-    expect((await refs(id)).rows).toHaveLength(4);
-    expect((await refs(id)).rows).toContainEqual({ entity_type: 'funding_subaccount_owner', external_id: `o:${id}:failed` });
+    expect((await refs(id)).rows).toHaveLength(2);
+    expect(await markers.owner(id)).toBe(`o:${id}:failed`);
+    expect(await oldRows(id)).toEqual([]);
     const c = await cases(id);
     expect(c.rows).toHaveLength(1);
     expect(c.rows[0]).toMatchObject({ kind: 'subaccount_owner_failed', severity: 'medium', dedupe_key: `subaccount-owner:${id}` });
@@ -375,4 +399,142 @@ describe('a full sub-account quota (T-0753)', () => {
     expect(e?.name).toBe('MemberSubAccountError');
     expect((await quotaCase()).rows).toHaveLength(0);
   });
+});
+
+describe('the purpose and owner markers (T-0770)', () => {
+  const FAILING = { owner: { ...OWNER, email: 'ownerfail@example.test' } };
+
+  it('a successful open writes the purpose marker once and no owner marker; a replay writes nothing more', async () => {
+    const id = uuidv7();
+    const { service } = build();
+    await service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    expect(await markers.purpose(id)).toBe(`p:${id}:${purposeHash(PURPOSE)}`);
+    expect(await markers.owner(id)).toBeUndefined();
+    expect(await markers.count(id)).toBe(1);
+    await service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    expect(await markers.count(id)).toBe(1);
+  });
+
+  it('a racing open of the SAME purpose that stored its marker first is accepted and its marker is kept', async () => {
+    const id = uuidv7();
+    const { service } = build();
+    await markers.plantPurpose(id, `p:${id}:${purposeHash(PURPOSE)}`);
+    expect(await service.open({ partyId: id, purpose: PURPOSE }, NOW)).toMatchObject({ created: true });
+    expect(await markers.count(id)).toBe(1);
+    expect(await vendorRefs(id)).toHaveLength(2);
+    expect(await oldRows(id)).toEqual([]);
+  });
+
+  it('first writer wins: a racing open that finds another purpose stored re-reads it and answers IDEMPOTENCY_CONFLICT; the stored purpose stays', async () => {
+    const id = uuidv7();
+    const { service, sim } = build();
+    await markers.plantPurpose(id, `p:${id}:${purposeHash('test-purpose-b')}`);
+    const e = await refused(service.open({ partyId: id, purpose: PURPOSE }, NOW));
+    expect(e.code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(sim.calls).toHaveLength(1);
+    expect(await markers.purpose(id)).toBe(`p:${id}:${purposeHash('test-purpose-b')}`);
+    expect(await vendorRefs(id)).toHaveLength(0);
+  });
+
+  it('markers are per provider: a marker (and a pair) under another provider is invisible, and is left alone', async () => {
+    const id = uuidv7();
+    const other = build({ provider: 'other-rail' });
+    await other.service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    expect(await markers.purpose(id, 'other-rail')).toBe(`p:${id}:${purposeHash(PURPOSE)}`);
+    expect(await markers.purpose(id)).toBeUndefined();
+    const mine = build();
+    expect(await mine.service.open({ partyId: id, purpose: PURPOSE }, NOW)).toMatchObject({ created: true });
+    expect(await markers.purpose(id)).toBe(`p:${id}:${purposeHash(PURPOSE)}`);
+    expect(await markers.purpose(id, 'other-rail')).toBe(`p:${id}:${purposeHash(PURPOSE)}`);
+    expect(await markers.owner(id)).toBeUndefined();
+  });
+
+  it('a failed owner writes ONE owner marker (o:{party}:failed) and ONE case; a replay adds neither', async () => {
+    const id = uuidv7();
+    const { service } = build({ details: FAILING });
+    await service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    expect(await markers.owner(id)).toBe(`o:${id}:failed`);
+    expect(await markers.count(id)).toBe(2);
+    expect((await cases(id)).rows).toHaveLength(1);
+    expect(await oldRows(id)).toEqual([]);
+    await service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    expect(await markers.count(id)).toBe(2);
+    expect((await cases(id)).rows).toHaveLength(1);
+  });
+
+  it('a failed owner whose open loses the purpose race leaves no owner marker, no case and no refs (one transaction)', async () => {
+    const id = uuidv7();
+    const { service } = build({ details: FAILING });
+    await markers.plantPurpose(id, `p:${id}:${purposeHash('test-purpose-b')}`);
+    expect((await refused(service.open({ partyId: id, purpose: PURPOSE }, NOW))).code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(await markers.owner(id)).toBeUndefined();
+    expect((await cases(id)).rows).toHaveLength(0);
+    expect(await vendorRefs(id)).toHaveLength(0);
+    expect(await markers.count(id)).toBe(1);
+  });
+
+  it('a pair whose marker belongs to another provider is refused as having no marker', async () => {
+    const id = uuidv7();
+    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_subaccount', $1, 'crowded', $2), ('funding_account', $1, 'crowded', $3)`, [id, `s:pm-${id}`, `s:pm-${id}:a`]);
+    await markers.plantPurpose(id, `p:${id}:${purposeHash(PURPOSE)}`, 'other-rail');
+    // Not even an old-style row of the right provider counts: the marker is read from ops.workflow_marker only (nothing is live, T-0770).
+    await db.query(`insert into ops.external_ref (entity_type, entity_id, provider, external_id) values ('funding_subaccount_purpose', $1, 'crowded', $2)`, [id, `p:${id}:${purposeHash(PURPOSE)}`]);
+    const { service, sim } = build();
+    const before = sim.calls.length;
+    expect((await refused(service.open({ partyId: id, purpose: PURPOSE }, NOW))).code).toBe('IDEMPOTENCY_CONFLICT');
+    expect(sim.calls.length).toBe(before);
+  });
+
+  it('the owner marker, the case and the refs are one transaction: a failing case insert rolls the purpose marker, the owner marker and the refs back', async () => {
+    const id = uuidv7();
+    const failing = {
+      query: db.query.bind(db),
+      transaction: <T>(fn: (tx: SqlClient) => Promise<T>) => db.transaction((tx) => fn({ query: (text, params) => (text.includes('ops.case') ? Promise.reject(new Error('case insert failed')) : tx.query(text, params)) })),
+    } as unknown as TestDatabase;
+    const service = new SubAccountService({ db: failing, flags: new StaticFlags(undefined, { 'wallet.subAccounts': true }), funding: shared, details: { read: async () => FAILING }, purposes: [PURPOSE], provider: 'crowded', eligible: async () => true });
+    await expect(service.open({ partyId: id, purpose: PURPOSE }, NOW)).rejects.toThrow('case insert failed');
+    expect(await markers.count(id)).toBe(0);
+    expect(await vendorRefs(id)).toEqual([]);
+    // The vendor was asked (it comes first); the retry writes everything.
+    const { service: again } = build({ details: FAILING });
+    await again.open({ partyId: id, purpose: PURPOSE }, NOW);
+    expect([await markers.purpose(id), await markers.owner(id)]).toEqual([`p:${id}:${purposeHash(PURPOSE)}`, `o:${id}:failed`]);
+  });
+
+  it('rows of the moved types are never written to ops.external_ref; the vendor rows are', async () => {
+    const id = uuidv7();
+    await build({ details: FAILING }).service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    expect(await oldRows(id)).toEqual([]);
+    expect(await vendorRefs(id)).toEqual(['funding_account', 'funding_subaccount']);
+  });
+});
+
+describe('the purpose and owner markers against a reference model (T-0770 differential)', () => {
+  it('300 random open sequences over two members and three purposes: the first purpose wins, a different one is IDEMPOTENCY_CONFLICT, a failed owner leaves one owner marker, nothing is written to ops.external_ref', async () => {
+    const purposes = [PURPOSE, 'test-purpose-b', 'Test-Purpose-C'];
+    let seed = 0x7a70;
+    const rnd = (n: number) => { seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff; return seed % n; };
+    const ok = build({ purposes });
+    const failing = build({ purposes, details: { owner: { ...OWNER, email: 'ownerfail@example.test' } } });
+    for (let i = 0; i < 300; i++) {
+      const party = [uuidv7(), uuidv7()] as const;
+      const first = new Map<string, string>();
+      for (let o = 0, n = 1 + rnd(5); o < n; o++) {
+        const who = rnd(2);
+        const id = party[who]!;
+        const raw = purposes[rnd(3)]!;
+        const wanted = raw.toLowerCase();
+        const outcome = await (who === 1 ? failing : ok).service.open({ partyId: id, purpose: rnd(2) === 0 ? raw : `  ${raw.toUpperCase()} ` }, NOW).then((r) => (r.created ? 'created' : 'replay'), (e: unknown) => (e as DomainError).code);
+        const have = first.get(id);
+        if (have === undefined) first.set(id, wanted);
+        expect(outcome).toBe(have === undefined ? 'created' : have === wanted ? 'replay' : 'IDEMPOTENCY_CONFLICT');
+      }
+      for (const [k, id] of party.entries()) {
+        const p = first.get(id);
+        expect(await markers.purpose(id)).toBe(p === undefined ? undefined : `p:${id}:${purposeHash(p)}`);
+        expect(await markers.owner(id)).toBe(p !== undefined && k === 1 ? `o:${id}:failed` : undefined);
+        expect(await oldRows(id)).toEqual([]);
+      }
+    }
+  }, 120_000);
 });
