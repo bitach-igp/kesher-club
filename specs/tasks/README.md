@@ -391,7 +391,7 @@
 | [T-0768](T-0768.md) | WAL | `ops.workflow_marker` table (ledger migration 0033), store module and desktop apply request (A4) | — | later (done by #382) · after T-0761, T-0762; desktop apply pending |
 | [T-0769](T-0769.md) | WAL | The credit markers move from `ops.external_ref` to `ops.workflow_marker` (A4) | — | later (done by #390) · after T-0761, T-0768 PASS |
 | [T-0770](T-0770.md) | WAL | The sub-account, lost-key and payee markers move to `ops.workflow_marker` (A4) | — | later (done by #392; old lost-key and payee rows still read) · after T-0762, T-0768 PASS |
-| [T-0771](T-0771.md) | SETUP | DESIGN: capability properties on port bindings replace provider-name branching in registry.ts; first slice scoped (A6) | — | later (scoped 2026-11-19) · design; slice 1 on acceptance |
+| [T-0771](T-0771.md) | SETUP | DESIGN: capability properties on port bindings replace provider-name branching in registry.ts; first slice scoped (A6) | — | later (scoped 2026-11-19) · design accepted; slice 1 built, PR open; later slices remain (see the card) |
 | [T-0772](T-0772.md) | SETUP | One `isUuidShape` in `@kesher/domain` replaces 28 loose UUID regex copies in apps/api (A7) | — | done by #371 (`isUuidShape`) |
 | [T-0773](T-0773.md) | SETUP | The mobile and console UUID regex copies use `isUuidShape` (A7) | — | done by #371 (`isUuidShape`) |
 | [T-0774](T-0774.md) | CRD | Card authorisation: daily and monthly held-sum reads become one read-only query (A8) | — | done by #383: one read-only held-sum query (`firstSpendLimitHit`), daily first |

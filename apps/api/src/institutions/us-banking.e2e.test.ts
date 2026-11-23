@@ -194,7 +194,7 @@ beforeAll(async () => {
     flags,
     registry,
     signingKey: await generateSigningKey(),
-    crowdedWebhookSecrets: crowdedWebhookSecrets(config),
+    crowdedWebhookSecrets: crowdedWebhookSecrets(registry, 'US'),
     usBankingPlatformEntityRef: platformRef,
     usCollectionCounterpartyRef: 'cp_kesher',
   });

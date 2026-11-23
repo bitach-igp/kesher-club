@@ -54,7 +54,7 @@ export async function main(env: Record<string, string | undefined>): Promise<Run
       pii,
       staffJwks: config.STAFF_JWKS,
       // The receiver at /webhooks/crowded verifies with these; with none (the simulator) it refuses every delivery.
-      crowdedWebhookSecrets: crowdedWebhookSecrets(config),
+      crowdedWebhookSecrets: crowdedWebhookSecrets(registry, config.MARKET),
       ...(config.MEMBER_APP_URL ? { oauth: { consentUrl: `${config.MEMBER_APP_URL.replace(/\/$/, '')}/connect` } } : {}),
     });
     const server = createServer(app, { role: config.SERVICE_ROLE, log: logger });
