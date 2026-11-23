@@ -57,7 +57,7 @@ function build(o: { flag?: boolean; purposes?: readonly string[]; details?: SubA
 }
 
 const refs = (id: string) => db.query<{ entity_type: string; external_id: string }>(`select entity_type, external_id from ops.external_ref where entity_id = $1 order by entity_type`, [id]);
-const cases = (id: string) => db.query<{ kind: string; severity: string; dedupe_key: string; payload: unknown }>(`select kind, severity, dedupe_key, payload from ops.case where dedupe_key = $1`, [`subaccount-owner:${id}`]);
+const cases = (id: string) => db.query<{ kind: string; severity: string; dedupe_key: string; status: string; payload: unknown }>(`select kind, severity, dedupe_key, status, payload from ops.case where dedupe_key = $1`, [`subaccount-owner:${id}`]);
 /** T-0770: the one place that names where the purpose and owner markers live (ops.workflow_marker, kind `subaccount_{purpose,owner}:{provider}`). */
 const markers = {
   async purpose(id: string, provider = 'crowded'): Promise<string | undefined> {
@@ -270,6 +270,17 @@ describe('SubAccountService.open (T-0752)', () => {
     for (const pii of ['Zelda', '+14155550199', 'ownerfail@example.test']) expect(text).not.toContain(pii);
     await service.open({ partyId: id, purpose: PURPOSE }, NOW);
     expect((await cases(id)).rows).toHaveLength(1);
+  });
+
+  it('a failed owner whose case staff already closed reopens it (T-0788: reopenableCase, not openCase), keeping the dedupe key and the payload', async () => {
+    const id = uuidv7();
+    await db.query(`insert into ops.case (id, kind, dedupe_key, severity, status, payload, opened_at, resolved_at, resolution) values ($1, 'subaccount_owner_failed', $2, 'medium', 'dismissed', $3, $4, $4, 'old')`, [uuidv7(), `subaccount-owner:${id}`, { partyId: id }, NOW]);
+    const { service } = build({ details: { owner: { ...OWNER, email: 'ownerfail@example.test' } } });
+    await service.open({ partyId: id, purpose: PURPOSE }, NOW);
+    const c = await cases(id);
+    expect(c.rows).toHaveLength(1);
+    expect(c.rows[0]).toMatchObject({ status: 'open', dedupe_key: `subaccount-owner:${id}` });
+    expect(c.rows[0]!.payload).toMatchObject({ partyId: id, reopened: { was: 'dismissed' } });
   });
 
   it('never puts a name, mobile or email into a thrown message when the details are refused', async () => {

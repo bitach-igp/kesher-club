@@ -6,10 +6,9 @@
 import { DomainError } from '@kesher/domain';
 import { FundingAccountError, FundingError, type CreditResult, type FundingAccountPort, type FundingCreditPort, type Load as VendorLoad } from '@kesher/ports';
 import type { Database } from '../db.ts';
-import { openCase } from '../ops/cases.ts';
 import { getMarker, getMarkers, putMarker } from '../ops/workflow-marker.ts';
 import type { Transfer } from '../transfers/service.ts';
-import { creditCase, openCreditCase } from './load-cases.ts';
+import { creditCase, openCreditCase, reopenableCase } from './load-cases.ts';
 import { mapFundingError } from './load-model.ts';
 import { isOwnerFailedMarker } from './sub-account-markers.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey, ownerKind } from './sub-accounts.ts';
@@ -145,7 +144,7 @@ async function ownerBlock(d: CreditDeps, transfer: Transfer, now: Date): Promise
   const party = transfer.toPartyId;
   if (party === undefined) return false;
   if (!isOwnerFailedMarker(party, await getMarker(d.db, ownerKind(d.provider), party))) return false;
-  await openCase(d.db, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(party), severity: 'medium', payload: { partyId: party }, now });
+  await reopenableCase(d.db, { kind: OWNER_FAILED_CASE, dedupeKey: ownerCaseKey(party), severity: 'medium', payload: { partyId: party }, now });
   return true;
 }
 
