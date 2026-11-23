@@ -107,7 +107,7 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-ADM-006 | P2 | Plan versions are offered only after a second finance approver; never edited, only superseded |
 | REQ-CMP-001 | P2 | Monitoring alerts with dispositions |
 | REQ-CMP-002 | P1 | Complaint SLA timers and export |
-| REQ-UX-001 | P2 | The Night Market palette keeps every text and action pair at WCAG AA in both modes, and a state never relies on colour alone |
+| REQ-UX-001 | P2 | The Night Market palette keeps every text and action pair at WCAG AA in both modes, and an amount never relies on colour alone (`+` in, `-` out) |
 | REQ-UX-002 | P2 | A member's appearance preference (system, light or dark) is stored on the account and returned by the API; unset reads as system |
 | REQ-UX-003 | P2 | The member app and the institution console render the member's chosen appearance on first paint; the public web site follows the system only |
 
