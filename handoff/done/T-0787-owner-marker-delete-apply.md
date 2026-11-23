@@ -23,3 +23,20 @@ Steps (from repo root, PowerShell on Windows unless stated):
 20. docker rm -f kesher-pg
 Expected: step 3 ends with `accepting connections`. Step 5 prints `ok` for every schema, with ledger at 34 migrations. Step 6 reports no pending migrations. Step 7 prints `INSERT 0 1`. Step 8 prints `DELETE 1` (an owner marker is deleted by club_app). Step 9 prints `DELETE 0` (nothing left, no error). Step 10 prints `INSERT 0 5`. Step 11 fails with `ERROR:  ops.workflow_marker: only a failed-owner marker may be deleted` (the trigger, NOT `permission denied`; the credit_outcome row is kept). Step 12 fails with the same trigger error (the payee row is kept). Step 13 fails with the same trigger error (the whole statement rolls back, so the owner marker `…78705` survives too). Step 14 fails with the same trigger error (the trigger applies to the superuser as well). Step 15 fails with `permission denied for table workflow_marker`. Step 16 fails with `permission denied for table workflow_marker`. Step 17 prints 5 rows: `credit_outcome` …78701 seq 1, `membership_lost_key` …78702, `payout_payee` …78703, `subaccount_owner:crowded` …78705, `subaccount_purpose:crowded` …78704. Step 18 prints `BEGIN`, `SET`, `DELETE 1`, `COMMIT` (the documented superuser clean-up path). Step 19 prints 4 rows (no `credit_outcome`).
 Report back: the console output of steps 3 and 5 to 19.
+
+## Result
+Outcome: PASS (2026-11-23 ~12:10 Asia/Jerusalem, runner worktree at 833f9d1, Docker 29.9.2, postgres:16).
+Note: the first PowerShell call (steps 1-6) ran but its output was lost to a tool timeout on the checker side; afterwards the container was up, `club_app` existed, the trigger existed, `atlas_ledger.atlas_schema_revisions` held 34 rows (max 0034) and a repeat of step 6 is shown below.
+- Step 3: `/var/run/postgresql:5432 - accepting connections`
+- Step 5 (evidence): ledger at 34 migrations (0034); all 9 schemas `ok`.
+- Step 6: `No migration files to execute`; `ok` ledger, identity, org, billing, legal, addons, notify, audit, agent.
+- Step 7: `INSERT 0 1`
+- Step 8: `DELETE 1`
+- Step 9: `DELETE 0`
+- Step 10: `INSERT 0 5`
+- Steps 11, 12, 13, 14: `ERROR:  ops.workflow_marker: only a failed-owner marker may be deleted` (CONTEXT: PL/pgSQL function ops.workflow_marker_delete_guard() line 4 at RAISE)
+- Steps 15, 16: `ERROR:  permission denied for table workflow_marker`
+- Step 17: 5 rows: credit_outcome …78701 seq 1, membership_lost_key …78702, payout_payee …78703, subaccount_owner:crowded …78705, subaccount_purpose:crowded …78704
+- Step 18: `BEGIN` / `SET` / `DELETE 1` / `COMMIT`
+- Step 19: 4 rows (membership_lost_key, payout_payee, subaccount_owner:crowded, subaccount_purpose:crowded; no credit_outcome)
+- Step 20: `kesher-pg` removed
