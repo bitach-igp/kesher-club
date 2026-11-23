@@ -19,7 +19,8 @@ import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import type { Transfer } from '../transfers/service.ts';
 import { applyVendorState, creditAttemptState, creditKey, HELD_RECHECK_MS, holdKey, loadState, LoadService, recordCreditBegan, recordCreditOutcome, releaseKey, runLoad, settleKey, type CreditOutcome, type LoadView } from './loads.ts';
 import { seedTransfer } from '../test-seed.ts';
-import { creditMayHaveMoved } from './load-credit.ts';
+import { CASE_AFTER_NOT_SUCCEEDED, creditMayHaveMoved, recordCreditFlap } from './load-credit.ts';
+import { honestCreditVendor } from './honest-credit-vendor.ts';
 import { openCase } from '../ops/cases.ts';
 import { ownerFailedMarker } from './sub-account-markers.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey, ownerKind } from './sub-accounts.ts';
@@ -1392,6 +1393,249 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
       });
     });
   });
+
+  describe('a credit answered NOT_SUCCEEDED with no case opens ONE case after the third answer for the same key (T-0786, TST-WAL-003)', () => {
+    /** The service over an HONEST vendor (the first answer per key stored and replayed) whose load reads can flip to a return and whose flap-marker write can fail once. */
+    const world = async () => {
+      const t = await setup();
+      const s = app.services;
+      const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
+      const vendor = honestCreditVendor(t.sim);
+      const ctl = { returned: false, dieOnFlap: false };
+      const port: FundingPort = { createLoad: (i, k) => t.sim.createLoad(i, k), getLoad: async (id) => { const l = await t.sim.getLoad(id); return ctl.returned ? { ...l, status: 'failed', failureCode: 'RETURNED' } : l; }, refund: (i, k) => t.sim.refund(i, k), getRefund: (id) => t.sim.getRefund(id), parseWebhook: (h, b) => t.sim.parseWebhook(h, b) };
+      const flaky = new Proxy(db, { get: (target, prop) => (prop === 'query' ? (async (text: string, params?: readonly unknown[]) => { if (ctl.dieOnFlap && text.startsWith('insert into ops.workflow_marker') && String(params?.[0]).startsWith('credit_flap')) { ctl.dieOnFlap = false; throw new Error('flap write failed'); } return (target.query as (t: string, p?: readonly unknown[]) => Promise<unknown>)(text, params); }) : Reflect.get(target, prop, target)) }) as typeof db;
+      const svc = new LoadService({ db: flaky, port, credit: vendor, ledger: s.ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
+      const sweep = async () => { for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER); };
+      const flaps = async (key: string) => (await db.query<{ kind: string; seq: number; value: string }>(`select m.kind, m.seq, m.value from ops.workflow_marker m join ops.transfer t on t.id = m.subject_id where m.kind like 'credit_flap:%' and t.idempotency_key = $1 order by m.kind, m.seq`, [key])).rows;
+      const resolve = async (key: string) => { await db.query(`update ops.case set status = 'resolved' where dedupe_key = 'load-credit:' || $1`, [(await s.transfers.byKey(key))!.id]); };
+      const state = async (key: string) => (await s.transfers.byKey(key))!.state;
+      return { ...t, s, svc, vendor, ctl, sweep, flaps, resolve, state };
+    };
+    const refusedCase = (attempt: number, reasonCode = 'NOT_SUCCEEDED') => [{ status: 'open', payload: expect.objectContaining({ reasonCode, attempt }) }];
+
+    it('(1) the vendor refuses NOT_SUCCEEDED for the key: the same key is sent three times, the third answer opens exactly one case, no journal, the load stays submitted, and the open case stops the vendor calls', async () => {
+      const w = await world();
+      const key = 'flap-three-0001';
+      w.vendor.script.push('NOT_SUCCEEDED');
+      await w.svc.request(w.party, w.body, key, NOW);
+      expect(await caseRows(key)).toEqual([]);
+      await w.sweep();
+      expect(await caseRows(key)).toEqual([]);
+      expect(w.vendor.calls).toEqual([`${key}:credit:1`, `${key}:credit:1`]);
+      await w.sweep();
+      expect(w.vendor.calls).toEqual([`${key}:credit:1`, `${key}:credit:1`, `${key}:credit:1`]);
+      expect(await caseRows(key)).toMatchObject(refusedCase(1));
+      expect((await caseRows(key))).toHaveLength(1);
+      const row = (await db.query<{ kind: string; severity: string; payload: Record<string, unknown> }>(`select c.kind, c.severity, c.payload from ops.case c join ops.transfer t on c.dedupe_key = 'load-credit:' || t.id where t.idempotency_key = $1`, [key])).rows[0]!;
+      expect(row).toMatchObject({ kind: 'load_credit_refused', severity: 'high', payload: { reasonCode: 'NOT_SUCCEEDED', attempt: 1, amount: { minor: '10000', currency: 'USD' } } });
+      // Sweeps after that open no second case and ask the vendor nothing while it is open (as for any open credit case).
+      await w.sweep();
+      await w.sweep();
+      expect(w.vendor.calls).toHaveLength(3);
+      expect(await caseRows(key)).toHaveLength(1);
+      expect(await journals(key)).toBe(0);
+      expect(await w.state(key)).toBe('submitted');
+      expect(await w.flaps(key)).toEqual([1, 2, 3].map((seq) => ({ kind: 'credit_flap:1', seq, value: `${key}:credit:1` })));
+      expect(w.svc.refusedCount).toBe(1);
+    }, 120_000);
+
+    it('(2) control: a real refusal opens one case at once, takes no flap marker, and resolving it takes :credit:2 (unchanged)', async () => {
+      const w = await world();
+      const key = 'flap-real-0001';
+      w.vendor.script.push('ACCOUNT_UNAVAILABLE');
+      await w.svc.request(w.party, w.body, key, NOW);
+      expect(await caseRows(key)).toMatchObject(refusedCase(1, 'ACCOUNT_UNAVAILABLE'));
+      await w.sweep();
+      expect(w.vendor.calls).toEqual([`${key}:credit:1`]);
+      expect(await w.flaps(key)).toEqual([]);
+      await w.resolve(key);
+      await w.sweep();
+      expect(w.vendor.calls).toEqual([`${key}:credit:1`, `${key}:credit:2`]);
+      expect(await w.state(key)).toBe('settled');
+      expect(await journals(key)).toBe(1);
+      expect(await caseRows(key)).toHaveLength(1);
+    }, 120_000);
+
+    it('(3) what a flap that clears can reach: two answers then the load is returned opens no credit case from this path and no returned case; one flap per load and per transfer never adds up; pending and an outage are not counted', async () => {
+      const w = await world();
+      const a = 'flap-clear-0001';
+      w.vendor.script.push('NOT_SUCCEEDED');
+      await w.svc.request(w.party, w.body, a, NOW);
+      await w.sweep();
+      expect(await w.flaps(a)).toHaveLength(2);
+      w.ctl.returned = true;
+      await w.sweep();
+      await w.sweep();
+      expect(await w.state(a)).toBe('failed');
+      expect(await caseRows(a)).toEqual([]);
+      expect((await db.query(`select 1 from ops.case c join ops.transfer t on c.dedupe_key = 'load-returned:' || t.id where t.idempotency_key = $1`, [a])).rows).toEqual([]);
+      expect(w.vendor.calls).toEqual([`${a}:credit:1`, `${a}:credit:1`]);
+      expect(await journals(a)).toBe(0);
+
+      // Another load: its first answer counts for it alone; the counts of two transfers never add up.
+      const w2 = await world();
+      const b = 'flap-clear-0002';
+      const c = 'flap-clear-0003';
+      w2.vendor.script.push('NOT_SUCCEEDED', 'NOT_SUCCEEDED');
+      await w2.svc.request(w2.party, w2.body, b, NOW);
+      await w2.svc.request(w2.party, w2.body, c, NOW);
+      await w2.sweep();
+      expect(await caseRows(b)).toEqual([]);
+      expect(await caseRows(c)).toEqual([]);
+      expect(await w2.flaps(b)).toHaveLength(2);
+      expect(await w2.flaps(c)).toHaveLength(2);
+      await w2.sweep();
+      expect(await caseRows(b)).toHaveLength(1);
+      expect(await caseRows(c)).toHaveLength(1);
+
+      // A pending answer and an outage are not NOT_SUCCEEDED answers: nothing is counted, and the load then credits under the same key.
+      const w3 = await world();
+      const d = 'flap-clear-0004';
+      w3.vendor.script.push('pending', 'outage');
+      await w3.svc.request(w3.party, w3.body, d, NOW);
+      await expect(w3.sweep()).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+      await w3.sweep();
+      expect(w3.vendor.calls).toEqual([`${d}:credit:1`, `${d}:credit:1`, `${d}:credit:1`]);
+      expect(await w3.flaps(d)).toEqual([]);
+      expect(await caseRows(d)).toEqual([]);
+      expect(await journals(d)).toBe(1);
+    }, 120_000);
+
+    it('(4) resolving the case takes :credit:2 and credits once with one journal; a second flap run on :credit:2 counts from zero and reopens the case at attempt 2', async () => {
+      const w = await world();
+      const key = 'flap-resolve-0001';
+      w.vendor.script.push('NOT_SUCCEEDED');
+      await w.svc.request(w.party, w.body, key, NOW);
+      await w.sweep();
+      await w.sweep();
+      expect(await caseRows(key)).toMatchObject(refusedCase(1));
+      await w.resolve(key);
+      await w.sweep();
+      expect(w.vendor.calls.at(-1)).toBe(`${key}:credit:2`);
+      expect(w.vendor.calls.filter((k) => k === `${key}:credit:1`)).toHaveLength(3);
+      expect(await w.state(key)).toBe('settled');
+      expect(await journals(key)).toBe(1);
+      expect(w.sim.creditCount((await w.svc.vendorLoadOf((await w.s.transfers.byKey(key))!.id))!)).toBe(1);
+      expect(await caseRows(key)).toHaveLength(1);
+
+      const w2 = await world();
+      const key2 = 'flap-resolve-0002';
+      w2.vendor.script.push('NOT_SUCCEEDED');
+      await w2.svc.request(w2.party, w2.body, key2, NOW);
+      await w2.sweep();
+      await w2.sweep();
+      await w2.resolve(key2);
+      w2.vendor.script.push('NOT_SUCCEEDED');
+      await w2.sweep();
+      expect(await caseRows(key2)).toMatchObject([{ status: 'resolved' }]);
+      await w2.sweep();
+      expect(await caseRows(key2)).toMatchObject([{ status: 'resolved' }]);
+      await w2.sweep();
+      expect(w2.vendor.calls.slice(3)).toEqual([`${key2}:credit:2`, `${key2}:credit:2`, `${key2}:credit:2`]);
+      expect(await caseRows(key2)).toMatchObject(refusedCase(2));
+      expect((await w2.flaps(key2)).map((r) => `${r.kind}:${r.seq}`)).toEqual(['credit_flap:1:1', 'credit_flap:1:2', 'credit_flap:1:3', 'credit_flap:2:1', 'credit_flap:2:2', 'credit_flap:2:3']);
+    }, 120_000);
+
+    it('(5a) crash: the flap marker write is lost after the vendor answered: the next cycle replays the same key and counts it, so the case opens one cycle later', async () => {
+      const w = await world();
+      const key = 'flap-lost-marker-1';
+      w.vendor.script.push('NOT_SUCCEEDED');
+      w.ctl.dieOnFlap = true;
+      await expect(w.svc.request(w.party, w.body, key, NOW)).rejects.toThrow('flap write failed');
+      expect(await w.flaps(key)).toEqual([]);
+      await w.sweep();
+      await w.sweep();
+      expect(await caseRows(key)).toEqual([]);
+      expect(await w.flaps(key)).toHaveLength(2);
+      await w.sweep();
+      expect(await caseRows(key)).toMatchObject(refusedCase(1));
+      expect(w.vendor.calls).toEqual(Array(4).fill(`${key}:credit:1`));
+      expect(await journals(key)).toBe(0);
+    }, 120_000);
+
+    it('(5b) crash: the vendor answered and we never heard (an outage-looking error): nothing is counted, the same key is asked again and the replayed answer is counted from there', async () => {
+      const w = await world();
+      const key = 'flap-lost-answer-1';
+      w.vendor.script.push('NOT_SUCCEEDED');
+      w.vendor.loseNextAnswer = true;
+      await expect(w.svc.request(w.party, w.body, key, NOW)).rejects.toMatchObject({ code: 'PROVIDER_UNAVAILABLE' });
+      expect(await w.flaps(key)).toEqual([]);
+      await w.sweep();
+      await w.sweep();
+      expect(await caseRows(key)).toEqual([]);
+      await w.sweep();
+      expect(await caseRows(key)).toMatchObject(refusedCase(1));
+      expect(w.vendor.calls).toEqual(Array(4).fill(`${key}:credit:1`));
+    }, 120_000);
+
+    it('(5c) two sweeps racing on the answer that reaches the third open ONE case, and racing sweeps after it open no second', async () => {
+      const w = await world();
+      const key = 'flap-race-0001';
+      w.vendor.script.push('NOT_SUCCEEDED');
+      await w.svc.request(w.party, w.body, key, NOW);
+      await w.sweep();
+      await Promise.all([w.sweep(), w.sweep()]);
+      expect(await caseRows(key)).toMatchObject(refusedCase(1));
+      expect(await caseRows(key)).toHaveLength(1);
+      const calls = w.vendor.calls.length;
+      await Promise.all([w.sweep(), w.sweep(), w.sweep()]);
+      expect(w.vendor.calls).toHaveLength(calls);
+      expect(await caseRows(key)).toHaveLength(1);
+      expect((await w.flaps(key)).length).toBeLessThanOrEqual(3);
+      expect(await journals(key)).toBe(0);
+    }, 120_000);
+
+    it('(5d) a return after N-1 answers is the existing return handling: the load fails with no credit case and no returned case (the outcome is refused: no money moved under that key)', async () => {
+      const w = await world();
+      const key = 'flap-return-0001';
+      w.vendor.script.push('NOT_SUCCEEDED');
+      await w.svc.request(w.party, w.body, key, NOW);
+      await w.sweep();
+      const tr = (await w.s.transfers.byKey(key))!;
+      expect(await creditMayHaveMoved({ db, provider: 'p' }, tr, 'ld_x')).toBeUndefined();
+      w.ctl.returned = true;
+      await w.sweep();
+      expect(await w.state(key)).toBe('failed');
+      expect(await caseRows(key)).toEqual([]);
+    }, 120_000);
+
+    describe('the counter (unit)', () => {
+      const fresh = () => ({ transferId: uuidv7(NOW), workflowId: `flapunit-${uuidv7(NOW)}`, provider: 'flap-unit' });
+      const rows = async (transferId: string) => (await db.query<{ kind: string; seq: number; value: string }>(`select kind, seq, value from ops.workflow_marker where subject_id = $1 and kind like 'credit_flap:%' order by kind, seq`, [transferId])).rows;
+
+      it('counts 1, 2, 3 and then stays at 3 without a fourth row; every row carries the credit key', async () => {
+        const a = fresh();
+        expect(CASE_AFTER_NOT_SUCCEEDED).toBe(3);
+        expect(await recordCreditFlap(db, { ...a, attempt: 1 })).toBe(1);
+        expect(await recordCreditFlap(db, { ...a, attempt: 1 })).toBe(2);
+        expect(await recordCreditFlap(db, { ...a, attempt: 1 })).toBe(3);
+        expect(await recordCreditFlap(db, { ...a, attempt: 1 })).toBe(3);
+        expect(await rows(a.transferId)).toEqual([1, 2, 3].map((seq) => ({ kind: 'credit_flap:1', seq, value: creditKey(a.workflowId, 1) })));
+      });
+
+      it('attempts and transfers count separately', async () => {
+        const a = fresh();
+        const b = fresh();
+        await recordCreditFlap(db, { ...a, attempt: 1 });
+        await recordCreditFlap(db, { ...a, attempt: 1 });
+        expect(await recordCreditFlap(db, { ...a, attempt: 2 })).toBe(1);
+        expect(await recordCreditFlap(db, { ...b, attempt: 1 })).toBe(1);
+        expect((await rows(a.transferId)).map((r) => `${r.kind}:${r.seq}`)).toEqual(['credit_flap:1:1', 'credit_flap:1:2', 'credit_flap:2:1']);
+      });
+
+      it('writes the first absent seq (a crash window or a lost race leaves a gap), and a row already there is never overwritten', async () => {
+        const a = fresh();
+        await db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value) values ('credit_flap:1', $1, 2, 'earlier-value')`, [a.transferId]);
+        expect(await recordCreditFlap(db, { ...a, attempt: 1 })).toBe(2);
+        expect(await recordCreditFlap(db, { ...a, attempt: 1 })).toBe(3);
+        expect(await rows(a.transferId)).toEqual([
+          { kind: 'credit_flap:1', seq: 1, value: creditKey(a.workflowId, 1) },
+          { kind: 'credit_flap:1', seq: 2, value: 'earlier-value' },
+          { kind: 'credit_flap:1', seq: 3, value: creditKey(a.workflowId, 1) },
+        ]);
+      });
+    });
+  });
 });
 
 describe('the typed credit-marker functions (T-0761)', () => {
@@ -1690,6 +1934,8 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     credit?: { status: string; attempt?: number };
     accountRef?: boolean;
     accountStatus?: string;
+    /** How many `credit_flap:1` rows (seqs 1..n) are already on record (T-0786). */
+    flaps?: number;
   }
   const run = async (w: World, o: { port?: boolean; kind?: string; vendor?: Partial<VendorLoad> | null; result?: { status: string; reasonCode?: string }; error?: unknown } = {}) => {
     const trace: string[] = [];
@@ -1708,6 +1954,11 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
         } else if (text.startsWith('insert into ops.case')) {
           trace.push(params[1] === OWNER_FAILED_CASE ? 'owner-case' : `credit-case-open:${String(params[1])}:${String(params[2])}:${(params[4] as { reasonCode?: string }).reasonCode ?? ''}:${(params[4] as { attempt?: number }).attempt ?? ''}`);
           rows = [{ id: 'row' }];
+        } else if (text.startsWith('select seq, value from ops.workflow_marker') && String(params[0]).startsWith('credit_flap')) {
+          trace.push(`flap-read:${String(params[0])}`);
+          rows = Array.from({ length: w.flaps ?? 0 }, (_, i) => ({ seq: i + 1, value: 'k' }));
+        } else if (text.startsWith('insert into ops.workflow_marker') && String(params[0]).startsWith('credit_flap')) {
+          trace.push(`flap-write:${String(params[0])}:${String(params[2])}=${String(params[3])}`);
         } else if (text.startsWith('insert into ops.workflow_marker')) {
           trace.push(params[0] === 'credit_outcome' ? `outcome:${String(params[0])}:${String(params[2])}=${String(params[3])}` : `began:${String(params[0])}:${String(params[2])}=${String(params[3])}`);
         } else {
@@ -1817,13 +2068,27 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     expect(r.svc.refusedCount).toBe(0);
   });
 
-  it('NOT_SUCCEEDED is the vendor read flapping: its outcome is written as refused, no case opens and refusedCount does not move', async () => {
+  it('NOT_SUCCEEDED is the vendor read flapping: its outcome is written as refused, then counted; below the third answer no case opens and refusedCount does not move', async () => {
     const r = await run({}, { result: { status: 'refused', reasonCode: 'NOT_SUCCEEDED' } });
     expect(r.proceed).toBe(false);
-    expect(r.trace.at(-1)).toBe('outcome:credit_outcome:1=refused');
+    expect(r.trace.slice(-3)).toEqual(['outcome:credit_outcome:1=refused', 'flap-read:credit_flap:1', 'flap-write:credit_flap:1:1=order-key-0001:credit:1']);
     expect(r.trace.some((t) => t.startsWith('credit-case-open'))).toBe(false);
     expect(r.svc.refusedCount).toBe(0);
     expect(r.svc.creditedCount).toBe(0);
+  });
+
+  it('the third NOT_SUCCEEDED answer for a key opens the credit case (reasonCode NOT_SUCCEEDED, this attempt, counted as a refusal); the second does not; attempt 2 counts its own', async () => {
+    const second = await run({ flaps: 1 }, { result: { status: 'refused', reasonCode: 'NOT_SUCCEEDED' } });
+    expect(second.trace.some((t) => t.startsWith('credit-case-open'))).toBe(false);
+    expect(second.trace.at(-1)).toBe('flap-write:credit_flap:1:2=order-key-0001:credit:1');
+    const third = await run({ flaps: 2 }, { result: { status: 'refused', reasonCode: 'NOT_SUCCEEDED' } });
+    expect(third.proceed).toBe(false);
+    expect(third.trace.at(-1)).toMatch(/^credit-case-open:load_credit_refused:load-credit:.*:NOT_SUCCEEDED:1$/);
+    expect(third.trace.at(-2)).toBe('flap-write:credit_flap:1:3=order-key-0001:credit:1');
+    expect(third.svc.refusedCount).toBe(1);
+    const next = await run({ flaps: 0, credit: { status: 'resolved', attempt: 1 } }, { result: { status: 'refused', reasonCode: 'NOT_SUCCEEDED' } });
+    expect(next.trace.some((t) => t.startsWith('credit-case-open'))).toBe(false);
+    expect(next.trace.at(-1)).toBe('flap-write:credit_flap:2:1=order-key-0001:credit:2');
   });
 
   it('a provider outage on the credit call surfaces as the mapped DomainError, writes no outcome and no case', async () => {

@@ -7,7 +7,7 @@ import { DomainError } from '@kesher/domain';
 import { FundingAccountError, FundingError, type CreditResult, type FundingAccountPort, type FundingCreditPort, type Load as VendorLoad } from '@kesher/ports';
 import type { Database } from '../db.ts';
 import { openCase } from '../ops/cases.ts';
-import { getMarker, putMarker } from '../ops/workflow-marker.ts';
+import { getMarker, getMarkers, putMarker } from '../ops/workflow-marker.ts';
 import type { Transfer } from '../transfers/service.ts';
 import { creditCase, openCreditCase } from './load-cases.ts';
 import { mapFundingError } from './load-model.ts';
@@ -22,6 +22,11 @@ export type CreditOutcome = 'credited' | 'pending' | 'refused';
 const CREDIT_BEGAN = 'credit_began';
 /** The outcome of attempt `seq` (value `credited|pending|refused`), written once after the vendor answered; absent after a crash in between. */
 const CREDIT_OUTCOME = 'credit_outcome';
+/** How many consecutive case-less `NOT_SUCCEEDED` answers for one key open the `load_credit_refused` case (T-0786, owner decision, option 2). */
+export const CASE_AFTER_NOT_SUCCEEDED = 3;
+const FLAP_SEQS: readonly number[] = Array.from({ length: CASE_AFTER_NOT_SUCCEEDED }, (_, i) => i + 1);
+/** `ops.workflow_marker` kind of the answers counted for credit attempt `attempt` (one kind per attempt, so a later key starts at zero); subject the transfer id, seq the occurrence 1..N, value the credit key. */
+const flapKind = (attempt: number): string => `credit_flap:${attempt}`;
 interface CreditAttempt {
   transferId: string;
   /** Kept for the callers; the markers are keyed by the transfer id, which implies the provider (T-0769). */
@@ -47,6 +52,22 @@ export async function creditAttemptState(db: Database, a: CreditAttempt): Promis
   return { began: true, outcome: done === 'credited' || done === 'refused' ? done : 'pending' };
 }
 
+/**
+ * Counts one case-less `NOT_SUCCEEDED` answer for this attempt's key (T-0786) and returns how many answers are on record, this one included.
+ * The count is derived from insert-only markers (no migration, no new grant): seqs 1..N of `credit_flap:{attempt}` are read and the first absent
+ * seq is written (first writer wins). A crash between the vendor's answer and this write loses nothing but time: the next cycle sends the same key,
+ * the vendor replays the same answer and it is counted then (the case opens one cycle later). Two sweeps racing may count one answer once (both write
+ * the same seq); they cannot open two cases, because the case opener dedupes on the transfer's `dedupe_key`.
+ */
+export async function recordCreditFlap(db: Database, a: CreditAttempt & { workflowId: string }): Promise<number> {
+  const kind = flapKind(a.attempt);
+  const have = await getMarkers(db, kind, a.transferId, FLAP_SEQS);
+  const next = FLAP_SEQS.find((seq) => !have.has(seq));
+  if (next === undefined) return have.size;
+  await putMarker(db, { kind, subjectId: a.transferId, seq: next, value: creditKey(a.workflowId, a.attempt) });
+  return have.size + 1;
+}
+
 /** The part of `LoadService`'s dependencies the credit phase reads. */
 export interface CreditDeps {
   db: Database;
@@ -67,7 +88,8 @@ export interface CreditStepResult {
  * The vendor credit before the journal (T-0705, ADR-018 A4/M1). `proceed` is true when the journal may post: no credit port (the journals every
  * other vendor posts), or the vendor answered `credited`. False leaves the load where it is and posts nothing: `pending` (a load the
  * vendor still holds, or an answer not final yet) is retried by the next sweep with the SAME key, a refusal opens one `load_credit_refused`
- * case and stops until people resolve it, and the retry after that takes the next key `{wf}:credit:{n}`, `n` read from the case.
+ * case and stops until people resolve it, and the retry after that takes the next key `{wf}:credit:{n}`, `n` read from the case. A `NOT_SUCCEEDED`
+ * refusal opens no case at first (retried with the same key) but does after the third in a row for that key (T-0786).
  * A thrown outage leaves everything as it was. The credit is per load at the vendor, so a crash after it and before the journal
  * calls it again, is answered `credited`, and the one journal follows.
  */
@@ -110,8 +132,11 @@ export async function creditStep(d: CreditDeps, transfer: Transfer, vendor: Vend
   // A `pending` that later turns credited or refused stays `pending`, which is conservative: it can only open a case, never hide one.
   await recordCreditOutcome(d.db, { transferId: transfer.id, workflowId: transfer.idempotencyKey, provider: d.provider, attempt, outcome: result.status });
   if (result.status === 'credited') return { proceed: true, credited: true, refused: false };
-  // `NOT_SUCCEEDED` after a `succeeded` read is the vendor's read flapping, not a refusal: retried with the same key, no case.
   if (result.status === 'refused' && result.reasonCode !== 'NOT_SUCCEEDED') return refuse(vendor.loadId, result.reasonCode ?? 'REFUSED', attempt);
+  // `NOT_SUCCEEDED` after a `succeeded` read is retried with the same key and no case, so a one-off flap costs nothing; but a refusal is final for
+  // its key at the vendor, so a key that keeps answering it never recovers. After N such answers in a row (T-0786) ONE `load_credit_refused` case
+  // opens (reasonCode `NOT_SUCCEEDED`, this attempt), the key stays the same, and staff resolving it takes the next key like any refusal.
+  if (result.status === 'refused' && (await recordCreditFlap(d.db, { transferId: transfer.id, workflowId: transfer.idempotencyKey, provider: d.provider, attempt })) >= CASE_AFTER_NOT_SUCCEEDED) return refuse(vendor.loadId, result.reasonCode ?? 'NOT_SUCCEEDED', attempt);
   return { proceed: false, credited: false, refused: false };
 }
 
@@ -147,7 +172,8 @@ async function accountBlock(d: CreditDeps, accountRef: string): Promise<string |
  * The vendor load id when the vendor may already hold this load's money in the member's wallet without our journal, else undefined. Reads
  * only our own records and calls no vendor: attempt `n` (the next after the credit case's) has a `began` marker, written before the call,
  * and its outcome row is `credited` or `pending`, or missing (a crash between the call and the outcome: the vendor may have credited).
- * A `refused` outcome, no marker, or an open credit case (the last attempt was refused, no later key sent) means no money moved.
+ * A `refused` outcome, no marker, or an open credit case (the last attempt was refused, no later key sent) means no money moved: a refusal is
+ * final for its key at the vendor, so a `refused` outcome means no money moved under that key.
  * `vendorId` is the vendor's load id for the transfer, read by the caller (`LoadService.vendorLoadOf`) after its `kind === 'load'` check.
  */
 export async function creditMayHaveMoved(d: Pick<CreditDeps, 'db' | 'provider'>, transfer: Transfer, vendorId: string): Promise<string | undefined> {
