@@ -4850,7 +4850,7 @@ export interface components {
             readonly summary: string;
         };
         /** @enum {string} */
-        readonly OpsCaseKind: "suspense" | "deposit_not_on_statement" | "payout_account_mismatch" | "balance_break" | "system_total_break" | "unbalanced_journal" | "kyb_application";
+        readonly OpsCaseKind: "suspense" | "deposit_not_on_statement" | "payout_account_mismatch" | "balance_break" | "system_total_break" | "unbalanced_journal" | "kyb_application" | "subaccount_owner_failed";
         readonly OtpStart: {
             readonly attemptsAllowed: number;
             /** Format: date-time */

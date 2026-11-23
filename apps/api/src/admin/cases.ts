@@ -11,10 +11,12 @@ import type { Database, SqlClient } from '../db.ts';
 import { requireStaff } from './staff-token.ts';
 import { ok, route, type Handler } from '../http.ts';
 import { iso } from '../dates.ts';
+import { clearMarker } from '../ops/workflow-marker.ts';
+import { OWNER_FAILED_CASE, ownerKind } from '../wallet/sub-accounts.ts';
 
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
 
-export const OPS_CASE_KINDS = ['suspense', 'deposit_not_on_statement', 'payout_account_mismatch', 'balance_break', 'system_total_break', 'unbalanced_journal', 'kyb_application'] as const;
+export const OPS_CASE_KINDS = ['suspense', 'deposit_not_on_statement', 'payout_account_mismatch', 'balance_break', 'system_total_break', 'unbalanced_journal', 'kyb_application', 'subaccount_owner_failed'] as const;
 export type OpsCaseKind = (typeof OPS_CASE_KINDS)[number];
 export type CaseStatus = 'open' | 'investigating' | 'resolved' | 'dismissed';
 const STATUSES: readonly CaseStatus[] = ['open', 'investigating', 'resolved', 'dismissed'];
@@ -121,9 +123,12 @@ function decodeCursor(raw: string | undefined): { at: string; id: string } | und
 export class OpsCases {
   private readonly db: Database;
   private readonly audit: AuditService;
-  constructor(db: Database, audit: AuditService) {
+  private readonly ownerProvider: string | undefined;
+  /** `ownerProvider`: the funding provider whose failed-owner markers a resolved owner case clears (T-0788); none, and nothing is cleared. */
+  constructor(db: Database, audit: AuditService, ownerProvider?: string) {
     this.db = db;
     this.audit = audit;
+    this.ownerProvider = ownerProvider;
   }
 
   /** Newest first, cursor-paged; filters combine. */
@@ -159,6 +164,12 @@ export class OpsCases {
     });
   }
 
+  private async clearOwnerMarker(tx: SqlClient, payload: Record<string, unknown>): Promise<boolean> {
+    const party = payload['partyId'];
+    if (this.ownerProvider === undefined || typeof party !== 'string' || party === '') return false;
+    return clearMarker(tx, { kind: ownerKind(this.ownerProvider), subjectId: party });
+  }
+
   /** Resolved or dismissed, with a note; final. A suspense credit is resolved only through its deposit (T-0631). */
   async decide(id: string, decision: CaseDecision, note: string, by: CaseActor, now: Date): Promise<OpsCase> {
     if (!DECISIONS.includes(decision)) throw new DomainError('VALIDATION_FAILED', `decision must be one of ${DECISIONS.join(', ')}`);
@@ -176,7 +187,10 @@ export class OpsCases {
         [id, decision, by.subject, now, trimmed, by.partyId],
       );
       if (!r.rows[0]) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This case was decided a moment ago');
-      await this.audit.record({ actorId: by.partyId, actorRole: by.role, action: `case.${decision}`, subject: id, reason: trimmed, before: { status: current.status }, after: { status: decision }, payload: { kind: current.kind } }, now, inTx(tx));
+      // T-0788: staff resolving a failed-owner case say the owner is fixed, so its marker goes in the SAME transaction as the decision (both
+      // stand or neither does; a replay finds the case decided and never reaches here). Dismissing leaves the marker: credits stay blocked.
+      const cleared = decision === 'resolved' && current.kind === OWNER_FAILED_CASE ? await this.clearOwnerMarker(tx, current.payload) : undefined;
+      await this.audit.record({ actorId: by.partyId, actorRole: by.role, action: `case.${decision}`, subject: id, reason: trimmed, before: { status: current.status }, after: { status: decision }, payload: { kind: current.kind, ...(cleared === undefined ? {} : { markerCleared: cleared }) } }, now, inTx(tx));
       return toCase(r.rows[0]);
     });
   }
