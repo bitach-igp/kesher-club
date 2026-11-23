@@ -18,7 +18,7 @@ import type { AuditService } from '../audit/service.ts';
 import type { Database } from '../db.ts';
 import type { AccountService } from '../ledger/accounts.ts';
 import type { PostgresLedger } from '../ledger/post.ts';
-import { linkRef, refOf } from '../ops/external-ref.ts';
+import { linkRef } from '../ops/external-ref.ts';
 import type { Transfer, TransferConversion, TransferService } from '../transfers/service.ts';
 import { settleKey } from '../transfers/journal-keys.ts';
 
@@ -91,8 +91,10 @@ export class ClosureService {
     if (user.status === 'closed') return this.view(partyId, 'closed', now);
     const pending = (await this.refundTransfers(partyId)).filter((t) => t.state === 'submitted');
     if (pending.length === 0) return this.view(partyId, 'open', now);
+    // One query for every pending refund's vendor id; the vendor reads and applyRefund still run one at a time, in refund order.
+    const refundIds = await this.vendorRefundsOf(pending.map((t) => t.id));
     for (const t of pending) {
-      const refundId = await this.vendorRefundOf(t.id);
+      const refundId = refundIds.get(t.id);
       if (refundId) await this.applyRefund(t, await this.d.port.getRefund(refundId), now);
     }
     return this.settle(partyId, now);
@@ -233,8 +235,10 @@ export class ClosureService {
     return this.d.transfers.getMany(r.rows.map((row) => row.id));
   }
 
-  private async vendorRefundOf(transferId: string): Promise<string | undefined> {
-    return refOf(this.d.db, 'refund', transferId, this.d.provider);
+  /** The vendor's refund id for each of these refund transfers that has one (ops.external_ref is unique per entity and provider). */
+  private async vendorRefundsOf(transferIds: string[]): Promise<Map<string, string>> {
+    const r = await this.d.db.query<{ entity_id: string; external_id: string }>(`select entity_id, external_id from ops.external_ref where entity_type = 'refund' and provider = $1 and entity_id = any($2::uuid[])`, [this.d.provider, transferIds]);
+    return new Map(r.rows.map((x) => [x.entity_id, x.external_id]));
   }
 }
 
