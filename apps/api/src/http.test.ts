@@ -1,6 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { DomainError } from '@kesher/domain';
-import { HttpError, makeRequest, ok, requireIdempotencyKey, requireRole, route } from './http.ts';
+import { HttpError, ok, requireIdempotencyKey, requireRole, route } from './http.ts';
+import { makeRequest } from './test-http.ts';
 
 describe('http core', () => {
   it('maps DomainError to problem+json with the trace id and no stack', async () => {
@@ -44,5 +48,21 @@ describe('http core', () => {
   it('passes successful responses through with the trace header', async () => {
     const res = await route(async () => ok({ hello: 'world' }))(makeRequest({ method: 'GET', path: '/', traceId: 't' }));
     expect(res).toMatchObject({ status: 200, body: { hello: 'world' }, headers: { 'x-trace-id': 't' } });
+  });
+});
+
+// T-0782: the request builder is a test fixture; no production module carries it or imports it.
+describe('makeRequest stays out of production code (T-0782)', () => {
+  const dir = path.dirname(fileURLToPath(import.meta.url));
+  const walk = (d: string): string[] => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
+  const sources = walk(dir).filter((f) => f.endsWith('.ts'));
+  it('http.ts exports no makeRequest', async () => {
+    expect(Object.keys(await import('./http.ts'))).not.toContain('makeRequest');
+    expect(fs.readFileSync(path.join(dir, 'http.ts'), 'utf8')).not.toContain('makeRequest');
+  });
+  it('only test files import test-http.ts', () => {
+    const importers = sources.filter((f) => /from '[^']*test-http\.ts'/.test(fs.readFileSync(f, 'utf8')));
+    expect(importers.length).toBeGreaterThan(0);
+    expect(importers.filter((f) => !f.endsWith('.test.ts'))).toEqual([]);
   });
 });

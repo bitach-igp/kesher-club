@@ -395,14 +395,14 @@
 | [T-0772](T-0772.md) | SETUP | One `isUuidShape` in `@kesher/domain` replaces 28 loose UUID regex copies in apps/api (A7) | — | done by #371 (`isUuidShape`) |
 | [T-0773](T-0773.md) | SETUP | The mobile and console UUID regex copies use `isUuidShape` (A7) | — | done by #371 (`isUuidShape`) |
 | [T-0774](T-0774.md) | CRD | Card authorisation: daily and monthly held-sum reads become one read-only query (A8) | — | done (PR for T-0774): one read-only held-sum query (`firstSpendLimitHit`), daily first |
-| [T-0775](T-0775.md) | INS | Identity `findUsers(ids)`: staff lists and customer lists read users in one query (A8) | — | later (scoped 2026-11-19) · independent |
+| [T-0775](T-0775.md) | INS | Identity `findUsers(ids)`: staff lists and customer lists read users in one query (A8) | — | done 2026-11-22 (built, PR open) · independent |
 | [T-0776](T-0776.md) | WAL | `DisplayNameService.getMany` for `listMemberships` (A8) | — | done 2026-11-22 (built, PR open) · independent; `TransferService.getMany` came with #366, `DisplayNameService.getMany` does not exist yet |
 | [T-0777](T-0777.md) | NOT | Outbound events: `messages()` reads attempts concurrently (A8) | — | later (scoped 2026-11-19) · independent |
 | [T-0778](T-0778.md) | WAL | Closure status: pending refund refs read in one query (A8) | — | later (scoped 2026-11-19) · independent |
 | [T-0779](T-0779.md) | LED | Ledger account provisioning in batches, idempotent (A8) | — | later (scoped 2026-11-19) · independent |
 | [T-0780](T-0780.md) | BIL | WIRE OR DELETE: `DunningService` has no production caller and no Stripe billing webhook feeds it (B) | — | later (scoped 2026-11-19) · decision first (with T-0736, T-0737) |
 | [T-0781](T-0781.md) | SETUP | DELETED: generic `standardWebhooksVerifier`, `stripeVerifier`, `hmacVerifier` were bound nowhere and carried bugs; live Stripe funding receiver now has a forged/stale-signature guard (B, security flag) | — | done 2026-11-20 (built, merged #374) |
-| [T-0782](T-0782.md) | SETUP | WIRE OR DELETE: `makeRequest` is test-only; move it to a test helper (B) | — | later (scoped 2026-11-19) · decision first |
+| [T-0782](T-0782.md) | SETUP | MOVED: `makeRequest` was test-only; it now lives in `apps/api/src/test-http.ts` (B) | — | done 2026-11-22 (built, PR open) · pure move, 8 importers |
 | [T-0783](T-0783.md) | AGT | DELETED: `metadataHandler` was a test-only duplicate; `McpHttp` serves the metadata (B) | REQ-AGT-001 | done 2026-11-22 (built, PR open) |
 | [T-0784](T-0784.md) | PAY | DELETED: `canTransition` was test-only; the state machine is enforced through `next()` and now asserted exhaustively through `TransferService.apply` (B, money-state flag) | — | done 2026-11-22 (built, PR open) · DB transition trigger stays a follow-up |
 | [T-0785](T-0785.md) | AUTH | WIRE OR DELETE: the org identity port and the WorkOS webhook check have no caller; REQ-AUTH-008 unwired (B, security flag) | REQ-AUTH-008 | later (scoped 2026-11-19) · decision first |
