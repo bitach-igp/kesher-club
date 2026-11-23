@@ -748,7 +748,11 @@ describe('T-0554: an institution payout whose approval is rejected or runs out e
       return (await db.query<{ n: number }>(`select count(*)::int as n from ops.external_ref where entity_type = 'payee' and entity_id = $1`, [transferId])).rows[0]!.n;
     },
     async drop(transferId: string): Promise<void> {
-      await db.query(`delete from ops.workflow_marker where kind = 'payout_payee' and subject_id = $1`, [transferId]);
+      // Write-once markers refuse a delete (T-0787 trigger); a test clears one as the superuser with triggers off for this transaction.
+      await db.transaction(async (tx) => {
+        await tx.query('set local session_replication_role = replica');
+        await tx.query(`delete from ops.workflow_marker where kind = 'payout_payee' and subject_id = $1`, [transferId]);
+      });
     },
     async plant(transferId: string, payeeId: string): Promise<void> {
       await db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value) values ('payout_payee', $1, 0, $2)`, [transferId, payeeId]);

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { findByClaim, getMarker, getMarkers, putMarker } from './workflow-marker.ts';
+import { clearMarker, findByClaim, getMarker, getMarkers, putMarker } from './workflow-marker.ts';
 
 // TST-WAL-003: our own workflow markers are write-once rows in ops.workflow_marker (T-0768).
 describe('ops.workflow_marker store', () => {
@@ -121,13 +121,13 @@ describe('ops.workflow_marker store', () => {
     expect(r.rows[0]?.age_s).toBeLessThan(5);
   });
 
-  it('grants club_app select and insert only: markers are write-once', async () => {
+  it('grants club_app select, insert and (guarded, see below) delete: no update, no truncate', async () => {
     const id = uuidv7(now);
     await db.asRole('club_app', (c) => putMarker(c, { kind: 'grant_kind', subjectId: id, value: 'grant-v' }));
     expect(await db.asRole('club_app', (c) => getMarker(c, 'grant_kind', id))).toBe('grant-v');
     for (const sql of [
       `update ops.workflow_marker set value = 'changed' where kind = 'grant_kind'`,
-      `delete from ops.workflow_marker where kind = 'grant_kind'`,
+      `update ops.workflow_marker set kind = 'subaccount_owner:x' where kind = 'grant_kind'`,
       `truncate ops.workflow_marker`,
     ]) {
       await expect(db.asRole('club_app', (c) => c.query(sql))).rejects.toThrow(/permission denied/);
@@ -135,3 +135,145 @@ describe('ops.workflow_marker store', () => {
     expect(await getMarker(db, 'grant_kind', id)).toBe('grant-v');
   });
 });
+
+// T-0787: a failed-owner marker can be cleared; every other marker stays write-once (the grant is table-wide, the trigger narrows it).
+describe('ops.workflow_marker delete (failed-owner markers only)', () => {
+  let db: TestDatabase;
+  beforeAll(async () => {
+    db = await createTestDatabase();
+  }, 120_000);
+  afterAll(async () => {
+    await db.close();
+  });
+
+  const now = new Date('2026-03-01T10:00:00Z');
+  const OWNER = 'subaccount_owner:crowded';
+  const WRITE_ONCE = ['credit_began', 'credit_outcome', 'payout_payee', 'membership_lost_key', 'subaccount_purpose:crowded', 'subaccount_owner', 'subaccount_ownerx:crowded', 'Subaccount_owner:crowded', 'subaccountXowner:crowded', 'x_subaccount_owner:crowded', ''];
+  const count = async (kind: string, id: string): Promise<number> => (await db.query<{ n: number }>('select count(*)::int as n from ops.workflow_marker where kind = $1 and subject_id = $2', [kind, id])).rows[0]!.n;
+
+  it('lets club_app delete an owner marker, and a later put can write it again', async () => {
+    const id = uuidv7(now);
+    await db.asRole('club_app', (c) => putMarker(c, { kind: OWNER, subjectId: id, value: `o:${id}:failed` }));
+    expect(await db.asRole('club_app', (c) => clearMarker(c, { kind: OWNER, subjectId: id }))).toBe(true);
+    expect(await getMarker(db, OWNER, id)).toBeUndefined();
+    expect(await putMarker(db, { kind: OWNER, subjectId: id, value: 'o:again' })).toBe(true);
+  });
+
+  it('deletes through plain SQL for club_app too (the grant is real), and any provider suffix is clearable', async () => {
+    const id = uuidv7(now);
+    await putMarker(db, { kind: 'subaccount_owner:other', subjectId: id, value: 'v' });
+    const r = await db.asRole('club_app', (c) => c.query(`delete from ops.workflow_marker where kind = 'subaccount_owner:other' and subject_id = $1`, [id]));
+    expect(r.rowCount).toBe(1);
+  });
+
+  it('deletes only the named subject, kind and seq', async () => {
+    const a = uuidv7(now);
+    const b = uuidv7(now);
+    await putMarker(db, { kind: OWNER, subjectId: a, value: 'va' });
+    await putMarker(db, { kind: OWNER, subjectId: a, seq: 1, value: 'va1' });
+    await putMarker(db, { kind: OWNER, subjectId: b, value: 'vb' });
+    await putMarker(db, { kind: 'subaccount_owner:other', subjectId: a, value: 'vo' });
+    expect(await clearMarker(db, { kind: OWNER, subjectId: a })).toBe(true);
+    expect(await getMarker(db, OWNER, a, 1)).toBe('va1');
+    expect(await getMarker(db, OWNER, b)).toBe('vb');
+    expect(await getMarker(db, 'subaccount_owner:other', a)).toBe('vo');
+    expect(await clearMarker(db, { kind: OWNER, subjectId: a, seq: 1 })).toBe(true);
+    expect(await getMarker(db, OWNER, a, 1)).toBeUndefined();
+  });
+
+  it('returns false for a marker that is not there, and for a second clear', async () => {
+    const id = uuidv7(now);
+    expect(await clearMarker(db, { kind: OWNER, subjectId: id })).toBe(false);
+    await putMarker(db, { kind: OWNER, subjectId: id, value: 'v' });
+    expect(await clearMarker(db, { kind: OWNER, subjectId: id })).toBe(true);
+    expect(await clearMarker(db, { kind: OWNER, subjectId: id })).toBe(false);
+  });
+
+  it('refuses at the table every other kind, for club_app and for the superuser, and keeps the row', async () => {
+    for (const kind of WRITE_ONCE) {
+      const id = uuidv7(now);
+      await putMarker(db, { kind, subjectId: id, value: 'keep-me' });
+      await expect(db.asRole('club_app', (c) => c.query('delete from ops.workflow_marker where kind = $1 and subject_id = $2', [kind, id]))).rejects.toThrow('only a failed-owner marker may be deleted');
+      await expect(db.query('delete from ops.workflow_marker where kind = $1 and subject_id = $2', [kind, id])).rejects.toThrow('only a failed-owner marker may be deleted');
+      expect(await getMarker(db, kind, id)).toBe('keep-me');
+    }
+  });
+
+  it('the refusal is the trigger, not a missing grant, and its message leaks no kind, subject or value', async () => {
+    const id = uuidv7(now);
+    await putMarker(db, { kind: 'credit_outcome', subjectId: id, seq: 1, value: 'secret-value-123' });
+    const err = await db.asRole('club_app', (c) => c.query('delete from ops.workflow_marker where subject_id = $1', [id])).then(() => undefined, (e: unknown) => e as Error);
+    expect(err).toBeDefined();
+    expect(err!.message).not.toMatch(/permission denied/);
+    for (const leak of ['credit_outcome', id, 'secret-value-123']) expect(err!.message).not.toContain(leak);
+  });
+
+  it('one statement that mixes an owner marker and a write-once marker deletes neither', async () => {
+    const id = uuidv7(now);
+    await putMarker(db, { kind: OWNER, subjectId: id, value: 'o' });
+    await putMarker(db, { kind: 'credit_began', subjectId: id, seq: 1, value: 'k' });
+    await expect(db.asRole('club_app', (c) => c.query('delete from ops.workflow_marker where subject_id = $1', [id]))).rejects.toThrow('only a failed-owner marker');
+    expect(await count(OWNER, id)).toBe(1);
+    expect(await count('credit_began', id)).toBe(1);
+  });
+
+  it('an unrelated bulk delete is refused as soon as it reaches a write-once row', async () => {
+    const id = uuidv7(now);
+    await putMarker(db, { kind: 'payout_payee', subjectId: id, value: 'p' });
+    await expect(db.asRole('club_app', (c) => c.query('delete from ops.workflow_marker'))).rejects.toThrow('only a failed-owner marker');
+    expect(await getMarker(db, 'payout_payee', id)).toBe('p');
+  });
+
+  it('keeps update and truncate denied to club_app, and grants it nothing on the other columns', async () => {
+    const id = uuidv7(now);
+    await putMarker(db, { kind: OWNER, subjectId: id, value: 'v' });
+    await expect(db.asRole('club_app', (c) => c.query(`update ops.workflow_marker set value = 'x' where subject_id = $1`, [id]))).rejects.toThrow(/permission denied/);
+    await expect(db.asRole('club_app', (c) => c.query(`update ops.workflow_marker set kind = 'credit_began' where subject_id = $1`, [id]))).rejects.toThrow(/permission denied/);
+    await expect(db.asRole('club_app', (c) => c.query('truncate ops.workflow_marker'))).rejects.toThrow(/permission denied/);
+    expect(await getMarker(db, OWNER, id)).toBe('v');
+    const g = await db.query<{ p: string }>(`select privilege_type as p from information_schema.role_table_grants where grantee = 'club_app' and table_schema = 'ops' and table_name = 'workflow_marker' order by 1`);
+    expect(g.rows.map((r) => r.p)).toEqual(['DELETE', 'INSERT', 'SELECT']);
+  });
+
+  it('defines the guard as SECURITY INVOKER with a fixed search_path, before delete, per row', async () => {
+    const f = await db.query<{ secdef: boolean; cfg: string[] | null }>(`select prosecdef as secdef, proconfig as cfg from pg_proc where proname = 'workflow_marker_delete_guard'`);
+    expect(f.rows).toHaveLength(1);
+    expect(f.rows[0]!.secdef).toBe(false);
+    expect(f.rows[0]!.cfg).toEqual(['search_path=pg_catalog']);
+    const t = await db.query<{ type: number; enabled: string }>(`select tgtype::int as type, tgenabled as enabled from pg_trigger where tgname = 'workflow_marker_delete_guard' and not tgisinternal`);
+    expect(t.rows).toHaveLength(1);
+    // tgtype bits: 1 row, 2 before, 8 delete.
+    expect(t.rows[0]!.type & 1).toBe(1);
+    expect(t.rows[0]!.type & 2).toBe(2);
+    expect(t.rows[0]!.type & 8).toBe(8);
+    expect(t.rows[0]!.type & (4 | 16 | 32)).toBe(0);
+    expect(t.rows[0]!.enabled).toBe('O');
+  });
+
+  it('lets a superuser clean up inside a transaction with session_replication_role = replica (documented path for tests and desktop steps)', async () => {
+    const id = uuidv7(now);
+    await putMarker(db, { kind: 'payout_payee', subjectId: id, value: 'p' });
+    await db.transaction(async (tx) => {
+      await tx.query('set local session_replication_role = replica');
+      await tx.query(`delete from ops.workflow_marker where kind = 'payout_payee' and subject_id = $1`, [id]);
+    });
+    expect(await getMarker(db, 'payout_payee', id)).toBeUndefined();
+  });
+
+  it('clearMarker rejects any other kind before touching the database', async () => {
+    let touched = 0;
+    const spy = { query: () => { touched += 1; return Promise.reject(new Error('db touched')); } } as unknown as Parameters<typeof clearMarker>[0];
+    for (const kind of WRITE_ONCE) await expect(clearMarker(spy, { kind, subjectId: uuidv7(now) })).rejects.toThrow('only a failed-owner marker may be cleared');
+    expect(touched).toBe(0);
+  });
+
+  it('clearMarker sends parameterised SQL: a hostile subject id or kind is data, not SQL', async () => {
+    const calls: { text: string; params: readonly unknown[] | undefined }[] = [];
+    const spy = { query: (text: string, params?: readonly unknown[]) => { calls.push({ text, params }); return Promise.resolve({ rows: [], rowCount: 0 }); } } as unknown as Parameters<typeof clearMarker>[0];
+    expect(await clearMarker(spy, { kind: "subaccount_owner:x'; drop table ops.workflow_marker; --", subjectId: "' or 1=1 --", seq: 2 })).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.text).not.toMatch(/drop|1=1|x'/);
+    expect(calls[0]!.params).toEqual(["subaccount_owner:x'; drop table ops.workflow_marker; --", "' or 1=1 --", 2]);
+  });
+});
+
