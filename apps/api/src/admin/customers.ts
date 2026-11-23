@@ -121,7 +121,8 @@ export class CustomerReadModel {
           `select distinct member_party_id from org.member where member_party_id is not null and member_name ilike $1 escape '\\' limit $2`,
           [likeContains(q), SEARCH_LIMIT],
         );
-    return compact(await Promise.all(ids.rows.map((r) => this.d.identity.findUser(r.member_party_id))));
+    const users = await this.d.identity.findUsers(ids.rows.map((r) => r.member_party_id));
+    return compact(ids.rows.map((r) => users.get(r.member_party_id)));
   }
 
   private async summary(u: UserAccount): Promise<CustomerSummary> {

@@ -16,7 +16,7 @@ import type { InstitutionPayoutRow, PayoutService } from './service.ts';
 
 export interface InstitutionPayoutDeps {
   db: Database;
-  identity: Pick<IdentityRepository, 'findUser'>;
+  identity: Pick<IdentityRepository, 'findUsers'>;
   /** The institution a member is active staff of, and their role there. */
   staffOf(partyId: string): Promise<{ institutionId: string; role: 'staff' | 'finance' | 'admin' } | undefined>;
   /** Institution payouts are withdrawals to the own verified account (T-0623, T-0625). */

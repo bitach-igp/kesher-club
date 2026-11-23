@@ -2,12 +2,17 @@
 // proposes a member as finance and nothing changes; admin B approves and the role reaches the member's
 // token at the next sign-in, with an audit entry naming both; A cannot approve its own proposal; after
 // removal the member's institution calls answer 403 at once, on the token they already hold.
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { randomBytes } from 'node:crypto';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
-import { uuidv7 } from '@kesher/domain';
+import { Secret, uuidv7 } from '@kesher/domain';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { createApp, type App } from '../app.ts';
+import { PostgresIdentityRepository } from '../auth/pg-repository.ts';
+import { createPiiCipher } from '../crypto/pii.ts';
+import { staffNames } from '../institutions/staff-names.ts';
+import { InstitutionAdmin } from './institutions.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { paymentReference } from '../institutions/deposits.ts';
@@ -16,6 +21,7 @@ import { STAFF_AUDIENCE, STAFF_ISSUER, staffPartyId } from './staff-token.ts';
 let db: TestDatabase;
 let app: App;
 let privateKey: CryptoKey;
+const pii = createPiiCipher({ dataKey: new Secret(randomBytes(32).toString('base64')), indexKey: new Secret(randomBytes(32).toString('base64')) });
 const NOW = new Date('2026-11-01T09:00:00Z');
 const MIRIAM = uuidv7(NOW);
 const YOSEF = uuidv7(NOW);
@@ -126,5 +132,134 @@ describe('admins onboard institutions and staff (T-0924, TST-ADM-004)', () => {
     expect((await app.services.audit.list(MIRIAM, 10)).map((e) => e.action)).toContain('institution.staff.remove');
     const list = await call('GET', '/v1/admin/institutions', { token: a });
     expect((list.body as { items: { id: string; activeStaff: number }[] }).items.find((i) => i.id === yeshiva)!.activeStaff).toBe(1);
+  });
+});
+
+// T-0775: the staff list reads its users in one identity query, and answers byte for byte what it
+// answered when it read them one by one. Expectations below are written out, not computed by the code
+// under test.
+describe('the staff list and staff labels read users in one query (T-0775)', () => {
+  const inst = uuidv7(NOW);
+  const T = (minutes: number) => new Date(NOW.getTime() - minutes * 60_000);
+  const ROLES = ['staff', 'finance', 'admin'] as const;
+  const last4 = (i: number) => String(1000 + i);
+  const staff = Array.from({ length: 25 }, (_, i) => ({
+    partyId: uuidv7(NOW),
+    role: ROLES[i % 3]!,
+    active: i % 5 !== 0,
+    createdAt: T(i % 7), // seven distinct times across 25 rows: the party id breaks the ties
+    phone: `+97250200${last4(i)}`,
+    hasUser: i !== 3 && i !== 11, // two staff rows whose account is gone
+  }));
+  /** The order the list promises: active first, then oldest first, then party id. */
+  const expected = [...staff].sort((a, b) => Number(b.active) - Number(a.active) || a.createdAt.getTime() - b.createdAt.getTime() || (a.partyId < b.partyId ? -1 : 1));
+  const listed = async () => ((await call('GET', `/v1/admin/institutions/${inst}/staff`, { token: await staffToken('admin-a') })).body as { items: unknown[]; pendingGrants: unknown[] });
+
+  /** How many times the staff code went to the identity repository: one batched read, or one per user. */
+  const identityReads = async (fn: () => Promise<unknown>): Promise<number> => {
+    const spies = [vi.spyOn(app.services.identity, 'findUser'), vi.spyOn(app.services.identity, 'findUsers')];
+    await fn();
+    const n = spies.reduce((sum, sp) => sum + sp.mock.calls.length, 0);
+    spies.forEach((sp) => sp.mockRestore());
+    return n;
+  };
+
+  beforeAll(async () => {
+    await db.query(`insert into org.institution (id, name, market) values ($1, 'Staff List Yeshiva', 'IL')`, [inst]);
+    for (const s of staff) {
+      await db.query('insert into org.staff (party_id, institution_id, role, active, created_at) values ($1, $2, $3, $4, $5)', [s.partyId, inst, s.role, s.active, s.createdAt]);
+      if (s.hasUser) await app.services.identity.createUser({ partyId: s.partyId, phone: s.phone, status: 'active', roles: ['member'], createdAt: NOW.toISOString() });
+    }
+  });
+
+  it('lists every staff row in its order, with the masked phone of each one that still has an account', async () => {
+    const r = await listed();
+    expect(r.items).toEqual(expected.map((s) => ({ partyId: s.partyId, institutionId: inst, role: s.role, active: s.active, createdAt: s.createdAt.toISOString(), ...(s.hasUser ? { phoneMasked: `•••• ${s.phone.slice(-4)}` } : {}) })));
+    expect(r.items).toHaveLength(25);
+    expect(r.pendingGrants).toEqual([]);
+    expect(JSON.stringify(r)).not.toContain('+97250200');
+  });
+
+  it('keeps an empty institution and an unknown one as they were', async () => {
+    const empty = uuidv7(NOW);
+    await db.query(`insert into org.institution (id, name, market) values ($1, 'No Staff Yeshiva', 'IL')`, [empty]);
+    const a = await staffToken('admin-a');
+    expect((await call('GET', `/v1/admin/institutions/${empty}/staff`, { token: a })).body).toEqual({ items: [], pendingGrants: [] });
+    expect((await call('GET', `/v1/admin/institutions/${uuidv7(NOW)}/staff`, { token: a })).status).toBe(404);
+  });
+
+  it('reads the 25 users of a staff list in one identity read, not one per row', async () => {
+    expect(await identityReads(() => listed())).toBe(1);
+  });
+
+  it('sends one query to identity.user_account for the 25 staff on Postgres', async () => {
+    const pg = new PostgresIdentityRepository(db, pii);
+    for (const s of staff) if (s.hasUser) await pg.createUser({ partyId: s.partyId, phone: s.phone, status: 'active', roles: ['member'], createdAt: NOW.toISOString() });
+    const admin = new InstitutionAdmin(db, pg, app.services.approvals, app.services.audit);
+    const spy = vi.spyOn(db, 'query');
+    const r = await admin.staff(inst, NOW);
+    const users = spy.mock.calls.filter((c) => /identity\.user_account/.test(String(c[0])));
+    spy.mockRestore();
+    expect(users).toHaveLength(1);
+    expect(r.items.map((x) => x.partyId)).toEqual(expected.map((s) => s.partyId));
+    expect(r.items.map((x) => x.phoneMasked)).toEqual(expected.map((s) => (s.hasUser ? `•••• ${s.phone.slice(-4)}` : undefined)));
+  });
+
+  it('findUsers sends no query for an empty list and each distinct id once, as one uuid array', async () => {
+    const pg = new PostgresIdentityRepository(db, pii);
+    const [x, y] = [staff[1]!.partyId, staff[2]!.partyId];
+    const spy = vi.spyOn(db, 'query');
+    expect((await pg.findUsers([])).size).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
+    await pg.findUsers([x, y, x, y, x]);
+    const calls = [...spy.mock.calls];
+    spy.mockRestore();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![0]).toMatch(/party_id = any\(\$1::uuid\[\]\)/);
+    expect(calls[0]![1]).toEqual([[x, y]]);
+  });
+
+  describe('staffNames', () => {
+    const [a, b, c] = [staff[1]!, staff[2]!, staff[0]!]; // active finance, active admin, a removed (inactive) staff
+    const gone = staff[3]!; // active staff row, account gone: only the role label
+    const stranger = uuidv7(NOW); // on no staff list and no account
+    const names = (ids: string[]) => staffNames(db, app.services.identity, ids);
+
+    it('labels the role they hold now with the last four digits, and "Former staff" once they have left or never were', async () => {
+      const m = await names([a.partyId, b.partyId, c.partyId, gone.partyId, stranger]);
+      expect([...m]).toEqual([
+        [a.partyId, { displayName: 'Finance •••• 1001' }],
+        [b.partyId, { displayName: 'Institution admin •••• 1002' }],
+        [c.partyId, { displayName: 'Former staff •••• 1000' }],
+        [gone.partyId, { displayName: 'Staff' }],
+        [stranger, { displayName: 'Former staff' }],
+      ]);
+    });
+
+    it('answers each distinct id once, in the order first asked, and nothing for an empty list', async () => {
+      const spy = vi.spyOn(app.services.identity, 'findUsers');
+      const m = await names([b.partyId, a.partyId, b.partyId, a.partyId]);
+      expect(spy.mock.calls).toEqual([[[b.partyId, a.partyId]]]);
+      spy.mockRestore();
+      expect([...m.keys()]).toEqual([b.partyId, a.partyId]);
+      const none = vi.spyOn(db, 'query');
+      expect((await names([])).size).toBe(0);
+      expect(none).not.toHaveBeenCalled();
+      none.mockRestore();
+    });
+
+    it('reads 25 staff names in one identity read and prints nothing', async () => {
+      const logs = (['log', 'info', 'warn', 'error', 'debug'] as const).map((k) => vi.spyOn(console, k).mockImplementation(() => undefined));
+      let m = new Map<string, unknown>();
+      const reads = await identityReads(async () => {
+        m = await names(staff.map((s) => s.partyId));
+      });
+      const printed = logs.reduce((n, l) => n + l.mock.calls.length, 0);
+      logs.forEach((l) => l.mockRestore());
+      expect(reads).toBe(1);
+      expect(printed).toBe(0);
+      expect(m.size).toBe(25);
+      expect(m.get(staff[4]!.partyId)).toEqual({ displayName: 'Finance •••• 1004' });
+    });
   });
 });
