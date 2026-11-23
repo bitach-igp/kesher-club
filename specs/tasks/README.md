@@ -399,7 +399,7 @@
 | [T-0776](T-0776.md) | WAL | `DisplayNameService.getMany` for `listMemberships` (A8) | — | done 2026-11-22 (built, PR open) · independent; `TransferService.getMany` came with #366, `DisplayNameService.getMany` does not exist yet |
 | [T-0777](T-0777.md) | NOT | Outbound events: `messages()` reads attempts concurrently (A8) | — | done 2026-11-22 (built, PR open) · first failing message in list order still surfaces |
 | [T-0778](T-0778.md) | WAL | Closure status: pending refund refs read in one query (A8) | — | done 2026-11-23 (built, PR open) · independent |
-| [T-0779](T-0779.md) | LED | Ledger account provisioning in batches, idempotent (A8) | — | later (scoped 2026-11-19) · independent |
+| [T-0779](T-0779.md) | LED | Ledger account provisioning in batches, idempotent (A8) | — | done 2026-11-23 (built, PR open) · independent |
 | [T-0780](T-0780.md) | BIL | WIRE OR DELETE: `DunningService` has no production caller and no Stripe billing webhook feeds it (B) | — | later (scoped 2026-11-19) · decision first (with T-0736, T-0737) |
 | [T-0781](T-0781.md) | SETUP | DELETED: generic `standardWebhooksVerifier`, `stripeVerifier`, `hmacVerifier` were bound nowhere and carried bugs; live Stripe funding receiver now has a forged/stale-signature guard (B, security flag) | — | done 2026-11-20 (built, merged #374) |
 | [T-0782](T-0782.md) | SETUP | MOVED: `makeRequest` was test-only; it now lives in `apps/api/src/test-http.ts` (B) | — | done 2026-11-22 (built, PR open) · pure move, 8 importers |
