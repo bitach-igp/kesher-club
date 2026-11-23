@@ -213,8 +213,8 @@ describe('TST-PAY-006: the receiving currency', () => {
     const d = await register('+972501000022');
     await fund(a, 50_000n, 'USD');
     await fund(a, 100_000n);
-    await app.services.preferences.set(b.partyId, 'ILS', NOW);
-    await app.services.preferences.set(d.partyId, 'USD', NOW);
+    await app.services.preferences.set(b.partyId, { receiveCurrency: 'ILS' }, NOW);
+    await app.services.preferences.set(d.partyId, { receiveCurrency: 'USD' }, NOW);
     const before = notifySim().sent.length;
 
     // $100 → ₪370.00 gross at 3.70, less the default 75 bps (₪2.78) → ₪367.22 in B's ILS purse.
@@ -269,7 +269,7 @@ describe('TST-PAY-006: the receiving currency', () => {
     const a = await register('+972501000030');
     const b = await register('+972501000031');
     const c = await register('+972501000032');
-    await app.services.preferences.set(b.partyId, 'ILS', NOW);
+    await app.services.preferences.set(b.partyId, { receiveCurrency: 'ILS' }, NOW);
     const preview = (from: Member, body: unknown, token = from.access) => dispatch(app, { method: 'POST', url: '/v1/transfers/preview', headers: { authorization: `Bearer ${token}` }, rawBody: JSON.stringify(body), now: NOW });
 
     const usdToIls = await preview(a, { toPartyId: b.partyId, amount: usd('10000') });
@@ -295,7 +295,7 @@ describe('TST-PAY-006: the receiving currency', () => {
     const c = await register('+972501000024');
     await fund(a, 50_000n, 'USD');
     await fund(a, 10_000n);
-    await app.services.preferences.set(c.partyId, 'ILS', NOW);
+    await app.services.preferences.set(c.partyId, { receiveCurrency: 'ILS' }, NOW);
     const before = notifySim().sent.length;
 
     // $200 to a new counterparty is over the $150 threshold: held, already priced at version 1 ($200 → ₪740.00 − ₪5.55).
@@ -429,7 +429,7 @@ describe('T-0543: a send left in pending is finished once, never posted twice (F
     const a = await register('+972501000096');
     const c = await register('+972501000097');
     await fund(a, 50_000n, 'USD');
-    await app.services.preferences.set(c.partyId, 'ILS', NOW);
+    await app.services.preferences.set(c.partyId, { receiveCurrency: 'ILS' }, NOW);
     const key = 'pending-xccy-1';
     const body = { toPartyId: c.partyId, amount: usd('20000') };
     // The earlier test in this file left the second published rate current from a minute on; price the hold then.

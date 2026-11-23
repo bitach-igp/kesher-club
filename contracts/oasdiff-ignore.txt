@@ -40,3 +40,6 @@ POST /memberships added the new required `header` request parameter `x-step-up`
 
 # T-0556 (REQ-PO-001): a member can cancel a payout that is still cooling off, so Payout.state gains `cancelled`. A payout reaches it only through the new POST /payouts/{id}/cancel, which no shipped client calls yet; the mobile app, the only client, reads Payout.state through its own model and is ours, so it gains the word in the same release as its cancel button.
 POST /payouts added the new `cancelled` enum value to the `state` response property for the response status `201`
+
+# T-1020 (REQ-UX-002): PATCH /me/preferences takes either field, so receiveCurrency stops being required and the body must carry at least one (minProperties 1). The only body the old contract accepted and the new one refuses is `{}`, which the server already refused with VALIDATION_FAILED, so no working client is broken.
+PATCH /me/preferences the request's body minProperties was set to `1`

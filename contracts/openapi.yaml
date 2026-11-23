@@ -371,8 +371,8 @@ paths:
   /me/preferences:
     get:
       operationId: getPreferences
-      summary: The member's receiving currency
-      description: REQ-PAY-007 (ADR-007). `as_sent`, the default, keeps the sender's currency; USD or ILS converts a send in the other currency at the club rate.
+      summary: The member's receiving currency and appearance
+      description: REQ-PAY-007 (ADR-007), REQ-UX-002. `as_sent`, the default, keeps the sender's currency; USD or ILS converts a send in the other currency at the club rate. `theme` (`system`, `light` or `dark`; `system` by default) is the account's appearance, shared by every role the account signs in with.
       security: [{ bearer: [] }]
       responses:
         "200":
@@ -383,8 +383,8 @@ paths:
         default: { $ref: "#/components/responses/Problem" }
     patch:
       operationId: updatePreferences
-      summary: Set the receiving currency
-      description: REQ-PAY-007. Bearer only; a preference moves no money by itself. Unknown values answer VALIDATION_FAILED.
+      summary: Set the receiving currency or the appearance
+      description: REQ-PAY-007, REQ-UX-002. Bearer only; a preference moves no money by itself. Send either field or both; a field left out keeps its stored value. An empty body or an unknown value answers VALIDATION_FAILED.
       security: [{ bearer: [] }]
       requestBody:
         required: true
@@ -392,9 +392,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [receiveCurrency]
+              minProperties: 1
               properties:
                 receiveCurrency: { type: string, enum: [USD, ILS, as_sent] }
+                theme: { type: string, enum: [system, light, dark] }
       responses:
         "200":
           description: Preferences after the change
@@ -5507,9 +5508,10 @@ components:
         updatedAt: { type: string, format: date-time }
     Preferences:
       type: object
-      required: [receiveCurrency]
+      required: [receiveCurrency, theme]
       properties:
         receiveCurrency: { type: string, enum: [USD, ILS, as_sent] }
+        theme: { type: string, enum: [system, light, dark], description: "The account's appearance (REQ-UX-002); system follows the device" }
         updatedAt: { type: string, format: date-time }
     FxRate:
       type: object

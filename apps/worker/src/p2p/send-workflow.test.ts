@@ -139,7 +139,7 @@ describe('a converted run (TST-PAY-006)', () => {
     const a = await member('+972501100005');
     const b = await member('+972501100006');
     await credit(a, 20_000n, 'USD');
-    await preferences.set(b, 'ILS', now);
+    await preferences.set(b, { receiveCurrency: 'ILS' }, now);
     const key = `send-xccy-${a}`;
     let die = true;
     const flaky: SendActivities = {

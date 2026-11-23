@@ -2880,8 +2880,8 @@ export interface paths {
             readonly cookie?: never;
         };
         /**
-         * The member's receiving currency
-         * @description REQ-PAY-007 (ADR-007). `as_sent`, the default, keeps the sender's currency; USD or ILS converts a send in the other currency at the club rate.
+         * The member's receiving currency and appearance
+         * @description REQ-PAY-007 (ADR-007), REQ-UX-002. `as_sent`, the default, keeps the sender's currency; USD or ILS converts a send in the other currency at the club rate. `theme` (`system`, `light` or `dark`; `system` by default) is the account's appearance, shared by every role the account signs in with.
          */
         readonly get: operations["getPreferences"];
         readonly put?: never;
@@ -2890,8 +2890,8 @@ export interface paths {
         readonly options?: never;
         readonly head?: never;
         /**
-         * Set the receiving currency
-         * @description REQ-PAY-007. Bearer only; a preference moves no money by itself. Unknown values answer VALIDATION_FAILED.
+         * Set the receiving currency or the appearance
+         * @description REQ-PAY-007, REQ-UX-002. Bearer only; a preference moves no money by itself. Send either field or both; a field left out keeps its stored value. An empty body or an unknown value answers VALIDATION_FAILED.
          */
         readonly patch: operations["updatePreferences"];
         readonly trace?: never;
@@ -5026,6 +5026,11 @@ export interface components {
         readonly Preferences: {
             /** @enum {string} */
             readonly receiveCurrency: "USD" | "ILS" | "as_sent";
+            /**
+             * @description The account's appearance (REQ-UX-002); system follows the device
+             * @enum {string}
+             */
+            readonly theme: "system" | "light" | "dark";
             /** Format: date-time */
             readonly updatedAt?: string;
         };
@@ -10012,7 +10017,9 @@ export interface operations {
             readonly content: {
                 readonly "application/json": {
                     /** @enum {string} */
-                    readonly receiveCurrency: "USD" | "ILS" | "as_sent";
+                    readonly receiveCurrency?: "USD" | "ILS" | "as_sent";
+                    /** @enum {string} */
+                    readonly theme?: "system" | "light" | "dark";
                 };
             };
         };

@@ -1,0 +1,34 @@
+Task: T-1020 · Branch: cards/T-1020-member-theme-preference · Needs: docker
+Why: Migration identity/0008 adds `theme text not null default 'system'` to identity.member_preference and a NOT VALID check `member_preference_theme_check`. PGlite passes the tests; the real Postgres 16 apply, the default, the grant (club_app keeps select, insert, update; no new grant) and the check refusing a bad value must be seen once on a fresh postgres:16 (roles.sql, migrate twice) before merge. Each statement whose success another depends on, and each deliberately failing statement, is in its own `-c` call (one `-c` is one transaction, so a failing statement would roll back its predecessors). The uuids are fixed all-zero test values; nothing here is a real member.
+Steps (from repo root, PowerShell on Windows unless stated):
+1. docker run --name kesher-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=club -p 5433:5432 -d postgres:16
+2. Start-Sleep -Seconds 8
+3. do { docker exec kesher-pg pg_isready -h 127.0.0.1 -U postgres -d club; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep -Seconds 2 } while ($true)
+4. Get-Content -Raw db/roles.sql | docker exec -i kesher-pg psql -U postgres -d club -v ON_ERROR_STOP=1
+5. node db/migrate.mjs --docker --url "postgres://postgres:postgres@localhost:5433/club?sslmode=disable"
+6. node db/migrate.mjs --docker --url "postgres://postgres:postgres@localhost:5433/club?sslmode=disable"
+7. docker exec -i kesher-pg psql -U postgres -d club -c "select count(*) as identity_migrations, max(version) as latest from atlas_identity.atlas_schema_revisions"
+8. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into identity.member_preference (party_id, receive_currency) values ('00000000-0000-7000-8000-000000102001', 'USD')"
+9. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; select party_id, receive_currency, theme from identity.member_preference where party_id = '00000000-0000-7000-8000-000000102001'"
+10. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; update identity.member_preference set theme = 'dark' where party_id = '00000000-0000-7000-8000-000000102001'"
+11. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into identity.member_preference (party_id, receive_currency, theme) values ('00000000-0000-7000-8000-000000102002', 'as_sent', 'light'), ('00000000-0000-7000-8000-000000102003', 'as_sent', 'system'), ('00000000-0000-7000-8000-000000102004', 'ILS', 'dark')"
+12. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into identity.member_preference (party_id, receive_currency, theme) values ('00000000-0000-7000-8000-000000102005', 'as_sent', 'sepia')"
+13. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; update identity.member_preference set theme = 'sepia' where party_id = '00000000-0000-7000-8000-000000102001'"
+14. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; select party_id, receive_currency, theme from identity.member_preference order by party_id"
+15. docker exec -i kesher-pg psql -U postgres -d club -c "select conname, convalidated from pg_constraint where conname = 'member_preference_theme_check'"
+16. docker exec -i kesher-pg psql -U postgres -d club -c "select column_default, is_nullable from information_schema.columns where table_schema = 'identity' and table_name = 'member_preference' and column_name = 'theme'"
+17. docker rm -f kesher-pg
+Expected: step 3 ends with `accepting connections`. Step 5 prints `ok` for every schema, with identity at 8 migrations. Step 6 reports no pending migrations. Step 7 prints `8` and `0008` (or `8` for the latest version, as the revisions table records it). Step 8 prints `INSERT 0 1` (an insert without theme succeeds as club_app). Step 9 prints one row: `…102001 | USD | system` (the default). Step 10 prints `UPDATE 1`. Step 11 prints `INSERT 0 3` (light, system and dark are all accepted). Step 12 fails with `ERROR:  new row for relation "member_preference" violates check constraint "member_preference_theme_check"` (the NOT VALID check still refuses new rows). Step 13 fails with the same constraint error (the row keeps `dark`). Step 14 prints 4 rows: …102001 USD dark, …102002 as_sent light, …102003 as_sent system, …102004 ILS dark (no 102005). Step 15 prints `member_preference_theme_check | f` (NOT VALID, not yet validated). Step 16 prints `'system'::text | NO`.
+Report back: the console output of steps 3 and 5 to 16.
+
+## Result
+PASS, 2026-11-23 21:08 (Asia/Jerusalem), desktop checker on Zvi's PC, runner worktree at 8bf5e61, Docker 29.9.3 (Docker Desktop was not running; started it, no settings changed), postgres:16.
+- Step 3: `127.0.0.1:5432 - accepting connections`. Step 4: roles.sql loaded (ALTER ROLE ..., exit 0).
+- Step 5: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent; identity "Migrating to version 0008 (8 migrations in total)", 0008 applied the `add column theme ... default 'system'` and `member_preference_theme_check ... not valid` statements.
+- Step 6: "No migration files to execute" for every schema, all `ok`.
+- Step 7: `8 | 0008`.
+- Step 8: `INSERT 0 1`. Step 9: `...102001 | USD | system`. Step 10: `UPDATE 1`. Step 11: `INSERT 0 3`.
+- Step 12: `ERROR:  new row for relation "member_preference" violates check constraint "member_preference_theme_check"` (row ...102005 sepia).
+- Step 13: same constraint error (row ...102001 sepia).
+- Step 14: 4 rows: 102001 USD dark, 102002 as_sent light, 102003 as_sent system, 102004 ILS dark.
+- Step 15: `member_preference_theme_check | f`. Step 16: `'system'::text | NO`. Step 17: container removed.
