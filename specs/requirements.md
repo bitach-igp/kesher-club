@@ -107,3 +107,16 @@ Snapshot of Tab 3 §2-3. Full Given/When/Then acceptance lives in the live spec;
 | REQ-ADM-006 | P2 | Plan versions are offered only after a second finance approver; never edited, only superseded |
 | REQ-CMP-001 | P2 | Monitoring alerts with dispositions |
 | REQ-CMP-002 | P1 | Complaint SLA timers and export |
+| REQ-UX-001 | P2 | The Night Market palette keeps every text and action pair at WCAG AA in both modes, and an amount never relies on colour alone (`+` in, `-` out) |
+| REQ-UX-002 | P2 | A member's appearance preference (system, light or dark) is stored on the account and returned by the API; unset reads as system |
+| REQ-UX-003 | P2 | The member app and the institution console render the member's chosen appearance on first paint; the public web site follows the system only |
+
+## REQ-UX acceptance and flags (new family, 2026-11-23)
+
+`REQ-UX` (presentation and appearance) is a new family: `tools/trace-check.mjs` matches `REQ-[A-Z]+-\d{3}` and enforces no family list, so nothing else changes. It is not yet in the `club-requirements` module list; add `UX` there with the next skill edit. Until the live spec's Tab 3 carries these rows, the full Given/When/Then and flag live here. Behaviour source: spec Tab 2, "Dark mode follows the system setting, with a manual override" (built by T-0006 without a REQ). Tests: `TST-UX-001` to `TST-UX-003`, named in T-1019 to T-1022.
+
+| ID | P | Requirement | Acceptance | Flag |
+|---|---|---|---|---|
+| REQ-UX-001 | P2 | Every text-on-surface pair the token spec lists, and every action and money colour, MUST meet WCAG 2.1 AA (4.5:1 text, 3:1 non-text) in light and in dark. Brand navy `#293B8F` MUST be the light-mode action and cyan `#04F7E8` the dark-mode action. Amounts MUST NOT rely on colour alone (`+` for money in, `-` for money out). | Given `color.action.primary` on `color.bg.surface`, when contrast is computed, then light `#293B8F` on `#FFFFFF` is at least 4.5:1 and dark `#04F7E8` on `#0B1247` is at least 4.5:1, and no light-mode text pair falls below 4.5:1. | — |
+| REQ-UX-002 | P2 | The API MUST store one appearance per signed-in account, one of `system`, `light`, `dark`, and MUST return it with the other preferences; a member who never chose reads `system`. An unknown value MUST answer `VALIDATION_FAILED` and change nothing. | Given a member with no preference, when they `GET /me/preferences`, then `theme` is `system`; when they `PATCH` `{ "theme": "dark" }`, then `GET` returns `dark` and `receiveCurrency` is unchanged; when they `PATCH` `{ "theme": "sepia" }`, then 422 `VALIDATION_FAILED` and the stored value is still `dark`. | — |
+| REQ-UX-003 | P2 | The member app and the institution console MUST apply the member's stored appearance on the first paint with no client-side correction; `system` MUST follow the device or browser setting. An explicit `light` MUST stay light when the system is dark. The public web site (`apps/web`) MUST follow the system only. | Given a member whose stored theme is `light` on a system set to dark, when the console renders any page, then `<html data-theme="light">` is in the first response; given `dark`, `data-theme="dark"`; given `system`, no `data-theme` attribute. In the app, `useThemeMode()` returns `light` for that member whatever `useColorScheme()` says. | — |
