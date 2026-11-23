@@ -12,7 +12,7 @@ import { Slot, useGlobalSearchParams, useRootNavigationState, useRouter as useEx
 import { uuidv7 } from '@kesher/domain';
 import { createClient } from '@kesher/sdk';
 import { ApiProvider, sdkApi, type Api, type SavedPaymentMethod } from '../src/api.ts';
-import { TabBar, Txt } from '../src/components/index.ts';
+import { Skeleton, TabBar, Txt } from '../src/components/index.ts';
 import { buildEnv, parseMobileConfig, type MobileConfig } from '../src/config.ts';
 import { DeviceProvider, type Device } from '../src/device.ts';
 import { LocaleProvider, t, useLocale, type Locale } from '../src/i18n.ts';
@@ -22,7 +22,8 @@ import { useStore } from '../src/model.ts';
 import { activeTab, ParamsProvider, RouterProvider, TABS, type Router } from '../src/navigation.ts';
 import { AuthenticatorProvider, seededAuthenticator, webAuthnAuthenticator, type Authenticator, type SeededDevice } from '../src/passkeys.ts';
 import { installId, memorySession, SessionProvider, type Session } from '../src/session.ts';
-import { useTheme } from '../src/theme.ts';
+import { ThemeOverrideProvider, useTheme } from '../src/theme.ts';
+import { createSharedAppearance, overrideOf, SharedAppearanceProvider, type SharedAppearance } from './settings/appearance.model.ts';
 import { webDevice, type BrowserNavigator } from '../src/web-device.ts';
 
 export const SIGN_IN_HREF = '/(auth)/sign-in';
@@ -51,7 +52,12 @@ export interface RootDeps {
   /** Held while the member owes a consent (T-0062). */
   consent: ConsentGate;
   personas?: PersonaPicker | undefined;
+  /** The member's stored appearance (T-1021): `system` until a signed-in member's preference is read. */
+  appearance: SharedAppearance;
 }
+
+/** How long a signed-in launch waits for the stored appearance before it renders in the system mode (T-1021). */
+export const APPEARANCE_HOLD_MS = 1500;
 
 /** Where the member belongs for these segments, or undefined to stay; `resume` replaces Home after sign-in. */
 export function guard(signedIn: boolean, segments: readonly string[], resume?: string, consentPending = false): string | undefined {
@@ -91,6 +97,35 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
   if (!signedIn) resume.current = resumable(segments, params) ?? resume.current;
   const pendingConsent = useStore(deps.consent).pending;
   const target = guard(signedIn, segments, resume.current, pendingConsent);
+  // The stored appearance (T-1021): read once per sign-in, held back for at most APPEARANCE_HOLD_MS behind a neutral
+  // system-themed frame, and written to the shared store even when it arrives later (the mode then switches once).
+  // Signed out there is no account, so the system decides and the store goes back to `system`.
+  const shared = deps.appearance;
+  const theme = useStore(shared.store).theme;
+  const [released, setReleased] = useState(false);
+  useEffect(() => {
+    if (!signedIn) {
+      shared.store.set({ theme: 'system' });
+      setReleased(false);
+      return;
+    }
+    let live = true;
+    const release = () => live && setReleased(true);
+    const timer = setTimeout(release, APPEARANCE_HOLD_MS);
+    deps.api.preferences.get().then(
+      (p) => {
+        if (!live) return;
+        shared.store.set({ theme: p.theme });
+        release();
+      },
+      release,
+    );
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [signedIn, shared, deps.api]);
+  const held = signedIn && !released;
   // expo-router refuses to navigate before its root navigator has mounted.
   useEffect(() => {
     if (!ready || !target) return;
@@ -98,28 +133,48 @@ export function RootLayoutView({ deps, router, segments, params = {}, ready = tr
     router.replace(target);
   }, [ready, target, router]);
   return (
-    <LocaleProvider value={deps.locale}>
-      <ApiProvider value={deps.api}>
-        <ConsentGateProvider value={deps.consent}>
-          <SessionProvider value={deps.session}>
-            <AuthenticatorProvider value={deps.authenticator}>
-              <OpenerProvider value={deps.opener}>
-                <DeviceProvider value={deps.device}>
-                  <RouterProvider value={router}>
-                    <ParamsProvider value={params}>
-                      {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
-                      <Chrome signedIn={signedIn} segments={segments} router={router}>
-                        {children}
-                      </Chrome>
-                    </ParamsProvider>
-                  </RouterProvider>
-                </DeviceProvider>
-              </OpenerProvider>
-            </AuthenticatorProvider>
-          </SessionProvider>
-        </ConsentGateProvider>
-      </ApiProvider>
-    </LocaleProvider>
+    <ThemeOverrideProvider value={held ? undefined : overrideOf(theme)}>
+      <LocaleProvider value={deps.locale}>
+        <ApiProvider value={deps.api}>
+          <SharedAppearanceProvider value={shared}>
+            <ConsentGateProvider value={deps.consent}>
+              <SessionProvider value={deps.session}>
+                <AuthenticatorProvider value={deps.authenticator}>
+                  <OpenerProvider value={deps.opener}>
+                    <DeviceProvider value={deps.device}>
+                      <RouterProvider value={router}>
+                        <ParamsProvider value={params}>
+                          {held ? (
+                            <HeldFrame />
+                          ) : (
+                            <>
+                              {deps.personas && segments[0] === '(auth)' ? <PersonaBar picker={deps.personas} /> : null}
+                              <Chrome signedIn={signedIn} segments={segments} router={router}>
+                                {children}
+                              </Chrome>
+                            </>
+                          )}
+                        </ParamsProvider>
+                      </RouterProvider>
+                    </DeviceProvider>
+                  </OpenerProvider>
+                </AuthenticatorProvider>
+              </SessionProvider>
+            </ConsentGateProvider>
+          </SharedAppearanceProvider>
+        </ApiProvider>
+      </LocaleProvider>
+    </ThemeOverrideProvider>
+  );
+}
+
+/** Shown while a signed-in launch waits for the stored appearance: the loading skeleton on the system canvas, no content. */
+function HeldFrame() {
+  const th = useTheme();
+  return (
+    <View testID="appearance-held" style={{ flex: 1, padding: th.space[4], backgroundColor: th.color.bg.canvas }}>
+      <Skeleton />
+    </View>
   );
 }
 
@@ -243,6 +298,7 @@ export function createRootDeps(config: MobileConfig, platform: Platform = {}): R
     locale: platform.language?.startsWith('he') ? 'he' : 'en',
     device: webDevice(platform.navigator),
     consent: createConsentGate(),
+    appearance: createSharedAppearance(),
     ...(loadPersonas ? { personas: { load: loadPersonas, current: () => persona, choose: (key: string) => void (persona = key) } } : {}),
   };
 }
