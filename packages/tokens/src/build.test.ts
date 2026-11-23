@@ -64,7 +64,7 @@ describe('dist/css/tokens.css', () => {
       expect(systemDark, name).toMatch(new RegExp(`${name}: #[0-9A-F]{6,8};`));
     }
     expect(root).toContain('--color-bg-canvas: #F4F7FB;');
-    expect(manualDark).toContain('--color-bg-canvas: #0D1426;');
+    expect(manualDark).toContain('--color-bg-canvas: #010235;');
     expect(manualDark).toContain('--color-money-in: #5CC98A;');
   });
 
@@ -109,7 +109,7 @@ describe('dist/json/tokens.flat.json', () => {
     const flat = JSON.parse(fs.readFileSync(out.files.json, 'utf8')) as Record<string, { $type: string; $value: unknown; $description?: string }>;
     expect(Object.keys(flat).length).toBe(leaves.length);
     expect(flat['color.money.in']).toEqual({ $type: 'color', $description: expect.stringContaining('Alias of status.success'), $value: { light: '#177A45', dark: '#5CC98A' } });
-    expect(flat['color.status.successSubtle']?.$value).toEqual({ light: '#ECF4F0', dark: '#223B41' });
+    expect(flat['color.status.successSubtle']?.$value).toEqual({ light: '#ECF4F0', dark: '#182F52' });
     expect(flat['space.4']?.$value).toEqual({ value: 16, unit: 'px' });
     expect((flat['typography.moneyHero']?.$value as Record<string, unknown>).fontFeatureSettings).toBe('tnum');
     for (const key of Object.keys(flat)) expect(key.startsWith('light.') || key.startsWith('dark.'), key).toBe(false);
