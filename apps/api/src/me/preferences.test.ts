@@ -111,6 +111,16 @@ describe('TST-UX-002: the appearance preference', () => {
     await expect(app.services.preferences.set(none.id, {}, NOW)).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
   });
 
+  it('a later PATCH advances updatedAt, and a key it does not know is ignored beside a valid field', async () => {
+    const m = await fresh();
+    await m.patch({ theme: 'dark' });
+    const later = new Date(NOW.getTime() + 60_000);
+    const r = await dispatch(app, { method: 'PATCH', url: '/v1/me/preferences', headers: { authorization: `Bearer ${m.token}` }, rawBody: JSON.stringify({ theme: 'light', foo: 1 }), now: later });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ receiveCurrency: 'as_sent', theme: 'light', updatedAt: later.toISOString() });
+    expect((await m.get()).body).toMatchObject({ theme: 'light', updatedAt: later.toISOString() });
+  });
+
   it('is keyed by the signed-in party: another member is unaffected', async () => {
     const a = await fresh();
     const b = await fresh();
