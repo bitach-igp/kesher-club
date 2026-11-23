@@ -19,7 +19,7 @@ import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import type { Transfer } from '../transfers/service.ts';
 import { applyVendorState, creditAttemptState, creditKey, HELD_RECHECK_MS, holdKey, loadState, LoadService, recordCreditBegan, recordCreditOutcome, releaseKey, runLoad, settleKey, type CreditOutcome, type LoadView } from './loads.ts';
 import { seedTransfer } from '../test-seed.ts';
-import { creditMayHaveMoved } from './load-credit.ts';
+import { creditMayHaveMoved, recordCreditResent } from './load-credit.ts';
 import { openCase } from '../ops/cases.ts';
 import { ownerFailedMarker } from './sub-account-markers.ts';
 import { OWNER_FAILED_CASE, ownerCaseKey, ownerKind } from './sub-accounts.ts';
@@ -1147,7 +1147,7 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
         const provider = (await db.query<{ p: string }>(`select provider as p from ops.external_ref where entity_id = $1 and entity_type = 'funding_account'`, [t.party])).rows[0]!.p;
         const ctl = { returned: false, dieOnOutcome: false, dieOnPost: false };
         const port: FundingPort = { createLoad: (i, k) => t.sim.createLoad(i, k), getLoad: async (id) => { const l = await t.sim.getLoad(id); return ctl.returned ? { ...l, status: 'failed', failureCode: 'RETURNED' } : l; }, refund: (i, k) => t.sim.refund(i, k), getRefund: (id) => t.sim.getRefund(id), parseWebhook: (h, b) => t.sim.parseWebhook(h, b) };
-        const flaky = new Proxy(db, { get: (target, prop) => (prop === 'query' ? (async (text: string, params?: readonly unknown[]) => { if (ctl.dieOnOutcome && params?.[0] === 'credit_outcome') { ctl.dieOnOutcome = false; throw new Error('outcome write failed'); } return (target.query as (t: string, p?: readonly unknown[]) => Promise<unknown>)(text, params); }) : Reflect.get(target, prop, target)) }) as typeof db;
+        const flaky = new Proxy(db, { get: (target, prop) => (prop === 'query' ? (async (text: string, params?: readonly unknown[]) => { if (ctl.dieOnOutcome && text.startsWith('insert') && params?.[0] === 'credit_outcome') { ctl.dieOnOutcome = false; throw new Error('outcome write failed'); } return (target.query as (t: string, p?: readonly unknown[]) => Promise<unknown>)(text, params); }) : Reflect.get(target, prop, target)) }) as typeof db;
         const ledger = new Proxy(s.ledger, { get: (target, prop) => (prop === 'post' && ctl.dieOnPost ? async () => { ctl.dieOnPost = false; throw new Error('crash before the journal'); } : Reflect.get(target, prop, target)) }) as typeof s.ledger;
         const svc = new LoadService({ db: flaky, port, credit: t.sim as Required<FundingSimulator>, ledger, accounts: s.accounts, transfers: s.transfers, memberships: s.memberships, flags: s.flags, provider });
         const sweep = async () => { for (const x of await svc.stale(LATER, 0)) await svc.applyVendorLoad((await svc.vendorLoadOf(x.id))!, LATER); };
@@ -1204,6 +1204,160 @@ describe('a card load credits the vendor wallet before its journal (T-0705, TST-
         expect((await u.s.transfers.byKey(key2))!.state).toBe('failed');
         expect(await returnedCase(key2)).toMatchObject([{ status: 'open', payload: { stage: 'before_journal' } }]);
         expect(u.spy).toHaveBeenCalledTimes(1);
+      });
+
+      describe('a credit refused NOT_SUCCEEDED and sent again under the same key is read as may-have-moved (T-0786, TST-WAL-003)', () => {
+        const NOT_SUCCEEDED = { status: 'refused', reasonCode: 'NOT_SUCCEEDED' } as const;
+        /** The `credit_resent` rows of a load, as `seq=value`. */
+        const resentRows = async (key: string) => (await db.query<{ seq: number; value: string }>(`select m.seq, m.value from ops.workflow_marker m join ops.transfer t on m.subject_id = t.id where t.idempotency_key = $1 and m.kind = 'credit_resent' order by m.seq`, [key])).rows.map((r) => `${r.seq}=${r.value}`);
+
+        it('(1) NOT_SUCCEEDED, then the same key credited, then the journal post throws, then a return: ONE before_journal case', async () => {
+          const t = await build();
+          const key = 'resent-case-0001';
+          t.spy.mockResolvedValueOnce(NOT_SUCCEEDED);
+          await t.svc.request(t.party, t.body, key, NOW);
+          expect(await outcomes(key)).toEqual(['refused']);
+          expect(await caseRows(key)).toEqual([]);
+          t.ctl.dieOnPost = true;
+          await expect(t.sweep()).rejects.toThrow('crash before the journal');
+          expect(t.spy.mock.calls.map((c) => c[1])).toEqual([`${key}:credit:1`, `${key}:credit:1`]);
+          expect(t.sim.creditCount((await t.svc.vendorLoadOf((await t.s.transfers.byKey(key))!.id))!)).toBe(1);
+          expect(await outcomes(key)).toEqual(['refused']);
+          expect(await journals(key)).toBe(0);
+          t.ctl.returned = true;
+          await t.sweep();
+          expect((await t.s.transfers.byKey(key))!.state).toBe('failed');
+          expect(await outcomes(key)).toEqual(['refused']);
+          expect(await returnedCase(key)).toMatchObject([{ kind: 'load_returned_after_release', status: 'open', payload: { stage: 'before_journal' } }]);
+          expect(await caseRows(key)).toEqual([]);
+          expect(t.spy).toHaveBeenCalledTimes(2);
+        }, 120_000);
+
+        it('(2) control: NOT_SUCCEEDED once and a return opens NO case and writes no credit_resent', async () => {
+          const t = await build();
+          const key = 'resent-ctrl-0001';
+          t.spy.mockResolvedValueOnce(NOT_SUCCEEDED);
+          await t.svc.request(t.party, t.body, key, NOW);
+          t.ctl.returned = true;
+          await t.sweep();
+          expect((await t.s.transfers.byKey(key))!.state).toBe('failed');
+          expect(await returnedCase(key)).toEqual([]);
+          expect(await resentRows(key)).toEqual([]);
+          expect(t.spy).toHaveBeenCalledTimes(1);
+        }, 120_000);
+
+        it('(3) NOT_SUCCEEDED twice and then a return: ONE case, the same key both times, one credit_resent row', async () => {
+          const t = await build();
+          const key = 'resent-twice-001';
+          t.spy.mockResolvedValueOnce(NOT_SUCCEEDED).mockResolvedValueOnce(NOT_SUCCEEDED);
+          await t.svc.request(t.party, t.body, key, NOW);
+          await t.sweep();
+          expect(t.spy.mock.calls.map((c) => c[1])).toEqual([`${key}:credit:1`, `${key}:credit:1`]);
+          expect(await outcomes(key)).toEqual(['refused']);
+          expect(await caseRows(key)).toEqual([]);
+          t.ctl.returned = true;
+          await t.sweep();
+          expect((await t.s.transfers.byKey(key))!.state).toBe('failed');
+          expect(await returnedCase(key)).toMatchObject([{ status: 'open', payload: { stage: 'before_journal' } }]);
+          expect(await resentRows(key)).toEqual([`1=${key}:credit:1`]);
+        }, 120_000);
+
+        it('(4) a real refusal behaves as today: no returned case while its case is open; after resolve, attempt 2 begun, credited, a crash and a return opens one', async () => {
+          const t = await build();
+          const key = 'resent-real-0001';
+          t.sim.failNext('ACCOUNT_UNAVAILABLE');
+          await t.svc.request(t.party, t.body, key, NOW);
+          expect(await caseRows(key)).toMatchObject([{ status: 'open', payload: { attempt: 1 } }]);
+          t.ctl.returned = true;
+          await t.sweep();
+          expect((await t.s.transfers.byKey(key))!.state).toBe('failed');
+          expect(await returnedCase(key)).toEqual([]);
+          expect(await resentRows(key)).toEqual([]);
+
+          const u = await build();
+          const key2 = 'resent-real-0002';
+          u.sim.failNext('ACCOUNT_UNAVAILABLE');
+          await u.svc.request(u.party, u.body, key2, NOW);
+          await db.query(`update ops.case set status = 'resolved' where dedupe_key = 'load-credit:' || $1`, [(await u.s.transfers.byKey(key2))!.id]);
+          u.ctl.dieOnPost = true;
+          await expect(u.sweep()).rejects.toThrow('crash before the journal');
+          expect(u.spy.mock.calls.map((c) => c[1])).toEqual([`${key2}:credit:1`, `${key2}:credit:2`]);
+          expect(await resentRows(key2)).toEqual([]);
+          u.ctl.returned = true;
+          await u.sweep();
+          expect((await u.s.transfers.byKey(key2))!.state).toBe('failed');
+          expect(await returnedCase(key2)).toMatchObject([{ status: 'open', payload: { stage: 'before_journal' } }]);
+        }, 120_000);
+
+        it('(5) two sweeps over the flap write ONE credit_resent row and ONE credit key, and the row is there before the second vendor call', async () => {
+          const t = await build();
+          const key = 'resent-sweep-001';
+          t.spy.mockResolvedValueOnce(NOT_SUCCEEDED);
+          await t.svc.request(t.party, t.body, key, NOW);
+          expect(await resentRows(key)).toEqual([]);
+          let seenAtCall: string[] | undefined;
+          t.spy.mockImplementationOnce(async () => { seenAtCall = await resentRows(key); return { status: 'credited' as const }; });
+          t.ctl.dieOnPost = true;
+          await expect(t.sweep()).rejects.toThrow('crash before the journal');
+          expect(seenAtCall).toEqual([`1=${key}:credit:1`]);
+          await t.sweep();
+          expect(await resentRows(key)).toEqual([`1=${key}:credit:1`]);
+          expect(new Set(t.spy.mock.calls.map((c) => c[1]))).toEqual(new Set([`${key}:credit:1`]));
+          expect(await journals(key)).toBe(1);
+        }, 120_000);
+
+        it('(model) 120 random sequences of vendor answers, crashes, resolves and a return match a reference model on calls, state, journals and the returned case', async () => {
+          type Ans = 'credited' | 'pending' | 'flap' | 'real' | 'outage';
+          type Step = { t: 'send'; a: Ans; die: boolean } | { t: 'resolve' } | { t: 'return' };
+          let seed = 0x786;
+          const rnd = (n: number) => { seed = (Math.imul(seed, 1103515245) + 12345) & 0x7fffffff; return (seed >>> 8) % n; };
+          const answers: Ans[] = ['credited', 'pending', 'flap', 'real', 'outage', 'flap', 'flap'];
+          const sim = (spy: { mockResolvedValueOnce(v: unknown): unknown; mockRejectedValueOnce(v: unknown): unknown }, a: Ans) => {
+            if (a === 'pending') spy.mockResolvedValueOnce({ status: 'pending' });
+            else if (a === 'flap') spy.mockResolvedValueOnce(NOT_SUCCEEDED);
+            else if (a === 'real') spy.mockResolvedValueOnce({ status: 'refused', reasonCode: 'ACCOUNT_UNAVAILABLE' });
+            else if (a === 'outage') spy.mockRejectedValueOnce(new FundingError('PROVIDER_UNAVAILABLE', 'down'));
+          };
+          for (let i = 0; i < 120; i++) {
+            const steps: Step[] = [{ t: 'send', a: answers[rnd(answers.length)]!, die: rnd(4) === 0 }];
+            for (let j = rnd(5); j > 0; j--) steps.push(rnd(10) < 7 ? { t: 'send', a: answers[rnd(answers.length)]!, die: rnd(3) === 0 } : { t: 'resolve' });
+            if (rnd(3) > 0) steps.push({ t: 'return' });
+            // The model: the records of the current attempt, the first outcome wins, a resend after a stored refusal is noted, a resolved case moves to the next attempt.
+            const m = { attempt: 1, began: false, outcome: undefined as string | undefined, resent: false, caseOpen: false, state: 'submitted', journals: 0, returned: 0, calls: [] as string[] };
+            const t = await build();
+            const key = `resent-model-${String(i).padStart(3, '0')}`;
+            let first = true;
+            for (const st of steps) {
+              if (st.t === 'send') {
+                sim(t.spy as never, st.a);
+                t.ctl.dieOnPost = st.die;
+                try { if (first) await t.svc.request(t.party, t.body, key, NOW); else await t.sweep(); } catch { /* a scripted outage or crash */ }
+                if (m.state === 'submitted' && !m.caseOpen) {
+                  m.began = true;
+                  if (m.outcome === 'refused') m.resent = true;
+                  m.calls.push(`${key}:credit:${m.attempt}`);
+                  if (st.a === 'credited') { m.outcome ??= 'credited'; if (!st.die) { m.state = 'settled'; m.journals = 1; } }
+                  else if (st.a === 'pending') m.outcome ??= 'pending';
+                  else if (st.a === 'flap') m.outcome ??= 'refused';
+                  else if (st.a === 'real') { m.outcome ??= 'refused'; m.caseOpen = true; }
+                }
+                first = false;
+              } else if (st.t === 'resolve') {
+                const tr = await t.s.transfers.byKey(key);
+                if (tr) await db.query(`update ops.case set status = 'resolved' where dedupe_key = 'load-credit:' || $1`, [tr.id]);
+                if (m.caseOpen) Object.assign(m, { caseOpen: false, attempt: m.attempt + 1, began: false, outcome: undefined, resent: false });
+              } else {
+                t.ctl.returned = true;
+                t.ctl.dieOnPost = false;
+                await t.sweep();
+                if (m.state === 'submitted') { m.state = 'failed'; if (!m.caseOpen && m.began && (m.outcome !== 'refused' || m.resent)) m.returned = 1; }
+              }
+            }
+            const where = JSON.stringify(steps);
+            expect({ where, calls: t.spy.mock.calls.map((c) => c[1]) }).toEqual({ where, calls: m.calls });
+            expect({ where, state: (await t.s.transfers.byKey(key))!.state, journals: await journals(key), returned: (await returnedCase(key)).length }).toEqual({ where, state: m.state, journals: m.journals, returned: m.returned });
+          }
+        }, 120_000);
       });
     });
 
@@ -1402,13 +1556,13 @@ describe('the typed credit-marker functions (T-0761)', () => {
 
   it('no rows reads { began: false }', async () => {
     const a = fresh();
-    expect(await read(a)).toEqual({ began: false });
+    expect(await read(a)).toEqual({ began: false, resent: false });
   });
 
   it('began only reads { began: true }, with no outcome key', async () => {
     const a = fresh();
     await recordCreditBegan(db, { ...a, attempt: 1 });
-    expect(await read(a)).toEqual({ began: true });
+    expect(await read(a)).toEqual({ began: true, resent: false });
     expect(await stored(a.transferId)).toEqual([{ kind: 'credit_began', seq: 1, value: `${a.workflowId}:credit:1` }]);
     await recordCreditBegan(db, { ...a, attempt: 1 });
     expect(await stored(a.transferId)).toHaveLength(1);
@@ -1418,7 +1572,7 @@ describe('the typed credit-marker functions (T-0761)', () => {
     const a = fresh();
     await recordCreditBegan(db, { ...a, attempt: 1 });
     await recordCreditOutcome(db, { ...a, attempt: 1, outcome });
-    expect(await read(a)).toEqual({ began: true, outcome });
+    expect(await read(a)).toEqual({ began: true, outcome, resent: false });
     expect(await stored(a.transferId)).toEqual([
       { kind: 'credit_began', seq: 1, value: creditKey(a.workflowId, 1) },
       { kind: 'credit_outcome', seq: 1, value: outcome },
@@ -1429,14 +1583,14 @@ describe('the typed credit-marker functions (T-0761)', () => {
   it('an outcome with no marker is not a began attempt', async () => {
     const a = fresh();
     await recordCreditOutcome(db, { ...a, attempt: 1, outcome: 'credited' });
-    expect(await read(a)).toEqual({ began: false });
+    expect(await read(a)).toEqual({ began: false, resent: false });
   });
 
   it('a stored suffix that is none of the three reads as pending', async () => {
     const a = fresh();
     await recordCreditBegan(db, { ...a, attempt: 1 });
     await db.query(`insert into ops.workflow_marker (kind, subject_id, seq, value) values ('credit_outcome', $1, 1, 'refused_later')`, [a.transferId]);
-    expect(await read(a)).toEqual({ began: true, outcome: 'pending' });
+    expect(await read(a)).toEqual({ began: true, outcome: 'pending', resent: false });
   });
 
   it('a second outcome with another value keeps the first', async () => {
@@ -1444,7 +1598,7 @@ describe('the typed credit-marker functions (T-0761)', () => {
     await recordCreditBegan(db, { ...a, attempt: 1 });
     await recordCreditOutcome(db, { ...a, attempt: 1, outcome: 'pending' });
     await recordCreditOutcome(db, { ...a, attempt: 1, outcome: 'credited' });
-    expect(await read(a)).toEqual({ began: true, outcome: 'pending' });
+    expect(await read(a)).toEqual({ began: true, outcome: 'pending', resent: false });
     await recordCreditOutcome(db, { ...a, attempt: 1, outcome: 'refused' });
     expect((await stored(a.transferId)).filter((r) => r.kind === 'credit_outcome' && r.seq === 1)).toHaveLength(1);
   });
@@ -1453,29 +1607,73 @@ describe('the typed credit-marker functions (T-0761)', () => {
     const a = fresh();
     await recordCreditBegan(db, { ...a, attempt: 1 });
     await recordCreditOutcome(db, { ...a, attempt: 1, outcome: 'refused' });
-    expect(await read(a, 2)).toEqual({ began: false });
+    expect(await read(a, 2)).toEqual({ began: false, resent: false });
     // T-0769: the marker is keyed by the transfer id, which implies the provider, so the provider argument no longer scopes the read.
-    expect(await read({ transferId: a.transferId, provider: 'other-provider' })).toEqual({ began: true, outcome: 'refused' });
-    expect(await read({ transferId: uuidv7(NOW), provider: a.provider })).toEqual({ began: false });
+    expect(await read({ transferId: a.transferId, provider: 'other-provider' })).toEqual({ began: true, outcome: 'refused', resent: false });
+    expect(await read({ transferId: uuidv7(NOW), provider: a.provider })).toEqual({ began: false, resent: false });
     await recordCreditBegan(db, { ...a, attempt: 2 });
-    expect(await read(a, 2)).toEqual({ began: true });
-    expect(await read(a, 1)).toEqual({ began: true, outcome: 'refused' });
+    expect(await read(a, 2)).toEqual({ began: true, resent: false });
+    expect(await read(a, 1)).toEqual({ began: true, outcome: 'refused', resent: false });
+  });
+});
+
+describe('the credit_resent marker (T-0786)', () => {
+  const fresh = () => ({ transferId: uuidv7(NOW), workflowId: `resent-${uuidv7(NOW)}`, provider: 'resent-provider' });
+  const read = (a: { transferId: string; provider: string }, attempt = 1) => creditAttemptState(db, { transferId: a.transferId, provider: a.provider, attempt });
+  const stored = async (transferId: string) => (await db.query<{ kind: string; seq: number; value: string }>(`select kind, seq, value from ops.workflow_marker where subject_id = $1 order by kind, seq`, [transferId])).rows;
+
+  it('resent is false with no row and true with the row; the row is (credit_resent, transfer, attempt, the credit key)', async () => {
+    const a = fresh();
+    await recordCreditBegan(db, { ...a, attempt: 1 });
+    await recordCreditOutcome(db, { ...a, attempt: 1, outcome: 'refused' });
+    expect(await read(a)).toEqual({ began: true, outcome: 'refused', resent: false });
+    await recordCreditResent(db, { ...a, attempt: 1 });
+    expect(await read(a)).toEqual({ began: true, outcome: 'refused', resent: true });
+    expect((await stored(a.transferId)).filter((r) => r.kind === 'credit_resent')).toEqual([{ kind: 'credit_resent', seq: 1, value: creditKey(a.workflowId, 1) }]);
+  });
+
+  it('writing it twice stores one row; another attempt and another transfer do not see it', async () => {
+    const a = fresh();
+    await recordCreditBegan(db, { ...a, attempt: 1 });
+    await recordCreditResent(db, { ...a, attempt: 1 });
+    await recordCreditResent(db, { ...a, attempt: 1 });
+    expect((await stored(a.transferId)).filter((r) => r.kind === 'credit_resent')).toHaveLength(1);
+    await recordCreditBegan(db, { ...a, attempt: 2 });
+    expect(await read(a, 2)).toEqual({ began: true, resent: false });
+    expect(await read({ transferId: uuidv7(NOW), provider: a.provider })).toEqual({ began: false, resent: false });
+  });
+
+  it('a resent row on an attempt with no outcome row (the crash between the marker and the answer) reads { began, resent: true } with no outcome key', async () => {
+    const a = fresh();
+    await recordCreditBegan(db, { ...a, attempt: 1 });
+    await recordCreditResent(db, { ...a, attempt: 1 });
+    expect(await read(a)).toEqual({ began: true, resent: true });
+  });
+
+  it('creditMayHaveMoved: refused + resent is may-have-moved; refused alone, and resent without a refusal outcome row, follow the old rule', async () => {
+    const a = fresh();
+    const transfer = { id: a.transferId, idempotencyKey: a.workflowId } as unknown as Transfer;
+    await recordCreditBegan(db, { ...a, attempt: 1 });
+    await recordCreditOutcome(db, { ...a, attempt: 1, outcome: 'refused' });
+    expect(await creditMayHaveMoved({ db, provider: a.provider }, transfer, 'ld_1')).toBeUndefined();
+    await recordCreditResent(db, { ...a, attempt: 1 });
+    expect(await creditMayHaveMoved({ db, provider: a.provider }, transfer, 'ld_1')).toBe('ld_1');
   });
 });
 
 describe('the credit markers against a reference model (T-0769 differential: green on external_ref and on workflow_marker)', () => {
   type Op = { op: 'began' | 'pending' | 'credited' | 'refused'; attempt: number };
   /** The reference: first writer wins per (kind, attempt); an outcome without a began marker reads as not begun. */
-  const model = (ops: Op[], attempt: number): { began: boolean; outcome?: CreditOutcome } => {
+  const model = (ops: Op[], attempt: number): { began: boolean; resent: boolean; outcome?: CreditOutcome } => {
     const began = new Set<number>();
     const out = new Map<number, CreditOutcome>();
     for (const o of ops) {
       if (o.op === 'began') began.add(o.attempt);
       else if (!out.has(o.attempt)) out.set(o.attempt, o.op);
     }
-    if (!began.has(attempt)) return { began: false };
+    if (!began.has(attempt)) return { began: false, resent: false };
     const outcome = out.get(attempt);
-    return outcome ? { began: true, outcome } : { began: true };
+    return outcome ? { began: true, outcome, resent: false } : { began: true, resent: false };
   };
   it('400 random write sequences (1,600 reads) read back exactly as the model says, for every attempt', async () => {
     let seed = 0x7a69;
@@ -1690,6 +1888,8 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     credit?: { status: string; attempt?: number };
     accountRef?: boolean;
     accountStatus?: string;
+    /** The stored `credit_outcome` of the attempt (T-0786 reads it before the call). */
+    storedOutcome?: string;
   }
   const run = async (w: World, o: { port?: boolean; kind?: string; vendor?: Partial<VendorLoad> | null; result?: { status: string; reasonCode?: string }; error?: unknown } = {}) => {
     const trace: string[] = [];
@@ -1699,6 +1899,9 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
         if (text.includes('from ops.workflow_marker') && params[0] === ownerKind('p')) {
           trace.push('owner-markers');
           rows = w.ownerFailed ? [{ value: `o:${party}:failed` }] : [];
+        } else if (text.includes('from ops.workflow_marker') && params[0] === 'credit_outcome') {
+          trace.push('outcome-read');
+          rows = w.storedOutcome === undefined ? [] : [{ value: w.storedOutcome }];
         } else if (text.includes("entity_type = 'funding_account'")) {
           trace.push('account-ref');
           rows = w.accountRef === false ? [] : [{ external_id: ref }];
@@ -1709,7 +1912,7 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
           trace.push(params[1] === OWNER_FAILED_CASE ? 'owner-case' : `credit-case-open:${String(params[1])}:${String(params[2])}:${(params[4] as { reasonCode?: string }).reasonCode ?? ''}:${(params[4] as { attempt?: number }).attempt ?? ''}`);
           rows = [{ id: 'row' }];
         } else if (text.startsWith('insert into ops.workflow_marker')) {
-          trace.push(params[0] === 'credit_outcome' ? `outcome:${String(params[0])}:${String(params[2])}=${String(params[3])}` : `began:${String(params[0])}:${String(params[2])}=${String(params[3])}`);
+          trace.push(params[0] === 'credit_resent' ? `resent:${String(params[0])}:${String(params[2])}=${String(params[3])}` : params[0] === 'credit_outcome' ? `outcome:${String(params[0])}:${String(params[2])}=${String(params[3])}` : `began:${String(params[0])}:${String(params[2])}=${String(params[3])}`);
         } else {
           trace.push(`unexpected: ${text}`);
         }
@@ -1780,7 +1983,7 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
   it('began marker seventh, then the vendor call under the attempt key, then the outcome', async () => {
     const r = await run({});
     expect(r).toMatchObject({ proceed: true });
-    expect(r.trace).toEqual(['owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:credit_began:1=order-key-0001:credit:1', 'vendor-call:order-key-0001:credit:1', 'outcome:credit_outcome:1=credited']);
+    expect(r.trace).toEqual(['owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:credit_began:1=order-key-0001:credit:1', 'outcome-read', 'vendor-call:order-key-0001:credit:1', 'outcome:credit_outcome:1=credited']);
     expect(r.svc.creditedCount).toBe(1);
     expect(r.svc.refusedCount).toBe(0);
   });
@@ -1795,11 +1998,22 @@ describe('the order of the early returns in the credit step (T-0766)', () => {
     const r = await run({}, { result: { status: 'refused', reasonCode: 'INSUFFICIENT_LIMIT' } });
     expect(r).toMatchObject({ proceed: false });
     expect(r.trace).toEqual([
-      'owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:credit_began:1=order-key-0001:credit:1', 'vendor-call:order-key-0001:credit:1',
+      'owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:credit_began:1=order-key-0001:credit:1', 'outcome-read', 'vendor-call:order-key-0001:credit:1',
       'outcome:credit_outcome:1=refused', 'credit-case-open:load_credit_refused:load-credit:tr_1:INSUFFICIENT_LIMIT:1',
     ]);
     expect(r.svc.refusedCount).toBe(1);
     expect(r.svc.creditedCount).toBe(0);
+  });
+
+  it('a stored `refused` with no open case writes credit_resent after the began marker and BEFORE the vendor call; any other stored outcome writes none (T-0786)', async () => {
+    const r = await run({ storedOutcome: 'refused' });
+    expect(r.trace).toEqual(['owner-markers', 'credit-case', 'account-ref', 'account-gate', 'began:credit_began:1=order-key-0001:credit:1', 'outcome-read', 'resent:credit_resent:1=order-key-0001:credit:1', 'vendor-call:order-key-0001:credit:1', 'outcome:credit_outcome:1=credited']);
+    for (const storedOutcome of ['pending', 'credited', 'refused_later']) expect((await run({ storedOutcome })).trace.some((x) => x.startsWith('resent:'))).toBe(false);
+    // A crash between the marker and the call, or an outage on the call, leaves the marker: it is never taken back.
+    const outage = await run({ storedOutcome: 'refused' }, { error: new FundingError('PROVIDER_UNAVAILABLE', 'vendor down') });
+    expect(outage.trace.slice(-2)).toEqual(['resent:credit_resent:1=order-key-0001:credit:1', 'vendor-call:order-key-0001:credit:1']);
+    // An open credit case stops the step before any read of the outcome (a refusal WITH a case takes the next key, not a resend).
+    expect((await run({ storedOutcome: 'refused', credit: { status: 'open' } })).trace).toEqual(['owner-markers', 'credit-case']);
   });
 
   it('a refusal that carries no reason code is stored with the default REFUSED', async () => {

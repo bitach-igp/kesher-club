@@ -22,6 +22,8 @@ export type CreditOutcome = 'credited' | 'pending' | 'refused';
 const CREDIT_BEGAN = 'credit_began';
 /** The outcome of attempt `seq` (value `credited|pending|refused`), written once after the vendor answered; absent after a crash in between. */
 const CREDIT_OUTCOME = 'credit_outcome';
+/** Noting that attempt `seq` was sent to the vendor AGAIN after a stored `refused` outcome with no credit case (T-0786); the value is the credit key. */
+const CREDIT_RESENT = 'credit_resent';
 interface CreditAttempt {
   transferId: string;
   /** Kept for the callers; the markers are keyed by the transfer id, which implies the provider (T-0769). */
@@ -34,17 +36,27 @@ export async function recordCreditBegan(db: Database, a: CreditAttempt & { workf
   await putMarker(db, { kind: CREDIT_BEGAN, subjectId: a.transferId, seq: a.attempt, value: creditKey(a.workflowId, a.attempt) });
 }
 
-/** Writes the outcome of a credit attempt. The FIRST outcome wins (write-once on (kind, transfer, attempt)): a `pending` that later turns credited or refused stays `pending` (conservative: it can only open a case, never hide one). */
+/** Writes the outcome of a credit attempt. The FIRST outcome wins (write-once on (kind, transfer, attempt)): a `pending` that later turns credited or refused stays `pending` (conservative: it can only open a case, never hide one; the one exception, a case-less `refused` sent again, is what `credit_resent` covers, T-0786). */
 export async function recordCreditOutcome(db: Database, a: CreditAttempt & { workflowId: string; outcome: CreditOutcome }): Promise<void> {
   await putMarker(db, { kind: CREDIT_OUTCOME, subjectId: a.transferId, seq: a.attempt, value: a.outcome });
 }
 
-/** What our own records say of a credit attempt: whether it began, and its outcome when one was written. A stored value that is none of the three reads as `pending` (the conservative answer: money may have moved). */
-export async function creditAttemptState(db: Database, a: CreditAttempt): Promise<{ began: boolean; outcome?: CreditOutcome }> {
-  if ((await getMarker(db, CREDIT_BEGAN, a.transferId, a.attempt)) === undefined) return { began: false };
+/**
+ * Writes, BEFORE the vendor call, that attempt `attempt` is sent again after a `refused` outcome that opened no case (the vendor's read flapped, T-0786).
+ * The stored `refused` is write-once, so a credit the vendor then answers `credited` under the same key leaves it `refused`; this row is how a later
+ * return tells that the vendor may hold the money. Idempotent (first writer wins).
+ */
+export async function recordCreditResent(db: Database, a: CreditAttempt & { workflowId: string }): Promise<void> {
+  await putMarker(db, { kind: CREDIT_RESENT, subjectId: a.transferId, seq: a.attempt, value: creditKey(a.workflowId, a.attempt) });
+}
+
+/** What our own records say of a credit attempt: whether it began, its outcome when one was written, and whether it was sent again after a case-less `refused` (`resent`, T-0786). A stored value that is none of the three reads as `pending` (the conservative answer: money may have moved). */
+export async function creditAttemptState(db: Database, a: CreditAttempt): Promise<{ began: boolean; resent: boolean; outcome?: CreditOutcome }> {
+  if ((await getMarker(db, CREDIT_BEGAN, a.transferId, a.attempt)) === undefined) return { began: false, resent: false };
+  const resent = (await getMarker(db, CREDIT_RESENT, a.transferId, a.attempt)) !== undefined;
   const done = await getMarker(db, CREDIT_OUTCOME, a.transferId, a.attempt);
-  if (done === undefined) return { began: true };
-  return { began: true, outcome: done === 'credited' || done === 'refused' ? done : 'pending' };
+  if (done === undefined) return { began: true, resent };
+  return { began: true, resent, outcome: done === 'credited' || done === 'refused' ? done : 'pending' };
 }
 
 /** The part of `LoadService`'s dependencies the credit phase reads. */
@@ -97,6 +109,9 @@ export async function creditStep(d: CreditDeps, transfer: Transfer, vendor: Vend
   if (blocked) return refuse(vendor.loadId, blocked, attempt);
   // Written before the call, so a crash between the vendor's `credited` and our journal leaves a trace a later return can find (T-0742).
   await recordCreditBegan(d.db, { transferId: transfer.id, workflowId: transfer.idempotencyKey, provider: d.provider, attempt });
+  // A stored `refused` with no open case (checked above) is a case-less refusal (`NOT_SUCCEEDED`): this call sends the same key again, and the vendor may now
+  // credit it while the write-once outcome stays `refused`. Noted BEFORE the call (T-0786), so a crash anywhere after it reads as may-have-moved.
+  if ((await getMarker(d.db, CREDIT_OUTCOME, transfer.id, attempt)) === 'refused') await recordCreditResent(d.db, { transferId: transfer.id, workflowId: transfer.idempotencyKey, provider: d.provider, attempt });
   let result: CreditResult;
   try {
     result = await port.creditWallet({ loadId: vendor.loadId, accountRef, amount: transfer.amount }, creditKey(transfer.idempotencyKey, attempt));
@@ -107,7 +122,7 @@ export async function creditStep(d: CreditDeps, transfer: Transfer, vendor: Vend
     throw mapFundingError(e);
   }
   // The FIRST outcome of an attempt wins: a second one hits the primary key (kind, subject, seq) and is dropped by `on conflict do nothing`.
-  // A `pending` that later turns credited or refused stays `pending`, which is conservative: it can only open a case, never hide one.
+  // A `pending` that later turns credited or refused stays `pending`, which is conservative: it can only open a case, never hide one (a `refused` sent again is noted by `credit_resent` above, T-0786).
   await recordCreditOutcome(d.db, { transferId: transfer.id, workflowId: transfer.idempotencyKey, provider: d.provider, attempt, outcome: result.status });
   if (result.status === 'credited') return { proceed: true, credited: true, refused: false };
   // `NOT_SUCCEEDED` after a `succeeded` read is the vendor's read flapping, not a refusal: retried with the same key, no case.
@@ -147,7 +162,8 @@ async function accountBlock(d: CreditDeps, accountRef: string): Promise<string |
  * The vendor load id when the vendor may already hold this load's money in the member's wallet without our journal, else undefined. Reads
  * only our own records and calls no vendor: attempt `n` (the next after the credit case's) has a `began` marker, written before the call,
  * and its outcome row is `credited` or `pending`, or missing (a crash between the call and the outcome: the vendor may have credited).
- * A `refused` outcome, no marker, or an open credit case (the last attempt was refused, no later key sent) means no money moved.
+ * A `refused` outcome that was never sent again (no `credit_resent` row, T-0786), no marker, or an open credit case (the last attempt was refused, no later key sent) means no money moved.
+ * A `refused` outcome with a `credit_resent` row is `may have moved`: the same key was sent again after the case-less refusal and the write-once outcome could not change.
  * `vendorId` is the vendor's load id for the transfer, read by the caller (`LoadService.vendorLoadOf`) after its `kind === 'load'` check.
  */
 export async function creditMayHaveMoved(d: Pick<CreditDeps, 'db' | 'provider'>, transfer: Transfer, vendorId: string): Promise<string | undefined> {
@@ -155,5 +171,5 @@ export async function creditMayHaveMoved(d: Pick<CreditDeps, 'db' | 'provider'>,
   if (found.open) return undefined;
   const attempt = found.attempt + 1;
   const state = await creditAttemptState(d.db, { transferId: transfer.id, provider: d.provider, attempt });
-  return state.began && state.outcome !== 'refused' ? vendorId : undefined;
+  return state.began && (state.outcome !== 'refused' || state.resent) ? vendorId : undefined;
 }
