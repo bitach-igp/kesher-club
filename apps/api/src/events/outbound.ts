@@ -98,9 +98,14 @@ export class OutboundEventsService implements OutboxSink {
   /** Replay UI: messages for an institution with their attempts. */
   async messages(institutionId: string, limit = 50): Promise<{ messageId: string; eventType: string; sentAt: string; attempts: readonly DeliveryAttempt[] }[]> {
     const r = await this.db.query<{ message_id: string; event_type: string; sent_at: string | Date }>('select message_id, event_type, sent_at from notify.outbound_message where institution_id = $1 order by sent_at desc limit $2', [institutionId, limit]);
-    const out = [];
-    for (const m of r.rows) out.push({ messageId: m.message_id, eventType: m.event_type, sentAt: new Date(m.sent_at).toISOString(), attempts: await this.port.listAttempts(m.message_id) });
-    return out;
+    // The reads are side-effect free and start together (the events port is the in-house one today; bound the fan-out if it becomes a rate-limited vendor).
+    // allSettled, not all: when several reads fail, the first in list order surfaces, as the one-by-one loop did, whatever the timing.
+    const reads = await Promise.allSettled(r.rows.map(async (m) => this.port.listAttempts(m.message_id)));
+    return r.rows.map((m, i) => {
+      const read = reads[i]!;
+      if (read.status === 'rejected') throw read.reason;
+      return { messageId: m.message_id, eventType: m.event_type, sentAt: new Date(m.sent_at).toISOString(), attempts: read.value };
+    });
   }
 
   /** Ops replay: the same Idempotency-Key replays once; without one every call is a new attempt. */
