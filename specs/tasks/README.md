@@ -396,7 +396,7 @@
 | [T-0773](T-0773.md) | SETUP | The mobile and console UUID regex copies use `isUuidShape` (A7) | — | done by #371 (`isUuidShape`) |
 | [T-0774](T-0774.md) | CRD | Card authorisation: daily and monthly held-sum reads become one read-only query (A8) | — | done (PR for T-0774): one read-only held-sum query (`firstSpendLimitHit`), daily first |
 | [T-0775](T-0775.md) | INS | Identity `findUsers(ids)`: staff lists and customer lists read users in one query (A8) | — | done 2026-11-22 (built, PR open) · independent |
-| [T-0776](T-0776.md) | WAL | `DisplayNameService.getMany` for `listMemberships` (A8) | — | later (scoped 2026-11-19) · independent; `TransferService.getMany` came with #366, `DisplayNameService.getMany` does not exist yet |
+| [T-0776](T-0776.md) | WAL | `DisplayNameService.getMany` for `listMemberships` (A8) | — | done 2026-11-22 (built, PR open) · independent; `TransferService.getMany` came with #366, `DisplayNameService.getMany` does not exist yet |
 | [T-0777](T-0777.md) | NOT | Outbound events: `messages()` reads attempts concurrently (A8) | — | done 2026-11-22 (built, PR open) · first failing message in list order still surfaces |
 | [T-0778](T-0778.md) | WAL | Closure status: pending refund refs read in one query (A8) | — | later (scoped 2026-11-19) · independent |
 | [T-0779](T-0779.md) | LED | Ledger account provisioning in batches, idempotent (A8) | — | later (scoped 2026-11-19) · independent |

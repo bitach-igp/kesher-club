@@ -349,15 +349,14 @@ export function createApp(o: AppOptions): App {
     listMemberships: route(async (req) => {
       const p = requirePrincipal(req);
       const items = await s.memberships.forParty(p.partyId);
+      const names = await s.displayNames.getMany(items.filter((m) => m.role === 'funder').map((m) => m.memberPartyId));
       return ok({
-        items: await Promise.all(
-          items.map(async (m) => ({
-            ...membershipBody(m),
-            role: m.role,
-            memberPartyId: m.memberPartyId,
-            ...(m.role === 'funder' ? { memberName: (await s.displayNames.get(m.memberPartyId)).displayName ?? 'Member' } : {}),
-          })),
-        ),
+        items: items.map((m) => ({
+          ...membershipBody(m),
+          role: m.role,
+          memberPartyId: m.memberPartyId,
+          ...(m.role === 'funder' ? { memberName: names.get(m.memberPartyId)?.displayName ?? 'Member' } : {}),
+        })),
       });
     }),
     cancelMembership: route(async (req) => {
