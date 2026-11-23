@@ -44,7 +44,7 @@ export function createCurrencyModel(deps: { preferences: PreferencesApi }): Curr
       const previous = s.receiveCurrency;
       store.patch({ receiveCurrency: value, saving: true, notice: undefined, error: undefined });
       try {
-        const p = await deps.preferences.set(value);
+        const p = await deps.preferences.set({ receiveCurrency: value });
         store.patch({ receiveCurrency: p.receiveCurrency, saving: false, notice: 'currency.saved' });
       } catch {
         store.patch({ receiveCurrency: previous, saving: false, error: 'currency.saveFailed' });

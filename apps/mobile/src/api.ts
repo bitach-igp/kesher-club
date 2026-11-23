@@ -31,6 +31,7 @@ export type Closure = Schemas['Closure'];
 export type ServiceStatus = Schemas['ServiceStatus'];
 export type CapabilityState = Schemas['CapabilityState'];
 export type ReceiveCurrency = Preferences['receiveCurrency'];
+export type Theme = Preferences['theme'];
 export type PaymentRequest = Schemas['PaymentRequest'];
 export type PaidPaymentRequest = Schemas['PaidPaymentRequest'];
 export type Split = Schemas['Split'];
@@ -138,7 +139,8 @@ export interface DisplayNameApi {
 /** M33 receiving currency (T-0514): which purse money sent to the member lands in. */
 export interface PreferencesApi {
   get(): Promise<Preferences>;
-  set(receiveCurrency: ReceiveCurrency): Promise<Preferences>;
+  /** One PATCH carrying the fields to change (T-1020): a field left out keeps its stored value. */
+  set(patch: { receiveCurrency?: ReceiveCurrency; theme?: Theme }): Promise<Preferences>;
 }
 
 /** M08–M10 home, balance and transaction detail (T-0511): purses, the transaction history per purse, identity and card status. */
@@ -340,7 +342,7 @@ export function sdkApi(client: Client, session: Session, extras: { esim: EsimUsa
     },
     preferences: {
       get: () => client.get('/me/preferences'),
-      set: (receiveCurrency) => client.patch('/me/preferences', { body: { receiveCurrency } }),
+      set: (patch) => client.patch('/me/preferences', { body: patch }),
     },
     displayName: {
       get: () => client.get('/me/display-name'),

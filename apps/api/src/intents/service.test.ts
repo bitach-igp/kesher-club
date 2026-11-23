@@ -119,7 +119,7 @@ describe('IntentService (REQ-AGT-006)', () => {
   it('an intent to a member who receives in the other currency converts at the club rate with their plan markup (T-0515)', async () => {
     await app.services.rates.publishFromPort('USD/ILS', 3_700_000n, clock.now());
     const lea = (await register('+972501234570')).principal;
-    await app.services.preferences.set(lea.partyId, 'USD', clock.now());
+    await app.services.preferences.set(lea.partyId, { receiveCurrency: 'USD' }, clock.now());
     const i = await proposeP2p(lea.partyId, '37000');
     const r = await intents.approve(approveReq(await freshStepUp()), i.id, 'k');
     // ₪370 → $100.00 gross at 1/3.70, less the default 75 bps → $99.25 in Lea's USD purse.

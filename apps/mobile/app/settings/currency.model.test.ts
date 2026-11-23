@@ -1,18 +1,18 @@
 // M33 receiving currency (T-0516, TST-PAY-007): as sent by default; the choice reads and saves through
 // /me/preferences, shows at once, and rolls back with a message when the server refuses it.
 import { describe, expect, it } from 'vitest';
-import type { Preferences, PreferencesApi, ReceiveCurrency } from '../../src/api.ts';
+import type { Preferences, PreferencesApi, ReceiveCurrency, Theme } from '../../src/api.ts';
 import { createCurrencyModel, RECEIVE_OPTIONS } from './currency.model.ts';
 
 function fakePreferences(opts: { failSet?: boolean; initial?: Preferences } = {}) {
-  let current: Preferences = opts.initial ?? { receiveCurrency: 'as_sent' };
-  const sets: ReceiveCurrency[] = [];
+  let current: Preferences = opts.initial ?? { receiveCurrency: 'as_sent', theme: 'system' };
+  const sets: { receiveCurrency?: ReceiveCurrency; theme?: Theme }[] = [];
   const api: PreferencesApi = {
     get: async () => current,
-    async set(receiveCurrency) {
-      sets.push(receiveCurrency);
+    async set(patch) {
+      sets.push(patch);
       if (opts.failSet) throw Object.assign(new Error('boom'), { status: 500 });
-      current = { receiveCurrency, updatedAt: '2026-11-10T09:00:00.000Z' };
+      current = { ...current, ...patch, updatedAt: '2026-11-10T09:00:00.000Z' };
       return current;
     },
   };
@@ -29,14 +29,14 @@ describe('M33 receiving currency (TST-PAY-007)', () => {
   });
 
   it('reads a saved choice and saves a new one once, with the notice', async () => {
-    const { api, sets } = fakePreferences({ initial: { receiveCurrency: 'USD' } });
+    const { api, sets } = fakePreferences({ initial: { receiveCurrency: 'USD', theme: 'dark' } });
     const m = createCurrencyModel({ preferences: api });
     await m.load();
     expect(m.store.get().receiveCurrency).toBe('USD');
     await m.choose('USD');
     expect(sets).toEqual([]);
     await m.choose('ILS');
-    expect(sets).toEqual(['ILS']);
+    expect(sets).toEqual([{ receiveCurrency: 'ILS' }]); // one PATCH carrying only the currency: the theme is not resent
     expect(m.store.get()).toMatchObject({ receiveCurrency: 'ILS', saving: false, notice: 'currency.saved' });
     await m.load();
     expect(m.store.get().receiveCurrency).toBe('ILS');

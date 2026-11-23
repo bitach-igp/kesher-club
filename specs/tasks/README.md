@@ -416,7 +416,7 @@
 | [T-0794](T-0794.md) | BIL | Mount `/hooks/stripe` behind `billing.stripe`: adapter verifies and stores; turning on blocked on T-0736 W1-W4 and T-0737 (independent reviewer) | — | later · after T-0793, T-0736 |
 | [T-0795](T-0795.md) | BIL | Worker job `billing-events` feeds `DunningService` from stored Stripe events (independent reviewer) | — | later · after T-0794 |
 | [T-1019](T-1019.md) | UX | Night Market palette in `@kesher/tokens`: per-mode values, new `color.facet.*` group, contrast gate; ships first (independent reviewer: contrast is the gate) | REQ-UX-001 | later · independent; scoped 2026-11-23 |
-| [T-1020](T-1020.md) | UX | Account appearance preference: `theme` on `/me/preferences`, `identity.member_preference.theme`, desktop apply, `PreferencesApi.set` takes an object (migration + contract, independent reviewer) | REQ-UX-002 | later · start in parallel with T-1019; desktop apply is the long pole |
+| [T-1020](T-1020.md) | UX | Account appearance preference: `theme` on `/me/preferences`, `identity.member_preference.theme`, desktop apply, `PreferencesApi.set` takes an object (migration + contract, independent reviewer) | REQ-UX-002 | built (PR open) · merge waits for the desktop apply PASS |
 | [T-1021](T-1021.md) | UX | Mobile Appearance screen (System / Light / Dark), override mounted above every themed screen, no launch flash | REQ-UX-003 | later · after T-1020 |
 | [T-1022](T-1022.md) | UX | Institution console renders the member's appearance on the server (`data-theme` on `<html>`, explicit `light`), with a control; `apps/web` and admin stay system-only | REQ-UX-003 | later · after T-1020 |
 
