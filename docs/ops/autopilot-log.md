@@ -150,3 +150,26 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-23 | T-0786 (re-scope) | #398 | docs, T-0786 re-scoped to the stuck case-less credit refusal, README statuses, Crowded Q73; no review (merged 4dbbe85) | green |
 | 2026-11-23 | T-0787 | #399 | built, narrow delete: `delete` on `ops.workflow_marker` granted to `club_app` plus a BEFORE DELETE trigger that refuses every kind except `subaccount_owner:` (migration 0034); real-Postgres desktop apply PASS; the owner said "allow delete grant" and it was narrowed so write-once markers stay write-once; the reviewer ran the bypass hunt on a real PG16 with 29 mutants, 0 survivors; `clearMarker` not yet wired, three owner decisions open (merged 441a442) | green |
 | 2026-11-23 | T-0786 | #400 | built, the owner decided option 2 with N=3: a case opens after the third case-less `NOT_SUCCEEDED` answer for the same key; the counter is write-once `credit_flap:{attempt}` markers, no migration; the reviewer's own 1,400-sequence differential found only the intended differences (merged 010e52a) | green |
+| 2026-11-23 | T-0785, T-0780 (decision) | #402 | docs, both cards decided: keep and wire behind flags; no review (merged 8f7ed90) | green |
+| 2026-11-23 | REQ-UX, T-1019 to T-1022 (cards) | #403 | docs, Night Market theming: REQ-UX-001 to REQ-UX-003 and four cards; departure from the plan: the admin app is an SSO staff session with no member preference, so it stays system-only like `apps/web` (default chosen 2026-11-23, reversible; a per-browser admin cookie would be its own card and needs the owner); no review (merged 1b5db19) | green |
+| 2026-11-23 | T-0771 slice 1 | #405 | built, `Binding.webhook?: { secrets }` set on the institution-banking binding, `crowdedWebhookSecrets(registry, market)` reads it and the `=== 'crowded'` test is gone; behaviour identical for every binding (old-vs-new table in `registry.test.ts`, 15 mutants killed); slices 2 to 5 remain open, each its own card (merged 953f590) | green |
+| 2026-11-23 | T-0788 | #404 | built, staff resolving the failed-owner case clears the owner marker in the decision's transaction (dismissing does not); the case joins the ops queue kinds; a blocked load reopens a closed owner case (merged 64dca08) | green |
+| 2026-11-23 | T-1019 | #407 | built, the Night Market palette per mode in `@kesher/tokens`, the new `color.facet.*` group and the contrast gate; light-mode pairings below threshold carried (see Carried follow-ups) (merged d0fca53) | green |
+| 2026-11-23 | T-1020 | #406 | built, `theme` on `/me/preferences` (`identity.member_preference.theme`, default `system`), `PreferencesApi.set` takes an object; merged after the desktop apply PASS (merged 1ddcebc) | green |
+| 2026-11-23 | T-1022 | #408 | built, the console renders the member's appearance on the server (`data-theme` on `<html>`, explicit `light`) with an Appearance control; 1500 ms lookup timeout falls back to `system`; `apps/web` and `apps/admin` untouched (merged e3ccb47) | green |
+| 2026-11-23 | T-1021 | #409 | built, mobile Appearance screen (System / Light / Dark), override mounted above every themed screen with a held neutral first frame; follow-ups carried (see Carried follow-ups) (merged ffaf406) | green |
+
+## Carried follow-ups (T-1019 to T-1022)
+
+Non-blocking notes from the theming cards, none yet carded:
+
+- `apps/mobile` layout: the sync-throw try/catch around the appearance hold has no test of its own; add a layout test with `get` throwing and one with no stored preferences.
+- Light-mode contrast pairings below threshold: placeholder text, `border.strong` on sunken, status text on stone and on `primarySubtle`.
+- Dark-mode hover on cyan is 1.10:1; the Toggle thumb on cyan is 1.36:1.
+- The light-mode `facet.yellow` is a design call (owner or designer).
+- Console: a render test for nav visibility and a test for the signed-out action guard are missing.
+- Console Appearance page: the second lookup can show a wrong "Now".
+- Mobile: native chrome (status bar, system dialogs) does not follow the override because `Appearance.setColorScheme` is not called.
+- Mobile: the Skeleton `aria-label` "Loading" is English in Hebrew.
+- Mobile: the selected check in the Appearance list lacks an accessibility state.
+- Manual pass on web and native for the held first frame (no launch flash, no flip on hydrate).
