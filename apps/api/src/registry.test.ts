@@ -804,8 +804,162 @@ describe('binding capabilities: webhook secrets (T-0771 slice 1)', () => {
     for (const market of MARKETS) {
       for (const { capability } of PORTS.filter((p) => p.capability !== 'institution-banking')) {
         const b = registry.bindingFor(capability, market);
-        if (b) expect(Object.keys(b).sort()).toEqual(['capability', 'market', 'mode', 'provider']);
+        // Stripe's funding and billing carry their webhook secrets since slice 3; everything else is provider and mode only.
+        const stripeBound = b?.provider === 'stripe';
+        if (b) expect(Object.keys(b).sort()).toEqual(stripeBound ? ['capability', 'market', 'mode', 'provider', 'webhook'] : ['capability', 'market', 'mode', 'provider']);
       }
+    }
+  });
+});
+
+// T-0771 slice 3: the Stripe override block and the single-secret-per-vendor wiring. `oracle*` are the pre-slice rules kept verbatim
+// (the `PROVIDER_FUNDING === 'stripe'` test, `stripe.webhookSecrets`, `acceptPreviousSecrets(funding|billing, ...)`), so the tables
+// prove old and new agree for every config. There is no PROVIDER_BILLING: billing follows PROVIDER_FUNDING (T-0041).
+describe('Stripe override and webhook secrets (T-0771 slice 3)', () => {
+  const OLDER = 'whsec_older_do_not_print';
+  const OTHER = 'whsec_other_do_not_print';
+  const choices = ['sim', 'stripe', 'Stripe', '', undefined] as const;
+  const shapes = ['full', 'noApi', 'noSecrets', 'noPlans', 'none', 'emptySecrets'] as const;
+  const SECRET_SETS: readonly (readonly string[])[] = [[STRIPE_CURRENT], [STRIPE_CURRENT, STRIPE_PREVIOUS], [STRIPE_CURRENT, STRIPE_PREVIOUS, OLDER]];
+  const PLANS = { club: 'prod_club' };
+  const cfg = (choice: (typeof choices)[number], shape: (typeof shapes)[number], secrets: readonly string[] = [STRIPE_CURRENT]) => {
+    const key = new Secret(STRIPE_KEY);
+    const list = secrets.map((s) => new Secret(s));
+    return {
+      ...sim,
+      ...(choice === undefined ? {} : { PROVIDER_FUNDING: choice }),
+      PROVIDER_BILLING: 'stripe', // not a config key: billing follows funding, so this must change nothing
+      ...(shape === 'noApi' || shape === 'none' ? {} : { STRIPE_API_KEY: key }),
+      ...(shape === 'noSecrets' || shape === 'none' ? {} : { STRIPE_WEBHOOK_SECRET: shape === 'emptySecrets' ? [] : list }),
+      ...(shape === 'noPlans' || shape === 'none' ? {} : { STRIPE_PLAN_PRODUCTS: PLANS }),
+    } as unknown as Parameters<typeof overridesFromConfig>[0];
+  };
+  const oracleMissing = (c: ReturnType<typeof cfg>): string[] => [c.STRIPE_API_KEY ? '' : 'STRIPE_API_KEY', c.STRIPE_WEBHOOK_SECRET ? '' : 'STRIPE_WEBHOOK_SECRET', c.STRIPE_PLAN_PRODUCTS ? '' : 'STRIPE_PLAN_PRODUCTS'].filter(Boolean);
+  const nothingToFetch = (async () => new Response('{}')) as unknown as typeof globalThis.fetch;
+
+  it('characterization: every (choice x key shape x transport) cell builds the same override, throws the same, warns nothing', () => {
+    let n = 0;
+    for (const choice of choices) {
+      for (const shape of shapes) {
+        for (const withFetch of [false, true]) {
+          const config = cfg(choice, shape);
+          const label = `${choice ?? '<unset>'}/${shape}/${withFetch ? 'fetch' : 'nofetch'}`;
+          const warnings: string[] = [];
+          const missing = oracleMissing(config);
+          const run = () => overridesFromConfig(config, nodb, (m) => warnings.push(m), withFetch ? nothingToFetch : undefined);
+          if (choice === 'stripe' && missing.length > 0) {
+            expect(run, label).toThrow(new Error(`PROVIDER_FUNDING=stripe needs ${missing.join(', ')}`));
+          } else if (choice === 'stripe') {
+            const f = run().funding;
+            expect(f, label).toEqual({ provider: 'stripe', secretKey: config.STRIPE_API_KEY, webhookSecrets: config.STRIPE_WEBHOOK_SECRET, planProducts: PLANS, ...(withFetch ? { fetch: nothingToFetch } : {}) });
+            expect(f?.secretKey, label).toBe(config.STRIPE_API_KEY);
+            expect(f?.webhookSecrets, label).toBe(config.STRIPE_WEBHOOK_SECRET);
+            expect(f?.planProducts, label).toBe(config.STRIPE_PLAN_PRODUCTS);
+            expect(Object.keys(f ?? {}).sort(), label).toEqual(withFetch ? ['fetch', 'planProducts', 'provider', 'secretKey', 'webhookSecrets'] : ['planProducts', 'provider', 'secretKey', 'webhookSecrets']);
+          } else {
+            expect(run(), label).toEqual({}); // any other value (sim, Stripe, empty, unset) binds nothing and never reads the keys
+          }
+          expect(warnings, label).toEqual([]);
+          n += 1;
+        }
+      }
+    }
+    expect(n).toBe(5 * 6 * 2);
+  });
+
+  it('characterization: an empty secret list passes the override and is refused where the adapter is built, naming no secret', () => {
+    const o = overridesFromConfig(cfg('stripe', 'emptySecrets'), nodb);
+    expect(o.funding?.webhookSecrets).toEqual([]);
+    const err = thrownBy(() => createRegistry('sandbox', systemClock(), o));
+    expect(err.message).toBe('Stripe needs a webhook secret');
+  });
+
+  it('characterization: what is bound, per choice, in both markets (funding and billing together, on stripe only, mode sandbox)', () => {
+    for (const choice of choices) {
+      if (choice === 'stripe') continue;
+      const { registry, providers } = createRegistry('sandbox', systemClock(), overridesFromConfig(cfg(choice, 'full'), nodb));
+      expect(providers.funding, String(choice)).toBe('sim');
+      for (const market of MARKETS) for (const capability of ['funding', 'billing']) expect(registry.bindingFor(capability, market), `${choice}/${capability}`).toEqual({ capability, market, provider: 'simulator', mode: 'sim' });
+    }
+    const { registry, providers } = createRegistry('sandbox', systemClock(), overridesFromConfig(cfg('stripe', 'full'), nodb));
+    expect(providers).toEqual({ ...ALL_SIM, funding: 'stripe' });
+    for (const market of MARKETS) for (const capability of ['funding', 'billing']) expect(registry.bindingFor(capability, market)).toMatchObject({ capability, market, provider: 'stripe', mode: 'sandbox' });
+  });
+
+  it('delivery table: signed with the current secret verifies, with a previous one only when configured, with another is refused (funding and billing)', async () => {
+    let n = 0;
+    for (const secrets of SECRET_SETS) {
+      const clock = fixedClock() as AdvanceableClock;
+      const fake = new FakeStripe({ secretKey: STRIPE_KEY, webhookSecret: STRIPE_CURRENT, clock });
+      const { registry } = createRegistry('sandbox', clock, overridesFromConfig(cfg('stripe', 'full', secrets), nodb, undefined, fake.fetch));
+      const funding = registry.resolve<FundingPort>('funding', 'US');
+      const billing = registry.resolve<BillingPort>('billing', 'US');
+      const customer = await billing.createCustomer({ partyId: `p${secrets.length}`, email: 'f@example.com' }, `cust-key-${secrets.length}000`);
+      const sub = await billing.createSubscription({ customerId: customer.customerId, planCode: 'club', price: { minor: 4_900n, currency: 'USD' }, termMonths: 10 }, `sub-key-${secrets.length}000`);
+      let i = 0;
+      for (const signer of [STRIPE_CURRENT, STRIPE_PREVIOUS, OLDER, OTHER]) {
+        const signedBy = new FakeStripe({ secretKey: STRIPE_KEY, webhookSecret: signer, clock });
+        const accepted = secrets.includes(signer);
+        const label = `${secrets.length} secrets, signer ${signer}`;
+        i += 1;
+        const l = await funding.createLoad({ customerId: 'cus_1', method: 'card', amount: { minor: 5_000n, currency: 'USD' }, paymentMethodId: 'pm_card_ok' }, `load-key-${secrets.length}${i}00`);
+        const hook = fake.settlePaymentIntent(l.loadId);
+        const fundingResult = funding.parseWebhook(signedBy.sign(hook.rawBody), hook.rawBody);
+        if (accepted) expect((await fundingResult).load.loadId, label).toBe(l.loadId);
+        else await expect(fundingResult, label).rejects.toMatchObject({ code: 'BAD_SIGNATURE' });
+        const invoice = fake.failInvoice(sub.subscriptionId, i);
+        const billingResult = billing.parseWebhook(signedBy.sign(invoice.rawBody), invoice.rawBody);
+        if (accepted) expect((await billingResult).type, label).toBe('invoice.payment_failed');
+        else await expect(billingResult, label).rejects.toMatchObject({ code: 'BAD_SIGNATURE' });
+        n += 2;
+      }
+    }
+    expect(n).toBe(3 * 4 * 2);
+  });
+
+  it('a request with no signature header is refused whatever the rotation', async () => {
+    const clock = fixedClock() as AdvanceableClock;
+    const fake = new FakeStripe({ secretKey: STRIPE_KEY, webhookSecret: STRIPE_CURRENT, clock });
+    const { registry } = createRegistry('sandbox', clock, overridesFromConfig(cfg('stripe', 'full', SECRET_SETS[2]), nodb, undefined, fake.fetch));
+    const funding = registry.resolve<FundingPort>('funding', 'IL');
+    const l = await funding.createLoad({ customerId: 'cus_1', method: 'card', amount: { minor: 5_000n, currency: 'USD' }, paymentMethodId: 'pm_card_ok' }, 'load-key-nohdr0');
+    const hook = fake.settlePaymentIntent(l.loadId);
+    await expect(funding.parseWebhook({}, hook.rawBody)).rejects.toMatchObject({ code: 'BAD_SIGNATURE' });
+  });
+
+  it('the second market accepts the same secrets (both markets share one adapter)', async () => {
+    const clock = fixedClock() as AdvanceableClock;
+    const prev = new FakeStripe({ secretKey: STRIPE_KEY, webhookSecret: STRIPE_PREVIOUS, clock });
+    const { registry } = createRegistry('sandbox', clock, overridesFromConfig(cfg('stripe', 'full', SECRET_SETS[1]), nodb, undefined, prev.fetch));
+    for (const market of MARKETS) {
+      const funding = registry.resolve<FundingPort>('funding', market);
+      const l = await funding.createLoad({ customerId: 'cus_1', method: 'card', amount: { minor: 5_000n, currency: 'USD' }, paymentMethodId: 'pm_card_ok' }, `load-key-mkt-${market}`);
+      const hook = prev.settlePaymentIntent(l.loadId);
+      expect((await funding.parseWebhook(hook.headers, hook.rawBody)).load.loadId).toBe(l.loadId);
+    }
+  });
+
+  it('the bindings carry the secrets they verify with: funding and billing, both markets, in config order, on stripe only', () => {
+    for (const choice of choices) {
+      for (const secrets of SECRET_SETS) {
+        const config = cfg(choice, 'full', secrets);
+        const { registry } = createRegistry('sandbox', systemClock(), overridesFromConfig(config, nodb));
+        const expected = choice === 'stripe' ? secrets : undefined;
+        for (const market of MARKETS) {
+          for (const { capability } of PORTS) {
+            const stripeBound = choice === 'stripe' && (capability === 'funding' || capability === 'billing');
+            expect(registry.bindingFor(capability, market)?.webhook?.secrets, `${choice}/${secrets.length}/${capability}/${market}`).toEqual(stripeBound ? expected : undefined);
+          }
+        }
+      }
+    }
+  });
+
+  it('the stripe bindings keep every other field, and the funding provider key space is still `stripe`', () => {
+    const { registry } = createRegistry('sandbox', systemClock(), overridesFromConfig(cfg('stripe', 'full', SECRET_SETS[1]), nodb));
+    for (const market of MARKETS) {
+      for (const capability of ['funding', 'billing']) expect(Object.keys(registry.bindingFor(capability, market) ?? {}).sort()).toEqual(['capability', 'market', 'mode', 'provider', 'webhook']);
+      expect(registry.bindingFor('funding', market)).toMatchObject({ provider: 'stripe', mode: 'sandbox' });
     }
   });
 });
