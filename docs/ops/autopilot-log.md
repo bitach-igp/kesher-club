@@ -158,6 +158,10 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-23 | T-1020 | #406 | built, `theme` on `/me/preferences` (`identity.member_preference.theme`, default `system`), `PreferencesApi.set` takes an object; merged after the desktop apply PASS (merged 1ddcebc) | green |
 | 2026-11-23 | T-1022 | #408 | built, the console renders the member's appearance on the server (`data-theme` on `<html>`, explicit `light`) with an Appearance control; 1500 ms lookup timeout falls back to `system`; `apps/web` and `apps/admin` untouched (merged e3ccb47) | green |
 | 2026-11-23 | T-1021 | #409 | built, mobile Appearance screen (System / Light / Dark), override mounted above every themed screen with a held neutral first frame; follow-ups carried (see Carried follow-ups) (merged ffaf406) | green |
+| 2026-11-24 | log through #409 | #410 | docs, autopilot log lines for #404 to #409; no review (merged e8469d7) | green |
+| 2026-11-24 | T-1023 (T-0771 slice 2) | #411 | built, the stray `CROWDED_BINDING=live` warning reads whether a Crowded binding was declared, not the provider name; the reviewer's own 34,560-config differential found no difference (merged 491264c) | green |
+| 2026-11-24 | T-1024 (T-0771 slice 3) | #412 | built, the safe part: the Stripe override block and the funding and billing webhook secrets read the binding; the reviewer's 17,039-record differential found no difference; left: adapter construction order and `webhook.path` (merged e91f5f5) | green |
+| 2026-11-24 | T-1025 | #413 | built, the simulator panel route returned whole bindings including webhook secrets, now provider and mode only; the shared secret lists are frozen; the reviewer reproduced the leak on main (merged 97f99ed) | green |
 
 ## Carried follow-ups (T-1019 to T-1022)
 
@@ -173,3 +177,10 @@ Non-blocking notes from the theming cards, none yet carded:
 - Mobile: the Skeleton `aria-label` "Loading" is English in Hebrew.
 - Mobile: the selected check in the Appearance list lacks an accessibility state.
 - Manual pass on web and native for the held first frame (no launch flash, no flip on hydrate).
+
+## Carried follow-ups (T-0771 slices 2 to 3, T-1025)
+
+- `bindBoth` freezes only the wrapper; a one-line `Object.freeze([...secrets])` inside it would make the immutability self-contained.
+- The `Binding` type still carries live secrets in-process; a typed safe serialiser or a non-enumerable property would end the class of leak (design call, not started).
+- A missing `CROWDED_API_TOKEN` alone and missing webhook secrets alone are untested in the registry tests (pre-existing).
+- T-0771 slices 4 and 5 touch the shared composition root `apps/api/src/app.ts`.
