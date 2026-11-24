@@ -391,7 +391,7 @@
 | [T-0768](T-0768.md) | WAL | `ops.workflow_marker` table (ledger migration 0033), store module and desktop apply request (A4) | — | later (done by #382) · after T-0761, T-0762; desktop apply pending |
 | [T-0769](T-0769.md) | WAL | The credit markers move from `ops.external_ref` to `ops.workflow_marker` (A4) | — | later (done by #390) · after T-0761, T-0768 PASS |
 | [T-0770](T-0770.md) | WAL | The sub-account, lost-key and payee markers move to `ops.workflow_marker` (A4) | — | later (done by #392; old lost-key and payee rows still read) · after T-0762, T-0768 PASS |
-| [T-0771](T-0771.md) | SETUP | DESIGN: capability properties on port bindings replace provider-name branching in registry.ts; first slice scoped (A6) | — | later (scoped 2026-11-19) · design accepted; slice 1 done by #405; slice 2 is T-1023, slice 3 is T-1024; slices 4-5 open (see the card) |
+| [T-0771](T-0771.md) | SETUP | DESIGN: capability properties on port bindings replace provider-name branching in registry.ts; first slice scoped (A6) | — | later (scoped 2026-11-19) · design accepted; slices 1 to 3 done (#405, #411, #412), slices 4-5 open (see the card) |
 | [T-0772](T-0772.md) | SETUP | One `isUuidShape` in `@kesher/domain` replaces 28 loose UUID regex copies in apps/api (A7) | — | done by #371 (`isUuidShape`) |
 | [T-0773](T-0773.md) | SETUP | The mobile and console UUID regex copies use `isUuidShape` (A7) | — | done by #371 (`isUuidShape`) |
 | [T-0774](T-0774.md) | CRD | Card authorisation: daily and monthly held-sum reads become one read-only query (A8) | — | done by #383: one read-only held-sum query (`firstSpendLimitHit`), daily first |
@@ -420,9 +420,9 @@
 | [T-1020](T-1020.md) | UX | Account appearance preference: `theme` on `/me/preferences`, `identity.member_preference.theme`, desktop apply, `PreferencesApi.set` takes an object (migration + contract, independent reviewer) | REQ-UX-002 | done by #406 (desktop apply PASS) |
 | [T-1021](T-1021.md) | UX | Mobile Appearance screen (System / Light / Dark), override mounted above every themed screen, no launch flash | REQ-UX-003 | done by #409 |
 | [T-1022](T-1022.md) | UX | Institution console renders the member's appearance on the server (`data-theme` on `<html>`, explicit `light`), with a control; `apps/web` and admin stay system-only | REQ-UX-003 | done by #408 |
-| [T-1023](T-1023.md) | SETUP | Slice 2 of T-0771: the stray `CROWDED_BINDING=live` warning reads whether a Crowded binding was declared, not the provider name | — | built, PR open |
-| [T-1024](T-1024.md) | SETUP | Slice 3 of T-0771: the Stripe override block and Stripe webhook-secret wiring read the binding (safe part only; see the card) | — | built, PR open |
-| [T-1025](T-1025.md) | SETUP | The simulators panel route answers a binding's provider and mode only (it leaked webhook secrets); the shared secret lists are frozen | — | built, PR open |
+| [T-1023](T-1023.md) | SETUP | Slice 2 of T-0771: the stray `CROWDED_BINDING=live` warning reads whether a Crowded binding was declared, not the provider name | — | done by #411 |
+| [T-1024](T-1024.md) | SETUP | Slice 3 of T-0771: the Stripe override block and Stripe webhook-secret wiring read the binding (safe part only; see the card) | — | done by #412 |
+| [T-1025](T-1025.md) | SETUP | The simulators panel route answers a binding's provider and mode only (it leaked webhook secrets); the shared secret lists are frozen | — | done by #413 |
 
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
 
