@@ -65,7 +65,9 @@ export async function handle(host: SimulatorHost, method: string, url: string, r
     if (!(capability in host.simulators)) return json(404, { error: 'unknown_port', capability });
     if (method === 'GET' && parts.length === 2) {
       const hooks = Object.fromEntries(Object.entries(host.hooks(capability)).map(([n, h]) => [n, { describe: h.describe, args: h.args }]));
-      return json(200, { capability, fixtures: host.fixtures(capability), hooks, binding: host.registry.bindingFor(capability, 'IL') ?? null });
+      // Provider and mode only: a binding can carry its webhook secrets (T-0771), and this response goes to the panel and to whoever reaches it.
+      const bound = host.registry.bindingFor(capability, 'IL');
+      return json(200, { capability, fixtures: host.fixtures(capability), hooks, binding: bound ? { provider: bound.provider, mode: bound.mode } : null });
     }
     if (method === 'POST' && parts[2] === 'hooks' && parts[3]) {
       const hook = host.hooks(capability)[parts[3]];

@@ -338,7 +338,8 @@ export function createRegistry(
   const providers: ProviderSummary = { 'institution-banking': 'sim', esim: 'sim', insurance: 'sim', 'org-idp': 'sim', 'federated-idp': 'sim', funding: 'sim', 'notify-sms': 'sim', 'notify-email': 'sim', 'notify-push': 'sim' };
   const banking = overrides.institutionBanking;
   if (banking) {
-    const secrets = banking.webhookSecrets.map((s) => s.reveal());
+    // Frozen: the same list is shared by both markets' bindings and the verifier, so no consumer may change what is accepted (T-1025).
+    const secrets: readonly string[] = Object.freeze(banking.webhookSecrets.map((s) => s.reveal()));
     const ledger = banking.keys?.(() => clock.now());
     // One instance for both markets: its key ledger and client are shared, and a boot with a bad URL fails here, not on a request.
     const adapter = new CrowdedInstitutionBankingAdapter({
@@ -353,14 +354,14 @@ export function createRegistry(
     simulators.registry.register('institution-banking', CROWDED_PROVIDER, () => adapter);
     const bindingMode = banking.binding ?? 'sandbox';
     if (bindingMode === 'live') banking.warn?.(LIVE_BINDING_WARNING);
-    for (const market of ['US', 'IL'] as const) simulators.registry.bind({ capability: 'institution-banking', market, provider: CROWDED_PROVIDER, mode: bindingMode, webhook: { secrets } });
+    for (const market of ['US', 'IL'] as const) simulators.registry.bind({ capability: 'institution-banking', market, provider: CROWDED_PROVIDER, mode: bindingMode, webhook: Object.freeze({ secrets }) });
     providers['institution-banking'] = 'crowded';
   }
   // The marketplace and identity ports (T-0042). Each is bound in sandbox mode, whatever the base URL: going live is a
   // provider_binding approval (T-0043), not an env switch. Both markets share one adapter instance.
   const bindBoth = <P>(capability: string, provider: string, adapter: P, webhook?: { secrets: readonly string[] }): void => {
     simulators.registry.register(capability, provider, () => adapter);
-    for (const market of ['US', 'IL'] as const) simulators.registry.bind({ capability, market, provider, mode: 'sandbox', ...(webhook ? { webhook } : {}) });
+    for (const market of ['US', 'IL'] as const) simulators.registry.bind({ capability, market, provider, mode: 'sandbox', ...(webhook ? { webhook: Object.freeze({ secrets: webhook.secrets }) } : {}) });
   };
   const esim = overrides.esim;
   if (esim) {
@@ -422,7 +423,7 @@ export function createRegistry(
   // Stripe backs funding and billing together (T-0041), in sandbox mode like the rest.
   const stripe = overrides.funding;
   if (stripe) {
-    const secrets = stripe.webhookSecrets.map((s) => s.reveal());
+    const secrets: readonly string[] = Object.freeze(stripe.webhookSecrets.map((s) => s.reveal())); // frozen, shared by both markets (T-1025)
     const [webhookSecret] = secrets;
     if (webhookSecret === undefined) throw new Error('Stripe needs a webhook secret');
     const transport = stripe.fetch ? { fetch: stripe.fetch } : {};

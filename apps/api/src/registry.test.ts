@@ -6,6 +6,7 @@ import { createMetrics, Secret } from '@kesher/domain';
 import { fixedClock, NotifyError, type AdvanceableClock, type BillingPort, type EsimPort, type FederatedIdPPort, type FundingPort, type InstitutionBankingPort, type InsurancePort, type NotifyPort, type OrgIdPPort } from '@kesher/ports';
 import { PORTS } from '@kesher/ports';
 import { describe, expect, it } from 'vitest';
+import { handle } from '@kesher/simulators';
 import { simulatorFlagViolations } from './config.ts';
 import type { SqlClient } from './db.ts';
 import { createRegistry, crowdedWebhookSecrets, IGNORED_LIVE_BINDING_WARNING, LIVE_BINDING_WARNING, overridesFromConfig, systemClock, type CrowdedBankingOverride } from './registry.ts';
@@ -961,5 +962,90 @@ describe('Stripe override and webhook secrets (T-0771 slice 3)', () => {
       for (const capability of ['funding', 'billing']) expect(Object.keys(registry.bindingFor(capability, market) ?? {}).sort()).toEqual(['capability', 'market', 'mode', 'provider', 'webhook']);
       expect(registry.bindingFor('funding', market)).toMatchObject({ provider: 'stripe', mode: 'sandbox' });
     }
+  });
+});
+
+describe('the panel never serialises a binding whole, and the shared secret list is frozen (T-1025)', () => {
+  const SECRETS = [STRIPE_CURRENT, STRIPE_PREVIOUS, 'whsec_older_do_not_print'];
+  const nodb = { async query() { throw new Error('no db in this test'); } } as unknown as SqlClient;
+  const stripeCfg = { ...sim, ...stripeSet, STRIPE_WEBHOOK_SECRET: SECRETS.map((s) => new Secret(s)) };
+  const crowdedCfg = {
+    PROVIDER_INSTITUTION_BANKING: 'crowded' as const,
+    CROWDED_BASE_URL: BASE,
+    CROWDED_API_TOKEN: new Secret(TOKEN),
+    CROWDED_WEBHOOK_SECRETS: [CURRENT, PREVIOUS, 'whsec-older-0123456789'].map((s) => new Secret(s)),
+  };
+  const hosts = [
+    { name: 'stripe', config: stripeCfg, secrets: SECRETS, ports: ['funding', 'billing'] },
+    { name: 'crowded', config: crowdedCfg, secrets: [CURRENT, PREVIOUS, 'whsec-older-0123456789'], ports: ['institution-banking'] },
+  ] as const;
+
+  it('GET /ports/{capability} answers provider and mode and no webhook, no secret string, whatever is bound', async () => {
+    let n = 0;
+    for (const h of hosts) {
+      const { simulators } = createRegistry('sandbox', systemClock(), overridesFromConfig(h.config, nodb, undefined, (async () => new Response('{}')) as typeof fetch));
+      for (const capability of h.ports) {
+        // Precondition: the binding really carries the secrets, so the assertions below can fail.
+        expect(simulators.registry.bindingFor(capability, 'IL')?.webhook?.secrets).toEqual(h.secrets);
+        const res = await handle(simulators, 'GET', `/ports/${capability}`);
+        expect(res.status).toBe(200);
+        const text = JSON.stringify(res.body);
+        // The Crowded port has a hook named "webhook", so the key is checked on the binding and as the secrets-bearing object.
+        expect(text, `${h.name}/${capability}`).not.toContain('"webhook":{"secrets"');
+        expect(text).not.toContain('"secrets"');
+        expect(JSON.stringify((res.body as { binding: object }).binding)).not.toContain('webhook');
+        for (const secret of [...h.secrets, STRIPE_KEY, TOKEN]) expect(text).not.toContain(secret);
+        expect(res.body).toMatchObject({ capability, binding: { provider: h.name, mode: 'sandbox' } });
+        expect(Object.keys((res.body as { binding: object }).binding).sort()).toEqual(['mode', 'provider']);
+        n += 1;
+      }
+    }
+    expect(n).toBe(3);
+  });
+
+  it('a simulator-bound capability still answers its provider and mode', async () => {
+    const { simulators } = createRegistry('sim', systemClock(), {});
+    expect((await handle(simulators, 'GET', '/ports/kyc')).body).toMatchObject({ binding: { provider: 'simulator', mode: 'sim' } });
+  });
+
+  it('the secret list on a binding is a frozen copy: not the config array, and nothing can change what is accepted', () => {
+    for (const [name, config, capability] of [['stripe', stripeCfg, 'funding'], ['crowded', crowdedCfg, 'institution-banking']] as const) {
+      const { registry } = createRegistry('sandbox', systemClock(), overridesFromConfig(config, nodb, undefined, (async () => new Response('{}')) as typeof fetch));
+      for (const market of MARKETS) {
+        const list = registry.bindingFor(capability, market)?.webhook?.secrets as string[];
+        const before = [...list];
+        expect(Object.isFrozen(list), `${name}/${market}`).toBe(true);
+        expect(Object.isFrozen(registry.bindingFor(capability, market)?.webhook), `${name}/${market} webhook`).toBe(true);
+        expect(() => { (registry.bindingFor(capability, market) as unknown as { webhook: { secrets: string[] } }).webhook.secrets = []; }).toThrow(TypeError);
+        expect(() => list.push('whsec_attacker')).toThrow(TypeError);
+        expect(() => { list[0] = 'whsec_attacker'; }).toThrow(TypeError);
+        expect(() => list.pop()).toThrow(TypeError);
+        expect(() => list.sort()).toThrow(TypeError);
+        expect(list).toEqual(before);
+      }
+    }
+    const crowded2 = createRegistry('sandbox', systemClock(), overridesFromConfig(crowdedCfg, nodb)).registry;
+    expect(crowdedWebhookSecrets(crowded2, 'US')).toEqual([CURRENT, PREVIOUS, 'whsec-older-0123456789']);
+    // The reader hands back a copy it owns: changing it changes nothing.
+    crowdedWebhookSecrets(crowded2, 'US').push('x');
+    expect(crowdedWebhookSecrets(crowded2, 'US')).toHaveLength(3);
+  });
+
+  it('the markets share one frozen list per capability set, and it is not the caller\'s array', () => {
+    const list = [new Secret(CURRENT), new Secret(PREVIOUS)];
+    const { registry } = createRegistry('sim', systemClock(), { institutionBanking: override({ webhookSecrets: list }) });
+    const bound = registry.bindingFor('institution-banking', 'US')?.webhook?.secrets;
+    expect(bound).toEqual([CURRENT, PREVIOUS]);
+    list.push(new Secret('whsec-late-0123456789'));
+    expect(registry.bindingFor('institution-banking', 'US')?.webhook?.secrets).toEqual([CURRENT, PREVIOUS]);
+  });
+
+  it('duplicates in the configured list are kept: the binding list equals the config list ([A, B, B])', () => {
+    const dup = [CURRENT, PREVIOUS, PREVIOUS];
+    const { registry } = createRegistry('sim', systemClock(), { institutionBanking: override({ webhookSecrets: dup.map((s) => new Secret(s)) }) });
+    for (const market of MARKETS) expect(registry.bindingFor('institution-banking', market)?.webhook?.secrets).toEqual(dup);
+    expect(crowdedWebhookSecrets(registry, 'IL')).toEqual(dup);
+    const stripe = createRegistry('sandbox', systemClock(), overridesFromConfig({ ...sim, ...stripeSet, STRIPE_WEBHOOK_SECRET: dup.map((s) => new Secret(s)) }, nodb, undefined, (async () => new Response('{}')) as typeof fetch)).registry;
+    for (const market of MARKETS) for (const capability of ['funding', 'billing']) expect(stripe.bindingFor(capability, market)?.webhook?.secrets).toEqual(dup);
   });
 });

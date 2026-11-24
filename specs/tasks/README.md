@@ -422,6 +422,7 @@
 | [T-1022](T-1022.md) | UX | Institution console renders the member's appearance on the server (`data-theme` on `<html>`, explicit `light`), with a control; `apps/web` and admin stay system-only | REQ-UX-003 | done by #408 |
 | [T-1023](T-1023.md) | SETUP | Slice 2 of T-0771: the stray `CROWDED_BINDING=live` warning reads whether a Crowded binding was declared, not the provider name | — | built, PR open |
 | [T-1024](T-1024.md) | SETUP | Slice 3 of T-0771: the Stripe override block and Stripe webhook-secret wiring read the binding (safe part only; see the card) | — | built, PR open |
+| [T-1025](T-1025.md) | SETUP | The simulators panel route answers a binding's provider and mode only (it leaked webhook secrets); the shared secret lists are frozen | — | built, PR open |
 
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
 
