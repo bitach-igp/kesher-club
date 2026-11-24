@@ -358,9 +358,9 @@ export function createRegistry(
   }
   // The marketplace and identity ports (T-0042). Each is bound in sandbox mode, whatever the base URL: going live is a
   // provider_binding approval (T-0043), not an env switch. Both markets share one adapter instance.
-  const bindBoth = <P>(capability: string, provider: string, adapter: P): void => {
+  const bindBoth = <P>(capability: string, provider: string, adapter: P, webhook?: { secrets: readonly string[] }): void => {
     simulators.registry.register(capability, provider, () => adapter);
-    for (const market of ['US', 'IL'] as const) simulators.registry.bind({ capability, market, provider, mode: 'sandbox' });
+    for (const market of ['US', 'IL'] as const) simulators.registry.bind({ capability, market, provider, mode: 'sandbox', ...(webhook ? { webhook } : {}) });
   };
   const esim = overrides.esim;
   if (esim) {
@@ -429,10 +429,13 @@ export function createRegistry(
     const shared = { secretKey: stripe.secretKey.reveal(), webhookSecret, clock, ...transport };
     const funding: FundingPort = new StripeFundingAdapter(shared);
     const billing: BillingPort = new StripeBillingAdapter({ ...shared, planProducts: { ...stripe.planProducts } });
-    acceptPreviousSecrets(funding, secrets, clock);
-    acceptPreviousSecrets(billing, secrets, clock);
-    bindBoth('funding', 'stripe', funding);
-    bindBoth('billing', 'stripe', billing);
+    // T-0771 slice 3: each binding declares the secrets its webhooks verify with, and the rotation wrapper reads them back from
+    // the binding (both markets share one adapter and one list, so one read per capability). The adapter itself still takes
+    // only the first secret above: it is built before any binding exists.
+    bindBoth('funding', 'stripe', funding, { secrets });
+    bindBoth('billing', 'stripe', billing, { secrets });
+    acceptPreviousSecrets(funding, simulators.registry.bindingFor('funding', 'US')?.webhook?.secrets ?? [], clock);
+    acceptPreviousSecrets(billing, simulators.registry.bindingFor('billing', 'US')?.webhook?.secrets ?? [], clock);
     providers.funding = 'stripe';
   }
   // Notification channels (T-0041): one router over the vendors chosen, the simulator for every other channel.
@@ -525,6 +528,14 @@ const needs = (choice: string, have: Record<string, unknown>): string => {
   return `${choice} needs ${missing.join(', ')}`;
 };
 
+/** The Stripe override (funding and billing together), or `undefined` when the config does not bind Stripe (the one place the choice is read, T-0771 slice 3). */
+function stripeOverride(config: ProviderConfig, transport: { fetch?: typeof globalThis.fetch }): StripeOverride | undefined {
+  if (config.PROVIDER_FUNDING !== 'stripe') return undefined;
+  const { STRIPE_API_KEY: secretKey, STRIPE_WEBHOOK_SECRET: webhookSecrets, STRIPE_PLAN_PRODUCTS: planProducts } = config;
+  if (!secretKey || !webhookSecrets || !planProducts) throw new Error(needs('PROVIDER_FUNDING=stripe', { STRIPE_API_KEY: secretKey, STRIPE_WEBHOOK_SECRET: webhookSecrets, STRIPE_PLAN_PRODUCTS: planProducts }));
+  return { provider: 'stripe', secretKey, webhookSecrets, planProducts, ...transport };
+}
+
 /** The overrides for the marketplace and identity ports a config chooses. Fails closed, naming keys and never a value. */
 function marketplaceOverrides(config: ProviderConfig, fetch?: typeof globalThis.fetch): RegistryOverrides {
   const out: RegistryOverrides = {};
@@ -573,11 +584,8 @@ function marketplaceOverrides(config: ProviderConfig, fetch?: typeof globalThis.
     }
     out.federatedIdp = { provider: 'oidc', apple: { clientId: appleClient, teamId, keyId, privateKey }, google: { clientId: googleClient, clientSecret: googleSecret }, ...transport };
   }
-  if (config.PROVIDER_FUNDING === 'stripe') {
-    const { STRIPE_API_KEY: secretKey, STRIPE_WEBHOOK_SECRET: webhookSecrets, STRIPE_PLAN_PRODUCTS: planProducts } = config;
-    if (!secretKey || !webhookSecrets || !planProducts) throw new Error(needs('PROVIDER_FUNDING=stripe', { STRIPE_API_KEY: secretKey, STRIPE_WEBHOOK_SECRET: webhookSecrets, STRIPE_PLAN_PRODUCTS: planProducts }));
-    out.funding = { provider: 'stripe', secretKey, webhookSecrets, planProducts, ...transport };
-  }
+  const funding = stripeOverride(config, transport);
+  if (funding) out.funding = funding;
   if (config.PROVIDER_NOTIFY_SMS === 'twilio') {
     const { TWILIO_ACCOUNT_SID: accountSid, TWILIO_AUTH_TOKEN: authToken, TWILIO_FROM_SMS: from, TWILIO_TEMPLATES: templates } = config;
     if (!accountSid || !authToken || !from || !templates) throw new Error(needs('PROVIDER_NOTIFY_SMS=twilio', { TWILIO_ACCOUNT_SID: accountSid, TWILIO_AUTH_TOKEN: authToken, TWILIO_FROM_SMS: from, TWILIO_TEMPLATES: templates }));
