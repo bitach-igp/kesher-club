@@ -603,14 +603,22 @@ function marketplaceOverrides(config: ProviderConfig, fetch?: typeof globalThis.
 export function overridesFromConfig(config: ProviderConfig, db: SqlClient, warn?: (message: string) => void, fetch?: typeof globalThis.fetch): RegistryOverrides {
   // `fetch` is the transport for the marketplace and identity adapters (T-0042); tests inject a fake vendor, a process passes none.
   const marketplace = marketplaceOverrides(config, fetch);
-  if (config.PROVIDER_INSTITUTION_BANKING !== 'crowded') {
-    // A stray live binds nothing while the port is on the simulator; say so rather than accept it silently.
+  const institutionBanking = crowdedOverride(config, db, warn);
+  if (!institutionBanking) {
+    // T-0771 slice 2: the warning reads whether a Crowded binding was declared, not the provider's name. A live setting for a
+    // vendor that is not bound binds nothing; say so rather than accept it silently.
     if (config.CROWDED_BINDING === 'live') warn?.(IGNORED_LIVE_BINDING_WARNING);
     return marketplace;
   }
+  return { ...marketplace, institutionBanking };
+}
+
+/** The Crowded banking override, or `undefined` when the config does not bind Crowded (the one place the choice is read). */
+function crowdedOverride(config: ProviderConfig, db: SqlClient, warn?: (message: string) => void): CrowdedBankingOverride | undefined {
+  if (config.PROVIDER_INSTITUTION_BANKING !== 'crowded') return undefined;
   const { CROWDED_BASE_URL: baseUrl, CROWDED_API_TOKEN: token, CROWDED_WEBHOOK_SECRETS: webhookSecrets } = config;
   if (!baseUrl || !token || !webhookSecrets) throw new Error('PROVIDER_INSTITUTION_BANKING=crowded needs CROWDED_BASE_URL, CROWDED_API_TOKEN and CROWDED_WEBHOOK_SECRETS');
-  return { ...marketplace, institutionBanking: { provider: 'crowded', baseUrl, token, webhookSecrets, binding: config.CROWDED_BINDING === 'live' ? 'live' : 'sandbox', ...(warn ? { warn } : {}), keys: (now) => new PostgresVendorKeyLedger(db, CROWDED_PROVIDER, now) } };
+  return { provider: 'crowded', baseUrl, token, webhookSecrets, binding: config.CROWDED_BINDING === 'live' ? 'live' : 'sandbox', ...(warn ? { warn } : {}), keys: (now) => new PostgresVendorKeyLedger(db, CROWDED_PROVIDER, now) };
 }
 
 /** The Crowded webhook secrets the receiver verifies with: what the institution-banking binding carries, none when it carries none (every delivery is refused, as before). */

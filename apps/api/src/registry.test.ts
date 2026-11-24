@@ -653,6 +653,66 @@ describe('provider.error for every resolved port (T-0689)', () => {
   });
 });
 
+// T-0771 slice 2: the stray CROWDED_BINDING=live warning reads whether a Crowded binding was declared, not the provider's name.
+// `oracle` is the pre-slice rule, kept verbatim: warn exactly when the banking choice is not 'crowded' and CROWDED_BINDING is 'live'.
+describe('stray live-binding warning (T-0771 slice 2)', () => {
+  const choices = ['sim', 'crowded', 'Crowded', 'stub', ''] as const; // the config schema allows two; the rest pin what an unexpected value does
+  const bindings = ['unset', 'sandbox', 'live'] as const;
+  const noDb = { async query() { throw new Error('no db in this test'); } } as unknown as SqlClient;
+  const cfg = (choice: string, binding: (typeof bindings)[number], keys: boolean) =>
+    ({
+      PROVIDER_INSTITUTION_BANKING: choice,
+      ...(keys ? { CROWDED_BASE_URL: BASE, CROWDED_API_TOKEN: new Secret(TOKEN), CROWDED_WEBHOOK_SECRETS: [new Secret(CURRENT)] } : {}),
+      ...(binding === 'unset' ? {} : { CROWDED_BINDING: binding }),
+    }) as unknown as Parameters<typeof overridesFromConfig>[0];
+  const oracleWarns = (c: { PROVIDER_INSTITUTION_BANKING: string; CROWDED_BINDING?: string }): string[] => (c.PROVIDER_INSTITUTION_BANKING !== 'crowded' && c.CROWDED_BINDING === 'live' ? [IGNORED_LIVE_BINDING_WARNING] : []);
+
+  it('characterization: every (choice x binding x keys) cell warns, overrides and fails as the oracle says', () => {
+    let n = 0;
+    for (const choice of choices) {
+      for (const binding of bindings) {
+        for (const keys of [true, false]) {
+          const config = cfg(choice, binding, keys);
+          const warnings: string[] = [];
+          const label = `${choice || '<empty>'}/${binding}/${keys ? 'keys' : 'nokeys'}`;
+          if (choice === 'crowded' && !keys) {
+            expect(() => overridesFromConfig(config, noDb, (m) => warnings.push(m)), label).toThrow('PROVIDER_INSTITUTION_BANKING=crowded needs CROWDED_BASE_URL, CROWDED_API_TOKEN and CROWDED_WEBHOOK_SECRETS');
+            expect(warnings, label).toEqual([]);
+          } else {
+            const o = overridesFromConfig(config, noDb, (m) => warnings.push(m));
+            expect(warnings, label).toEqual(oracleWarns(config as never));
+            if (choice === 'crowded') expect(o.institutionBanking, label).toMatchObject({ provider: 'crowded', binding: binding === 'live' ? 'live' : 'sandbox' });
+            else expect(o, label).toEqual({});
+          }
+          // No warn callback: nothing to call, nothing thrown.
+          if (!(choice === 'crowded' && !keys)) expect(() => overridesFromConfig(config, noDb), label).not.toThrow();
+          n += 1;
+        }
+      }
+    }
+    expect(n).toBe(5 * 3 * 2);
+  });
+
+  it('a live setting warns once and with the exact text; sandbox and unset never warn; crowded never warns here', () => {
+    const warnings: string[] = [];
+    overridesFromConfig(cfg('sim', 'live', true), noDb, (m) => warnings.push(m));
+    expect(warnings).toEqual([IGNORED_LIVE_BINDING_WARNING]);
+    for (const binding of ['unset', 'sandbox'] as const) overridesFromConfig(cfg('sim', binding, true), noDb, (m) => warnings.push(m));
+    overridesFromConfig(cfg('crowded', 'unset', true), noDb, (m) => warnings.push(m));
+    expect(warnings).toEqual([IGNORED_LIVE_BINDING_WARNING]);
+  });
+
+  it('the warning does not depend on the other vendors: marketplace overrides are returned beside it unchanged', () => {
+    const warnings: string[] = [];
+    const config = { ...cfg('sim', 'live', false), PROVIDER_ESIM: 'airalo', AIRALO_BASE_URL: 'https://sandbox.example/', AIRALO_CLIENT_ID: new Secret('id'), AIRALO_CLIENT_SECRET: new Secret('sec') } as never;
+    const out = overridesFromConfig(config, noDb, (m) => warnings.push(m));
+    expect(warnings).toEqual([IGNORED_LIVE_BINDING_WARNING]);
+    expect(out.institutionBanking).toBeUndefined();
+    expect(out.esim).toMatchObject({ provider: 'airalo' });
+    expect(out).toEqual(overridesFromConfig({ ...(config as object), CROWDED_BINDING: 'sandbox' } as never, noDb));
+  });
+});
+
 // T-0771 slice 1: the Crowded webhook secrets come from the binding's capability, not from comparing a provider name.
 // `oracle` is the pre-slice rule, kept here verbatim so the table below proves old and new resolve identically.
 describe('binding capabilities: webhook secrets (T-0771 slice 1)', () => {
