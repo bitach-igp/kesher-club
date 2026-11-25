@@ -162,6 +162,13 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-24 | T-1023 (T-0771 slice 2) | #411 | built, the stray `CROWDED_BINDING=live` warning reads whether a Crowded binding was declared, not the provider name; the reviewer's own 34,560-config differential found no difference (merged 491264c) | green |
 | 2026-11-24 | T-1024 (T-0771 slice 3) | #412 | built, the safe part: the Stripe override block and the funding and billing webhook secrets read the binding; the reviewer's 17,039-record differential found no difference; left: adapter construction order and `webhook.path` (merged e91f5f5) | green |
 | 2026-11-24 | T-1025 | #413 | built, the simulator panel route returned whole bindings including webhook secrets, now provider and mode only; the shared secret lists are frozen; the reviewer reproduced the leak on main (merged 97f99ed) | green |
+| 2026-11-24 | log through #413 | #414 | docs, autopilot log lines for #411 to #413 and card status lines; no review (merged 0a621d5) | green |
+| 2026-11-25 | T-1101 to T-1115 (cards) | #415 | docs, phase 1 gap analysis, Crowded cross-reference and fifteen cards; no review (merged 1eac00f) | green |
+| 2026-11-25 | T-0789 | #416 | built, `org.staff_idp_link` and its store, dark; desktop apply PASS on real PG16 and the reviewer ran a real PG16 apply too; two additions beyond the card: a live-party unique index (one party, one live link) and an unlink-once trigger (an unlinked row cannot be revived) (merged 12702ac) | green |
+| 2026-11-25 | T-1026 (T-0771 slice 4) | #417 | built, tests only, nothing moved: an old-vs-new table pins what `app.ts` reads off the funding and billing bindings; owner decision left: the ref provider key cannot become a capability without changing the `ops.external_ref` key space (merged 1050769) | green |
+| 2026-11-25 | T-0790 | #418 | built, the WorkOS directory webhook deprovisions linked staff behind `auth.orgSso`, dark; three review rounds: a lost-finish race fixed; refused events must never stay pending (a first design starved the shared 100-event replay queue and was fixed) (merged 1e151e5) | green |
+| 2026-11-25 | T-0791 | #419 | built, the directory drift sweep, dark; three review rounds: a lost finish after an hour fixed with finished, attempt and abandoned markers; a 24 h grace for a freshly linked member's absence; removal bound to the link id; the flag re-read per removal; head-of-line starvation fixed with keyset paging and abandonment after 20 attempts; terraform stale-job alarms 26 to 28 (merged 6e59d34) | green |
+| 2026-11-25 | T-1116 to T-1119 (cards), log through #419 | this PR | docs, the four WorkOS pre-flag blocker cards (adapter fixes, alarms and RUN-10, production wiring, sweep index), a "Before `auth.orgSso` is turned on" checklist in `specs/tasks/README.md`, T-0789 to T-0791 done; T-0792 not yet built; no review | green |
 
 ## Carried follow-ups (T-1019 to T-1022)
 
@@ -184,3 +191,14 @@ Non-blocking notes from the theming cards, none yet carded:
 - The `Binding` type still carries live secrets in-process; a typed safe serialiser or a non-enumerable property would end the class of leak (design call, not started).
 - A missing `CROWDED_API_TOKEN` alone and missing webhook secrets alone are untested in the registry tests (pre-existing).
 - T-0771 slices 4 and 5 touch the shared composition root `apps/api/src/app.ts`.
+
+## Carried follow-ups (T-0789 to T-0791, T-1026)
+
+Non-blocking survivors of the reviews, not fixed; the blockers are carded as T-1116 to T-1119:
+
+- D24: the nightly unlinked-directory-user count is inverted and untested.
+- S9: the webhook's refusal reason string is not the final wording.
+- S11: the member select scope is equivalent to the intended one but not identical; tighten when touched.
+- C3 and C4: the default per-cycle cap of 500 and `MAX_ATTEMPTS` of 20 are tested only through injection; add a test that pins the defaults.
+- A lone-surrogate event id cannot be audited (the audit write refuses it).
+- T-1026: the ref provider key cannot become a capability without changing the `ops.external_ref` key space (owner decision).

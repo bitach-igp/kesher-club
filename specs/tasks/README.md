@@ -409,9 +409,9 @@
 | [T-0786](T-0786.md) | WAL | A load whose credit is refused `NOT_SUCCEEDED` with no case is retried forever under the same key and sticks silently: no journal, no case, no signal to staff (found in the T-0769 review, premise corrected by the PR #397 review; money-adjacent, independent reviewer) | REQ-WAL-003 | done by #400 (owner decided option 2, N=3) |
 | [T-0787](T-0787.md) | WAL | A failed-owner marker can be cleared: `ops.workflow_marker` delete grant to `club_app` narrowed by a trigger to `subaccount_owner:` kinds, `clearMarker`, desktop apply request (T-0763's open question, owner-decided; money-adjacent, independent reviewer) | REQ-WAL-003 | done by #399 (desktop apply PASS); caller not wired: owner decisions open (see the card) |
 | [T-0788](T-0788.md) | WAL | Staff resolving the failed-owner case clears the owner marker in the decision's transaction (dismissing does not); the case joins the ops queue kinds; a blocked load reopens a closed owner case (T-0787's follow-up, owner-delegated decisions; money-adjacent, independent reviewer) | REQ-WAL-003 | done by #404 |
-| [T-0789](T-0789.md) | AUTH | Staff IdP link table (`org.staff_idp_link`) mapping an IdP subject to a staff party; migration and desktop apply (security, independent reviewer) | REQ-AUTH-008 | built, PR open; merges only after a PASS `## Result` for the desktop apply in `handoff/done/` and an independent review · dark, no route or flag read |
-| [T-0790](T-0790.md) | AUTH | Mount the WorkOS webhook behind `auth.orgSso`: `dsync.user.deleted` deprovisions linked staff and revokes sessions; supersedes T-0693 (security, independent reviewer) | REQ-AUTH-008 | built, PR open · dark behind `auth.orgSso`, owner actions listed not done |
-| [T-0791](T-0791.md) | AUTH | Directory drift sweep: worker job compares the WorkOS directory with the staff links and deprovisions drift (security, independent reviewer) | REQ-AUTH-008 | built, PR open · dark behind `auth.orgSso` |
+| [T-0789](T-0789.md) | AUTH | Staff IdP link table (`org.staff_idp_link`) mapping an IdP subject to a staff party; migration and desktop apply (security, independent reviewer) | REQ-AUTH-008 | done by #416 · dark, no route or flag read; desktop apply PASS on real PG16 |
+| [T-0790](T-0790.md) | AUTH | Mount the WorkOS webhook behind `auth.orgSso`: `dsync.user.deleted` deprovisions linked staff and revokes sessions; supersedes T-0693 (security, independent reviewer) | REQ-AUTH-008 | done by #418 · dark behind `auth.orgSso`, owner actions listed not done |
+| [T-0791](T-0791.md) | AUTH | Directory drift sweep: worker job compares the WorkOS directory with the staff links and deprovisions drift (security, independent reviewer) | REQ-AUTH-008 | done by #419 · dark behind `auth.orgSso` |
 | [T-0792](T-0792.md) | AUTH | Staff SSO login (`startSso`, `handleCallback`) and link creation; contract change; build when the first institution asks (security, independent reviewer) | REQ-AUTH-008 | later · after T-0790 |
 | [T-0793](T-0793.md) | BIL | `DunningService` pre-wire fixes: markers not counted as pending webhooks, real notice recipient (independent reviewer) | — | later · first of T-0793 to T-0795 |
 | [T-0794](T-0794.md) | BIL | Mount `/hooks/stripe` behind `billing.stripe`: adapter verifies and stores; turning on blocked on T-0736 W1-W4 and T-0737 (independent reviewer) | — | later · after T-0793, T-0736 |
@@ -423,7 +423,7 @@
 | [T-1023](T-1023.md) | SETUP | Slice 2 of T-0771: the stray `CROWDED_BINDING=live` warning reads whether a Crowded binding was declared, not the provider name | — | done by #411 |
 | [T-1024](T-1024.md) | SETUP | Slice 3 of T-0771: the Stripe override block and Stripe webhook-secret wiring read the binding (safe part only; see the card) | — | done by #412 |
 | [T-1025](T-1025.md) | SETUP | The simulators panel route answers a binding's provider and mode only (it leaked webhook secrets); the shared secret lists are frozen | — | done by #413 |
-| [T-1026](T-1026.md) | SETUP | Slice 4 of T-0771: what `app.ts` reads off the funding and billing bindings pinned by an old-vs-new table; nothing moved (a capability cannot replace the ref provider key, and the sim route is a mode check) | — | open |
+| [T-1026](T-1026.md) | SETUP | Slice 4 of T-0771: what `app.ts` reads off the funding and billing bindings pinned by an old-vs-new table; nothing moved (a capability cannot replace the ref provider key, and the sim route is a mode check) | — | done by #417 (tests only) |
 
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
 
@@ -450,3 +450,27 @@ Scoped 2026-11-25 from the founder's phase 1 rollout notes; see `docs/ops/phase-
 | [T-1113](T-1113.md) | UX | Home: a 'What do you want to do today?' choice that starts a send or a receive | — | later · phase 1 gap analysis |
 | [T-1114](T-1114.md) | SETUP | Needs owner decision: what ships in phase 1 and what must be true before the first member sends a dollar | — | needs owner decision |
 | [T-1115](T-1115.md) | SETUP | Put the phase 1 questions to Crowded and record the answers | — | needs owner action |
+| [T-1116](T-1116.md) | AUTH | WorkOS adapter fixes before `auth.orgSso` is on: signature timestamp unit, removal without an email, a directory read that fails closed, raw directory state (security, independent reviewer) | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
+| [T-1117](T-1117.md) | AUTH | Alarms and RUN-10 for the WorkOS removal path (`unknown_org`, `scim_unauthorized`, `guard_half`, `drift_finish_abandoned`) and a re-drive for an abandoned removal | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
+| [T-1118](T-1118.md) | AUTH | Needs owner or ops decision, then code: production wiring of `orgIdp.orgs` and `staffAlertEmail` in both `main.ts`, with uniqueness and two-source agreement checks (security, independent reviewer) | REQ-AUTH-008 | needs owner decision · dark/before `auth.orgSso` is turned on |
+| [T-1119](T-1119.md) | AUTH | Partial index on the audit table for the drift sweep's resume scan; a migration card with a desktop apply request (scope only) | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
+
+## Before `auth.orgSso` is turned on
+
+T-0789 (link table), T-0790 (webhook) and T-0791 (drift sweep) are merged and dark. Nothing below is done; do all of it, in this order, before the flag flips:
+
+1. T-1116, the WorkOS adapter fixes (the signature timestamp unit above all: until it is verified, a real delivery may be refused as stale).
+2. T-1117, the alarms, RUN-10 and the re-drive for an abandoned removal.
+3. T-1118, production wiring: until `main.ts` passes `orgIdp.orgs` and `staffAlertEmail`, the webhook and the sweep are inert.
+4. T-1119, the sweep index (not blocking, but it bounds the resume scan).
+5. A WorkOS account and contract, with an Organization and a Directory Sync connection per institution; the secrets `workos-client-id`, `workos-api-key` and `workos-webhook-secret` (named in `docs/setup/secrets.md`) put in the secret store and `PROVIDER_ORG_IDP=workos` set.
+6. The webhook registered in the WorkOS dashboard as `https://<api host>/hooks/workos` for `dsync.user.created`, `dsync.user.updated`, `dsync.user.deleted`.
+7. The per-institution record (WorkOS organisation id, directory id, SCIM bearer) entered as configuration (ADR-004, T-1118).
+8. The flag flipped through the flag service with two approvals, after T-0789 is applied on the real Postgres (done) and the cards above are merged.
+9. The staging drill: remove a test user in the IdP and see the staff row inactive within 15 minutes, once by webhook and once with the webhook blocked (the sweep).
+
+Known limits to carry into the pilot:
+
+- A one-of-one linked institution is never drift-removable (one of one is more than half, so the guard refuses): the webhook is the only remover there.
+- Subject identity is an assumption until proven: the link stores the SSO profile `idp_id` and the sweep compares it with the directory user's `idp_id`. Verify in the first pilot that the two are the same string for a real user (T-0792 creates the link).
+- A person hired back between the sweep's check and its role strip, a window of milliseconds, is a known race: the removal is bound to the link id the sweep read, but the check and the role strip are not one atomic step. Accepted for the pilot; recheck if staff turnover grows.
