@@ -35,6 +35,8 @@ locals {
     "monitoring"           = { cycle_s = 3600, money = false }
     "card-release-holds"   = { cycle_s = 3600, money = true }
     "esim-usage"           = { cycle_s = 3600, money = false }
+    "directory-drift"      = { cycle_s = 600, money = false }
+    "directory-report"     = { cycle_s = 86400, money = false }
     "balance-proof"        = { cycle_s = 86400, money = true }
     "catalogue-sync"       = { cycle_s = 86400, money = false }
     "kyb-rescreen"         = { cycle_s = 86400, money = false }

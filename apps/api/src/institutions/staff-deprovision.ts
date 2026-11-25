@@ -8,6 +8,7 @@
 //   whose audit row exists finishes them, so a crash between the steps never leaves a removed person with access.
 // - `create` and `update` events never grant or raise anything. The last active admin is removed anyway (the IdP is the authority):
 //   an `institution.admin.none` audit row and a notification make that visible.
+import { createHash } from 'node:crypto';
 import { DomainError, guarded, type Metrics } from '@kesher/domain';
 import { OrgIdPError, type NotifyPort, type OrgIdPPort, type ScimEvent } from '@kesher/ports';
 import { AuditService } from '../audit/service.ts';
@@ -16,6 +17,7 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database, SqlClient } from '../db.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import { simulatorVerifier, type Verified, type WebhookVerifier } from '../webhooks/verify.ts';
+import { getMarker, putMarker } from '../ops/workflow-marker.ts';
 import { StaffIdpLinks } from './staff-idp-link.ts';
 import type { InstitutionTeam } from './team.ts';
 
@@ -23,6 +25,11 @@ export const ORG_SSO_FLAG = 'auth.orgSso';
 export const DEPROVISION_PROVIDER = 'workos';
 const PROMISE_MS = 15 * 60_000;
 const STALE_MS = 5 * 60_000;
+/**
+ * The key a removal's markers hang on: the institution and the sha256 of the event id (a signed event id has no length limit and `kind` is a
+ * btree key). The SQL twin is `institution || ':' || encode(sha256(convert_to(event_id, 'UTF8')), 'hex')`.
+ */
+export const removalKey = (institutionId: string, eventId: string): string => `${institutionId}:${createHash('sha256').update(eventId).digest('hex')}`;
 const SYSTEM = { actorId: '00000000-0000-7000-8000-000000000000', actorRole: 'system' };
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
 
@@ -42,6 +49,13 @@ export function directoryResolver(orgs: Readonly<Record<string, { directoryId?: 
   return (directoryId) => (directoryId ? (byDirectory.get(directoryId) ?? undefined) : undefined);
 }
 
+/** The institutions whose per-organisation record names a directory id that no other institution claims (a shared one resolves to nothing). */
+export function directoryInstitutions(orgs: Readonly<Record<string, { directoryId?: string | undefined }>> = {}): string[] {
+  const claims = new Map<string, string[]>();
+  for (const [institutionId, o] of Object.entries(orgs)) if (o.directoryId) claims.set(o.directoryId, [...(claims.get(o.directoryId) ?? []), institutionId]);
+  return [...claims.values()].filter((ids) => ids.length === 1).map((ids) => ids[0]!);
+}
+
 export interface StaffDeprovisionDeps {
   db: Database;
   audit: AuditService;
@@ -56,11 +70,13 @@ export interface StaffDeprovisionDeps {
   notify: NotifyPort;
   /** Where Kesher staff are told an institution lost its last admin; none configured means the audit row alone. */
   alertTo?: string | undefined;
+  /** Institutions whose directory the drift sweep may read: those with a directory id no other institution claims. */
+  institutions?: readonly string[];
   metrics: Metrics;
   now: () => Date;
 }
 
-interface Done {
+export interface Done {
   institutionId: string;
   partyId: string;
   eventId: string;
@@ -83,6 +99,11 @@ export class StaffDeprovisioner {
   constructor(deps: StaffDeprovisionDeps) {
     this.d = deps;
     this.metrics = guarded(deps.metrics);
+  }
+
+  /** The institutions the drift sweep covers (empty when no per-organisation record names a directory). */
+  institutions(): readonly string[] {
+    return this.d.institutions ?? [];
   }
 
   /** Flag off: the route does not exist (404, nothing stored). Otherwise the signature, then the event id. */
@@ -141,28 +162,45 @@ export class StaffDeprovisioner {
     const lagMs = now.getTime() - Date.parse(ev.occurredAt);
     if (lagMs > PROMISE_MS) this.metrics.put({ 'staff.deprovision_lag_s': lagMs / 1000 });
 
-    const prior = await this.prior(event.eventId, org.institutionId);
-    if (prior) return this.finish(prior);
-    const partyId = await this.d.links.find(org.institutionId, ev.subject);
-    if (!partyId) return;
-    const done = await this.deprovision(org.institutionId, ev.subject, event.eventId, now);
-    if (done) return this.finish(done);
+    await this.remove(org.institutionId, ev.subject, event.eventId, now, { reason: `Directory event ${event.eventId}` });
+  }
+
+  /**
+   * THE removal, shared by the webhook (T-0790) and the drift sweep (T-0791): the live link of (institution, subject) finds the party;
+   * row, audit and unlink commit together, then role and sessions follow. `eventId` is the idempotency key: a repeat finds its own audit
+   * row and only finishes what it left undone. True iff this call or an earlier pass of the same key removed someone.
+   */
+  async remove(institutionId: string, subject: string, eventId: string, now: Date, how: { reason: string; payload?: Record<string, unknown>; linkId?: string }): Promise<boolean> {
+    const prior = await this.prior(eventId, institutionId);
+    if (prior) {
+      await this.finish(prior);
+      return true;
+    }
+    const partyId = await this.d.links.find(institutionId, subject);
+    if (!partyId) return false;
+    const done = await this.deprovision(institutionId, subject, eventId, now, how);
+    if (done) {
+      await this.finish(done);
+      return true;
+    }
     // The link was gone inside the transaction: a concurrent delivery of this same event committed first. If its post-commit steps
     // failed, the router would mark THIS delivery processed and nobody would retry, so finish what that delivery committed.
-    const raced = await this.prior(event.eventId, org.institutionId);
-    if (raced) await this.finish(raced);
+    const raced = await this.prior(eventId, institutionId);
+    if (!raced) return false;
+    await this.finish(raced);
+    return true;
   }
 
   /** Row, audit and unlink in one transaction: a crash leaves all of it or none. */
-  private async deprovision(institutionId: string, subject: string, eventId: string, now: Date): Promise<Done | undefined> {
+  private async deprovision(institutionId: string, subject: string, eventId: string, now: Date, how: { reason: string; payload?: Record<string, unknown>; linkId?: string }): Promise<Done | undefined> {
     return this.d.db.transaction(async (tx) => {
       const txdb = inTx(tx);
-      const link = (await tx.query<{ party_id: string; linked_at: string | Date }>('select party_id, linked_at from org.staff_idp_link where institution_id = $1 and idp_subject = $2 and unlinked_at is null for update', [institutionId, subject])).rows[0];
+      const link = (await tx.query<{ party_id: string; linked_at: string | Date }>('select party_id, linked_at from org.staff_idp_link where institution_id = $1 and idp_subject = $2 and unlinked_at is null and ($3::uuid is null or id = $3::uuid) for update', [institutionId, subject, how.linkId ?? null])).rows[0];
       if (!link) return undefined;
       const member = (await tx.query<{ role: string }>('select role from org.staff where party_id = $1 and institution_id = $2 and active for update', [link.party_id, institutionId])).rows[0];
       const removed = member ? await this.d.team.deactivate(institutionId, link.party_id, txdb) : false;
       const adminNone = removed && member?.role === 'admin' && (await tx.query("select 1 from org.staff where institution_id = $1 and active and role = 'admin'", [institutionId])).rowCount === 0;
-      await this.d.audit.record({ ...SYSTEM, action: 'institution.staff.deprovision', subject: link.party_id, reason: `Directory event ${eventId}`, payload: { institutionId, eventId, removed, adminNone } }, now, txdb);
+      await this.d.audit.record({ ...SYSTEM, action: 'institution.staff.deprovision', subject: link.party_id, reason: how.reason, payload: { institutionId, eventId, removed, adminNone, ...how.payload } }, now, txdb);
       if (adminNone) await this.d.audit.record({ ...SYSTEM, action: 'institution.admin.none', subject: institutionId, reason: `Directory event ${eventId} removed the last active admin`, payload: { institutionId, eventId } }, now, txdb);
       // The unlink clock must not precede the link's own (a check on the table): never earlier than linked_at.
       const at = new Date(Math.max(now.getTime(), new Date(link.linked_at).getTime()));
@@ -182,7 +220,10 @@ export class StaffDeprovisioner {
    * After the commit: role, sessions, alert. Idempotent; a throw leaves the event unprocessed so the replay retries it. The check and the
    * role strip are two steps (the role lives in the identity repository, not in SQL): a hire between them is possible only in that
    * instant, and the new institution's grant (`InstitutionTeam.apply`) writes the role again. Skipped for a party who is active staff anywhere (a stale link must not reach their new job). */
-  private async finish(done: Done): Promise<void> {
+  async finish(done: Done): Promise<void> {
+    // Runs to completion once: the write-once marker ends it, so a replay never revokes a session the person opened AFTER the removal.
+    const kind = `deprovision_finished:${removalKey(done.institutionId, done.eventId)}`;
+    if ((await getMarker(this.d.db, kind, done.partyId)) !== undefined) return;
     const active = await this.d.db.query('select 1 from org.staff where party_id = $1 and active', [done.partyId]);
     if (!active.rowCount) {
       await this.d.team.clearOrgRole(done.partyId);
@@ -191,5 +232,6 @@ export class StaffDeprovisioner {
     if (done.adminNone && this.d.alertTo) {
       await this.d.notify.send({ channel: 'email', to: this.d.alertTo, template: 'institution.admin_none', locale: 'en', data: { institutionId: done.institutionId }, category: 'service' }, `deprovision:${done.eventId}:admin-none`);
     }
+    await putMarker(this.d.db, { kind, subjectId: done.partyId, value: 'done' });
   }
 }
