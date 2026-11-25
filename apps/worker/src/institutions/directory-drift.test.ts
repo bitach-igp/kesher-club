@@ -14,9 +14,9 @@ import { generateSigningKey } from '@kesher/api/auth/tokens';
 import type { FeatureFlags } from '@kesher/api/billing/capabilities';
 import { dispatch } from '@kesher/api/server';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
-import { directoryInstitutions, StaffDeprovisioner } from '@kesher/api/institutions/staff-deprovision';
+import { directoryInstitutions, removalKey, StaffDeprovisioner } from '@kesher/api/institutions/staff-deprovision';
 import { StaffIdpLinks } from '@kesher/api/institutions/staff-idp-link';
-import { DirectoryDrift, DriftCycleFailed, type DirectoryDriftDeps } from './directory-drift.ts';
+import { DirectoryDrift, DriftCycleFailed, type DirectoryDriftDeps, type DriftResult } from './directory-drift.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -492,5 +492,90 @@ describe('directory drift sweep (TST-AUTH-008, T-0791)', () => {
     await deprovisioner([I]).remove(I, 'idp-a', 'evt-hook', NOW, { reason: 'Directory event evt-hook' });
     expect(await job([I]).run()).toMatchObject({ corrected: 0, failed: 0 });
     expect(await auditRows('institution.staff.deprovision').then((r) => r.filter((x) => x.payload['institutionId'] === I))).toHaveLength(1);
+  });
+
+  it('(F1a) permanently failing finishes never block a fresh one behind them; each is retried, then abandoned and shown, and then left alone', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    const fakes = Array.from({ length: 12 }, () => uuidv7(NOW));
+    for (const [i, party] of fakes.entries()) {
+      await app.services.audit.record({ ...SYSTEM, action: 'institution.staff.deprovision', subject: party, reason: 'test', payload: { institutionId: I, eventId: `drift:fake-${i}`, source: 'drift', removed: true, adminNone: false } }, NOW);
+    }
+    await dir(I, 'a', false);
+    const a = people[who(I, 'a')]!.partyId;
+    let boom = true;
+    let calls = 0;
+    const perFake = new Map<string, number>();
+    const dp = deprovisioner([I], { tokens: { revokeAll: async (p, r) => { calls += 1; perFake.set(p, (perFake.get(p) ?? 0) + 1); if (fakes.includes(p) || (boom && p === a)) { if (p === a) boom = false; throw new Error('simulated failure'); } return app.services.tokens.revokeAll(p, r); } } });
+    const tune = { resume: { batch: 5, cap: 8, maxAttempts: 3 } };
+    await expect(job([I], { deprovision: dp, ...tune }).run()).rejects.toBeInstanceOf(DriftCycleFailed); // a's own finish fails once; the cycle also tried 8 older rows
+    const drift = job([I], { deprovision: dp, ...tune });
+    expect(await live(who(I, 'a'))).toBe(true); // not yet finished
+    const results: DriftResult[] = [];
+    for (let i = 0; i < 6; i += 1) results.push(await drift.run().catch((e: unknown) => (e as DriftCycleFailed).result));
+    expect(await live(who(I, 'a'))).toBe(false); // finished behind the 12 failing rows, within a cycle or two
+    expect(results.reduce((n, r) => n + (r.abandoned ?? 0), 0)).toBe(12);
+    expect(metric('staff.drift_finish_abandoned')).toBe(12);
+    expect((await auditRows('institution.staff.drift_finish_abandoned')).filter((r) => fakes.includes(r.subject))).toHaveLength(12);
+    for (const f of fakes) expect(perFake.get(f)).toBe(3); // abandoned after exactly maxAttempts failed attempts
+    const before = calls;
+    expect(await drift.run()).toMatchObject({ failed: 0 }); // abandoned rows are not retried
+    expect(calls).toBe(before);
+  });
+
+  it('(F1b) a cycle makes at most `cap` attempts and the next one carries on after where it stopped, wrapping round', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    const fakes = Array.from({ length: 4 }, () => uuidv7(NOW));
+    for (const [i, party] of fakes.entries()) {
+      await app.services.audit.record({ ...SYSTEM, action: 'institution.staff.deprovision', subject: party, reason: 'test', payload: { institutionId: I, eventId: `drift:cap-${i}`, source: 'drift', removed: true, adminNone: false } }, NOW);
+    }
+    const hit: string[] = [];
+    const dp = deprovisioner([I], { tokens: { revokeAll: async (p) => { if (fakes.includes(p)) { hit.push(p); throw new Error('simulated failure'); } return 0; } } });
+    const drift = job([I], { deprovision: dp, resume: { batch: 2, cap: 3, maxAttempts: 1000 } });
+    const cycle = async () => { hit.length = 0; await drift.run().catch(() => undefined); return [...hit]; };
+    const c1 = await cycle();
+    expect(c1).toEqual(fakes.slice(0, 3));
+    const c2 = await cycle();
+    expect(c2).toEqual([fakes[3], fakes[0], fakes[1]]);
+    // settle: abandon them so later tests are untouched
+    await job([I], { deprovision: dp, resume: { batch: 2, cap: 10, maxAttempts: 1 } }).run().catch(() => undefined);
+  });
+
+  it('(F1c) a replay of a finished removal revokes nothing and leaves a newer session alone', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    const a = people[who(I, 'a')]!.partyId;
+    let revokes = 0;
+    const dp = deprovisioner([I], { tokens: { revokeAll: async (p, r) => { revokes += 1; return app.services.tokens.revokeAll(p, r); } } });
+    const how = { reason: 'Directory drift sweep', payload: { source: 'drift', drift_missing: false } };
+    expect(await dp.remove(I, 'idp-a', 'drift:replay', NOW, how)).toBe(true);
+    expect(revokes).toBe(1);
+    people['replay'] = { partyId: a, access: (await app.services.tokens.issue({ partyId: a, deviceId: 'phone-3', roles: ['member'] })).accessToken };
+    expect(await dp.remove(I, 'idp-a', 'drift:replay', NOW, how)).toBe(true);
+    expect(revokes).toBe(1);
+    expect((await mine('replay')).status).not.toBe(401);
+  });
+
+  it('(F1d) markers are keyed by institution and the hash of the event id: the same event at another institution is its own, a very long id works', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    const J = await institution(['x', 'y', 'z', 'w']);
+    const a = people[who(I, 'a')]!.partyId;
+    let revokes = 0;
+    const dp = deprovisioner([I, J], { tokens: { revokeAll: async (p, r) => { revokes += 1; return app.services.tokens.revokeAll(p, r); } } });
+    const how = { reason: 'Directory drift sweep', payload: { source: 'drift', drift_missing: false } };
+    const long = 'e'.repeat(5000);
+    expect(await dp.remove(I, 'idp-a', long, NOW, how)).toBe(true);
+    const kinds = async (party: string) => (await db.query<{ kind: string }>('select kind from ops.workflow_marker where subject_id = $1', [party])).rows.map((r) => r.kind);
+    expect(await kinds(a)).toEqual([`deprovision_finished:${removalKey(I, long)}`]);
+    expect(removalKey(I, long).length).toBeLessThan(120);
+    // the same party is hired at J and removed there under the SAME event id: a separate removal, finished separately
+    await db.query('update org.staff set institution_id = $2, active = true where party_id = $1', [a, J]);
+    await links.link(J, 'idp-a-at-j', a, SYSTEM, OLD);
+    expect(await dp.remove(J, 'idp-a-at-j', long, NOW, how)).toBe(true);
+    expect(revokes).toBe(2);
+    expect((await kinds(a)).sort()).toEqual([`deprovision_finished:${removalKey(I, long)}`, `deprovision_finished:${removalKey(J, long)}`].sort());
+    expect(removalKey(I, long)).not.toBe(removalKey(J, long));
   });
 });

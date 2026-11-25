@@ -8,6 +8,7 @@
 //   whose audit row exists finishes them, so a crash between the steps never leaves a removed person with access.
 // - `create` and `update` events never grant or raise anything. The last active admin is removed anyway (the IdP is the authority):
 //   an `institution.admin.none` audit row and a notification make that visible.
+import { createHash } from 'node:crypto';
 import { DomainError, guarded, type Metrics } from '@kesher/domain';
 import { OrgIdPError, type NotifyPort, type OrgIdPPort, type ScimEvent } from '@kesher/ports';
 import { AuditService } from '../audit/service.ts';
@@ -24,6 +25,11 @@ export const ORG_SSO_FLAG = 'auth.orgSso';
 export const DEPROVISION_PROVIDER = 'workos';
 const PROMISE_MS = 15 * 60_000;
 const STALE_MS = 5 * 60_000;
+/**
+ * The key a removal's markers hang on: the institution and the sha256 of the event id (a signed event id has no length limit and `kind` is a
+ * btree key). The SQL twin is `institution || ':' || encode(sha256(convert_to(event_id, 'UTF8')), 'hex')`.
+ */
+export const removalKey = (institutionId: string, eventId: string): string => `${institutionId}:${createHash('sha256').update(eventId).digest('hex')}`;
 const SYSTEM = { actorId: '00000000-0000-7000-8000-000000000000', actorRole: 'system' };
 const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
 
@@ -216,7 +222,7 @@ export class StaffDeprovisioner {
    * instant, and the new institution's grant (`InstitutionTeam.apply`) writes the role again. Skipped for a party who is active staff anywhere (a stale link must not reach their new job). */
   async finish(done: Done): Promise<void> {
     // Runs to completion once: the write-once marker ends it, so a replay never revokes a session the person opened AFTER the removal.
-    const kind = `deprovision_finished:${done.institutionId}:${done.eventId}`;
+    const kind = `deprovision_finished:${removalKey(done.institutionId, done.eventId)}`;
     if ((await getMarker(this.d.db, kind, done.partyId)) !== undefined) return;
     const active = await this.d.db.query('select 1 from org.staff where party_id = $1 and active', [done.partyId]);
     if (!active.rowCount) {

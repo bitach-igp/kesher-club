@@ -18,14 +18,18 @@
 import type { AuditService } from '@kesher/api/audit/service';
 import type { FeatureFlags } from '@kesher/api/billing/capabilities';
 import type { Database } from '@kesher/api/db';
-import { ORG_SSO_FLAG, type StaffDeprovisioner } from '@kesher/api/institutions/staff-deprovision';
+import { putMarker } from '@kesher/api/ops/workflow-marker';
+import { ORG_SSO_FLAG, removalKey, type StaffDeprovisioner } from '@kesher/api/institutions/staff-deprovision';
 import { guarded, type Metrics } from '@kesher/domain';
 import { OrgIdPError, type OrgIdPPort } from '@kesher/ports';
 
 export const DRIFT_CYCLE_MS = 10 * 60_000;
 /** A link younger than this is not removed for ABSENCE: SCIM sync can lag the link by tens of minutes. A positive inactive is never graced. */
 const NEW_LINK_GRACE_MS = 24 * 3_600_000;
+/** Resume: rows per page, attempts per cycle, and failed attempts before a removal is abandoned (and shown, never dropped). */
 const RESUME_BATCH = 100;
+const RESUME_CAP = 500;
+const MAX_ATTEMPTS = 20;
 const SYSTEM = { actorId: '00000000-0000-7000-8000-000000000000', actorRole: 'system' };
 const SOURCE = 'drift';
 
@@ -37,6 +41,8 @@ export interface DriftResult {
   unlinked: number;
   refused: number;
   failed: number;
+  /** Removals given up on this cycle after too many failed finishes. */
+  abandoned?: number;
 }
 
 /** Thrown after the whole sweep when any institution could not be read or removed: the scheduler logs it and runs again next cycle. */
@@ -59,6 +65,7 @@ export interface DirectoryDriftDeps {
   deprovision: Pick<StaffDeprovisioner, 'remove' | 'finish' | 'institutions'> | undefined;
   metrics: Metrics;
   clock: () => Date;
+  resume?: { batch?: number; cap?: number; maxAttempts?: number };
 }
 
 interface Link {
@@ -75,6 +82,8 @@ const reasonOf = (e: unknown): string => (e instanceof OrgIdPError ? e.code.toLo
 export class DirectoryDrift {
   private readonly d: DirectoryDriftDeps;
   private readonly metrics: Metrics;
+  /** Where the last resume stopped: the next cycle starts after it, so rows that keep failing never starve the ones behind them. */
+  private cursor = 0;
   constructor(deps: DirectoryDriftDeps) {
     this.d = deps;
     this.metrics = guarded(deps.metrics);
@@ -205,26 +214,67 @@ export class DirectoryDrift {
   }
 
   /**
-   * Finishes drift removals whose role or session step failed after the commit: every drift audit row with no `deprovision_finished` marker
-   * (written once, when `finish` completes), however old. A finished one is never looked at again and never revokes a newer session.
+   * Finishes drift removals whose role or session step failed after the commit: every drift audit row with no `deprovision_finished` and no
+   * `deprovision_abandoned` marker, however old. Rows are paged by `seq` from a cursor that persists between cycles (and wraps), at most
+   * `cap` attempts per cycle, so a row that keeps failing never blocks the ones behind it. Each failed attempt is a write-once attempt marker;
+   * after `maxAttempts` the removal is abandoned: a terminal marker, an audit row and `staff.drift_finish_abandoned`, then it is not retried.
+   * The select is an anti-join over drift audit rows (no index on `source`): bounded by the number of drift removals ever made, with no migration.
    */
   private async resume(out: DriftResult): Promise<void> {
-    const r = await this.d.db.query<{ subject: string; payload: { institutionId?: string; eventId?: string; adminNone?: boolean } }>(
-      `select a.subject, a.payload from audit.entry a
-        where a.action = 'institution.staff.deprovision' and a.payload->>'source' = $1
-          and not exists (select 1 from ops.workflow_marker m where m.kind = 'deprovision_finished:' || (a.payload->>'institutionId') || ':' || (a.payload->>'eventId') and m.subject_id = a.subject::uuid)
-        order by a.seq limit ${RESUME_BATCH}`,
-      [SOURCE],
-    );
-    for (const row of r.rows) {
-      const { institutionId, eventId } = row.payload;
-      if (!institutionId || !eventId) continue;
-      try {
-        await this.d.deprovision!.finish({ institutionId, partyId: row.subject, eventId, adminNone: row.payload.adminNone === true });
-      } catch {
-        out.failed += 1;
-        this.metrics.put({ 'staff.drift_refused': 1 }, { reason: 'finish_failed' });
+    const batch = this.d.resume?.batch ?? RESUME_BATCH;
+    let budget = this.d.resume?.cap ?? RESUME_CAP;
+    const start = this.cursor;
+    let wrapped = false;
+    while (budget > 0) {
+      const rows = await this.unfinished(this.cursor, wrapped ? start : undefined, Math.min(batch, budget));
+      if (rows.length === 0) {
+        if (wrapped || this.cursor === 0) {
+          this.cursor = 0;
+          return;
+        }
+        this.cursor = 0;
+        wrapped = true;
+        continue;
       }
+      for (const row of rows) {
+        budget -= 1;
+        this.cursor = row.seq;
+        await this.attempt(row, out);
+      }
+    }
+  }
+
+  private async unfinished(after: number, upto: number | undefined, limit: number) {
+    const r = await this.d.db.query<{ seq: string | number; subject: string; payload: { institutionId?: string; eventId?: string; adminNone?: boolean } }>(
+      `select a.seq, a.subject, a.payload from audit.entry a
+        where a.action = 'institution.staff.deprovision' and a.payload->>'source' = $1 and a.seq > $2 and ($3::bigint is null or a.seq <= $3::bigint)
+          and not exists (select 1 from ops.workflow_marker m where m.subject_id = a.subject::uuid
+                and m.kind in ('deprovision_finished:' || (a.payload->>'institutionId') || ':' || encode(sha256(convert_to(a.payload->>'eventId', 'UTF8')), 'hex'),
+                               'deprovision_abandoned:' || (a.payload->>'institutionId') || ':' || encode(sha256(convert_to(a.payload->>'eventId', 'UTF8')), 'hex')))
+        order by a.seq limit $4`,
+      [SOURCE, after, upto ?? null, limit],
+    );
+    return r.rows.map((x) => ({ seq: Number(x.seq), subject: x.subject, payload: x.payload }));
+  }
+
+  private async attempt(row: { subject: string; payload: { institutionId?: string; eventId?: string; adminNone?: boolean } }, out: DriftResult): Promise<void> {
+    const { institutionId, eventId } = row.payload;
+    if (!institutionId || !eventId) return;
+    try {
+      await this.d.deprovision!.finish({ institutionId, partyId: row.subject, eventId, adminNone: row.payload.adminNone === true });
+    } catch {
+      out.failed += 1;
+      this.metrics.put({ 'staff.drift_refused': 1 }, { reason: 'finish_failed' });
+      const key = removalKey(institutionId, eventId);
+      const kind = `deprovision_attempt:${key}`;
+      const n = (await this.d.db.query<{ n: number }>('select count(*)::int as n from ops.workflow_marker where kind = $1 and subject_id = $2', [kind, row.subject])).rows[0]!.n;
+      await putMarker(this.d.db, { kind, subjectId: row.subject, seq: n, value: 'failed' });
+      if (n + 1 < (this.d.resume?.maxAttempts ?? MAX_ATTEMPTS)) return;
+      const now = this.d.clock();
+      await putMarker(this.d.db, { kind: `deprovision_abandoned:${key}`, subjectId: row.subject, value: 'abandoned' });
+      await this.d.audit.record({ ...SYSTEM, action: 'institution.staff.drift_finish_abandoned', subject: row.subject, reason: 'The role and session step of a drift removal failed repeatedly and is no longer retried', payload: { institutionId, eventId, attempts: n + 1 } }, now);
+      this.metrics.put({ 'staff.drift_finish_abandoned': 1 });
+      out.abandoned = (out.abandoned ?? 0) + 1;
     }
   }
 }

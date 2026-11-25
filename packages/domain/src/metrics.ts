@@ -50,6 +50,8 @@ export const METRIC_DEFS = {
   'staff.drift_corrected': { unit: 'Count', dimensions: ['reason'] },
   // A directory the sweep did not act on (reason: a closed list, see directory-drift.ts); an empty or failed read is never read as "everyone left".
   'staff.drift_refused': { unit: 'Count', dimensions: ['reason'] },
+  // A drift removal whose role or session step failed 20 times and is no longer retried (a marker and an audit row stay); someone may keep access.
+  'staff.drift_finish_abandoned': { unit: 'Count', dimensions: [] },
   // Directory users with no staff link, counted by the nightly report and never acted on.
   'staff.directory_unlinked': { unit: 'Count', dimensions: [] },
 } as const satisfies Record<string, MetricDef>;
