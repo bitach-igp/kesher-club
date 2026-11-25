@@ -423,6 +423,7 @@
 | [T-1023](T-1023.md) | SETUP | Slice 2 of T-0771: the stray `CROWDED_BINDING=live` warning reads whether a Crowded binding was declared, not the provider name | — | done by #411 |
 | [T-1024](T-1024.md) | SETUP | Slice 3 of T-0771: the Stripe override block and Stripe webhook-secret wiring read the binding (safe part only; see the card) | — | done by #412 |
 | [T-1025](T-1025.md) | SETUP | The simulators panel route answers a binding's provider and mode only (it leaked webhook secrets); the shared secret lists are frozen | — | done by #413 |
+| [T-1026](T-1026.md) | SETUP | Slice 4 of T-0771: what `app.ts` reads off the funding and billing bindings pinned by an old-vs-new table; nothing moved (a capability cannot replace the ref provider key, and the sim route is a mode check) | — | open |
 
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
 
