@@ -105,6 +105,7 @@ describe('team and roles (TST-INS-020, T-0643)', () => {
     expect((await call('dov', 'GET', `/institutions/${OHR}/team`)).status).toBe(200);
     const r = (await call('rivka', 'PATCH', `/institutions/${OHR}/team/${people['dov']!.partyId}`, { active: false }, { key: 'remove-dov-1' })).body as Change;
     expect(r.staff).toMatchObject({ active: false });
+    expect((await app.services.identity.findUser(people['dov']!.partyId))?.roles).not.toContain('org_finance');
     expect((await call('dov', 'GET', '/me/institution')).status).toBe(403);
     expect((await call('dov', 'GET', `/institutions/${OHR}/team`)).status).toBe(404);
     const audit = await db.query<{ action: string }>(`select action from audit.entry where subject = $1 order by at`, [people['dov']!.partyId]);

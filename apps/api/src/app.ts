@@ -2,7 +2,7 @@
 // in sim mode) and returns the handler table. The HTTP server (server.ts) and tests call this;
 // nothing here knows about sockets. Secrets arrive through the config loader (T-0004).
 import type { Database } from './db.ts';
-import type { AuthPort, BankPort, BillingPort, CardIssuingPort, EventsPort, FederatedIdPPort, FundingPort, FxPort, InstitutionBankingPort, PayoutPort, KycPort, KybPort, NotifyPort, ProviderRegistry, Market } from '@kesher/ports';
+import type { AuthPort, BankPort, BillingPort, CardIssuingPort, EventsPort, FederatedIdPPort, FundingPort, FxPort, InstitutionBankingPort, PayoutPort, KycPort, KybPort, NotifyPort, OrgIdPPort, ProviderRegistry, Market } from '@kesher/ports';
 import { ok, requireIdempotencyKey, requirePrincipal, requireRole, route, type Handler, type HttpRequest } from './http.ts';
 import { authHandlers, bearerMiddleware } from './auth/handlers.ts';
 import { adminHandlers } from './admin/handlers.ts';
@@ -53,6 +53,8 @@ import { RosterList, rosterListHandlers } from './institutions/roster-list.ts';
 import { StudentDetail, studentHandlers } from './institutions/student.ts';
 import { statementHandlers } from './institutions/statement.ts';
 import { InstitutionTeam, teamHandlers } from './institutions/team.ts';
+import { StaffIdpLinks } from './institutions/staff-idp-link.ts';
+import { DEPROVISION_PROVIDER, StaffDeprovisioner, directoryResolver } from './institutions/staff-deprovision.ts';
 import { InstitutionUsBanking, usBankingHandlers } from './institutions/us-banking.ts';
 import { UsCollections, usCollectionsHandlers } from './institutions/us-collections.ts';
 import { InstitutionUsFunding, usFundingHandlers } from './institutions/us-funding.ts';
@@ -112,7 +114,7 @@ import { simulatorVerifier } from './webhooks/verify.ts';
 import { OutboundEventsService, webhookHandlers } from './events/outbound.ts';
 import { ROUTES, type HandlerTable } from './routes.ts';
 import { randomBytes } from 'node:crypto';
-import { toWire, DomainError, Secret } from '@kesher/domain';
+import { toWire, DomainError, Secret, stdoutMetrics } from '@kesher/domain';
 import { createPiiCipher, type PiiCipher } from './crypto/pii.ts';
 
 export interface AppOptions {
@@ -150,6 +152,12 @@ export interface AppOptions {
   oauth?: { resource?: string; consentUrl?: string };
   /** The client-metadata fetch (T-1003): DNS and fetch. Tests inject both; the defaults are the network's. */
   cimd?: { resolve: Resolver; fetch: Fetcher };
+  /**
+   * Directory sync for institution staff (T-0790, auth.orgSso): our institution id to its WorkOS ids and SCIM bearer, the same records the
+   * adapter holds. Empty by default, so every directory is unknown and a delivery moves nothing. `staffAlertEmail` is told when an IdP
+   * removal leaves an institution with no admin; without it the audit row `institution.admin.none` stands alone.
+   */
+  orgIdp?: { orgs?: Readonly<Record<string, { directoryId?: string | undefined; scimBearer: string }>>; staffAlertEmail?: string };
 }
 
 export interface App {
@@ -231,6 +239,16 @@ function buildServices(o: AppOptions) {
       },
     } });
   webhooks.bind(CROWDED_PROVIDER, { verifier: refuseAllVerifier, process: (e) => crowdedWebhook.process(e) });
+  // WorkOS Directory Sync (T-0790): bound where an org-idp binding exists; the verifier answers 404 and stores nothing while auth.orgSso
+  // is off, and the processor checks the flag again. A removal in the institution's IdP deprovisions the linked staff member.
+  if (o.registry.bindingFor('org-idp', o.market)) {
+    const deprovision = new StaffDeprovisioner({
+      db: o.db, audit, links: new StaffIdpLinks({ db: o.db, audit }), team, tokens, flags, notify: notifyPort, metrics: stdoutMetrics, now: clock.now,
+      port: () => o.registry.resolve<OrgIdPPort>('org-idp', o.market), mode: () => o.registry.bindingFor('org-idp', o.market)?.mode,
+      directories: directoryResolver(o.orgIdp?.orgs), alertTo: o.orgIdp?.staffAlertEmail,
+    });
+    webhooks.bind(DEPROVISION_PROVIDER, { verifier: deprovision.verifier(), process: (e) => deprovision.process(e) });
+  }
   const institutionCredit = new InstitutionCredit(o.db, approvals, audit, kybGate);
   const payoutAccounts = new PayoutAccounts(o.db, audit);
   const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
