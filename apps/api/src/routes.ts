@@ -21,6 +21,8 @@ export const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/auth/social/providers', operationId: 'listSocialProviders', public: true },
   { method: 'POST', path: '/auth/social/sign-in', operationId: 'signInWithSocial', public: true },
   { method: 'POST', path: '/auth/step-up', operationId: 'stepUp' },
+  { method: 'POST', path: '/institutions/{id}/sso/start', operationId: 'startStaffSso', public: true },
+  { method: 'GET', path: '/sso/callback', operationId: 'completeStaffSso', public: true },
   { method: 'GET', path: '/legal/documents', operationId: 'getLegalDocuments', public: true },
   { method: 'GET', path: '/me/consents', operationId: 'getMyConsents' },
   { method: 'POST', path: '/me/consents', operationId: 'recordConsents' },

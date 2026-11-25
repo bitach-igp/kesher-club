@@ -153,6 +153,63 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SocialSignInResult" }
         default: { $ref: "#/components/responses/Problem" }
+  /institutions/{id}/sso/start:
+    post:
+      operationId: startStaffSso
+      summary: Begin an institution staff sign-in (or the one-time link) through the institution's own IdP
+      description: >-
+        REQ-AUTH-008 (T-1120 contract, T-0792 behaviour). Public: a staff member who is not signed in has no bearer; a valid bearer
+        is read only for `purpose: link`. Answers 404 FEATURE_OFF while `auth.orgSso` is off (nothing stored), and 404 NOT_FOUND for an
+        institution with no SSO record. Returns the IdP URL, a one-time `state` and its expiry (10 minutes at most), and binds the
+        state to the starting browser with an HttpOnly, Secure, SameSite=Lax cookie in `Set-Cookie`; the callback refuses a state
+        without that cookie. `sign_in` is for an identity that is already linked. `link` is the first sign-in of a staff member who
+        has no link yet and needs a signed-in session plus ONE proof of control in this same request: a fresh `X-Step-Up`
+        token (REQ-AUTH-006) or the `inviteToken` of a staff invite to this institution (REQ-INS-020, accepted here). The IdP's
+        email, name and groups are never used to find or raise a staff row. Starts are rate limited per institution and per
+        party (429 RATE_LIMITED). The callback URL is fixed server-side; the caller cannot choose where the browser lands.
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/Id" }
+        - { name: X-Step-Up, in: header, required: false, description: "Only for `purpose: link` without an `inviteToken`: a step-up token younger than 5 minutes (REQ-AUTH-006).", schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StaffSsoStartRequest" }
+      responses:
+        "200":
+          description: The IdP URL and the one-time state
+          headers:
+            Set-Cookie: { description: "The browser binding for the state (HttpOnly, Secure, SameSite=Lax, 10 minutes at most)", schema: { type: string } }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffSsoStart" }
+        default: { $ref: "#/components/responses/Problem" }
+  /sso/callback:
+    get:
+      operationId: completeStaffSso
+      summary: The IdP sends the browser back here with a code; a linked, active staff member gets the normal staff token
+      description: >-
+        REQ-AUTH-008 (T-1120 contract, T-0792 behaviour). Public; the redirect URI registered with the IdP. The institution comes from the
+        state stored at start, never from this request. The state must be single use, unexpired, and the browser must present the
+        cookie set at start; the code is checked through the org identity port. The identity must be linked to an ACTIVE staff
+        member of that institution, or be the `link` flow that started with a proof of control; a link is never made by email
+        match. Every refusal (unknown, replayed, expired or unbound state, a bad code, another organisation, an unlinked or
+        deprovisioned identity, a link conflict) answers the same 401 UNAUTHENTICATED with the same body and no hint which, and
+        writes nothing. 404 FEATURE_OFF while `auth.orgSso` is off. 503 PROVIDER_UNAVAILABLE when the IdP is down. A success returns
+        the same token pair as any staff sign-in: no longer-lived token, and no role from an IdP group. `code` and `state` are
+        secrets of the redirect: they are never logged and never repeated in a response.
+      security: []
+      parameters:
+        - { name: code, in: query, required: true, schema: { type: string, maxLength: 2048 } }
+        - { name: state, in: query, required: true, schema: { type: string, maxLength: 128 } }
+      responses:
+        "200":
+          description: The staff token pair
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/StaffSsoSession" }
+        default: { $ref: "#/components/responses/Problem" }
   /auth/step-up:
     post:
       operationId: stepUp
@@ -4702,6 +4759,26 @@ components:
       required: [tokens]
       properties:
         tokens: { $ref: "#/components/schemas/TokenPair" }
+    StaffSsoStartRequest:
+      type: object
+      required: [purpose, deviceId]
+      properties:
+        purpose: { type: string, enum: [sign_in, link] }
+        deviceId: { $ref: "#/components/schemas/DeviceId" }
+        inviteToken: { type: string, minLength: 1, maxLength: 128, description: "Only for `purpose: link`: the token of a staff invite to this institution, as proof of control instead of a step-up" }
+    StaffSsoStart:
+      type: object
+      required: [url, state, expiresAt]
+      properties:
+        url: { type: string, format: uri, description: Where to send the browser (the IdP's authorize URL) }
+        state: { type: string, description: One-time and opaque; the IdP echoes it to the callback }
+        expiresAt: { type: string, format: date-time }
+    StaffSsoSession:
+      type: object
+      required: [tokens, institutionId]
+      properties:
+        tokens: { $ref: "#/components/schemas/TokenPair" }
+        institutionId: { type: string, format: uuid }
     TokenPair:
       type: object
       required: [accessToken, refreshToken, accessExpiresAt]
