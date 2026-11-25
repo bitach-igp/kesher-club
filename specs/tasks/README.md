@@ -410,7 +410,7 @@
 | [T-0787](T-0787.md) | WAL | A failed-owner marker can be cleared: `ops.workflow_marker` delete grant to `club_app` narrowed by a trigger to `subaccount_owner:` kinds, `clearMarker`, desktop apply request (T-0763's open question, owner-decided; money-adjacent, independent reviewer) | REQ-WAL-003 | done by #399 (desktop apply PASS); caller not wired: owner decisions open (see the card) |
 | [T-0788](T-0788.md) | WAL | Staff resolving the failed-owner case clears the owner marker in the decision's transaction (dismissing does not); the case joins the ops queue kinds; a blocked load reopens a closed owner case (T-0787's follow-up, owner-delegated decisions; money-adjacent, independent reviewer) | REQ-WAL-003 | done by #404 |
 | [T-0789](T-0789.md) | AUTH | Staff IdP link table (`org.staff_idp_link`) mapping an IdP subject to a staff party; migration and desktop apply (security, independent reviewer) | REQ-AUTH-008 | built, PR open; merges only after a PASS `## Result` for the desktop apply in `handoff/done/` and an independent review · dark, no route or flag read |
-| [T-0790](T-0790.md) | AUTH | Mount the WorkOS webhook behind `auth.orgSso`: `dsync.user.deleted` deprovisions linked staff and revokes sessions; supersedes T-0693 (security, independent reviewer) | REQ-AUTH-008 | built, PR open, STACKED on T-0789 (#416: not before it) · dark behind `auth.orgSso`, owner actions listed not done |
+| [T-0790](T-0790.md) | AUTH | Mount the WorkOS webhook behind `auth.orgSso`: `dsync.user.deleted` deprovisions linked staff and revokes sessions; supersedes T-0693 (security, independent reviewer) | REQ-AUTH-008 | built, PR open · dark behind `auth.orgSso`, owner actions listed not done |
 | [T-0791](T-0791.md) | AUTH | Directory drift sweep: worker job compares the WorkOS directory with the staff links and deprovisions drift (security, independent reviewer) | REQ-AUTH-008 | later · after T-0790 |
 | [T-0792](T-0792.md) | AUTH | Staff SSO login (`startSso`, `handleCallback`) and link creation; contract change; build when the first institution asks (security, independent reviewer) | REQ-AUTH-008 | later · after T-0790 |
 | [T-0793](T-0793.md) | BIL | `DunningService` pre-wire fixes: markers not counted as pending webhooks, real notice recipient (independent reviewer) | — | later · first of T-0793 to T-0795 |
@@ -423,6 +423,7 @@
 | [T-1023](T-1023.md) | SETUP | Slice 2 of T-0771: the stray `CROWDED_BINDING=live` warning reads whether a Crowded binding was declared, not the provider name | — | done by #411 |
 | [T-1024](T-1024.md) | SETUP | Slice 3 of T-0771: the Stripe override block and Stripe webhook-secret wiring read the binding (safe part only; see the card) | — | done by #412 |
 | [T-1025](T-1025.md) | SETUP | The simulators panel route answers a binding's provider and mode only (it leaked webhook secrets); the shared secret lists are frozen | — | done by #413 |
+| [T-1026](T-1026.md) | SETUP | Slice 4 of T-0771: what `app.ts` reads off the funding and billing bindings pinned by an old-vs-new table; nothing moved (a capability cannot replace the ref provider key, and the sim route is a mode check) | — | open |
 
 E04 (card + push provisioning) and E05 (wallet, P2P, FX, payouts) are built against the simulators (ADR-006, 2026-10-17); the processor adapter is a later card once the vendor is signed.
 
