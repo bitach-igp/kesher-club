@@ -30,8 +30,9 @@ const OHR = uuidv7(NOW);
 const NER = uuidv7(NOW);
 const SOLO = uuidv7(NOW);
 const NOADM = uuidv7(NOW);
+const NA2 = uuidv7(NOW);
 const SYSTEM = { actorId: '00000000-0000-7000-8000-000000000000', actorRole: 'system' };
-const ORGS = Object.fromEntries([[OHR, 'ohr'], [NER, 'ner'], [SOLO, 'solo'], [NOADM, 'noadm']].map(([id, n]) => [id!, { directoryId: `dir_${n}`, scimBearer: `scim_${id}` }]));
+const ORGS = Object.fromEntries([[OHR, 'ohr'], [NER, 'ner'], [SOLO, 'solo'], [NOADM, 'noadm'], [NA2, 'na2']].map(([id, n]) => [id!, { directoryId: `dir_${n}`, scimBearer: `scim_${id}` }]));
 const flagState = { on: true };
 const flags: FeatureFlags = { isOn: (k) => k === 'auth.orgSso' && flagState.on, keys: () => ['auth.orgSso'] };
 const lines: string[] = [];
@@ -94,11 +95,11 @@ const crashy = (): Partial<StaffDeprovisionDeps> => ({
 beforeAll(async () => {
   db = await createTestDatabase();
   host = new SimulatorHost();
-  host.simulators['org-idp'] = new OrgIdPSimulator(host.clock, [OHR, NER, SOLO, NOADM]);
+  host.simulators['org-idp'] = new OrgIdPSimulator(host.clock, [OHR, NER, SOLO, NOADM, NA2]);
   app = createApp({ db, registry: host.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags, orgIdp: { orgs: ORGS, staffAlertEmail: 'ops@kesher.example' } });
   links = new StaffIdpLinks({ db, audit: app.services.audit });
   flaky.audit = new FlakyAudit(db);
-  await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Ohr', 'IL'), ($2, 'Beit Ner', 'IL'), ($3, 'Solo School', 'IL'), ($4, 'No Admin School', 'IL')`, [OHR, NER, SOLO, NOADM]);
+  await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Ohr', 'IL'), ($2, 'Beit Ner', 'IL'), ($3, 'Solo School', 'IL'), ($4, 'No Admin School', 'IL'), ($5, 'Two School', 'IL')`, [OHR, NER, SOLO, NOADM, NA2]);
   await staffer('rivka', OHR, 'admin');
 }, 120_000);
 afterAll(async () => db.close());
@@ -316,19 +317,20 @@ describe('directory deprovisioning (TST-AUTH-008, T-0790)', () => {
     expect(await v.verify({ 'WorkOS-Signature': t(NOW) }, raw, NOW)).toMatchObject({ ok: false, reason: 'bad signature' });
   });
 
-  it('N3: an event the adapter refuses moves nothing, is counted by reason, and is left errored and pending (HTTP stays 200), never a silent drop', async () => {
+  it('N3: an event the adapter refuses moves nothing, is counted by its closed reason and leaves the queue (HTTP 200), never starving replay', async () => {
     const bea = await staffer('bea', OHR, 'staff');
     await links.link(OHR, 'idp-bea', bea, SYSTEM, NOW);
     lines.length = 0;
     const bad = make({ directories: directoryResolver({ [OHR]: { directoryId: 'dir_ohr', scimBearer: 'wrong' } }) });
-    await expect(bad.process(asEvent(body('evt-bea', 'idp-bea')))).rejects.toThrow('scim_unauthorized');
+    await bad.process(asEvent(body('evt-bea', 'idp-bea'))); // resolves: a refusal leaves the queue
     expect(await staffRow(bea)).toMatchObject({ active: true });
     const m = lines.filter((l) => l.includes('staff.deprovision_refused')).map((l) => JSON.parse(l) as Record<string, unknown>);
     expect(m).toEqual([expect.objectContaining({ reason: 'scim_unauthorized', 'staff.deprovision_refused': 1 })]);
-    // through the route: 200, and the stored event carries the reason, unprocessed
+    // through the route: 200, processed, no error, and not in the replay queue
     const malformed = await hook({ eventId: 'evt-bad-shape', directoryId: 'dir_ohr', op: 'nonsense' });
     expect(malformed.status).toBe(200);
-    expect((await stored('evt-bad-shape'))[0]).toMatchObject({ processed_at: null, error: expect.stringContaining('scim_malformed') });
+    expect((await stored('evt-bad-shape'))[0]).toMatchObject({ processed_at: expect.any(Date), error: null });
+    expect((await app.services.inbound.pending(1000, 'workos')).map((e) => e.eventId)).not.toContain('evt-bad-shape');
     // two institutions claiming one directory resolve to nothing
     expect(directoryResolver({ a: { directoryId: 'd', scimBearer: 'x' }, b: { directoryId: 'd', scimBearer: 'y' } })('d')).toBeUndefined();
   });
@@ -397,6 +399,15 @@ describe('directory deprovisioning (TST-AUTH-008, T-0790)', () => {
     expect(await audits('institution.admin.none', NOADM)).toHaveLength(0);
   });
 
+  it('O15: the no-admin alert counts admins only: a non-admin left behind still raises it, a kept admin does not', async () => {
+    const adm = await staffer('na2adm', NA2, 'admin');
+    await staffer('na2staff', NA2, 'staff');
+    await links.link(NA2, 'idp-na2adm', adm, SYSTEM, NOW);
+    await make().process(asEvent(body('evt-na2', 'idp-na2adm', { directoryId: 'dir_na2' })));
+    expect(await audits('institution.admin.none', NA2)).toHaveLength(1);
+    expect(await audits('institution.admin.none', OHR)).toHaveLength(0); // OHR kept its admins when 'second' left (test 5)
+  });
+
   it('F2d: with no alert address configured the last admin is still removed and audited, and nobody is messaged', async () => {
     const adm = await staffer('lonely', NOADM, 'admin');
     await links.link(NOADM, 'idp-lonely', adm, SYSTEM, NOW);
@@ -411,6 +422,7 @@ describe('directory deprovisioning (TST-AUTH-008, T-0790)', () => {
 
 describe('directory deprovisioning with the WorkOS verifier (TST-AUTH-008, T-0790)', () => {
   let wapp: App;
+  let wreg: ReturnType<typeof createRegistry>['registry'];
   let clock: AdvanceableClock;
   const WOH = uuidv7(NOW);
   const SECRET = 'whsec_directory_test';
@@ -423,7 +435,8 @@ describe('directory deprovisioning with the WorkOS verifier (TST-AUTH-008, T-079
 
   beforeAll(async () => {
     clock = fixedClock(NOW.toISOString()) as AdvanceableClock;
-    const { registry } = createRegistry('sandbox', clock, { orgIdp: { provider: 'workos', clientId: new Secret('client_woh'), apiKey: new Secret('sk_woh'), webhookSecret: new Secret(SECRET), orgs: { [WOH]: { workosOrganizationId: 'org_workos_woh', directoryId: 'directory_woh', scimBearer: 'bearer-woh' } } } });
+    const { registry } = (({ registry }) => ({ registry }))(createRegistry('sandbox', clock, { orgIdp: { provider: 'workos', clientId: new Secret('client_woh'), apiKey: new Secret('sk_woh'), webhookSecret: new Secret(SECRET), orgs: { [WOH]: { workosOrganizationId: 'org_workos_woh', directoryId: 'directory_woh', scimBearer: 'bearer-woh' } } } }));
+    wreg = registry;
     wapp = createApp({ db, registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags, orgIdp: { orgs: { [WOH]: { directoryId: 'directory_woh', scimBearer: 'bearer-woh' } } } });
     await db.query(`insert into org.institution (id, name, market) values ($1, 'WorkOS School', 'IL')`, [WOH]);
   }, 60_000);
@@ -461,4 +474,26 @@ describe('directory deprovisioning with the WorkOS verifier (TST-AUTH-008, T-079
     expect((await send(dsync('evt-w2d', 'dsync.user.updated', 'idp-w2', 'inactive'))).status).toBe(200);
     expect(await staffRow(wid)).toMatchObject({ active: false });
   });
+
+  it('B1: signed events the adapter cannot use (a group event, a deletion with no email) are processed without error, counted, and never starve the replay queue', async () => {
+    const send = (p: unknown) => post(p, sign(JSON.stringify(p), NOW));
+    const group = { id: 'evt-grp', event: 'dsync.group.user_added', created_at: NOW.toISOString(), data: { directory_id: 'directory_woh', organization_id: 'org_workos_woh', user: { idp_id: 'x' }, group: { id: 'g' } } };
+    const noEmail = (i: number) => ({ id: `evt-noemail-${i}`, event: 'dsync.user.deleted', created_at: NOW.toISOString(), data: { id: 'du', idp_id: 'idp-ghost', organization_id: 'org_workos_woh', directory_id: 'directory_woh', emails: [], state: 'inactive' } });
+    expect((await send(group)).status).toBe(200);
+    for (let i = 0; i < 100; i++) expect((await send(noEmail(i))).status).toBe(200);
+    for (const id of ['evt-grp', 'evt-noemail-0', 'evt-noemail-99']) expect((await stored(id))[0]).toMatchObject({ processed_at: expect.any(Date), error: null });
+    expect(await wapp.services.inbound.pending(1000, 'workos')).toEqual([]);
+    // the refused metric, by closed reason, from the processor with the real adapter
+    lines.length = 0;
+    const direct = new StaffDeprovisioner({ db, audit: wapp.services.audit, links: new StaffIdpLinks({ db, audit: wapp.services.audit }), team: wapp.services.team, tokens: wapp.services.tokens, flags, port: () => wreg.resolve('org-idp', 'IL'), mode: () => 'sandbox', directories: directoryResolver({ [WOH]: { directoryId: 'directory_woh', scimBearer: 'bearer-woh' } }), notify: host.simulators.notify, metrics, now: () => NOW });
+    await direct.process({ provider: 'workos', eventId: 'evt-noemail-x', receivedAt: NOW.toISOString(), signatureOk: true, payload: noEmail(1000) });
+    await direct.process({ provider: 'workos', eventId: 'evt-grp-x', receivedAt: NOW.toISOString(), signatureOk: true, payload: group });
+    const refused = lines.filter((l) => l.includes('staff.deprovision_refused')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(refused).toEqual([expect.objectContaining({ reason: 'scim_malformed', 'staff.deprovision_refused': 1 })]); // the group event is an ignored no-op, not a refusal
+    // a legitimate removal received after the noise is replayed and applied
+    const wid = await seedStaff('idp-w3');
+    await wapp.services.inbound.record({ provider: 'workos', eventId: 'evt-w3', signatureOk: true, payload: dsync('evt-w3', 'dsync.user.deleted', 'idp-w3'), receivedAt: new Date(NOW.getTime() + 1000) });
+    expect(await wapp.services.webhooks.replay({ provider: 'workos', now: NOW })).toMatchObject({ attempted: 1, succeeded: 1 });
+    expect(await staffRow(wid)).toMatchObject({ active: false });
+  }, 60_000);
 });

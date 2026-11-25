@@ -120,17 +120,19 @@ export class StaffDeprovisioner {
     if (!(await this.d.flags.isOn(ORG_SSO_FLAG))) throw new Error('auth.orgSso is off: the event stays pending');
     const org = this.d.directories(directoryIdOf(event.payload));
     if (!org) return; // an unknown directory moves nothing
+    // Anything that is not a user event (a group or directory event, signed and routine) is a clean no-op.
+    const kind = isRecord(event.payload) ? event.payload['event'] : undefined;
+    if (typeof kind === 'string' && !kind.startsWith('dsync.user.')) return;
     let ev: ScimEvent;
     try {
       ev = await this.d.port().parseScimEvent(org.institutionId, org.scimBearer, event.payload);
     } catch (e) {
       if (e instanceof OrgIdPError && e.code !== 'PROVIDER_UNAVAILABLE') {
-        // The adapter refused a signed event (unknown organisation, malformed, another organisation's): never a silent drop. Counted by
-        // reason, and the event is left errored and pending (HTTP stays 200) so the backlog alarm and the replay tool see it. Only the
-        // closed code is recorded, never event text.
-        const reason = e.code.toLowerCase();
-        this.metrics.put({ 'staff.deprovision_refused': 1 }, { reason });
-        throw new Error(`refused by the org IdP adapter: ${reason}`, { cause: e });
+        // The adapter refused a signed event (malformed, unknown organisation, another organisation's, a bad bearer). The metric is the
+        // signal, labelled by the closed error code only; the event is processed and LEAVES the queue, because a refusal can never
+        // succeed on retry and refused events would otherwise starve every provider's replay. Only a transient failure stays pending.
+        this.metrics.put({ 'staff.deprovision_refused': 1 }, { reason: e.code.toLowerCase() });
+        return;
       }
       throw e;
     }
