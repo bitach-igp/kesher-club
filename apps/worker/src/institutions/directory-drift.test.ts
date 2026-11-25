@@ -24,10 +24,13 @@ let links: StaffIdpLinks;
 let notify: NotifyPort;
 const sim = new OrgIdPSimulator(fixedClock(), []);
 const NOW = new Date('2026-11-25T10:00:00Z');
+/** Links made two days ago: past the 24 hour grace for absence. */
+const OLD = new Date(NOW.getTime() - 48 * 3_600_000);
 let now = NOW;
 const SYSTEM = { actorId: '00000000-0000-7000-8000-000000000000', actorRole: 'system' };
-const flagState: { on: boolean; throws: boolean } = { on: true, throws: false };
-const flags: FeatureFlags = { isOn: async (k) => { if (flagState.throws) throw new Error('flag service down'); return k === 'auth.orgSso' && flagState.on; }, keys: () => ['auth.orgSso'] };
+const flagState: { on: boolean; throws: boolean; budget: number | undefined } = { on: true, throws: false, budget: undefined };
+/** `budget` is how many reads answer on; the next ones answer off (a flag turned off mid-cycle). */
+const flags: FeatureFlags = { isOn: async (k) => { if (flagState.throws) throw new Error('flag service down'); if (flagState.budget !== undefined && flagState.budget-- <= 0) return false; return k === 'auth.orgSso' && flagState.on; }, keys: () => ['auth.orgSso'] };
 const lines: string[] = [];
 const metrics = createMetrics({ write: (l) => lines.push(l) });
 const metric = (name: string, reason?: string): number => lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((m) => name in m && (reason === undefined || m['reason'] === reason)).reduce((n, m) => n + (m[name] as number), 0);
@@ -80,7 +83,7 @@ async function institution(names: string[], listed: 'all' | 'none' = 'all'): Pro
   for (const name of names) {
     const party = await staffer(`${id}-${name}`, id);
     people[name + id] = people[`${id}-${name}`]!;
-    await links.link(id, `idp-${name}`, party, SYSTEM, NOW);
+    await links.link(id, `idp-${name}`, party, SYSTEM, OLD);
     if (listed === 'all') await dir(id, name, true);
   }
   return id;
@@ -108,6 +111,7 @@ const reset = () => {
   listing = undefined;
   flagState.on = true;
   flagState.throws = false;
+  flagState.budget = undefined;
   lines.length = 0;
 };
 
@@ -236,6 +240,106 @@ describe('directory drift sweep (TST-AUTH-008, T-0791)', () => {
     const dp = { remove: async () => false, finish: async () => undefined, institutions: () => [I] };
     expect(await job([I], { deprovision: dp }).run()).toMatchObject({ corrected: 0, failed: 0 });
     expect(metric('staff.drift_corrected')).toBe(0);
+  });
+
+  it('(S1) a link younger than 24 hours is not removed for absence, but a positive inactive is never graced', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    const f = await staffer(who(I, 'f'), I);
+    const g = await staffer(who(I, 'g'), I);
+    await links.link(I, 'idp-f', f, SYSTEM, NOW);
+    await links.link(I, 'idp-g', g, SYSTEM, NOW);
+    await dir(I, 'g', false); // f is not listed yet
+    expect(await job([I]).run()).toMatchObject({ corrected: 1 });
+    expect(await active(who(I, 'f'))).toEqual([true]);
+    expect(await active(who(I, 'g'))).toEqual([false]);
+    now = new Date(NOW.getTime() + 25 * 3_600_000);
+    expect(await job([I]).run()).toMatchObject({ corrected: 1 }); // a day on, absence counts
+    expect(await active(who(I, 'f'))).toEqual([false]);
+  });
+
+  it('(S2) a link ended and made again during the list call is not removed: the expected link id is part of the removal', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    listing = async (org) => {
+      const answer = await sim.listDirectory(org);
+      await links.unlink(I, 'idp-a', SYSTEM, NOW);
+      await links.link(I, 'idp-a', people[who(I, 'a')]!.partyId, SYSTEM, NOW);
+      return answer.map((e) => (e.subject === 'idp-a' ? { ...e, active: false } : e));
+    };
+    expect(await job([I]).run()).toMatchObject({ corrected: 0, failed: 0 });
+    expect(await active(who(I, 'a'))).toEqual([true]);
+    expect(await links.find(I, 'idp-a')).toBe(people[who(I, 'a')]!.partyId);
+    expect(await live(who(I, 'a'))).toBe(true);
+  });
+
+  it('(B2) a removal whose session step failed is finished however late (+61 min, +25 h) and then never again: a newer session survives', async () => {
+    for (const lateMs of [61 * 60_000, 25 * 3_600_000]) {
+      reset();
+      const I = await institution(['a', 'b', 'c', 'd']);
+      await dir(I, 'a', false);
+      const a = people[who(I, 'a')]!.partyId;
+      let boom = true;
+      const dp = deprovisioner([I], { tokens: { revokeAll: async (p, r) => { if (boom && p === a) { boom = false; throw new Error('simulated crash'); } return app.services.tokens.revokeAll(p, r); } } });
+      await expect(job([I], { deprovision: dp }).run()).rejects.toBeInstanceOf(DriftCycleFailed);
+      expect(await live(who(I, 'a'))).toBe(true); // the staff row is gone but the session was not revoked: a 403, not a 401
+      now = new Date(NOW.getTime() + lateMs);
+      expect(await job([I]).run()).toMatchObject({ failed: 0 });
+      expect(await live(who(I, 'a'))).toBe(false);
+      expect(await roles(who(I, 'a'))).not.toContain('org_staff');
+      // finished once: the person, still a Kesher member, signs in again; later cycles leave that session alone
+      people['again'] = { partyId: a, access: (await app.services.tokens.issue({ partyId: a, deviceId: 'phone-2', roles: ['member'] })).accessToken };
+      expect((await mine('again')).status).not.toBe(401);
+      for (let i = 0; i < 3; i += 1) await job([I]).run();
+      expect((await mine('again')).status).not.toBe(401);
+    }
+  });
+
+  it('(S4) the flag is re-read before each institution and each removal; off mid-cycle stops further removals and still reports an earlier failure', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    await dir(I, 'a', false);
+    flagState.budget = 2; // the start and the institution pass; the removal's check answers off
+    expect(await job([I]).run()).toMatchObject({ skipped: 'flag_off', corrected: 0 });
+    expect(await active(who(I, 'a'))).toEqual([true]);
+    const X = await institution(['a', 'b', 'c']);
+    const Y = await institution(['a', 'b', 'c', 'd']);
+    await dir(Y, 'a', false);
+    listing = async (org) => {
+      if (org === X) throw new OrgIdPError('PROVIDER_UNAVAILABLE', 'down');
+      return sim.listDirectory(org);
+    };
+    flagState.budget = 2; // the start and X; Y's institution pass answers off
+    await expect(job([X, Y]).run()).rejects.toBeInstanceOf(DriftCycleFailed);
+    expect(await active(who(Y, 'a'))).toEqual([true]);
+  });
+
+  it('a finished-late removal of the last admin sends the alert once', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    await db.query("update org.staff set role = 'admin' where party_id = $1", [people[who(I, 'a')]!.partyId]);
+    await dir(I, 'a', false);
+    const sent: string[] = [];
+    const spy: NotifyPort = { ...notify, send: async (m, key) => { sent.push(key); return notify.send(m, key); } } as NotifyPort;
+    const a = people[who(I, 'a')]!.partyId;
+    let boom = true;
+    const dp = deprovisioner([I], { alertTo: 'ops@kesher.example', notify: spy, tokens: { revokeAll: async (p, r) => { if (boom && p === a) { boom = false; throw new Error('simulated crash'); } return app.services.tokens.revokeAll(p, r); } } });
+    await expect(job([I], { deprovision: dp }).run()).rejects.toBeInstanceOf(DriftCycleFailed);
+    expect(sent).toHaveLength(0);
+    await job([I], { deprovision: dp }).run();
+    await job([I], { deprovision: dp }).run();
+    expect(sent.filter((k) => k.endsWith(':admin-none'))).toHaveLength(1);
+  });
+
+  it('two removals of the same key both answer true; the second only finds the first', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    const dp = deprovisioner([I]);
+    const how = { reason: 'Directory drift sweep', payload: { source: 'drift', drift_missing: false } };
+    const [x, y] = await Promise.all([dp.remove(I, 'idp-a', 'drift:race', NOW, how), dp.remove(I, 'idp-a', 'drift:race', NOW, how)]);
+    expect([x, y]).toEqual([true, true]);
+    expect(await dp.remove(I, 'idp-b', 'drift:other', NOW, how)).toBe(true);
+    expect(await dp.remove(I, 'idp-b', 'drift:another', NOW, how)).toBe(false); // no live link any more
   });
 
   it('(4) more than half of the linked staff in one cycle is refused: audit row once a day and a metric, nothing removed', async () => {

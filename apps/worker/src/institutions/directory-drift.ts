@@ -10,7 +10,10 @@
 //   OpenAPI enum, the SDK and the admin types (T-0788), which is outside this card. `listDirectory` pages internally and throws on
 //   any failed page, so a list it returns is complete; a truncated one cannot reach this code.
 // - One bad institution never starves the others: errors are counted by a closed reason and the loop goes on. Nothing is queued.
-// - A removal whose post-commit steps failed is finished by the next cycles (drift audit rows of the last hour), never forgotten.
+// - A removal whose post-commit steps failed is finished by the next cycles however late (drift audit rows with no `deprovision_finished`
+//   marker; the marker is written once `finish` completes, so a finished one never revokes a newer session).
+// - A link younger than 24 hours is not removed for ABSENCE (SCIM sync lags); a positive inactive is never graced. Known gap: the port
+//   does not expose the raw directory state (the adapter maps anything but 'active' to inactive), so a suspect state cannot be told apart.
 // - Audit payloads carry ids and the closed `drift_missing` flag only: no email, no subject.
 import type { AuditService } from '@kesher/api/audit/service';
 import type { FeatureFlags } from '@kesher/api/billing/capabilities';
@@ -20,7 +23,9 @@ import { guarded, type Metrics } from '@kesher/domain';
 import { OrgIdPError, type OrgIdPPort } from '@kesher/ports';
 
 export const DRIFT_CYCLE_MS = 10 * 60_000;
-const RESUME_WINDOW_MS = 60 * 60_000;
+/** A link younger than this is not removed for ABSENCE: SCIM sync can lag the link by tens of minutes. A positive inactive is never graced. */
+const NEW_LINK_GRACE_MS = 24 * 3_600_000;
+const RESUME_BATCH = 100;
 const SYSTEM = { actorId: '00000000-0000-7000-8000-000000000000', actorRole: 'system' };
 const SOURCE = 'drift';
 
@@ -58,6 +63,7 @@ export interface DirectoryDriftDeps {
 
 interface Link {
   id: string;
+  linkedAt: number;
   subject: string;
   partyId: string;
 }
@@ -81,11 +87,17 @@ export class DirectoryDrift {
     if (!port || !this.d.deprovision) return { ...out, skipped: 'no_binding' };
     if (!(await this.d.flags.isOn(ORG_SSO_FLAG))) return { ...out, skipped: 'flag_off' };
     const now = this.d.clock();
-    await this.resume(now, out);
+    await this.resume(out);
     for (const institutionId of this.d.deprovision.institutions()) {
-      if (!(await this.d.flags.isOn(ORG_SSO_FLAG))) return { ...out, skipped: 'flag_off' };
+      if (!(await this.d.flags.isOn(ORG_SSO_FLAG))) {
+        out.skipped = 'flag_off';
+        break;
+      }
       try {
-        await this.sweep(port, institutionId, now, out);
+        if (!(await this.sweep(port, institutionId, now, out))) {
+          out.skipped = 'flag_off';
+          break;
+        }
       } catch (e) {
         out.failed += 1;
         this.metrics.put({ 'staff.drift_refused': 1 }, { reason: reasonOf(e) });
@@ -117,9 +129,10 @@ export class DirectoryDrift {
     return out;
   }
 
-  private async sweep(port: OrgIdPPort, institutionId: string, now: Date, out: DriftResult): Promise<void> {
+  /** False when the flag went off part-way and the cycle must stop. */
+  private async sweep(port: OrgIdPPort, institutionId: string, now: Date, out: DriftResult): Promise<boolean> {
     const links = await this.links(institutionId);
-    if (links.length === 0) return; // no live link, nothing to correct and no list call
+    if (links.length === 0) return true; // no live link, nothing to correct and no list call
     out.institutions += 1;
     const read = this.read(await port.listDirectory(institutionId));
     if (read.malformed > 0) this.metrics.put({ 'staff.drift_refused': read.malformed }, { reason: 'malformed_entry' });
@@ -134,23 +147,26 @@ export class DirectoryDrift {
       const active = bySubject.get(link.subject);
       if (active === false) candidates.push({ link, missing: false });
       else if (active === undefined) {
+        if (link.linkedAt > now.getTime() - NEW_LINK_GRACE_MS) continue; // freshly linked: the directory may not list them yet
         if (trustAbsence) candidates.push({ link, missing: true });
         else doubtful += 1;
       }
     }
     if (doubtful > 0) this.metrics.put({ 'staff.drift_refused': doubtful }, { reason: 'unreliable_list' });
-    if (candidates.length === 0) return;
+    if (candidates.length === 0) return true;
     if (candidates.length * 2 > links.length) {
       out.refused += 1;
       this.metrics.put({ 'staff.drift_refused': 1 }, { reason: 'guard_half' });
       await this.recordRefusal(institutionId, links.length, candidates.length, now);
-      return;
+      return true;
     }
     for (const { link, missing } of candidates) {
+      if (!(await this.d.flags.isOn(ORG_SSO_FLAG))) return false; // turned off mid-cycle: no further removal
       try {
         const removed = await this.d.deprovision!.remove(institutionId, link.subject, `${SOURCE}:${link.id}`, now, {
           reason: 'Directory drift sweep',
           payload: { source: SOURCE, drift_missing: missing },
+          linkId: link.id,
         });
         if (!removed) continue;
         out.corrected += 1;
@@ -160,6 +176,7 @@ export class DirectoryDrift {
         this.metrics.put({ 'staff.drift_refused': 1 }, { reason: 'removal_failed' });
       }
     }
+    return true;
   }
 
   /** Valid entries (a non-empty subject of at most 255 characters and a boolean `active`); everything else is only counted. */
@@ -175,8 +192,8 @@ export class DirectoryDrift {
   }
 
   private async links(institutionId: string): Promise<Link[]> {
-    const r = await this.d.db.query<{ id: string; idp_subject: string; party_id: string }>('select id, idp_subject, party_id from org.staff_idp_link where institution_id = $1 and unlinked_at is null order by id', [institutionId]);
-    return r.rows.map((x) => ({ id: x.id, subject: x.idp_subject, partyId: x.party_id }));
+    const r = await this.d.db.query<{ id: string; idp_subject: string; party_id: string; linked_at: string | Date }>('select id, idp_subject, party_id, linked_at from org.staff_idp_link where institution_id = $1 and unlinked_at is null order by id', [institutionId]);
+    return r.rows.map((x) => ({ id: x.id, subject: x.idp_subject, partyId: x.party_id, linkedAt: new Date(x.linked_at).getTime() }));
   }
 
   /** The refusal is an audit row, written once a day per institution so a standing refusal cannot grow the log every cycle. */
@@ -187,12 +204,17 @@ export class DirectoryDrift {
     await this.d.audit.record({ ...SYSTEM, action: 'institution.staff.drift_refused', subject: institutionId, reason: 'Directory drift would remove more than half of the linked staff', payload: { institutionId, day, linked, candidates, reason: 'guard_half' } }, now);
   }
 
-  /** Finishes removals of the last hour whose role or session step failed after the commit; idempotent, skipped for anyone active staff somewhere. */
-  private async resume(now: Date, out: DriftResult): Promise<void> {
-    const since = new Date(now.getTime() - RESUME_WINDOW_MS);
+  /**
+   * Finishes drift removals whose role or session step failed after the commit: every drift audit row with no `deprovision_finished` marker
+   * (written once, when `finish` completes), however old. A finished one is never looked at again and never revokes a newer session.
+   */
+  private async resume(out: DriftResult): Promise<void> {
     const r = await this.d.db.query<{ subject: string; payload: { institutionId?: string; eventId?: string; adminNone?: boolean } }>(
-      "select subject, payload from audit.entry where action = 'institution.staff.deprovision' and payload->>'source' = $1 and at > $2 order by seq",
-      [SOURCE, since],
+      `select a.subject, a.payload from audit.entry a
+        where a.action = 'institution.staff.deprovision' and a.payload->>'source' = $1
+          and not exists (select 1 from ops.workflow_marker m where m.kind = 'deprovision_finished:' || (a.payload->>'institutionId') || ':' || (a.payload->>'eventId') and m.subject_id = a.subject::uuid)
+        order by a.seq limit ${RESUME_BATCH}`,
+      [SOURCE],
     );
     for (const row of r.rows) {
       const { institutionId, eventId } = row.payload;

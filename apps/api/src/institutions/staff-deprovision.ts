@@ -16,6 +16,7 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { Database, SqlClient } from '../db.ts';
 import type { InboundEvent } from '../webhooks/store.ts';
 import { simulatorVerifier, type Verified, type WebhookVerifier } from '../webhooks/verify.ts';
+import { getMarker, putMarker } from '../ops/workflow-marker.ts';
 import { StaffIdpLinks } from './staff-idp-link.ts';
 import type { InstitutionTeam } from './team.ts';
 
@@ -163,7 +164,7 @@ export class StaffDeprovisioner {
    * row, audit and unlink commit together, then role and sessions follow. `eventId` is the idempotency key: a repeat finds its own audit
    * row and only finishes what it left undone. True iff this call or an earlier pass of the same key removed someone.
    */
-  async remove(institutionId: string, subject: string, eventId: string, now: Date, how: { reason: string; payload?: Record<string, unknown> }): Promise<boolean> {
+  async remove(institutionId: string, subject: string, eventId: string, now: Date, how: { reason: string; payload?: Record<string, unknown>; linkId?: string }): Promise<boolean> {
     const prior = await this.prior(eventId, institutionId);
     if (prior) {
       await this.finish(prior);
@@ -179,15 +180,16 @@ export class StaffDeprovisioner {
     // The link was gone inside the transaction: a concurrent delivery of this same event committed first. If its post-commit steps
     // failed, the router would mark THIS delivery processed and nobody would retry, so finish what that delivery committed.
     const raced = await this.prior(eventId, institutionId);
-    if (raced) await this.finish(raced);
-    return false;
+    if (!raced) return false;
+    await this.finish(raced);
+    return true;
   }
 
   /** Row, audit and unlink in one transaction: a crash leaves all of it or none. */
-  private async deprovision(institutionId: string, subject: string, eventId: string, now: Date, how: { reason: string; payload?: Record<string, unknown> }): Promise<Done | undefined> {
+  private async deprovision(institutionId: string, subject: string, eventId: string, now: Date, how: { reason: string; payload?: Record<string, unknown>; linkId?: string }): Promise<Done | undefined> {
     return this.d.db.transaction(async (tx) => {
       const txdb = inTx(tx);
-      const link = (await tx.query<{ party_id: string; linked_at: string | Date }>('select party_id, linked_at from org.staff_idp_link where institution_id = $1 and idp_subject = $2 and unlinked_at is null for update', [institutionId, subject])).rows[0];
+      const link = (await tx.query<{ party_id: string; linked_at: string | Date }>('select party_id, linked_at from org.staff_idp_link where institution_id = $1 and idp_subject = $2 and unlinked_at is null and ($3::uuid is null or id = $3::uuid) for update', [institutionId, subject, how.linkId ?? null])).rows[0];
       if (!link) return undefined;
       const member = (await tx.query<{ role: string }>('select role from org.staff where party_id = $1 and institution_id = $2 and active for update', [link.party_id, institutionId])).rows[0];
       const removed = member ? await this.d.team.deactivate(institutionId, link.party_id, txdb) : false;
@@ -213,6 +215,9 @@ export class StaffDeprovisioner {
    * role strip are two steps (the role lives in the identity repository, not in SQL): a hire between them is possible only in that
    * instant, and the new institution's grant (`InstitutionTeam.apply`) writes the role again. Skipped for a party who is active staff anywhere (a stale link must not reach their new job). */
   async finish(done: Done): Promise<void> {
+    // Runs to completion once: the write-once marker ends it, so a replay never revokes a session the person opened AFTER the removal.
+    const kind = `deprovision_finished:${done.institutionId}:${done.eventId}`;
+    if ((await getMarker(this.d.db, kind, done.partyId)) !== undefined) return;
     const active = await this.d.db.query('select 1 from org.staff where party_id = $1 and active', [done.partyId]);
     if (!active.rowCount) {
       await this.d.team.clearOrgRole(done.partyId);
@@ -221,5 +226,6 @@ export class StaffDeprovisioner {
     if (done.adminNone && this.d.alertTo) {
       await this.d.notify.send({ channel: 'email', to: this.d.alertTo, template: 'institution.admin_none', locale: 'en', data: { institutionId: done.institutionId }, category: 'service' }, `deprovision:${done.eventId}:admin-none`);
     }
+    await putMarker(this.d.db, { kind, subjectId: done.partyId, value: 'done' });
   }
 }
