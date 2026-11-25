@@ -54,7 +54,7 @@ import { StudentDetail, studentHandlers } from './institutions/student.ts';
 import { statementHandlers } from './institutions/statement.ts';
 import { InstitutionTeam, teamHandlers } from './institutions/team.ts';
 import { StaffIdpLinks } from './institutions/staff-idp-link.ts';
-import { DEPROVISION_PROVIDER, StaffDeprovisioner, directoryResolver } from './institutions/staff-deprovision.ts';
+import { DEPROVISION_PROVIDER, StaffDeprovisioner, directoryInstitutions, directoryResolver } from './institutions/staff-deprovision.ts';
 import { InstitutionUsBanking, usBankingHandlers } from './institutions/us-banking.ts';
 import { UsCollections, usCollectionsHandlers } from './institutions/us-collections.ts';
 import { InstitutionUsFunding, usFundingHandlers } from './institutions/us-funding.ts';
@@ -241,13 +241,15 @@ function buildServices(o: AppOptions) {
   webhooks.bind(CROWDED_PROVIDER, { verifier: refuseAllVerifier, process: (e) => crowdedWebhook.process(e) });
   // WorkOS Directory Sync (T-0790): bound where an org-idp binding exists; the verifier answers 404 and stores nothing while auth.orgSso
   // is off, and the processor checks the flag again. A removal in the institution's IdP deprovisions the linked staff member.
+  let deprovision: StaffDeprovisioner | undefined;
   if (o.registry.bindingFor('org-idp', o.market)) {
-    const deprovision = new StaffDeprovisioner({
+    deprovision = new StaffDeprovisioner({
       db: o.db, audit, links: new StaffIdpLinks({ db: o.db, audit }), team, tokens, flags, notify: notifyPort, metrics: stdoutMetrics, now: clock.now,
       port: () => o.registry.resolve<OrgIdPPort>('org-idp', o.market), mode: () => o.registry.bindingFor('org-idp', o.market)?.mode,
-      directories: directoryResolver(o.orgIdp?.orgs), alertTo: o.orgIdp?.staffAlertEmail,
+      directories: directoryResolver(o.orgIdp?.orgs), institutions: directoryInstitutions(o.orgIdp?.orgs), alertTo: o.orgIdp?.staffAlertEmail,
     });
-    webhooks.bind(DEPROVISION_PROVIDER, { verifier: deprovision.verifier(), process: (e) => deprovision.process(e) });
+    const dp = deprovision;
+    webhooks.bind(DEPROVISION_PROVIDER, { verifier: dp.verifier(), process: (e) => dp.process(e) });
   }
   const institutionCredit = new InstitutionCredit(o.db, approvals, audit, kybGate);
   const payoutAccounts = new PayoutAccounts(o.db, audit);
@@ -311,7 +313,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', revoker });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, social, socialLinks, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, fundingDetails, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
+  return { clock, identity, tokens, otp, passkeys, social, socialLinks, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, fundingDetails, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, deprovision, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
 /** T-0043: in prod, the reason a flag cannot be turned on (its port is a simulator), else undefined. */

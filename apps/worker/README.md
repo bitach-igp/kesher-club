@@ -49,6 +49,7 @@ their own flag checks.
 | `monitoring` | `monitoring/job` | 1 h |
 | `card-release-holds` | `cards/release-holds` | 1 h |
 | `esim-usage` | `esim/usage` | 1 h |
+| `directory-drift` | `institutions/directory-drift`, dark behind `auth.orgSso` (T-0791) | 10 min |
 
 Nightly jobs (T-0023) run once per Israel calendar day at their wall-clock time. Each ticks every minute;
 once Israel time passes its slot and `ops.job_run` has no row for today's Israel date, it runs and then
@@ -59,6 +60,7 @@ the clocks jump past the slot, the first tick after the jump runs it. Idle ticks
 | Job | Module | Israel time |
 | --- | --- | --- |
 | `balance-proof` | `ledger/balance-proof` | 02:30 |
+| `directory-report` | `institutions/directory-drift`, the unlinked directory users counted (T-0791) | 04:00 |
 | `catalogue-sync` | `catalogue/sync`, asking each market's vendors for what `config/catalogue.json` lists; recorded per market | 03:00 |
 
 Reconciliation joins at 04:00 Israel time with the processor adapter, which brings its statement

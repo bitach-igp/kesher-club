@@ -82,16 +82,17 @@ describe('buildJobs (T-0022)', () => {
       'agent-expire-intents': 900,
       monitoring: 3600,
       'esim-usage': 3600,
+      'directory-drift': 600,
       'card-release-holds': 3600,
       ...Object.fromEntries(Object.keys(NIGHTLY).map((n) => [n, DAILY_TICK_MS / 1000])),
     });
     // The nightly jobs tick every minute and run once a day at their Israel time.
-    expect(NIGHTLY).toEqual({ 'balance-proof': '02:30', 'catalogue-sync': '03:00', 'kyb-rescreen': '05:00', 'kyb-refresh': '05:15', 'partner-recon': '05:30', 'deposit-reconcile': '06:30', 'us-banking-recon': '03:00' });
+    expect(NIGHTLY).toEqual({ 'balance-proof': '02:30', 'catalogue-sync': '03:00', 'kyb-rescreen': '05:00', 'kyb-refresh': '05:15', 'partner-recon': '05:30', 'deposit-reconcile': '06:30', 'us-banking-recon': '03:00', 'directory-report': '04:00' });
   });
 
   it('gives every job a scope: market jobs sweep their own market\'s rows, club jobs run one at a time in the club (T-0028)', () => {
     const byScope = (scope: string) => jobs.filter((j) => j.scope === scope).map((j) => j.name).sort();
-    expect(byScope('market')).toEqual(['ach-release-holds', 'auto-reload', 'card-token-events', 'catalogue-sync', 'deposit-reconcile', 'esim-usage', 'kyb-rescreen', 'load-sweep', 'metrics-market', 'p2p-release-holds', 'partner-recon', 'payout-sweep', 'us-banking-recon', 'us-funding-sweep', 'webhook-replay']);
+    expect(byScope('market')).toEqual(['ach-release-holds', 'auto-reload', 'card-token-events', 'catalogue-sync', 'deposit-reconcile', 'directory-drift', 'directory-report', 'esim-usage', 'kyb-rescreen', 'load-sweep', 'metrics-market', 'p2p-release-holds', 'partner-recon', 'payout-sweep', 'us-banking-recon', 'us-funding-sweep', 'webhook-replay']);
     expect(byScope('club')).toEqual(['agent-expire-intents', 'balance-proof', 'card-release-holds', 'fx-refresh-rates', 'fx-void-stale', 'kyb-refresh', 'metrics-recon', 'monitoring', 'outbox-publish', 'p2p-expire-requests', 'send-sweep']);
     expect(jobs.every((j) => j.scope === 'market' || j.scope === 'club')).toBe(true);
   });
@@ -114,6 +115,7 @@ describe('buildJobs (T-0022)', () => {
     expect(r.rows).toEqual([
       { job: 'IL:catalogue-sync', run_date: '2026-10-19' },
       { job: 'IL:deposit-reconcile', run_date: '2026-10-19' },
+      { job: 'IL:directory-report', run_date: '2026-10-19' },
       { job: 'IL:kyb-rescreen', run_date: '2026-10-19' },
       { job: 'IL:partner-recon', run_date: '2026-10-19' },
       { job: 'IL:us-banking-recon', run_date: '2026-10-19' },

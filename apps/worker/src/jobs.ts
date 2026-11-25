@@ -11,7 +11,7 @@ import { OutboxPublisher } from '@kesher/api/transfers/outbox';
 import { cardIssuingProcessor } from '@kesher/api/cards/settlement';
 import type { Database } from '@kesher/api/db';
 import { US_BANKING_FLAG } from '@kesher/api/institutions/us-banking';
-import { FundingError, type BankPort, type EsimPort, type FundingPort, type FundingStatementPort, type FxPort, type InstitutionBankingPort, type InsurancePort, type KybPort, type Market, type NotifyPort, type ProviderRegistry } from '@kesher/ports';
+import { FundingError, type BankPort, type EsimPort, type FundingPort, type FundingStatementPort, type FxPort, type InstitutionBankingPort, type InsurancePort, type KybPort, type Market, type NotifyPort, type OrgIdPPort, type ProviderRegistry } from '@kesher/ports';
 import { guarded, minorToNumber, stdoutMetrics, type Metrics } from '@kesher/domain';
 import { z } from 'zod';
 import { EXPIRE_INTENTS_CYCLE_MS, ExpireIntentsJob } from './agent/expire-intents.ts';
@@ -22,6 +22,7 @@ import { EsimUsagePoller } from './esim/usage.ts';
 import { REFRESH_CYCLE_MS, RefreshRatesJob } from './fx/refresh-rates.ts';
 import { VOID_STALE_CYCLE_MS, VoidStaleConversionsJob } from './fx/void-stale.ts';
 import { DepositReconcileJob } from './institutions/deposit-reconcile.ts';
+import { DirectoryDrift, DRIFT_CYCLE_MS } from './institutions/directory-drift.ts';
 import { KybRefresh, KybRescreen } from './institutions/kyb-sweeps.ts';
 import { BalanceProof } from './ledger/balance-proof.ts';
 import { MonitoringJob } from './monitoring/job.ts';
@@ -50,7 +51,7 @@ export const ESIM_USAGE_CYCLE_MS = 60 * 60_000;
  *  reconciliation (T-0684) reads the funding vendor's statement for yesterday at 05:30, half an hour ahead of REQ-LED-004's 06:00 deadline. The KYB rescreen
  *  and refresh (T-0624) run before the working day, so a payout that morning meets the day's answer. The
  *  deposit reconciliation (T-0618) reads yesterday's bank statement once the bank has closed the day. */
-export const NIGHTLY = { 'balance-proof': '02:30', 'catalogue-sync': '03:00', 'kyb-rescreen': '05:00', 'kyb-refresh': '05:15', 'partner-recon': '05:30', 'deposit-reconcile': '06:30', 'us-banking-recon': '03:00' } as const;
+export const NIGHTLY = { 'balance-proof': '02:30', 'catalogue-sync': '03:00', 'kyb-rescreen': '05:00', 'kyb-refresh': '05:15', 'partner-recon': '05:30', 'deposit-reconcile': '06:30', 'us-banking-recon': '03:00', 'directory-report': '04:00' } as const;
 
 /** What the nightly catalogue sync asks the vendors for: `config/catalogue.json`, so nothing is hard-coded. */
 export const catalogueConfigSchema = z
@@ -158,6 +159,8 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue, m
   const outbox = new OutboxPublisher(db, s.outbound);
   const proof = new BalanceProof(db);
   const sync = new CatalogueSync(db, clock);
+  // Directory drift (T-0791): resolved when it runs; a market with no `org-idp` binding, or `auth.orgSso` off, does nothing.
+  const drift = new DirectoryDrift({ db, audit: s.audit, flags: s.flags, port: () => (registry.bindingFor('org-idp', market) ? registry.resolve<OrgIdPPort>('org-idp', market) : undefined), deprovision: s.deprovision, metrics, clock });
   const providerOf = (capability: string): string => registry.bindingFor(capability, market)?.provider ?? 'simulator';
   const rescreen = new KybRescreen(db, s.institutionKyb, s.flags, registry.resolve<KybPort>('kyb', market), providerOf('kyb'), market, clock);
   const refresh = new KybRefresh(s.institutionKyb, clock);
@@ -207,6 +210,7 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue, m
     { name: 'agent-expire-intents', scope: 'club', everyMs: EXPIRE_INTENTS_CYCLE_MS, run: () => intents.run() },
     { name: 'monitoring', scope: 'club', everyMs: MONITORING_CYCLE_MS, run: () => monitoring.run() },
     { name: 'card-release-holds', scope: 'club', everyMs: CARD_HOLD_RELEASE_CYCLE_MS, run: () => cardHolds.run() },
+    { name: 'directory-drift', scope: 'market', everyMs: DRIFT_CYCLE_MS, run: () => drift.run() },
     { name: 'esim-usage', scope: 'market', everyMs: ESIM_USAGE_CYCLE_MS, run: () => esim.poll(clock()) },
     daily({ name: 'balance-proof', scope: 'club', at: NIGHTLY['balance-proof'], run: (now) => proof.run(now) }, runs, clock),
     daily(
@@ -226,6 +230,7 @@ export function buildJobs({ app, db, registry, market, clock, runs, catalogue, m
     daily({ name: 'kyb-refresh', scope: 'club', at: NIGHTLY['kyb-refresh'], run: (now) => refresh.run(now) }, runs, clock),
     daily({ name: 'partner-recon', scope: 'market', at: NIGHTLY['partner-recon'], run: partnerRecon }, marketRuns, clock),
     daily({ name: 'deposit-reconcile', scope: 'market', at: NIGHTLY['deposit-reconcile'], run: (now) => depositRecon.run(now) }, marketRuns, clock),
+    daily({ name: 'directory-report', scope: 'market', at: NIGHTLY['directory-report'], run: () => drift.report() }, marketRuns, clock),
     daily({ name: 'us-banking-recon', scope: 'market', at: NIGHTLY['us-banking-recon'], run: (now) => usRecon.run(now) }, marketRuns, clock),
   ];
 }

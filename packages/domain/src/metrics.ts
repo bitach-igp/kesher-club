@@ -46,6 +46,12 @@ export const METRIC_DEFS = {
   'staff.deprovision_lag_s': { unit: 'Seconds', dimensions: [] },
   // A signed directory event the org IdP adapter refused (reason: its closed error code, lower-case); a real removal may have been dropped.
   'staff.deprovision_refused': { unit: 'Count', dimensions: ['reason'] },
+  // The drift sweep (T-0791): staff removed because the directory dropped them (reason: inactive | missing); a webhook was lost or late.
+  'staff.drift_corrected': { unit: 'Count', dimensions: ['reason'] },
+  // A directory the sweep did not act on (reason: a closed list, see directory-drift.ts); an empty or failed read is never read as "everyone left".
+  'staff.drift_refused': { unit: 'Count', dimensions: ['reason'] },
+  // Directory users with no staff link, counted by the nightly report and never acted on.
+  'staff.directory_unlinked': { unit: 'Count', dimensions: [] },
 } as const satisfies Record<string, MetricDef>;
 export type MetricName = keyof typeof METRIC_DEFS;
 
