@@ -2171,6 +2171,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/institutions/{id}/sso/link/start": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Begin the one-time link of a signed-in staff member to the institution's IdP identity
+         * @description REQ-AUTH-008 (T-1120 contract, T-0792 behaviour). Needs a bearer AND a fresh step-up (REQ-AUTH-006): the signed-in party proves control of their Kesher account in this same request. The party must be ACTIVE staff of THIS institution, or hold a valid, pending staff invite to THIS institution (`inviteToken`). The invite is only VALIDATED here (read-only; nothing is accepted and no row is changed); it is consumed at the callback, after the IdP identity is verified, the organisation equals the institution stored in the state, and the state is claimed. The IdP's email, name and groups are never used to find or raise a staff row. Same body and `Set-Cookie` result as `startStaffSso`; the state is bound to the party and their session. Errors: 401 UNAUTHENTICATED without a bearer; 401 STEP_UP_REQUIRED for a missing or stale step-up; 422 VALIDATION_FAILED for a bad body (`deviceId` is optional and defaults to the session's own device); 404 NOT_FOUND when the party is neither active staff of this institution nor holds a valid pending invite for it (one answer for an invalid, expired, taken or other-institution invite); 409 IDEMPOTENCY_CONFLICT when the party already has a live link; 404 FEATURE_OFF as for `startStaffSso`; 429 RATE_LIMITED per party; 503 PROVIDER_UNAVAILABLE. No Idempotency-Key, for the same reason as `startStaffSso`. A link state lives 5 minutes, the step-up's own window.
+         */
+        readonly post: operations["startStaffSsoLink"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/institutions/{id}/sso/start": {
         readonly parameters: {
             readonly query?: never;
@@ -2181,8 +2201,8 @@ export interface paths {
         readonly get?: never;
         readonly put?: never;
         /**
-         * Begin an institution staff sign-in (or the one-time link) through the institution's own IdP
-         * @description REQ-AUTH-008 (T-1120 contract, T-0792 behaviour). Public: a staff member who is not signed in has no bearer; a valid bearer is read only for `purpose: link`. Answers 404 FEATURE_OFF while `auth.orgSso` is off (nothing stored), and 404 NOT_FOUND for an institution with no SSO record. Returns the IdP URL, a one-time `state` and its expiry (10 minutes at most), and binds the state to the starting browser with an HttpOnly, Secure, SameSite=Lax cookie in `Set-Cookie`; the callback refuses a state without that cookie. `sign_in` is for an identity that is already linked. `link` is the first sign-in of a staff member who has no link yet and needs a signed-in session plus ONE proof of control in this same request: a fresh `X-Step-Up` token (REQ-AUTH-006) or the `inviteToken` of a staff invite to this institution (REQ-INS-020, accepted here). The IdP's email, name and groups are never used to find or raise a staff row. Starts are rate limited per institution and per party (429 RATE_LIMITED). The callback URL is fixed server-side; the caller cannot choose where the browser lands.
+         * Begin an institution staff sign-in through the institution's own IdP
+         * @description REQ-AUTH-008 (T-1120 contract, T-0792 behaviour). Public (no bearer): for a staff member whose IdP identity is already linked. No Idempotency-Key, as for `signInWithSocial`: it moves no money, and every call mints a fresh one-time state, so a retry is harmless. Returns the IdP URL, a one-time `state` (at least 256 bits, single use, 10 minutes at most) and its expiry, and binds the state to the starting browser with an HttpOnly, Secure, SameSite=Lax `__Host-` cookie in `Set-Cookie`. The first sign-in of someone with no link yet is `startStaffSsoLink`, never this operation. Errors: 404 FEATURE_OFF while `auth.orgSso` is off, AND for a malformed institution id, an unknown institution, or one with no SSO record (one answer, so SSO use cannot be enumerated); 422 VALIDATION_FAILED for a bad body; 503 PROVIDER_UNAVAILABLE when the IdP connection is down. Abuse control: this route has NO application-level counter, because a per-institution counter on a public route would let anyone who knows an institution id lock its staff out. Abuse is bounded at the edge: a rate rule per source address on the ALB or WAF for `/v1/institutions/*\/sso/start` and `/v1/sso/*` is a REQUIREMENT before the flag turns on (follow-up card). Each start writes exactly one state row; the marker table is insert-only, so those rows need a purge or TTL path (follow-up card).
          */
         readonly post: operations["startStaffSso"];
         readonly delete?: never;
@@ -3312,12 +3332,32 @@ export interface paths {
             readonly cookie?: never;
         };
         /**
-         * The IdP sends the browser back here with a code; a linked, active staff member gets the normal staff token
-         * @description REQ-AUTH-008 (T-1120 contract, T-0792 behaviour). Public; the redirect URI registered with the IdP. The institution comes from the state stored at start, never from this request. The state must be single use, unexpired, and the browser must present the cookie set at start; the code is checked through the org identity port. The identity must be linked to an ACTIVE staff member of that institution, or be the `link` flow that started with a proof of control; a link is never made by email match. Every refusal (unknown, replayed, expired or unbound state, a bad code, another organisation, an unlinked or deprovisioned identity, a link conflict) answers the same 401 UNAUTHENTICATED with the same body and no hint which, and writes nothing. 404 FEATURE_OFF while `auth.orgSso` is off. 503 PROVIDER_UNAVAILABLE when the IdP is down. A success returns the same token pair as any staff sign-in: no longer-lived token, and no role from an IdP group. `code` and `state` are secrets of the redirect: they are never logged and never repeated in a response.
+         * The IdP sends the browser back here with a code; the browser is redirected on with a one-time exchange code
+         * @description REQ-AUTH-008 (T-1120 contract, T-0792 behaviour). Public; the redirect URI registered with the IdP, so the caller is a BROWSER and the answer is a redirect, never tokens. The state must be single use, unexpired, and the browser must present the cookie set at start; the institution comes from the stored state, never from this request; the IdP code is checked through the org identity port. The identity must be linked to an ACTIVE staff member of that institution, or be a link flow whose proof of control was given at start; a link is never made by email match. Every outcome except a flag-off 404 is a 302 to the ONE fixed console URL from server configuration (never caller-controlled): success is `Location: <console url>#code=<exchange code>` (a single-use code of at least 256 bits, valid 60 seconds, redeemed by `exchangeStaffSso`; in the fragment so no server sees it); EVERY refusal (unknown, replayed, expired or unbound state, a bad code, another organisation, an unlinked or deprovisioned identity, a link conflict) is the same 302 to `<console url>#error=refused`, identical in body, headers and timing class, and writes nothing. An IdP outage is `#error=unavailable`. Every response carries `Cache-Control: no-store`, `Referrer-Policy: no-referrer` and a `Set-Cookie` that clears the binding cookie (Max-Age=0). 404 FEATURE_OFF while `auth.orgSso` is off (nothing stored, no cookie). The ALB access log records the query string, so `code` and `state` reach the log bucket: both are single use and short lived, and dropping the query string for this path from the ALB logs (or restricting those logs) is a follow-up before the flag turns on. Our own request log carries the operation name only.
          */
         readonly get: operations["completeStaffSso"];
         readonly put?: never;
         readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/sso/exchange": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Redeem the one-time exchange code for the normal staff token pair
+         * @description REQ-AUTH-008 (T-1120 contract, T-0792 behaviour). Public; called by the console page the callback redirected to. The code is single use and valid for 60 seconds; a replayed, expired, unknown or malformed code answers the same 401 UNAUTHENTICATED, and a concurrent double redemption has exactly one winner. A success is the same token pair as any staff sign-in: no longer-lived token and no role from an IdP group. 404 FEATURE_OFF while `auth.orgSso` is off; 422 VALIDATION_FAILED for a body that is not `{code}`; 429 RATE_LIMITED per code. No Idempotency-Key: the code is single use by design.
+         */
+        readonly post: operations["exchangeStaffSso"];
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -5332,6 +5372,15 @@ export interface components {
             /** @description Role and the last four digits of the phone, e.g. Finance •••• 0109 */
             readonly displayName: string;
         };
+        readonly StaffSsoExchangeRequest: {
+            /** @description The one-time exchange code from the callback's redirect fragment */
+            readonly code: string;
+        };
+        readonly StaffSsoLinkStartRequest: {
+            readonly deviceId?: components["schemas"]["DeviceId"];
+            /** @description The token of a pending staff invite to this institution; validated here and consumed at the callback */
+            readonly inviteToken?: string;
+        };
         readonly StaffSsoSession: {
             /** Format: uuid */
             readonly institutionId: string;
@@ -5340,7 +5389,7 @@ export interface components {
         readonly StaffSsoStart: {
             /** Format: date-time */
             readonly expiresAt: string;
-            /** @description One-time and opaque; the IdP echoes it to the callback */
+            /** @description One-time and opaque */
             readonly state: string;
             /**
              * Format: uri
@@ -5350,10 +5399,6 @@ export interface components {
         };
         readonly StaffSsoStartRequest: {
             readonly deviceId: components["schemas"]["DeviceId"];
-            /** @description Only for `purpose: link`: the token of a staff invite to this institution, as proof of control instead of a step-up */
-            readonly inviteToken?: string;
-            /** @enum {string} */
-            readonly purpose: "sign_in" | "link";
         };
         readonly StepUpRequest: {
             /** @description The authenticator's assertion; omit to receive options */
@@ -8951,13 +8996,42 @@ export interface operations {
             readonly default: components["responses"]["Problem"];
         };
     };
+    readonly startStaffSsoLink: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header: {
+                /** @description Step-up token from stepUp, younger than 5 minutes (REQ-AUTH-006). */
+                readonly "X-Step-Up": components["parameters"]["StepUp"];
+            };
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["StaffSsoLinkStartRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description The IdP URL and the one-time state */
+            readonly 200: {
+                headers: {
+                    /** @description The browser binding for the state (HttpOnly, Secure, SameSite=Lax, 5 minutes at most) */
+                    readonly "Set-Cookie"?: string;
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["StaffSsoStart"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
     readonly startStaffSso: {
         readonly parameters: {
             readonly query?: never;
-            readonly header?: {
-                /** @description Only for `purpose: link` without an `inviteToken`: a step-up token younger than 5 minutes (REQ-AUTH-006). */
-                readonly "X-Step-Up"?: string;
-            };
+            readonly header?: never;
             readonly path: {
                 readonly id: components["parameters"]["Id"];
             };
@@ -10733,6 +10807,7 @@ export interface operations {
     readonly completeStaffSso: {
         readonly parameters: {
             readonly query: {
+                /** @description The IdP's authorization code (format unverified until the real WorkOS) */
                 readonly code: string;
                 readonly state: string;
             };
@@ -10741,6 +10816,34 @@ export interface operations {
             readonly cookie?: never;
         };
         readonly requestBody?: never;
+        readonly responses: {
+            /** @description To the fixed console URL, with an exchange code or a generic error in the fragment */
+            readonly 302: {
+                headers: {
+                    readonly "Cache-Control"?: "no-store";
+                    readonly Location?: string;
+                    readonly "Referrer-Policy"?: "no-referrer";
+                    /** @description Clears the binding cookie (Max-Age=0) */
+                    readonly "Set-Cookie"?: string;
+                    readonly [name: string]: unknown;
+                };
+                content?: never;
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly exchangeStaffSso: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["StaffSsoExchangeRequest"];
+            };
+        };
         readonly responses: {
             /** @description The staff token pair */
             readonly 200: {

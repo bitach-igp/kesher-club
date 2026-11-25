@@ -454,21 +454,23 @@ Scoped 2026-11-25 from the founder's phase 1 rollout notes; see `docs/ops/phase-
 | [T-1117](T-1117.md) | AUTH | Alarms and RUN-10 for the WorkOS removal path (`unknown_org`, `scim_unauthorized`, `guard_half`, `drift_finish_abandoned`) and a re-drive for an abandoned removal | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
 | [T-1118](T-1118.md) | AUTH | Needs owner or ops decision, then code: production wiring of `orgIdp.orgs` and `staffAlertEmail` in both `main.ts`, with uniqueness and two-source agreement checks (security, independent reviewer) | REQ-AUTH-008 | needs owner decision · dark/before `auth.orgSso` is turned on |
 | [T-1119](T-1119.md) | AUTH | Partial index on the audit table for the drift sweep's resume scan; a migration card with a desktop apply request (scope only) | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
-| [T-1120](T-1120.md) | AUTH | Staff SSO contract and SDK: `startStaffSso`, `completeStaffSso`, route rows, generated types; first half of T-0792, dark (security, independent reviewer) | REQ-AUTH-008 | later · dark; merge before T-0792's behaviour |
+| [T-1120](T-1120.md) | AUTH | Staff SSO contract and SDK: four operations (`startStaffSso`, `startStaffSsoLink`, `completeStaffSso`, `exchangeStaffSso`), route rows, `HEADER_OPS` row, generated types; first half of T-0792, dark (security, independent reviewer) | REQ-AUTH-008 | later · dark; merge before T-0792's behaviour |
 
 ## Before `auth.orgSso` is turned on
 
 T-0789 (link table), T-0790 (webhook) and T-0791 (drift sweep) are merged and dark. Nothing below is done; do all of it, in this order, before the flag flips:
 
 1. T-1116, the WorkOS adapter fixes (the signature timestamp unit above all: until it is verified, a real delivery may be refused as stale).
+   Includes its item 5: the WorkOS adapter's SSO state and deactivation memory are per process; SSO cannot run on more than one API process until that moves (T-0792 review).
 2. T-1117, the alarms, RUN-10 and the re-drive for an abandoned removal.
 3. T-1118, production wiring: until `main.ts` passes `orgIdp.orgs` and `staffAlertEmail`, the webhook and the sweep are inert.
 4. T-1119, the sweep index (not blocking, but it bounds the resume scan).
 5. A WorkOS account and contract, with an Organization and a Directory Sync connection per institution; the secrets `workos-client-id`, `workos-api-key` and `workos-webhook-secret` (named in `docs/setup/secrets.md`) put in the secret store and `PROVIDER_ORG_IDP=workos` set.
-6. The webhook registered in the WorkOS dashboard as `https://<api host>/hooks/workos` for `dsync.user.created`, `dsync.user.updated`, `dsync.user.deleted`.
-7. The per-institution record (WorkOS organisation id, directory id, SCIM bearer) entered as configuration (ADR-004, T-1118).
-8. The flag flipped through the flag service with two approvals, after T-0789 is applied on the real Postgres (done) and the cards above are merged.
-9. The staging drill: remove a test user in the IdP and see the staff row inactive within 15 minutes, once by webhook and once with the webhook blocked (the sweep).
+6. T-1120 and T-0792 merged, plus an edge rate rule on `/v1/institutions/*/sso/start` and `/v1/sso/*` and the ALB access logs no longer recording the query string of `/v1/sso/callback` (infra follow-ups).
+7. The webhook registered in the WorkOS dashboard as `https://<api host>/hooks/workos` for `dsync.user.created`, `dsync.user.updated`, `dsync.user.deleted`.
+8. The per-institution record (WorkOS organisation id, directory id, SCIM bearer) entered as configuration (ADR-004, T-1118).
+9. The flag flipped through the flag service with two approvals, after T-0789 is applied on the real Postgres (done) and the cards above are merged.
+10. The staging drill: remove a test user in the IdP and see the staff row inactive within 15 minutes, once by webhook and once with the webhook blocked (the sweep).
 
 Known limits to carry into the pilot:
 
