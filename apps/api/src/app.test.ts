@@ -51,6 +51,13 @@ describe('API end to end (simulators)', () => {
     expect(JSON.stringify(r.body)).not.toMatch(/at .*\.ts:/);
   });
 
+  it('binds the WorkOS directory webhook only behind auth.orgSso: with the flag off (its default) the route answers 404 and stores nothing (T-0790)', async () => {
+    const r = await call('POST', '/v1/hooks/workos', { eventId: 'evt-app-1', op: 'deactivate', subject: 's', email: 'a@example.com' }, { 'x-sim-signature': 'sim' });
+    expect(r.status).toBe(404);
+    expect((await db.query("select 1 from ops.inbound_event where provider = 'workos'")).rowCount).toBe(0);
+    expect((await db.query("select 1 from ops.inbound_rejected where provider = 'workos'")).rowCount).toBe(0);
+  });
+
   it('signs a member up over HTTP and reads capabilities with registry flags', async () => {
     const otp = await call('POST', '/v1/auth/otp', { phone: '+972501234567' });
     expect(otp.status).toBe(201);

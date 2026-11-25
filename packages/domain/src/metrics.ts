@@ -42,6 +42,8 @@ export const METRIC_DEFS = {
   'provider.error': { unit: 'Count', dimensions: ['port'], optional: ['provider'] },
   // A webhook whose signature (or freshness) failed verification. Not alarmed: a burst is a forged-traffic signal read on the dashboard.
   'webhook.rejected': { unit: 'Count', dimensions: ['provider', 'reason'] },
+  // A directory deprovision processed more than 15 minutes after the IdP emitted it (REQ-AUTH-008, T-0790): the promise made observable.
+  'staff.deprovision_lag_s': { unit: 'Seconds', dimensions: [] },
 } as const satisfies Record<string, MetricDef>;
 export type MetricName = keyof typeof METRIC_DEFS;
 

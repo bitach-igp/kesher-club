@@ -147,8 +147,8 @@ export class InstitutionTeam {
     if (!target || !target.active) throw new DomainError('NOT_FOUND', 'Not active staff of this institution');
     if (b['active'] === false) {
       await this.requireAnotherAdmin(institutionId, target);
-      await this.d.db.query('update org.staff set active = false where party_id = $1 and institution_id = $2', [target.partyId, institutionId]);
-      await this.setOrgRole(target.partyId, undefined);
+      await this.deactivate(institutionId, target.partyId);
+      await this.clearOrgRole(target.partyId);
       await this.d.audit.record({ actorId: admin, actorRole: 'org_admin', action: 'institution.staff.remove', subject: target.partyId, reason: 'Removed by an institution admin', before: { institutionId, role: target.role, active: true }, after: { institutionId, role: target.role, active: false }, payload: { institutionId } }, now);
       return { staff: (await this.member(institutionId, target.partyId))! };
     }
@@ -160,6 +160,20 @@ export class InstitutionTeam {
     }
     if (target.partyId === admin) throw new DomainError('FORBIDDEN', 'You cannot raise your own role');
     return { staff: target, grant: await this.propose(institutionId, target.partyId, role, { partyId: admin, role: 'org_admin' }, key, `Raised to ${role}`, now) };
+  }
+
+  /**
+   * The removal body `change` and the IdP deprovision (T-0790) share: sets the staff row of THIS institution inactive, and says whether
+   * it was active there. A party active at another institution is never touched. `db` lets a caller put it in its own transaction.
+   */
+  async deactivate(institutionId: string, partyId: string, db: Pick<Database, 'query'> = this.d.db): Promise<boolean> {
+    const r = await db.query('update org.staff set active = false where party_id = $1 and institution_id = $2 and active', [partyId, institutionId]);
+    return r.rowCount > 0;
+  }
+
+  /** The other half of the removal: the `org_*` role leaves the user, so it is not in their next token. Idempotent. */
+  async clearOrgRole(partyId: string): Promise<void> {
+    await this.setOrgRole(partyId, undefined);
   }
 
   /** The second admin's approval; the proposer cannot approve their own grant. Applies the role once approved. */
