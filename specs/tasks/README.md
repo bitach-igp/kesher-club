@@ -448,3 +448,4 @@ Scoped 2026-11-25 from the founder's phase 1 rollout notes; see `docs/ops/phase-
 | [T-1112](T-1112.md) | ID | Needs owner decision: onboarding and KYC by category: documents, minors, Israeli ID types, IDF IDs and what Crowded will bank | — | needs owner decision |
 | [T-1113](T-1113.md) | UX | Home: a 'What do you want to do today?' choice that starts a send or a receive | — | later · phase 1 gap analysis |
 | [T-1114](T-1114.md) | SETUP | Needs owner decision: what ships in phase 1 and what must be true before the first member sends a dollar | — | needs owner decision |
+| [T-1115](T-1115.md) | SETUP | Put the phase 1 questions to Crowded and record the answers | — | needs owner action |
