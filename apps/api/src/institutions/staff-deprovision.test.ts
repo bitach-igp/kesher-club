@@ -29,8 +29,9 @@ const LATER = new Date('2026-11-25T11:00:00Z');
 const OHR = uuidv7(NOW);
 const NER = uuidv7(NOW);
 const SOLO = uuidv7(NOW);
+const NOADM = uuidv7(NOW);
 const SYSTEM = { actorId: '00000000-0000-7000-8000-000000000000', actorRole: 'system' };
-const ORGS = Object.fromEntries([[OHR, 'ohr'], [NER, 'ner'], [SOLO, 'solo']].map(([id, n]) => [id!, { directoryId: `dir_${n}`, scimBearer: `scim_${id}` }]));
+const ORGS = Object.fromEntries([[OHR, 'ohr'], [NER, 'ner'], [SOLO, 'solo'], [NOADM, 'noadm']].map(([id, n]) => [id!, { directoryId: `dir_${n}`, scimBearer: `scim_${id}` }]));
 const flagState = { on: true };
 const flags: FeatureFlags = { isOn: (k) => k === 'auth.orgSso' && flagState.on, keys: () => ['auth.orgSso'] };
 const lines: string[] = [];
@@ -93,11 +94,11 @@ const crashy = (): Partial<StaffDeprovisionDeps> => ({
 beforeAll(async () => {
   db = await createTestDatabase();
   host = new SimulatorHost();
-  host.simulators['org-idp'] = new OrgIdPSimulator(host.clock, [OHR, NER, SOLO]);
+  host.simulators['org-idp'] = new OrgIdPSimulator(host.clock, [OHR, NER, SOLO, NOADM]);
   app = createApp({ db, registry: host.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags, orgIdp: { orgs: ORGS, staffAlertEmail: 'ops@kesher.example' } });
   links = new StaffIdpLinks({ db, audit: app.services.audit });
   flaky.audit = new FlakyAudit(db);
-  await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Ohr', 'IL'), ($2, 'Beit Ner', 'IL'), ($3, 'Solo School', 'IL')`, [OHR, NER, SOLO]);
+  await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Ohr', 'IL'), ($2, 'Beit Ner', 'IL'), ($3, 'Solo School', 'IL'), ($4, 'No Admin School', 'IL')`, [OHR, NER, SOLO, NOADM]);
   await staffer('rivka', OHR, 'admin');
 }, 120_000);
 afterAll(async () => db.close());
@@ -144,6 +145,8 @@ describe('directory deprovisioning (TST-AUTH-008, T-0790)', () => {
     expect((await hook(body('evt-fay-2', 'idp-fay', { directoryId: 'dir_ner' }))).status).toBe(200);
     expect(await staffRow(fay)).toMatchObject({ active: true });
     expect(await links.find(OHR, 'idp-fay')).toBe(fay);
+    // an unknown directory is a CLEAN no-op: stored, processed, no error
+    expect((await stored('evt-fay-1'))[0]).toMatchObject({ processed_at: expect.any(Date), error: null });
     expect(await staffRow(eli)).toMatchObject({ active: true });
     expect((await mine('eli')).status).toBe(200);
     expect((await db.query<{ n: number }>('select count(*)::int as n from audit.entry')).rows[0]!.n).toBe(before);
@@ -313,14 +316,97 @@ describe('directory deprovisioning (TST-AUTH-008, T-0790)', () => {
     expect(await v.verify({ 'WorkOS-Signature': t(NOW) }, raw, NOW)).toMatchObject({ ok: false, reason: 'bad signature' });
   });
 
-  it('a delivery for an organisation the adapter refuses (a bad bearer) moves nothing and is not retried forever', async () => {
+  it('N3: an event the adapter refuses moves nothing, is counted by reason, and is left errored and pending (HTTP stays 200), never a silent drop', async () => {
     const bea = await staffer('bea', OHR, 'staff');
     await links.link(OHR, 'idp-bea', bea, SYSTEM, NOW);
-    await make({ directories: directoryResolver({ [OHR]: { directoryId: 'dir_ohr', scimBearer: 'wrong' } }) }).process(asEvent(body('evt-bea', 'idp-bea')));
+    lines.length = 0;
+    const bad = make({ directories: directoryResolver({ [OHR]: { directoryId: 'dir_ohr', scimBearer: 'wrong' } }) });
+    await expect(bad.process(asEvent(body('evt-bea', 'idp-bea')))).rejects.toThrow('scim_unauthorized');
     expect(await staffRow(bea)).toMatchObject({ active: true });
+    const m = lines.filter((l) => l.includes('staff.deprovision_refused')).map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(m).toEqual([expect.objectContaining({ reason: 'scim_unauthorized', 'staff.deprovision_refused': 1 })]);
+    // through the route: 200, and the stored event carries the reason, unprocessed
+    const malformed = await hook({ eventId: 'evt-bad-shape', directoryId: 'dir_ohr', op: 'nonsense' });
+    expect(malformed.status).toBe(200);
+    expect((await stored('evt-bad-shape'))[0]).toMatchObject({ processed_at: null, error: expect.stringContaining('scim_malformed') });
     // two institutions claiming one directory resolve to nothing
     expect(directoryResolver({ a: { directoryId: 'd', scimBearer: 'x' }, b: { directoryId: 'd', scimBearer: 'y' } })('d')).toBeUndefined();
   });
+
+  it('F1: a concurrent delivery whose twin committed but failed to finish does not swallow the event: it finishes, or stays unprocessed for replay', async () => {
+    for (const bFails of [false, true]) {
+      const name = bFails ? 'racef' : 'racet';
+      const id = await staffer(name, OHR, 'staff');
+      await links.link(OHR, `idp-${name}`, id, SYSTEM, NOW);
+      const ev = asEvent(body(`evt-${name}`, `idp-${name}`));
+      let release = (): void => undefined;
+      const gate = new Promise<void>((r) => (release = r));
+      let reached = (): void => undefined;
+      const atGate = new Promise<void>((r) => (reached = r));
+      // B has already found the live link when A commits
+      const B = make({ ...(bFails ? crashy() : {}), links: { find: async (...a) => { const r = await links.find(...a); reached(); await gate; return r; } } });
+      const bRun = B.process(ev).then(() => 'ok', (e: Error) => e.message);
+      await atGate;
+      flaky.revoke = true;
+      await expect(make(crashy()).process(ev)).rejects.toThrow('simulated crash'); // A: committed, finish threw
+      expect((await mine(name)).status).not.toBe(401);
+      if (bFails) flaky.revoke = true;
+      release();
+      const outcome = await bRun;
+      if (!bFails) {
+        expect(outcome).toBe('ok');
+        expect((await mine(name)).status).toBe(401);
+        expect(await roles(name)).not.toContain('org_staff');
+      } else {
+        expect(outcome).toBe('simulated crash'); // B throws, so the router leaves the event unprocessed and the replay retries
+        await make().process(ev);
+        expect((await mine(name)).status).toBe(401);
+      }
+      expect(await audits('institution.staff.deprovision', id)).toHaveLength(1);
+    }
+  }, 30_000);
+
+  it('F2a: the same subject text live at two institutions: an event for one never touches the other', async () => {
+    const y = await staffer('dupy', NER, 'staff');
+    await links.link(NER, 'idp-dup', y, SYSTEM, NOW); // linked first, so an unscoped lookup would meet it first
+    const x = await staffer('dupx', OHR, 'staff');
+    await links.link(OHR, 'idp-dup', x, SYSTEM, NOW);
+    await make().process(asEvent(body('evt-dup', 'idp-dup')));
+    expect(await staffRow(x)).toMatchObject({ active: false });
+    expect(await staffRow(y)).toMatchObject({ active: true });
+    expect(await links.find(NER, 'idp-dup')).toBe(y);
+    expect((await mine('dupy')).status).toBe(200);
+  });
+
+  it('F2b: the replay lookup is per institution: the same event id seen for another institution is its own work', async () => {
+    const a = await staffer('shra', OHR, 'staff');
+    const b = await staffer('shrb', NER, 'staff');
+    await links.link(OHR, 'idp-shr', a, SYSTEM, NOW);
+    await links.link(NER, 'idp-shr', b, SYSTEM, NOW);
+    await make().process(asEvent(body('evt-shared', 'idp-shr')));
+    await make().process(asEvent(body('evt-shared', 'idp-shr', { directoryId: 'dir_ner' })));
+    expect(await staffRow(a)).toMatchObject({ active: false });
+    expect(await staffRow(b)).toMatchObject({ active: false });
+  });
+
+  it('F2c: removing a non-admin from an institution that has no admin raises no institution.admin.none', async () => {
+    const n = await staffer('noadm', NOADM, 'staff');
+    await links.link(NOADM, 'idp-noadm', n, SYSTEM, NOW);
+    await make().process(asEvent(body('evt-noadm', 'idp-noadm', { directoryId: 'dir_noadm' })));
+    expect(await staffRow(n)).toMatchObject({ active: false });
+    expect(await audits('institution.admin.none', NOADM)).toHaveLength(0);
+  });
+
+  it('F2d: with no alert address configured the last admin is still removed and audited, and nobody is messaged', async () => {
+    const adm = await staffer('lonely', NOADM, 'admin');
+    await links.link(NOADM, 'idp-lonely', adm, SYSTEM, NOW);
+    const before = host.simulators.notify.sent.length;
+    await make({ alertTo: undefined }).process(asEvent(body('evt-lonely', 'idp-lonely', { directoryId: 'dir_noadm' })));
+    expect(await staffRow(adm)).toMatchObject({ active: false });
+    expect(await audits('institution.admin.none', NOADM)).toHaveLength(1);
+    expect(host.simulators.notify.sent.length).toBe(before);
+  });
+
 });
 
 describe('directory deprovisioning with the WorkOS verifier (TST-AUTH-008, T-0790)', () => {

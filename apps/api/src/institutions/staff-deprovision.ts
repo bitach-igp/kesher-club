@@ -124,7 +124,14 @@ export class StaffDeprovisioner {
     try {
       ev = await this.d.port().parseScimEvent(org.institutionId, org.scimBearer, event.payload);
     } catch (e) {
-      if (e instanceof OrgIdPError && e.code !== 'PROVIDER_UNAVAILABLE') return;
+      if (e instanceof OrgIdPError && e.code !== 'PROVIDER_UNAVAILABLE') {
+        // The adapter refused a signed event (unknown organisation, malformed, another organisation's): never a silent drop. Counted by
+        // reason, and the event is left errored and pending (HTTP stays 200) so the backlog alarm and the replay tool see it. Only the
+        // closed code is recorded, never event text.
+        const reason = e.code.toLowerCase();
+        this.metrics.put({ 'staff.deprovision_refused': 1 }, { reason });
+        throw new Error(`refused by the org IdP adapter: ${reason}`, { cause: e });
+      }
       throw e;
     }
     if (!(ev.op === 'deactivate' || (ev.op === 'update' && !ev.active))) return; // create and update never grant or raise
@@ -137,7 +144,11 @@ export class StaffDeprovisioner {
     const partyId = await this.d.links.find(org.institutionId, ev.subject);
     if (!partyId) return;
     const done = await this.deprovision(org.institutionId, ev.subject, event.eventId, now);
-    if (done) await this.finish(done);
+    if (done) return this.finish(done);
+    // The link was gone inside the transaction: a concurrent delivery of this same event committed first. If its post-commit steps
+    // failed, the router would mark THIS delivery processed and nobody would retry, so finish what that delivery committed.
+    const raced = await this.prior(event.eventId, org.institutionId);
+    if (raced) await this.finish(raced);
   }
 
   /** Row, audit and unlink in one transaction: a crash leaves all of it or none. */
@@ -165,7 +176,10 @@ export class StaffDeprovisioner {
     return row ? { institutionId, partyId: row.subject, eventId, adminNone: row.payload.adminNone === true } : undefined;
   }
 
-  /** After the commit: role, sessions, alert. Skipped for a party who is active staff anywhere (a stale link must not reach their new job). */
+  /**
+   * After the commit: role, sessions, alert. Idempotent; a throw leaves the event unprocessed so the replay retries it. The check and the
+   * role strip are two steps (the role lives in the identity repository, not in SQL): a hire between them is possible only in that
+   * instant, and the new institution's grant (`InstitutionTeam.apply`) writes the role again. Skipped for a party who is active staff anywhere (a stale link must not reach their new job). */
   private async finish(done: Done): Promise<void> {
     const active = await this.d.db.query('select 1 from org.staff where party_id = $1 and active', [done.partyId]);
     if (!active.rowCount) {
