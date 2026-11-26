@@ -268,7 +268,7 @@ function buildServices(o: AppOptions) {
     return { consoleUrl, callbackUrl };
   })();
   const staffSso = new StaffSso({
-    db: o.db, flags, identity, tokens, links: new StaffIdpLinks({ db: o.db, audit }), team, metrics: stdoutMetrics, port: () => o.registry.resolve<OrgIdPPort>('org-idp', o.market),
+    db: o.db, flags, identity, events: passkeys.events, tokens, links: new StaffIdpLinks({ db: o.db, audit }), team, metrics: stdoutMetrics, port: () => o.registry.resolve<OrgIdPPort>('org-idp', o.market),
     configured: () => !!ssoUrls && !!o.registry.bindingFor('org-idp', o.market), orgs: o.orgIdp?.orgs ?? {}, consoleUrl: ssoUrls?.consoleUrl ?? '', callbackUrl: ssoUrls?.callbackUrl ?? '',
     ...(o.orgIdp?.callbackFloorMs !== undefined ? { floorMs: o.orgIdp.callbackFloorMs } : {}),
   });
