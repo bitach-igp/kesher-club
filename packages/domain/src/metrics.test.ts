@@ -46,6 +46,7 @@ describe('the EMF line', () => {
     metrics.put({ 'staff.drift_refused': 1 }, { reason: 'guard_half' });
     metrics.put({ 'staff.directory_unlinked': 3 });
     metrics.put({ 'staff.drift_finish_abandoned': 1 });
+    metrics.put({ 'staff.sso_refused': 1 }, { reason: 'exchange_verifier' });
     const emitted = lines.flatMap((l) => (JSON.parse(l) as { _aws: { CloudWatchMetrics: { Metrics: { Name: string }[] }[] } })._aws.CloudWatchMetrics[0]!.Metrics.map((m) => m.Name));
     expect(emitted.sort()).toEqual(Object.keys(METRIC_DEFS).sort());
     expect(JSON.parse(lines[6]!)).toMatchObject({ state: 'pending', market: 'US', 'transfer.stuck': 600 });

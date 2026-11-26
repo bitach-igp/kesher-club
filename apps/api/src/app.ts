@@ -54,6 +54,7 @@ import { StudentDetail, studentHandlers } from './institutions/student.ts';
 import { statementHandlers } from './institutions/statement.ts';
 import { InstitutionTeam, teamHandlers } from './institutions/team.ts';
 import { StaffIdpLinks } from './institutions/staff-idp-link.ts';
+import { StaffSso, staffSsoHandlers } from './institutions/staff-sso.ts';
 import { DEPROVISION_PROVIDER, StaffDeprovisioner, directoryInstitutions, directoryResolver } from './institutions/staff-deprovision.ts';
 import { InstitutionUsBanking, usBankingHandlers } from './institutions/us-banking.ts';
 import { UsCollections, usCollectionsHandlers } from './institutions/us-collections.ts';
@@ -157,7 +158,15 @@ export interface AppOptions {
    * adapter holds. Empty by default, so every directory is unknown and a delivery moves nothing. `staffAlertEmail` is told when an IdP
    * removal leaves an institution with no admin; without it the audit row `institution.admin.none` stands alone.
    */
-  orgIdp?: { orgs?: Readonly<Record<string, { directoryId?: string | undefined; scimBearer: string }>>; staffAlertEmail?: string };
+  orgIdp?: {
+    orgs?: Readonly<Record<string, { directoryId?: string | undefined; scimBearer: string }>>;
+    staffAlertEmail?: string;
+    /** Staff SSO (T-0792): the ONE console URL the callback redirects to (https, no fragment) and the callback URL registered with the IdP. Without both the four SSO operations answer FEATURE_OFF. */
+    consoleUrl?: string;
+    callbackUrl?: string;
+    /** The least time the callback takes, so a refusal before the IdP call costs the same as one after it (default 400 ms). */
+    callbackFloorMs?: number;
+  };
 }
 
 export interface App {
@@ -251,6 +260,18 @@ function buildServices(o: AppOptions) {
     const dp = deprovision;
     webhooks.bind(DEPROVISION_PROVIDER, { verifier: dp.verifier(), process: (e) => dp.process(e) });
   }
+  const ssoUrls = ((): { consoleUrl: string; callbackUrl: string } | undefined => {
+    const { consoleUrl, callbackUrl } = o.orgIdp ?? {};
+    if (!consoleUrl || !callbackUrl) return undefined;
+    const c = new URL(consoleUrl);
+    if (c.hash || (c.protocol !== 'https:' && c.hostname !== 'localhost') || new URL(callbackUrl).protocol !== c.protocol) throw new Error('orgIdp.consoleUrl must be https without a fragment, and callbackUrl the same scheme');
+    return { consoleUrl, callbackUrl };
+  })();
+  const staffSso = new StaffSso({
+    db: o.db, flags, identity, tokens, links: new StaffIdpLinks({ db: o.db, audit }), team, metrics: stdoutMetrics, port: () => o.registry.resolve<OrgIdPPort>('org-idp', o.market),
+    configured: () => !!ssoUrls && !!o.registry.bindingFor('org-idp', o.market), orgs: o.orgIdp?.orgs ?? {}, consoleUrl: ssoUrls?.consoleUrl ?? '', callbackUrl: ssoUrls?.callbackUrl ?? '',
+    ...(o.orgIdp?.callbackFloorMs !== undefined ? { floorMs: o.orgIdp.callbackFloorMs } : {}),
+  });
   const institutionCredit = new InstitutionCredit(o.db, approvals, audit, kybGate);
   const payoutAccounts = new PayoutAccounts(o.db, audit);
   const fx = new FxService({ db: o.db, port: o.registry.resolve<FxPort>('fx', o.market), rates, ledger, accounts, transfers, memberships, plans, flags });
@@ -313,7 +334,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', revoker });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, social, socialLinks, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, fundingDetails, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, deprovision, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
+  return { clock, identity, tokens, otp, passkeys, social, socialLinks, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, fundingDetails, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, deprovision, staffSso, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
 /** T-0043: in prod, the reason a flag cannot be turned on (its port is a simulator), else undefined. */
@@ -420,6 +441,7 @@ export function createApp(o: AppOptions): App {
     ...studentHandlers(new StudentDetail(o.db, new RosterList(o.db)), staffOf),
     ...statementHandlers(o.db, s.accounts, staffOf),
     ...teamHandlers(s.team, s.stepUp, staffOf),
+    ...staffSsoHandlers(s.staffSso, s.stepUp),
     ...webhookHandlers({ svc: s.outbound, flags: s.flags, audit: s.audit, staffOf }),
     ...usBankingHandlers(s.usBanking, s.stepUp, staffOf),
     ...usFundingHandlers(s.usFunding, s.stepUp, staffOf),

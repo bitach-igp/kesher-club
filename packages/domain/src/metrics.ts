@@ -54,6 +54,8 @@ export const METRIC_DEFS = {
   'staff.drift_finish_abandoned': { unit: 'Count', dimensions: [] },
   // Directory users with no staff link, counted by the nightly report and never acted on.
   'staff.directory_unlinked': { unit: 'Count', dimensions: [] },
+  // A staff SSO attempt refused (T-0792; reason: a closed list, see SSO_REFUSAL_REASONS). Every refusal looks the same to the caller, so this is the only place a brute force shows.
+  'staff.sso_refused': { unit: 'Count', dimensions: ['reason'] },
 } as const satisfies Record<string, MetricDef>;
 export type MetricName = keyof typeof METRIC_DEFS;
 
