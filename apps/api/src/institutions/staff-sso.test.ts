@@ -99,7 +99,7 @@ async function signIn(inst: string, code: string, p = pair(), now = NOW) {
 }
 
 const mk = (over: Partial<StaffSsoDeps> = {}) =>
-  new StaffSso({ db, flags, identity: app.services.identity, tokens: app.services.tokens, links, team: app.services.team, port: () => host.simulators['org-idp'], configured: () => true, orgs: ORGS, consoleUrl: CONSOLE, callbackUrl: CALLBACK, metrics, floorMs: 0, ...over });
+  new StaffSso({ db, flags, identity: app.services.identity, events: app.services.passkeys.events, tokens: app.services.tokens, links, team: app.services.team, port: () => host.simulators['org-idp'], configured: () => true, orgs: ORGS, consoleUrl: CONSOLE, callbackUrl: CALLBACK, metrics, floorMs: 0, ...over });
 const counting = (base: Database) => {
   const n = { q: 0 };
   return { n, db: { query: (t: string, p?: readonly unknown[]) => { n.q += 1; return base.query(t, p); }, transaction: base.transaction } as Database };
@@ -651,6 +651,172 @@ describe('uniformity, timing and opacity', () => {
     for (const secret of ['leak-email', 'idp-leak-subject', 'example.com', (r.body as { state: string }).state]) expect(stored).not.toContain(secret);
     expect(JSON.stringify(wrong.body)).not.toMatch(/verifier|code not|unknown|expired/i);
     expect(new DomainError('UNAUTHENTICATED', 'Sign-in refused').message).toBe((wrong.body as { detail?: string; title: string }).detail ?? (wrong.body as { title: string }).title);
+  });
+});
+
+describe('device registration and the new-device alert (TST-AUTH-008, T-1121)', () => {
+  const sink = () => app.services.passkeys.events;
+  const alerts = (party: string) => sink().filter((e) => e.type === 'new_device_sign_in' && e.partyId === party);
+  const devices = async (party: string) => (await app.services.identity.listDevices(party)).map((d) => d.deviceId).sort();
+  const reach = async (inst: string, subject: string, deviceId: string, p = pair()) => {
+    const start = await post(`/institutions/${inst}/sso/start`, { deviceId, challenge: p.challenge });
+    const res = await cb({ code: idp(subject), state: (start.body as { state: string }).state }, cookieOf(start));
+    return { p, code: frag(res).slice(5), res };
+  };
+
+  it('a first SSO sign-in on a new device writes the device row and emits exactly one new_device_sign_in; a repeat on it emits none; another device emits one more', async () => {
+    const party = await staffer('dev1', OHR, 'staff', 'idp-dev1');
+    const before = await devices(party);
+    const a = await reach(OHR, 'idp-dev1', 'sso-laptop');
+    expect(await devices(party)).toEqual(before); // the callback registers nothing
+    expect(alerts(party)).toHaveLength(0);
+    const out = await ex(a.code, a.p.verifier);
+    expect(out.status).toBe(200);
+    expect(await devices(party)).toEqual([...before, 'sso-laptop'].sort());
+    expect(alerts(party)).toEqual([{ type: 'new_device_sign_in', partyId: party, deviceId: 'sso-laptop', at: NOW.toISOString() }]);
+    const b = await reach(OHR, 'idp-dev1', 'sso-laptop');
+    expect((await ex(b.code, b.p.verifier)).status).toBe(200);
+    expect(alerts(party)).toHaveLength(1);
+    const c = await reach(OHR, 'idp-dev1', 'sso-phone');
+    expect((await ex(c.code, c.p.verifier)).status).toBe(200);
+    expect(alerts(party).map((e) => (e as { deviceId: string }).deviceId)).toEqual(['sso-laptop', 'sso-phone']);
+    // the token carries the registered device
+    expect((await app.services.tokens.verifyAccess((out.body as { tokens: { accessToken: string } }).tokens.accessToken)).deviceId).toBe('sso-laptop');
+  });
+
+  it('a device the member already uses (passkey) raises no alert', async () => {
+    const party = await staffer('dev2', OHR, 'staff', 'idp-dev2');
+    const known = (await devices(party))[0]!;
+    const r = await reach(OHR, 'idp-dev2', known);
+    expect((await ex(r.code, r.p.verifier)).status).toBe(200);
+    expect(alerts(party)).toHaveLength(0);
+  });
+
+  it('the event and the device row carry no state, code, verifier, token or IdP claim', async () => {
+    const party = await staffer('dev3', OHR, 'staff', 'idp-dev3-secret');
+    const r = await reach(OHR, 'idp-dev3-secret', 'sso-d3');
+    const out = await ex(r.code, r.p.verifier);
+    const tokens = (out.body as { tokens: { accessToken: string; refreshToken: string } }).tokens;
+    const seen = JSON.stringify([alerts(party), await app.services.identity.listDevices(party)]);
+    for (const secret of [r.code, r.p.verifier, r.p.challenge, tokens.accessToken, tokens.refreshToken, 'idp-dev3-secret', 'example.com', 'state', 'verifier']) expect(seen).not.toContain(secret);
+    expect(Object.keys(alerts(party)[0]!).sort()).toEqual(['at', 'deviceId', 'partyId', 'type']);
+  });
+
+  it('the device is the one stored at start: a deviceId in the exchange request is ignored', async () => {
+    const party = await staffer('dev4', OHR, 'staff', 'idp-dev4');
+    const r = await reach(OHR, 'idp-dev4', 'sso-stored');
+    const out = await post('/sso/exchange', { code: r.code, verifier: r.p.verifier, deviceId: 'sso-evil' });
+    expect(out.status).toBe(200);
+    expect(await devices(party)).toContain('sso-stored');
+    expect(await devices(party)).not.toContain('sso-evil');
+    expect(alerts(party).map((e) => (e as { deviceId: string }).deviceId)).toEqual(['sso-stored']);
+    // the handler forwards only code and verifier; the service itself also ignores a stray field
+    const r2 = await reach(OHR, 'idp-dev4', 'sso-stored-2');
+    await mk().exchange({ code: r2.code, verifier: r2.p.verifier, deviceId: 'sso-evil' } as never, NOW);
+    expect(await devices(party)).toContain('sso-stored-2');
+    expect(await devices(party)).not.toContain('sso-evil');
+    expect(alerts(party).map((e) => (e as { deviceId: string }).deviceId)).toEqual(['sso-stored', 'sso-stored-2']);
+  });
+
+  it('a link-mode sign-in registers the device too', async () => {
+    const party = await staffer('dev5', NER, 'staff');
+    const p = pair();
+    const start = await linkIn('dev5', NER, p, { deviceId: 'sso-link-dev' });
+    const res = await cb({ code: idp('idp-dev5'), state: (start.body as { state: string }).state }, cookieOf(start));
+    expect((await ex(frag(res).slice(5), p.verifier)).status).toBe(200);
+    expect(alerts(party).map((e) => (e as { deviceId: string }).deviceId)).toEqual(['sso-link-dev']);
+  });
+
+  it('every refusal writes no device row and emits nothing: the callback causes and the exchange 401s', async () => {
+    const party = await staffer('dev6', OHR, 'staff', 'idp-dev6');
+    const stranger = await staffer('dev6b', OHR, 'staff');
+    const snap = async () => JSON.stringify([sink().length, await devices(party), await devices(stranger)]);
+    const base = await snap();
+    const svc = mk();
+    const begin = async (deviceId = 'sso-refused') => { const p = pair(); const s = await svc.startSignIn(OHR, { deviceId, challenge: p.challenge }, NOW); return { p, state: s.body.state, cookie: s.setCookie.split(';')[0]! }; };
+    const good = idp('idp-dev6');
+    const callbacks: Array<() => Promise<unknown>> = [
+      async () => svc.callback({ code: good, state: 'short' }, undefined, NOW),
+      async () => svc.callback({ code: good, state: rand43() }, undefined, NOW),
+      async () => { const b = await begin(); return svc.callback({ code: good, state: b.state }, undefined, NOW); },
+      async () => { const b = await begin(); return svc.callback({ code: good, state: b.state }, `${b.cookie.split('=')[0]}=${'B'.repeat(43)}`, NOW); },
+      async () => { const b = await begin(); return svc.callback({ code: good, state: b.state }, b.cookie, at(SIGN_IN_TTL_MS)); },
+      async () => { const b = await begin(); await svc.callback({ code: 'garbage', state: b.state }, b.cookie, NOW); return svc.callback({ code: good, state: b.state }, b.cookie, NOW); },
+      async () => { const b = await begin(); return svc.callback({ code: 'garbage', state: b.state }, b.cookie, NOW); },
+      async () => { const b = await begin(); return svc.callback({ code: idp('idp-stranger'), state: b.state }, b.cookie, NOW); },
+      async () => { const b = await begin(); return svc.callback({ code: good, state: b.state, error: 'access_denied' }, b.cookie, NOW); },
+      async () => { const b = await begin(); return svc.callback({ state: b.state }, b.cookie, NOW); },
+    ];
+    for (const run of callbacks) await run();
+    expect(await snap()).toBe(base);
+    // exchange refusals: unknown, expired, wrong verifier (and exhaustion), stale, replayed
+    const mint = async (deviceId = 'sso-refused') => { const b = await begin(deviceId); const out = await svc.callback({ code: good, state: b.state }, b.cookie, NOW); return { p: b.p, code: out.location.split('#code=')[1]! }; };
+    await expect(svc.exchange({ code: 'z'.repeat(43), verifier: pair().verifier }, NOW)).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    const e = await mint();
+    await expect(svc.exchange({ code: e.code, verifier: e.p.verifier }, at(CODE_TTL_MS))).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    const w = await mint();
+    for (let i = 0; i < 5; i += 1) await expect(svc.exchange({ code: w.code, verifier: pair().verifier }, NOW)).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    await expect(svc.exchange({ code: w.code, verifier: w.p.verifier }, NOW)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    const s = await mint();
+    await app.services.deprovision!.remove(OHR, 'idp-dev6', 'evt-dev6', NOW, { reason: 'test' });
+    await expect(svc.exchange({ code: s.code, verifier: s.p.verifier }, NOW)).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    expect(await snap()).toBe(base);
+  });
+
+  it('a replayed or double-redeemed code emits exactly once', async () => {
+    const party = await staffer('dev7', OHR, 'staff', 'idp-dev7');
+    const r = await reach(OHR, 'idp-dev7', 'sso-race');
+    const both = await Promise.all([ex(r.code, r.p.verifier), ex(r.code, r.p.verifier)]);
+    expect(both.map((x) => x.status).sort()).toEqual([200, 401]);
+    expect((await ex(r.code, r.p.verifier)).status).toBe(401);
+    expect(alerts(party)).toHaveLength(1);
+  });
+
+  it('a failing device write fails the exchange closed: no token, no alert, the claim is released, the retry redeems once, then the code is dead', async () => {
+    const party = await staffer('dev8', OHR, 'staff', 'idp-dev8');
+    let fail = true;
+    const issued: string[] = [];
+    const svc = mk({
+      identity: { findSession: (i) => app.services.identity.findSession(i), findUser: (i) => app.services.identity.findUser(i), upsertDevice: async (d) => { if (fail) { fail = false; throw new Error('device store down'); } return app.services.identity.upsertDevice(d); } },
+      tokens: { issue: async (i) => { issued.push(i.deviceId); return app.services.tokens.issue(i); } },
+    });
+    const p = pair();
+    const s = await svc.startSignIn(OHR, { deviceId: 'sso-flaky', challenge: p.challenge }, NOW);
+    const code = (await svc.callback({ code: idp('idp-dev8'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location.split('#code=')[1]!;
+    const released = await markerCount('sso_code_released');
+    await expect(svc.exchange({ code, verifier: p.verifier }, NOW)).rejects.toThrow('device store down');
+    expect(issued).toEqual([]);
+    expect(alerts(party)).toHaveLength(0);
+    expect(await devices(party)).not.toContain('sso-flaky');
+    expect(await markerCount('sso_code_released')).toBe(released + 1);
+    expect((await svc.exchange({ code, verifier: p.verifier }, NOW)).institutionId).toBe(OHR);
+    expect(issued).toEqual(['sso-flaky']);
+    expect(alerts(party)).toHaveLength(1);
+    await expect(svc.exchange({ code, verifier: p.verifier }, NOW)).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    expect(alerts(party)).toHaveLength(1);
+  });
+
+  it('a token failure after the device write does not double the alert on the retry', async () => {
+    const party = await staffer('dev9', OHR, 'staff', 'idp-dev9');
+    let fail = true;
+    const svc = mk({ tokens: { issue: async (i) => { if (fail) { fail = false; throw new Error('token store down'); } return app.services.tokens.issue(i); } } });
+    const p = pair();
+    const s = await svc.startSignIn(OHR, { deviceId: 'sso-t', challenge: p.challenge }, NOW);
+    const code = (await svc.callback({ code: idp('idp-dev9'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location.split('#code=')[1]!;
+    await expect(svc.exchange({ code, verifier: p.verifier }, NOW)).rejects.toThrow('token store down');
+    await svc.exchange({ code, verifier: p.verifier }, NOW);
+    expect(alerts(party)).toHaveLength(1);
+    expect(await devices(party)).toContain('sso-t');
+  });
+
+  it('the dark flag stops it all: with the flag off the exchange registers nothing', async () => {
+    const party = await staffer('dev10', OHR, 'staff', 'idp-dev10');
+    const r = await reach(OHR, 'idp-dev10', 'sso-dark');
+    flagState.on = false;
+    expect((await ex(r.code, r.p.verifier)).status).toBe(404);
+    flagState.on = true;
+    expect(alerts(party)).toHaveLength(0);
+    expect(await devices(party)).not.toContain('sso-dark');
   });
 });
 

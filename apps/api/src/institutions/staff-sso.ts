@@ -5,7 +5,7 @@
 //  - sso_state_used: write-once, claimed AFTER the cookie and expiry checks and BEFORE the IdP call: one winner, and a holder of a leaked
 //    state with no cookie cannot burn it (the IdP is then called with a decoy state, so it cannot burn the IdP's copy either).
 //  - sso_code: SHA-256 of the exchange code; sso_code_attempt (wrong verifiers, cap 5, only for codes that exist); sso_code_used and
-//    sso_code_released (a failed token issue releases the claim, so the retry takes the next generation; a crash mid-issue kills the code).
+//    sso_code_released (a failed device write or token issue releases the claim, so the retry takes the next generation; a crash mid-issue kills the code).
 // - The browser binding is a per-state `__Host-` cookie (HttpOnly, Secure, SameSite=Lax), so flows in one browser do not clash.
 // - The institution comes only from the stored state; the IdP's email, name and groups are never read. A link is made only for a party who
 //   proved control at start (a fresh step-up as active staff, or a valid pending invite, which is consumed here, after the IdP identity is
@@ -15,6 +15,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { DomainError, guarded, isUuidShape, uuidv7, type Metrics } from '@kesher/domain';
 import { OrgIdPError, type OrgIdPPort } from '@kesher/ports';
+import type { AuthEvent } from '../auth/passkeys.ts';
 import type { IdentityRepository } from '../auth/repository.ts';
 import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import type { TokenPair, TokenService } from '../auth/tokens.ts';
@@ -75,7 +76,9 @@ export interface SsoStart {
 export interface StaffSsoDeps {
   db: Database;
   flags: FeatureFlags;
-  identity: Pick<IdentityRepository, 'findSession' | 'findUser'>;
+  identity: Pick<IdentityRepository, 'findSession' | 'findUser' | 'upsertDevice'>;
+  /** The same sink the passkey and social sign-ins push `new_device_sign_in` to (`PasskeyService.events`). */
+  events: Pick<AuthEvent[], 'push'>;
   tokens: Pick<TokenService, 'issue'>;
   links: Pick<StaffIdpLinks, 'find' | 'link'>;
   team: Pick<InstitutionTeam, 'acceptById'>;
@@ -260,6 +263,12 @@ export class StaffSso {
         throw fail('exchange_unknown');
       }
       try {
+        // The device first (as passkey and social sign-in do), from the STORED state's device id, on the claimed generation only: a replayed or
+        // refused code never reaches here. A failed write fails the exchange and releases the claim like a failed issue (fail closed: no token
+        // without the device row, so no session without the alert); a retry finds the device already known and emits nothing a second time.
+        const seen = now.toISOString();
+        const { isNew } = await this.d.identity.upsertDevice({ partyId: rec.party, deviceId: rec.device, firstSeenAt: seen, lastSeenAt: seen });
+        if (isNew) this.d.events.push({ type: 'new_device_sign_in', partyId: rec.party, deviceId: rec.device, at: seen });
         return { tokens: await this.d.tokens.issue({ partyId: rec.party, deviceId: rec.device, roles: user.roles }), institutionId: rec.inst };
       } catch (e) {
         await putMarker(this.d.db, { kind: 'sso_code_released', subjectId: row.subject_id, seq: g, value: 'released' });
