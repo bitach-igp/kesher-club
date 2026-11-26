@@ -152,11 +152,12 @@ describe('staff SSO contract (T-1120)', () => {
     const ex = schema('StaffSsoExchangeRequest');
     expect(requiredOf(ex).sort()).toEqual(['code', 'verifier']);
     const verifier = ex.split('\n').find((l) => l.includes('verifier:'))!;
-    expect(num(verifier, 'minLength')).toBeGreaterThanOrEqual(43);
-    expect(num(verifier, 'maxLength')).toBeLessThanOrEqual(128);
+    expect(num(verifier, 'minLength')).toBe(43);
+    expect(num(verifier, 'maxLength')).toBe(128);
     expect(verifier).toContain('^[A-Za-z0-9_-]+$');
     const code = ex.split('\n').find((l) => l.includes('code: {'))!;
-    expect(num(code, 'minLength')).toBeGreaterThanOrEqual(43);
+    expect(num(code, 'minLength')).toBe(43);
+    expect(num(code, 'maxLength')).toBe(128);
     const ch = schema('StaffSsoChallenge');
     expect([num(ch, 'minLength'), num(ch, 'maxLength')]).toEqual([43, 43]);
     expect(ch).toContain('^[A-Za-z0-9_-]{43}$');

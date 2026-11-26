@@ -122,9 +122,18 @@ export class InstitutionTeam {
 
   /** The invitee, signed in, joins as staff; a finance or admin invite also opens the grant its inviter proposed. */
   async accept(token: string, partyId: string, now: Date): Promise<{ staff: TeamMember; grant?: ApprovalRequest }> {
+    return this.acceptWhere('i.token_hash = $1', sha256(token), partyId, now);
+  }
+
+  /** The same acceptance by invite id: the SSO link flow (T-0792) keeps the id, never the token, between its start and its callback. */
+  async acceptById(inviteId: string, partyId: string, now: Date): Promise<{ staff: TeamMember; grant?: ApprovalRequest }> {
+    return this.acceptWhere('i.id = $1', inviteId, partyId, now);
+  }
+
+  private async acceptWhere(where: 'i.token_hash = $1' | 'i.id = $1', key: string, partyId: string, now: Date): Promise<{ staff: TeamMember; grant?: ApprovalRequest }> {
     const r = await this.d.db.query<{ id: string; institution_id: string; role: StaffRole; invited_by: string; expires_at: string | Date; party_id: string | null }>(
-      'select i.id, i.institution_id, i.role, i.invited_by, i.expires_at, a.party_id from org.staff_invite i left join org.staff_invite_acceptance a on a.invite_id = i.id where i.token_hash = $1',
-      [sha256(token)],
+      `select i.id, i.institution_id, i.role, i.invited_by, i.expires_at, a.party_id from org.staff_invite i left join org.staff_invite_acceptance a on a.invite_id = i.id where ${where}`,
+      [key],
     );
     const inv = r.rows[0];
     if (!inv) throw new DomainError('NOT_FOUND', 'Invite not found');

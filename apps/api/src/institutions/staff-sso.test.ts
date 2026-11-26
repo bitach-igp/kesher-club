@@ -1,0 +1,657 @@
+// TST-AUTH-008 staff SSO behaviour (T-0792, REQ-AUTH-008): start, callback and exchange with the simulator org IdP (no network), real
+// createApp + dispatch on PGlite. The card's six items, then the review points: single-use bound state, PKCE-style exchange, link proof,
+// sign-in only for a live link to ACTIVE staff, uniform refusals (same answer, same reads, one latency floor), flag fail-closed, opaque errors.
+import { createHash, randomBytes } from 'node:crypto';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { createMetrics, DomainError, uuidv7 } from '@kesher/domain';
+import { OrgIdPError, OrgIdPSimulator, SIM_OTP_CODE, SimPasskeyDevice, type OrgIdPPort } from '@kesher/ports';
+import { SimulatorHost } from '@kesher/simulators';
+import { generateSigningKey } from '../auth/tokens.ts';
+import { createApp, type App } from '../app.ts';
+import type { FeatureFlags } from '../billing/capabilities.ts';
+import type { Database } from '../db.ts';
+import type { HttpResponse } from '../http.ts';
+import { dispatch } from '../server.ts';
+import { createTestDatabase, type TestDatabase } from '../test-db.ts';
+import { StaffIdpLinks } from './staff-idp-link.ts';
+import { StaffSso, type StaffSsoDeps } from './staff-sso.ts';
+
+// The lifetimes are written out, not imported: a changed constant must fail here.
+const SIGN_IN_TTL_MS = 10 * 60_000;
+const LINK_TTL_MS = 5 * 60_000;
+const CODE_TTL_MS = 60_000;
+
+let db: TestDatabase;
+let app: App;
+let host: SimulatorHost;
+let links: StaffIdpLinks;
+const NOW = new Date('2026-11-26T10:00:00Z');
+const OHR = uuidv7(NOW);
+const NER = uuidv7(NOW);
+const NOSSO = uuidv7(NOW);
+const SYSTEM = { actorId: '00000000-0000-7000-8000-000000000000', actorRole: 'system' };
+const CONSOLE = 'https://console.kesher.example/sso';
+const CALLBACK = 'https://api.kesher.example/v1/sso/callback';
+const ORGS = { [OHR]: { scimBearer: `scim_${OHR}` }, [NER]: { scimBearer: `scim_${NER}` } };
+const flagState: { on: boolean; throws: boolean } = { on: true, throws: false };
+const flags: FeatureFlags = {
+  isOn: async (k) => {
+    if (flagState.throws) throw new Error('flag store down');
+    return k === 'auth.orgSso' && flagState.on;
+  },
+  keys: () => ['auth.orgSso'],
+};
+const lines: string[] = [];
+const metrics = createMetrics({ write: (l) => lines.push(l) });
+type Who = { partyId: string; access: string; stepUp: string; sessionId: string };
+const people: Record<string, Who> = {};
+const at = (ms: number) => new Date(NOW.getTime() + ms);
+
+let phone = 972_501_250_000;
+async function person(name: string, roles: string[]): Promise<void> {
+  const s = app.services;
+  const p = `+${phone++}`;
+  const started = await s.otp.start({ phone: p, locale: 'he' });
+  const verified = await s.otp.verify({ otpId: started.otpId, code: SIM_OTP_CODE, purpose: 'register' });
+  const device = new SimPasskeyDevice();
+  const r1 = await s.passkeys.register({ otpSessionToken: verified.otpSessionToken!, deviceId: `web-${p}`, deviceName: 'Console' });
+  const r2 = await s.passkeys.register({ otpSessionToken: verified.otpSessionToken!, deviceId: `web-${p}`, deviceName: 'Console', response: await device.register(r1.options!) });
+  const partyId = (await s.tokens.verifyAccess(r2.tokens!.accessToken)).partyId;
+  const access = (await s.tokens.issue({ partyId, deviceId: `web-${p}`, roles })).accessToken;
+  const principal = await s.tokens.verifyAccess(access);
+  const su = await s.stepUp.start(principal);
+  people[name] = { partyId, access, sessionId: principal.sessionId, stepUp: (await s.stepUp.complete(principal, await device.authenticate(su.options))).stepUpToken };
+}
+async function staffer(name: string, inst: string, role: 'admin' | 'staff' = 'staff', linkedAs?: string): Promise<string> {
+  await person(name, ['member', `org_${role}`]);
+  await db.query('insert into org.staff (party_id, institution_id, role, active) values ($1, $2, $3, true)', [people[name]!.partyId, inst, role]);
+  await app.services.identity.setUserRoles(people[name]!.partyId, ['member', `org_${role}`]);
+  if (linkedAs) await links.link(inst, linkedAs, people[name]!.partyId, SYSTEM, NOW);
+  return people[name]!.partyId;
+}
+
+const pair = () => {
+  const verifier = randomBytes(32).toString('base64url');
+  return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
+};
+const post = (url: string, body: unknown, headers: Record<string, string> = {}, now = NOW) => dispatch(app, { method: 'POST', url: `/v1${url}`, headers, rawBody: JSON.stringify(body), now });
+const cookieOf = (r: HttpResponse) => (r.headers?.['set-cookie'] ?? '').split(';')[0]!;
+const startIn = (inst: string, p = pair(), now = NOW) => post(`/institutions/${inst}/sso/start`, { deviceId: 'web-sso', challenge: p.challenge }, {}, now);
+const as = (who: string, step = true) => ({ authorization: `Bearer ${people[who]!.access}`, ...(step ? { 'x-step-up': people[who]!.stepUp } : {}) });
+const linkIn = (who: string, inst: string, p = pair(), extra: Record<string, unknown> = {}, step = true) => post(`/institutions/${inst}/sso/link/start`, { challenge: p.challenge, ...extra }, as(who, step));
+const cb = (q: Record<string, string>, cookie?: string, now = NOW, theApp = app) => dispatch(theApp, { method: 'GET', url: `/v1/sso/callback?${new URLSearchParams(q)}`, headers: cookie ? { cookie } : {}, rawBody: '', now });
+const frag = (r: HttpResponse) => (r.headers?.['location'] ?? '').split('#')[1] ?? '';
+const idp = (subject: string, groups?: string) => `ok:${subject}:${subject}@example.com${groups ? `:${groups}` : ''}`;
+const ex = (code: string, verifier: string, now = NOW) => post('/sso/exchange', { code, verifier }, {}, now);
+const markerCount = async (kind: string) => (await db.query<{ n: number }>('select count(*)::int as n from ops.workflow_marker where kind = $1', [kind])).rows[0]!.n;
+const allMarkers = async () => (await db.query<{ kind: string }>("select kind from ops.workflow_marker where kind like 'sso%'")).rows.length;
+const linkRows = async (party: string) => (await db.query('select 1 from org.staff_idp_link where party_id = $1 and unlinked_at is null', [party])).rows.length;
+/** A refusal as the caller sees it: status, body and headers with the trace id dropped and the cookie reduced to its attributes. */
+const shape = (r: HttpResponse) => JSON.stringify({ s: r.status, b: r.body ? { ...(r.body as object), traceId: '' } : null, h: { ...r.headers, 'x-trace-id': '', 'set-cookie': (r.headers?.['set-cookie'] ?? '').replace(/^[^;]*/, '') } });
+
+/** A sign-in that reaches the callback for `subject`; returns what a test needs to inspect or replay it. */
+async function signIn(inst: string, code: string, p = pair(), now = NOW) {
+  const start = await startIn(inst, p);
+  const state = (start.body as { state: string }).state;
+  const cookie = cookieOf(start);
+  const res = await cb({ code, state }, cookie, now);
+  return { p, state, cookie, res, f: frag(res) };
+}
+
+const mk = (over: Partial<StaffSsoDeps> = {}) =>
+  new StaffSso({ db, flags, identity: app.services.identity, tokens: app.services.tokens, links, team: app.services.team, port: () => host.simulators['org-idp'], configured: () => true, orgs: ORGS, consoleUrl: CONSOLE, callbackUrl: CALLBACK, metrics, floorMs: 0, ...over });
+const counting = (base: Database) => {
+  const n = { q: 0 };
+  return { n, db: { query: (t: string, p?: readonly unknown[]) => { n.q += 1; return base.query(t, p); }, transaction: base.transaction } as Database };
+};
+
+beforeAll(async () => {
+  db = await createTestDatabase();
+  host = new SimulatorHost();
+  host.simulators['org-idp'] = new OrgIdPSimulator(host.clock, [OHR, NER, NOSSO]);
+  app = createApp({ db, registry: host.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags, orgIdp: { orgs: ORGS, consoleUrl: CONSOLE, callbackUrl: CALLBACK, callbackFloorMs: 0 } });
+  links = new StaffIdpLinks({ db, audit: app.services.audit });
+  await db.query(`insert into org.institution (id, name, market) values ($1, 'Yeshivat Ohr', 'IL'), ($2, 'Beit Ner', 'IL'), ($3, 'No SSO School', 'IL')`, [OHR, NER, NOSSO]);
+  await staffer('rivka', OHR, 'admin');
+  await staffer('nina', NOSSO, 'admin');
+}, 120_000);
+afterAll(async () => db.close());
+
+describe('staff SSO sign-in (TST-AUTH-008, T-0792)', () => {
+  it('(1) start returns a URL, a 256-bit state and a __Host- cookie; only the state hash is stored; the linked identity gets the normal token', async () => {
+    const avi = await staffer('avi', OHR, 'staff', 'idp-avi');
+    const p = pair();
+    const start = await startIn(OHR, p);
+    expect(start.status).toBe(200);
+    const body = start.body as { url: string; state: string; expiresAt: string };
+    expect(body.state).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(body.url).toContain(body.state);
+    expect(body.expiresAt).toBe(at(SIGN_IN_TTL_MS).toISOString());
+    const sc = start.headers!['set-cookie']!;
+    expect(sc).toMatch(/^__Host-sso-[0-9a-f]{24}=[A-Za-z0-9_-]{43}; Max-Age=600; Path=\/; Secure; HttpOnly; SameSite=Lax$/);
+    expect(sc).not.toContain('Domain');
+    const row = (await db.query<{ value: string; claim: string }>("select value, claim from ops.workflow_marker where kind = 'sso_state' and claim = $1", [createHash('sha256').update(body.state).digest('hex')])).rows[0]!;
+    expect(row.value).not.toContain(body.state);
+    expect(row.value).not.toContain(sc.split('=')[1]!.split(';')[0]!);
+    expect(JSON.parse(row.value)).toMatchObject({ inst: OHR, mode: 'sign_in', device: 'web-sso', challenge: p.challenge, exp: at(SIGN_IN_TTL_MS).getTime() });
+
+    const res = await cb({ code: idp('idp-avi'), state: body.state }, cookieOf(start));
+    expect(res.status).toBe(302);
+    expect(res.headers).toMatchObject({ 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' });
+    expect(res.headers!['location']).toMatch(new RegExp(`^${CONSOLE}#code=[A-Za-z0-9_-]{43}$`));
+    expect(res.headers!['set-cookie']).toMatch(/^__Host-sso-[0-9a-f]{24}=; Max-Age=0; Path=\/; Secure; HttpOnly; SameSite=Lax$/);
+    expect(res.headers!['set-cookie']!.split('=')[0]).toBe(sc.split('=')[0]);
+    const code = frag(res).slice('code='.length);
+    const stored = (await db.query<{ value: string }>("select value from ops.workflow_marker where kind = 'sso_code' and claim = $1", [createHash('sha256').update(code).digest('hex')])).rows[0]!;
+    expect(stored.value).not.toContain(code);
+    expect(JSON.parse(stored.value)).toMatchObject({ party: avi, inst: OHR, challenge: p.challenge });
+
+    const done = await ex(code, p.verifier);
+    expect(done.status).toBe(200);
+    const out = done.body as { tokens: { accessToken: string }; institutionId: string };
+    expect(out.institutionId).toBe(OHR);
+    const principal = await app.services.tokens.verifyAccess(out.tokens.accessToken);
+    expect(principal).toMatchObject({ partyId: avi, deviceId: 'web-sso', roles: ['member', 'org_staff'] });
+  });
+
+  it('(2) a wrong, unknown, malformed or replayed state is the same refusal, and a replay or double submit has exactly one winner', async () => {
+    await staffer('bea', OHR, 'staff', 'idp-bea');
+    const first = await signIn(OHR, idp('idp-bea'));
+    expect(first.f).toMatch(/^code=/);
+    const replay = await cb({ code: idp('idp-bea'), state: first.state }, first.cookie);
+    expect(frag(replay)).toBe('error=refused');
+    expect(shape(replay)).toBe(shape(await cb({ code: idp('idp-bea'), state: 'x'.repeat(43) }, first.cookie)));
+    // a concurrent double submit
+    const s = await startIn(OHR);
+    const q = { code: idp('idp-bea'), state: (s.body as { state: string }).state };
+    const both = await Promise.all([cb(q, cookieOf(s)), cb(q, cookieOf(s))]);
+    expect(both.map(frag).filter((f) => f.startsWith('code=')).length).toBe(1);
+    expect(await markerCount('sso_state_used')).toBeGreaterThan(0);
+  });
+
+  it('(3) an unlinked identity without an invite is refused and nothing is linked, created or issued', async () => {
+    const codes = await markerCount('sso_code');
+    const links0 = (await db.query('select 1 from org.staff_idp_link')).rows.length;
+    const staff0 = (await db.query('select 1 from org.staff')).rows.length;
+    // an IdP identity whose email is a staff member's is still nobody: email never finds a staff row
+    for (const subject of ['idp-nobody', 'idp-rivka-by-email']) {
+      const r = await signIn(OHR, `ok:${subject}:rivka@example.com`);
+      expect(r.f).toBe('error=refused');
+    }
+    expect(await markerCount('sso_code')).toBe(codes);
+    expect((await db.query('select 1 from org.staff_idp_link')).rows.length).toBe(links0);
+    expect((await db.query('select 1 from org.staff')).rows.length).toBe(staff0);
+  });
+
+  it('(4) after the deprovision the same identity is refused at the callback; an inactive staff row and a link at another institution are refused too', async () => {
+    const cai = await staffer('cai', OHR, 'staff', 'idp-cai');
+    expect((await signIn(OHR, idp('idp-cai'))).f).toMatch(/^code=/);
+    expect(await app.services.deprovision!.remove(OHR, 'idp-cai', 'evt-cai', NOW, { reason: 'test' })).toBe(true);
+    expect((await signIn(OHR, idp('idp-cai'))).f).toBe('error=refused');
+    expect(cai).toBeTruthy();
+    const dan = await staffer('dan', OHR, 'staff', 'idp-dan');
+    await app.services.team.deactivate(OHR, dan);
+    expect((await signIn(OHR, idp('idp-dan'))).f).toBe('error=refused');
+    await staffer('eli', NER, 'staff', 'idp-eli');
+    expect((await signIn(OHR, idp('idp-eli'))).f).toBe('error=refused');
+  });
+
+  it('(5) with auth.orgSso off all four answer 404 FEATURE_OFF and store nothing; a throwing flag service fails closed; an unconfigured app is inert', async () => {
+    const p = pair();
+    const good = await startIn(OHR, p);
+    const state = (good.body as { state: string }).state;
+    const code = (await ex('c'.repeat(43), p.verifier)).status;
+    expect(code).toBe(401);
+    const before = await allMarkers();
+    for (const mode of ['off', 'throws'] as const) {
+      flagState.on = mode !== 'off';
+      flagState.throws = mode === 'throws';
+      const rs = [await startIn(OHR), await linkIn('rivka', OHR), await cb({ code: idp('idp-x'), state }, cookieOf(good)), await ex('c'.repeat(43), p.verifier)];
+      for (const r of rs) {
+        expect(r.status).toBe(404);
+        expect(r.body).toMatchObject({ code: 'FEATURE_OFF' });
+        expect(r.headers?.['set-cookie']).toBeUndefined();
+        expect(r.headers?.['location']).toBeUndefined();
+      }
+    }
+    flagState.on = true;
+    flagState.throws = false;
+    expect(await allMarkers()).toBe(before);
+    // the flag is read again at the callback and the exchange: off after a good start, the state is left unused
+    flagState.on = false;
+    expect((await cb({ code: idp('idp-x'), state }, cookieOf(good))).status).toBe(404);
+    flagState.on = true;
+    expect(await db.query("select 1 from ops.workflow_marker where kind = 'sso_state_used'").then((r) => r.rows.length)).toBe(await markerCount('sso_state_used'));
+    // no console URL or binding configured: FEATURE_OFF even with the flag on
+    const bare = createApp({ db, registry: host.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags, orgIdp: { orgs: ORGS } });
+    const r = await dispatch(bare, { method: 'POST', url: `/v1/institutions/${OHR}/sso/start`, headers: {}, rawBody: JSON.stringify({ deviceId: 'd', challenge: p.challenge }), now: NOW });
+    expect(r.status).toBe(404);
+    expect(() => createApp({ db, registry: host.registry, market: 'IL', signingKey: undefined as never, issuer: 'x', flags, orgIdp: { consoleUrl: `${CONSOLE}#frag`, callbackUrl: CALLBACK } })).toThrow(/consoleUrl/);
+  });
+
+  it('(6) a group claim naming an admin role does not raise the role; the token carries the stored roles', async () => {
+    const gus = await staffer('gus', OHR, 'staff', 'idp-gus');
+    const r = await signIn(OHR, idp('idp-gus', 'org_admin,admin'));
+    const done = await ex(r.f.slice(5), r.p.verifier);
+    const principal = await app.services.tokens.verifyAccess((done.body as { tokens: { accessToken: string } }).tokens.accessToken);
+    expect(principal.roles).toEqual(['member', 'org_staff']);
+    expect((await db.query<{ role: string }>('select role from org.staff where party_id = $1', [gus])).rows[0]!.role).toBe('staff');
+  });
+});
+
+describe('state rules', () => {
+  it('the cookie binds the state: no cookie, a wrong cookie or another flow\'s cookie is refused WITHOUT burning the state; the right one still works', async () => {
+    await staffer('hal', OHR, 'staff', 'idp-hal');
+    const a = await startIn(OHR);
+    const b = await startIn(OHR);
+    const state = (a.body as { state: string }).state;
+    const q = { code: idp('idp-hal'), state };
+    const name = cookieOf(a).split('=')[0]!;
+    for (const c of [undefined, `${name}=${'A'.repeat(43)}`, `${name}=`, cookieOf(b), `${cookieOf(b).split('=')[0]}=${cookieOf(a).split('=')[1]}`]) expect(frag(await cb(q, c))).toBe('error=refused');
+    const used = await markerCount('sso_state_used');
+    expect(frag(await cb(q, `other=1; ${cookieOf(a)}; more=2`))).toMatch(/^code=/);
+    expect(await markerCount('sso_state_used')).toBe(used + 1);
+  });
+
+  it('a sign-in state expires after 10 minutes and a link state after 5; the exchange code after 60 seconds', async () => {
+    await staffer('ida', OHR, 'staff', 'idp-ida');
+    const ok = await signIn(OHR, idp('idp-ida'), pair(), at(SIGN_IN_TTL_MS - 1));
+    expect(ok.f).toMatch(/^code=/);
+    const late = await signIn(OHR, idp('idp-ida'), pair(), at(SIGN_IN_TTL_MS));
+    expect(late.f).toBe('error=refused');
+    const s = await startIn(OHR);
+    expect(frag(await cb({ code: idp('idp-ida'), state: (s.body as { state: string }).state }, cookieOf(s), at(SIGN_IN_TTL_MS + 1)))).toBe('error=refused');
+    const link = await linkIn('rivka', OHR);
+    expect(JSON.parse((await db.query<{ value: string }>("select value from ops.workflow_marker where kind = 'sso_state' and claim = $1", [createHash('sha256').update((link.body as { state: string }).state).digest('hex')])).rows[0]!.value).exp).toBe(at(LINK_TTL_MS).getTime());
+    expect(frag(await cb({ code: idp('idp-rivka-x'), state: (link.body as { state: string }).state }, cookieOf(link), at(LINK_TTL_MS)))).toBe('error=refused');
+    const c = await signIn(OHR, idp('idp-ida'));
+    expect((await ex(c.f.slice(5), c.p.verifier, at(CODE_TTL_MS))).status).toBe(401);
+    const d = await signIn(OHR, idp('idp-ida'));
+    expect((await ex(d.f.slice(5), d.p.verifier, at(CODE_TTL_MS - 1))).status).toBe(200);
+  });
+
+  it('missing or malformed parameters and an IdP error redirect are the same 302, never a 422, and an error redirect does not burn the state', async () => {
+    const s = await startIn(OHR);
+    const state = (s.body as { state: string }).state;
+    const c = cookieOf(s);
+    const base = shape(await cb({}, c));
+    for (const q of [{ state }, { code: 'x' }, { state: 'short', code: 'x' }, { state: 'é'.repeat(50), code: 'x' }, { state: 's'.repeat(129), code: 'x' }, { code: 'x'.repeat(3000), state }, { error: 'access_denied', error_description: 'nope <b>', state, code: idp('idp-ida') }]) {
+      const r = await cb(q, c);
+      expect(r.status).toBe(302);
+      expect(frag(r)).toBe('error=refused');
+      expect(JSON.stringify(r)).not.toContain('nope');
+    }
+    expect(JSON.parse(shape(await cb({}, c))).h.location).toBe(JSON.parse(base).h.location);
+    expect(await db.query('select 1 from ops.workflow_marker where kind = $1 and subject_id = (select subject_id from ops.workflow_marker where kind = $2 and claim = $3)', ['sso_state_used', 'sso_state', createHash('sha256').update(state).digest('hex')]).then((r) => r.rows.length)).toBe(0);
+  });
+
+  it('the institution comes only from the stored state: another organisation in the identity, or no per-organisation record, is refused', async () => {
+    await staffer('jon', OHR, 'staff', 'idp-jon');
+    const sim = host.simulators['org-idp'];
+    const other: OrgIdPPort = { startSso: (...a) => sim.startSso(...a), handleCallback: async (i) => ({ ...(await sim.handleCallback(i)), orgId: NER }), parseScimEvent: (...a) => sim.parseScimEvent(...a), listDirectory: (...a) => sim.listDirectory(...a) };
+    const svc = mk({ port: () => other });
+    const s = await svc.startSignIn(OHR, { deviceId: 'd', challenge: pair().challenge }, NOW);
+    const codes = await markerCount('sso_code');
+    expect((await svc.callback({ code: idp('idp-jon'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location).toBe(`${CONSOLE}#error=refused`);
+    expect(await markerCount('sso_code')).toBe(codes);
+    // the state was made where a record existed; this instance has none for the institution
+    const s2 = await mk().startSignIn(OHR, { deviceId: 'd', challenge: pair().challenge }, NOW);
+    expect((await mk({ orgs: {} }).callback({ code: idp('idp-jon'), state: s2.body.state }, s2.setCookie.split(';')[0], NOW)).location).toBe(`${CONSOLE}#error=refused`);
+    expect((await mk().callback({ code: idp('idp-jon'), state: s2.body.state }, s2.setCookie.split(';')[0], NOW)).location).toBe(`${CONSOLE}#error=refused`); // consumed above
+  });
+
+  it('start: a bad body is 422 for every institution alike; an unknown, malformed or SSO-less institution is the one FEATURE_OFF; an IdP outage is 503 and stores nothing', async () => {
+    const p = pair();
+    const bad = [{}, { deviceId: 'd' }, { challenge: p.challenge }, { deviceId: 'd', challenge: p.challenge.slice(1) }, { deviceId: 'd', challenge: `${p.challenge.slice(1)}=` }, { deviceId: '', challenge: p.challenge }];
+    for (const b of bad) for (const inst of [OHR, NOSSO, 'nope']) {
+      const r = await post(`/institutions/${inst}/sso/start`, b);
+      expect(r.status).toBe(422);
+    }
+    const off = [NOSSO, 'nope', uuidv7(NOW), OHR.toUpperCase().slice(0, 35)];
+    const shapes = new Set<string>();
+    for (const inst of off) shapes.add(shape(await startIn(inst, p)));
+    expect(shapes.size).toBe(1);
+    expect(JSON.parse([...shapes][0]!)).toMatchObject({ s: 404, b: { code: 'FEATURE_OFF' } });
+    expect((await startIn(OHR.toUpperCase())).status).toBe(200);
+    const sim = host.simulators['org-idp'];
+    const orig = sim.startSso.bind(sim);
+    sim.startSso = async () => { throw new OrgIdPError('PROVIDER_UNAVAILABLE', 'down'); };
+    const states = await markerCount('sso_state');
+    const r = await startIn(OHR);
+    sim.startSso = orig;
+    expect(r.status).toBe(503);
+    expect(r.headers?.['set-cookie']).toBeUndefined();
+    expect(await markerCount('sso_state')).toBe(states);
+  });
+});
+
+describe('exchange', () => {
+  it('a wrong verifier is the uniform 401, does not consume the code, and five of them kill it (429); unknown codes leave no row', async () => {
+    await staffer('kim', OHR, 'staff', 'idp-kim');
+    const r = await signIn(OHR, idp('idp-kim'));
+    const code = r.f.slice(5);
+    const unknown = await markerCount('sso_code_attempt');
+    const before = await allMarkers();
+    const u = await ex('u'.repeat(43), r.p.verifier);
+    expect(u.status).toBe(401);
+    expect(await allMarkers()).toBe(before);
+    expect(await markerCount('sso_code_attempt')).toBe(unknown);
+    const wrongBody = await ex(code, pair().verifier);
+    expect(wrongBody.status).toBe(401);
+    expect(shape(wrongBody)).toBe(shape(u));
+    for (let i = 0; i < 3; i += 1) expect((await ex(code, pair().verifier)).status).toBe(401);
+    expect(await markerCount('sso_code_attempt')).toBe(unknown + 4);
+    expect((await ex(code, pair().verifier)).status).toBe(401); // the 5th wrong one
+    expect((await ex(code, pair().verifier)).status).toBe(429);
+    expect((await ex(code, r.p.verifier)).status).toBe(429); // dead, even for the right verifier
+    expect(await markerCount('sso_code_attempt')).toBe(unknown + 5);
+    // a code that took fewer than five wrong tries still redeems, and the first wrong one did not consume it
+    const r2 = await signIn(OHR, idp('idp-kim'));
+    expect((await ex(r2.f.slice(5), pair().verifier)).status).toBe(401);
+    expect((await ex(r2.f.slice(5), r2.p.verifier)).status).toBe(200);
+  });
+
+  it('a redeemed code cannot be replayed and a concurrent double redemption has one winner', async () => {
+    await staffer('lee', OHR, 'staff', 'idp-lee');
+    const r = await signIn(OHR, idp('idp-lee'));
+    const both = await Promise.all([ex(r.f.slice(5), r.p.verifier), ex(r.f.slice(5), r.p.verifier)]);
+    expect(both.map((x) => x.status).sort()).toEqual([200, 401]);
+    expect((await ex(r.f.slice(5), r.p.verifier)).status).toBe(401);
+  });
+
+  it('the verifier is checked against the challenge stored with the state; the callback takes no challenge from the request', async () => {
+    await staffer('mia', OHR, 'staff', 'idp-mia');
+    const p = pair();
+    const evil = pair();
+    const start = await startIn(OHR, p);
+    const res = await cb({ code: idp('idp-mia'), state: (start.body as { state: string }).state, challenge: evil.challenge }, cookieOf(start));
+    const code = frag(res).slice(5);
+    expect((await ex(code, evil.verifier)).status).toBe(401);
+    expect((await ex(code, p.verifier)).status).toBe(200);
+  });
+
+  it('a schema-invalid body is 422 (the verifier and code floors are 43), a well-formed wrong one is the uniform 401', async () => {
+    const v = pair().verifier;
+    for (const b of [{}, { code: 'c'.repeat(43) }, { verifier: v }, { code: 'c'.repeat(42), verifier: v }, { code: 'c'.repeat(129), verifier: v }, { code: 'c'.repeat(43), verifier: v.slice(1) }, { code: 'c'.repeat(43), verifier: `${v.slice(1)}!` }, { code: 'c'.repeat(43), verifier: `${v}${v}${v}` }, { code: 7, verifier: v }]) expect((await post('/sso/exchange', b)).status).toBe(422);
+    expect((await post('/sso/exchange', { code: 'c'.repeat(43), verifier: v })).status).toBe(401);
+    expect((await post('/sso/exchange', { code: 'c'.repeat(128), verifier: v.repeat(2).slice(0, 128) })).status).toBe(401);
+  });
+
+  it('the flag is read again at redemption: a code made while it was on is not redeemable while it is off', async () => {
+    await staffer('flo', OHR, 'staff', 'idp-flo');
+    const r = await signIn(OHR, idp('idp-flo'));
+    flagState.on = false;
+    await expect(mk().exchange({ code: r.f.slice(5), verifier: r.p.verifier }, NOW)).rejects.toMatchObject({ code: 'FEATURE_OFF' });
+    flagState.on = true;
+    expect((await ex(r.f.slice(5), r.p.verifier)).status).toBe(200);
+  });
+
+  it('a removal in the 60 seconds after the callback is honoured at redemption', async () => {
+    await staffer('noa', OHR, 'staff', 'idp-noa');
+    const r = await signIn(OHR, idp('idp-noa'));
+    await app.services.deprovision!.remove(OHR, 'idp-noa', 'evt-noa', NOW, { reason: 'test' });
+    const res = await ex(r.f.slice(5), r.p.verifier);
+    expect(res.status).toBe(401);
+    expect(JSON.stringify(res.body)).not.toContain('tokens');
+  });
+
+  it('a failed token issue leaves no replayable code: it releases the claim, the retry redeems once, then the code is dead', async () => {
+    await staffer('opal', OHR, 'staff', 'idp-opal');
+    let fail = true;
+    const svc = mk({ tokens: { issue: async (i) => { if (fail) { fail = false; throw new Error('token store down'); } return app.services.tokens.issue(i); } } });
+    const p = pair();
+    const s = await svc.startSignIn(OHR, { deviceId: 'd', challenge: p.challenge }, NOW);
+    const out = await svc.callback({ code: idp('idp-opal'), state: s.body.state }, s.setCookie.split(';')[0], NOW);
+    const code = out.location.split('#code=')[1]!;
+    await expect(svc.exchange({ code, verifier: p.verifier }, NOW)).rejects.toThrow('token store down');
+    expect(await markerCount('sso_code_released')).toBeGreaterThan(0);
+    expect((await svc.exchange({ code, verifier: p.verifier }, NOW)).institutionId).toBe(OHR);
+    await expect(svc.exchange({ code, verifier: p.verifier }, NOW)).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+  });
+});
+
+describe('link flow', () => {
+  it('an active staff member with a fresh step-up links once; the audit row carries no subject; the next sign-in works', async () => {
+    const before = await linkRows(people['rivka']!.partyId);
+    const p = pair();
+    const start = await linkIn('rivka', OHR, p);
+    expect(start.status).toBe(200);
+    expect(start.headers!['set-cookie']).toContain('Max-Age=300');
+    const res = await cb({ code: idp('idp-rivka'), state: (start.body as { state: string }).state }, cookieOf(start));
+    const done = await ex(frag(res).slice(5), p.verifier);
+    expect(done.status).toBe(200);
+    expect(before).toBe(0);
+    expect(await links.find(OHR, 'idp-rivka')).toBe(people['rivka']!.partyId);
+    const audit = (await db.query<{ subject: string; payload: Record<string, unknown> }>("select subject, payload from audit.entry where action = 'institution.staff.idp_link' and subject = $1", [people['rivka']!.partyId])).rows;
+    expect(audit).toHaveLength(1);
+    expect(JSON.stringify(audit)).not.toContain('idp-rivka');
+    expect((await signIn(OHR, idp('idp-rivka'))).f).toMatch(/^code=/);
+    // a second link start for a linked party is a 409, for a member only
+    expect((await linkIn('rivka', OHR)).status).toBe(409);
+  });
+
+  it('answers in the contract order: bearer, step-up, 422, then membership (one NOT_FOUND for every non-member), then FEATURE_OFF, 409, 429', async () => {
+    await person('dov', ['member']);
+    await person('pat', ['member']);
+    const p = pair();
+    expect((await post(`/institutions/${OHR}/sso/link/start`, { challenge: p.challenge })).status).toBe(401);
+    const noStep = await linkIn('dov', OHR, p, {}, false);
+    expect(noStep.body).toMatchObject({ code: 'STEP_UP_REQUIRED' });
+    expect((await post(`/institutions/${OHR}/sso/link/start`, { challenge: 'short' }, as('dov'))).status).toBe(422);
+    expect((await post(`/institutions/${NOSSO}/sso/link/start`, {}, as('dov'))).status).toBe(422);
+    // invites: one for Ner, one expired, one already taken, one for Ohr
+    const invite = async (inst: string, who: string, email: string) => {
+      await app.services.team.invite(inst, people[who]!.partyId, { role: 'staff', email }, `key-${email}-12345`, NOW);
+      const sent = host.simulators.notify.sent.filter((n) => n.to === email).at(-1)!;
+      return String(sent.data['inviteUrl']).split('token=')[1]!;
+    };
+    await staffer('ned', NER, 'admin');
+    const other = await invite(NER, 'ned', 'dov-ner@example.com');
+    const stale = await invite(OHR, 'rivka', 'dov-stale@example.com');
+    await db.query("update org.staff_invite set expires_at = $1 where token_hash = $2", [at(-1000), createHash('sha256').update(stale).digest('hex')]);
+    const taken = await invite(OHR, 'rivka', 'dov-taken@example.com');
+    await app.services.team.accept(taken, people['pat']!.partyId, NOW);
+    const shapes = new Set<string>();
+    for (const [inst, extra] of [[OHR, {}], [NOSSO, {}], ['nope', {}], [uuidv7(NOW), {}], [OHR, { inviteToken: 'bogus' }], [OHR, { inviteToken: other }], [OHR, { inviteToken: stale }], [OHR, { inviteToken: taken }], [NOSSO, { inviteToken: other }]] as const) {
+      const r = await linkIn('dov', inst, p, extra);
+      shapes.add(JSON.stringify({ s: r.status, c: (r.body as { code: string }).code }));
+    }
+    expect([...shapes]).toEqual([JSON.stringify({ s: 404, c: 'NOT_FOUND' })]);
+    expect(await markerCount('sso_state')).toBeGreaterThan(0);
+    // a member of an institution with no SSO record sees FEATURE_OFF
+    expect((await linkIn('nina', NOSSO)).body).toMatchObject({ code: 'FEATURE_OFF' });
+    // read-only at start: no invite was consumed or accepted
+    const ok = await invite(OHR, 'rivka', 'dov-ok@example.com');
+    const accepted = (await db.query('select 1 from org.staff_invite_acceptance')).rows.length;
+    expect((await linkIn('dov', OHR, p, { inviteToken: ok })).status).toBe(200);
+    expect((await db.query('select 1 from org.staff_invite_acceptance')).rows.length).toBe(accepted);
+    expect((await db.query('select 1 from org.staff where party_id = $1', [people['dov']!.partyId])).rows.length).toBe(0);
+  });
+
+  it('per party: the sixth link start in ten minutes is 429 (for a member only), and another party is unaffected', async () => {
+    await staffer('quin', NER, 'staff');
+    await staffer('ron', NER, 'staff');
+    for (let i = 0; i < 5; i += 1) expect((await linkIn('quin', NER)).status).toBe(200);
+    expect((await linkIn('quin', NER)).status).toBe(429);
+    expect((await linkIn('ron', NER)).status).toBe(200);
+    expect((await linkIn('dov', NER)).status).toBe(404);
+    const quin = { partyId: people['quin']!.partyId, sessionId: people['quin']!.sessionId, deviceId: 'web' };
+    await expect(mk().startLink(quin, NER, { challenge: pair().challenge }, at(10 * 60_000 - 1))).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    expect((await mk().startLink(quin, NER, { challenge: pair().challenge }, at(10 * 60_000))).body.state).toHaveLength(43);
+  });
+
+  it('an invite holder is made staff and linked only at the callback, after the IdP identity is verified', async () => {
+    await person('sue', ['member']);
+    await app.services.team.invite(OHR, people['rivka']!.partyId, { role: 'staff', email: 'sue@example.com' }, 'key-sue-invite-1', NOW);
+    const token = String(host.simulators.notify.sent.filter((n) => n.to === 'sue@example.com').at(-1)!.data['inviteUrl']).split('token=')[1]!;
+    const p = pair();
+    const start = await linkIn('sue', OHR, p, { inviteToken: token });
+    const state = (start.body as { state: string }).state;
+    // the IdP names another organisation: refused and the invite is NOT consumed
+    const sim = host.simulators['org-idp'];
+    const orig = sim.handleCallback.bind(sim);
+    sim.handleCallback = async (i) => ({ ...(await orig(i)), orgId: NER });
+    const mismatch = await cb({ code: idp('idp-sue'), state }, cookieOf(start));
+    sim.handleCallback = orig;
+    expect(frag(mismatch)).toBe('error=refused');
+    expect((await db.query('select 1 from org.staff where party_id = $1', [people['sue']!.partyId])).rows).toHaveLength(0);
+    // a fresh start and a good callback
+    const start2 = await linkIn('sue', OHR, p, { inviteToken: token });
+    const res = await cb({ code: idp('idp-sue'), state: (start2.body as { state: string }).state }, cookieOf(start2));
+    expect(frag(res)).toMatch(/^code=/);
+    expect((await db.query<{ institution_id: string; active: boolean }>('select institution_id, active from org.staff where party_id = $1', [people['sue']!.partyId])).rows[0]).toMatchObject({ institution_id: OHR, active: true });
+    expect(await links.find(OHR, 'idp-sue')).toBe(people['sue']!.partyId);
+    const done = await ex(frag(res).slice(5), p.verifier);
+    const principal = await app.services.tokens.verifyAccess((done.body as { tokens: { accessToken: string } }).tokens.accessToken);
+    expect(principal.roles).toContain('org_staff');
+  });
+
+  it('a lost or changed proof is refused at the callback and links nothing: revoked session, removed party, a consumed invite, a taken subject, a live link', async () => {
+    // revoked session
+    await staffer('tess', OHR, 'staff');
+    const a = await linkIn('tess', OHR);
+    await app.services.tokens.revokeAll(people['tess']!.partyId, 'test');
+    expect(frag(await cb({ code: idp('idp-tess'), state: (a.body as { state: string }).state }, cookieOf(a)))).toBe('error=refused');
+    expect(await linkRows(people['tess']!.partyId)).toBe(0);
+    // removed between start and callback
+    const uma = await staffer('uma', OHR, 'staff');
+    const b = await linkIn('uma', OHR);
+    await app.services.team.deactivate(OHR, uma);
+    expect(frag(await cb({ code: idp('idp-uma'), state: (b.body as { state: string }).state }, cookieOf(b)))).toBe('error=refused');
+    expect(await linkRows(uma)).toBe(0);
+    // the subject is already linked to someone else (a 409 from the table is a refusal, not a 500), and the invite is not consumed
+    await staffer('vic', OHR, 'staff', 'idp-taken');
+    await person('wes', ['member']);
+    await app.services.team.invite(OHR, people['rivka']!.partyId, { role: 'staff', email: 'wes@example.com' }, 'key-wes-invite-1', NOW);
+    const token = String(host.simulators.notify.sent.filter((n) => n.to === 'wes@example.com').at(-1)!.data['inviteUrl']).split('token=')[1]!;
+    const c = await linkIn('wes', OHR, pair(), { inviteToken: token });
+    expect(frag(await cb({ code: idp('idp-taken'), state: (c.body as { state: string }).state }, cookieOf(c)))).toBe('error=refused');
+    expect((await db.query('select 1 from org.staff where party_id = $1', [people['wes']!.partyId])).rows).toHaveLength(0);
+    // the invite is accepted by someone else between start and callback
+    const d = await linkIn('wes', OHR, pair(), { inviteToken: token });
+    await app.services.team.accept(token, people['dov']!.partyId, NOW);
+    expect(frag(await cb({ code: idp('idp-wes'), state: (d.body as { state: string }).state }, cookieOf(d)))).toBe('error=refused');
+    expect(await linkRows(people['wes']!.partyId)).toBe(0);
+    // the party got a live link between start and callback
+    await staffer('xan', OHR, 'staff');
+    const e = await linkIn('xan', OHR);
+    await links.link(OHR, 'idp-xan-other', people['xan']!.partyId, SYSTEM, NOW);
+    expect(frag(await cb({ code: idp('idp-xan'), state: (e.body as { state: string }).state }, cookieOf(e)))).toBe('error=refused');
+    expect(await links.find(OHR, 'idp-xan')).toBeUndefined();
+  });
+
+  it('the link completion keeps its own guards: a conflict race is a refusal, an invite is not consumed for a party who got a link or whose invite moved, the device defaults to the session\'s', async () => {
+    // links.link answering 409 (a race with another link) is the uniform refusal, not a 500
+    await staffer('yu', OHR, 'staff');
+    const racy = mk({ links: { find: (...a) => links.find(...a), link: async () => { throw new DomainError('IDEMPOTENCY_CONFLICT', 'raced'); } } });
+    const s = await racy.startLink({ partyId: people['yu']!.partyId, sessionId: people['yu']!.sessionId, deviceId: 'web' }, OHR, { challenge: pair().challenge }, NOW);
+    expect((await racy.callback({ code: idp('idp-yu'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location).toBe(`${CONSOLE}#error=refused`);
+    // an invite holder who got a live link after the start: refused BEFORE the invite is consumed
+    const invite = async (email: string) => {
+      await person(email, ['member']);
+      await app.services.team.invite(OHR, people['rivka']!.partyId, { role: 'staff', email: `${email}@example.com` }, `key-${email}-invite`, NOW);
+      return String(host.simulators.notify.sent.filter((n) => n.to === `${email}@example.com`).at(-1)!.data['inviteUrl']).split('token=')[1]!;
+    };
+    const t1 = await invite('zed');
+    const a = await linkIn('zed', OHR, pair(), { inviteToken: t1 });
+    await db.query("insert into org.staff (party_id, institution_id, role, active) values ($1, $2, 'staff', true)", [people['zed']!.partyId, NER]);
+    await links.link(NER, 'idp-zed-ner', people['zed']!.partyId, SYSTEM, NOW);
+    await db.query('update org.staff set active = false where party_id = $1', [people['zed']!.partyId]); // inactive elsewhere, so only the link guard stops the invite
+    expect(frag(await cb({ code: idp('idp-zed'), state: (a.body as { state: string }).state }, cookieOf(a)))).toBe('error=refused');
+    expect((await db.query('select 1 from org.staff_invite_acceptance a join org.staff_invite i on i.id = a.invite_id where i.token_hash = $1', [createHash('sha256').update(t1).digest('hex')])).rows).toHaveLength(0);
+    // an invite that no longer belongs to this institution is neither accepted nor linked
+    const t2 = await invite('abe');
+    const b = await linkIn('abe', OHR, pair(), { inviteToken: t2 });
+    await db.query('update org.staff_invite set institution_id = $1 where token_hash = $2', [NER, createHash('sha256').update(t2).digest('hex')]);
+    expect(frag(await cb({ code: idp('idp-abe'), state: (b.body as { state: string }).state }, cookieOf(b)))).toBe('error=refused');
+    expect((await db.query('select 1 from org.staff_invite_acceptance a join org.staff_invite i on i.id = a.invite_id where i.token_hash = $1', [createHash('sha256').update(t2).digest('hex')])).rows).toHaveLength(0);
+    expect((await db.query('select 1 from org.staff where party_id = $1', [people['abe']!.partyId])).rows).toHaveLength(0);
+    // the token's device is the one asked for, else the session's own
+    const p1 = pair();
+    const c = await linkIn('ron', NER, p1, { deviceId: 'web-explicit' });
+    const out1 = await ex(frag(await cb({ code: idp('idp-ron'), state: (c.body as { state: string }).state }, cookieOf(c))).slice(5), p1.verifier);
+    expect((await app.services.tokens.verifyAccess((out1.body as { tokens: { accessToken: string } }).tokens.accessToken)).deviceId).toBe('web-explicit');
+    await staffer('ivy', NER, 'staff');
+    const p2 = pair();
+    const d = await linkIn('ivy', NER, p2);
+    const out2 = await ex(frag(await cb({ code: idp('idp-ivy'), state: (d.body as { state: string }).state }, cookieOf(d))).slice(5), p2.verifier);
+    expect((await app.services.tokens.verifyAccess((out2.body as { tokens: { accessToken: string } }).tokens.accessToken)).deviceId).toMatch(/^web-\+/);
+  });
+});
+
+describe('uniformity, timing and opacity', () => {
+  it('every refusal reason is byte-identical to the caller, reads the same rows and takes the same latency floor; the IdP is always called and never with a state it did not earn', async () => {
+    await staffer('yan', OHR, 'staff', 'idp-yan');
+    const sleeps: number[] = [];
+    const idpCalls: { code: string; state: string }[] = [];
+    const sim = host.simulators['org-idp'];
+    const spy: OrgIdPPort = { startSso: (...a) => sim.startSso(...a), handleCallback: async (i) => { idpCalls.push(i); return sim.handleCallback(i); }, parseScimEvent: (...a) => sim.parseScimEvent(...a), listDirectory: (...a) => sim.listDirectory(...a) };
+    const c = counting(db);
+    const svc = mk({ db: c.db, port: () => spy, floorMs: 300, hr: () => 0, sleep: async (ms) => { sleeps.push(ms); } });
+    const begin = async () => { const s = await svc.startSignIn(OHR, { deviceId: 'd', challenge: pair().challenge }, NOW); return { state: s.body.state, cookie: s.setCookie.split(';')[0]! }; };
+    const good = idp('idp-yan');
+    const cases: Record<string, () => Promise<{ code?: string; state?: string; cookie?: string; now?: Date }>> = {
+      malformed: async () => ({ code: good, state: 'short' }),
+      unknown: async () => ({ code: good, state: rand43() }),
+      unbound: async () => ({ ...(await begin()), code: good, cookie: undefined as never }),
+      wrongCookie: async () => { const b = await begin(); return { ...b, code: good, cookie: `${b.cookie.split('=')[0]}=${'B'.repeat(43)}` }; },
+      expired: async () => ({ ...(await begin()), code: good, now: at(SIGN_IN_TTL_MS) }),
+      replayed: async () => { const b = await begin(); await svc.callback({ code: good, state: b.state }, b.cookie, NOW); return { ...b, code: good }; },
+      badIdpCode: async () => ({ ...(await begin()), code: 'garbage' }),
+      unlinked: async () => ({ ...(await begin()), code: idp('idp-stranger') }),
+    };
+    const seen = new Map<string, { out: string; reads: number }>();
+    for (const [name, make] of Object.entries(cases)) {
+      const q = await make();
+      const reads0 = c.n.q;
+      const calls0 = idpCalls.length;
+      const sleeps0 = sleeps.length;
+      const out = await svc.callback({ code: q.code, state: q.state }, q.cookie, q.now ?? NOW);
+      seen.set(name, { out: JSON.stringify({ l: out.location, c: out.clear.replace(/^[^=]*/, '') }), reads: c.n.q - reads0 });
+      expect(idpCalls.length - calls0, `${name} calls the IdP once`).toBe(1);
+      expect(sleeps.length - sleeps0, `${name} waits for the floor`).toBe(1);
+      expect(sleeps.at(-1)).toBe(300);
+      if (q.state && !['replayed', 'badIdpCode', 'unlinked'].includes(name)) expect(idpCalls.at(-1)!.state, `${name} never hands the real state to the IdP`).not.toBe(q.state);
+      expect(idpCalls.at(-1)!.code).not.toBe(q.code === 'garbage' ? '' : good);
+    }
+    expect(new Set([...seen.values()].map((v) => v.out)).size).toBe(1);
+    expect(JSON.parse([...seen.values()][0]!.out).l).toBe(`${CONSOLE}#error=refused`);
+    expect(new Set([...seen.values()].map((v) => v.reads)).size, JSON.stringify([...seen])).toBe(1);
+    // a success takes the same floor
+    const b = await begin();
+    sleeps.length = 0;
+    expect((await svc.callback({ code: good, state: b.state }, b.cookie, NOW)).location).toMatch(/#code=/);
+    expect(sleeps).toEqual([300]);
+  });
+
+  it('an IdP outage after a good state is #error=unavailable; on a state that earned nothing it is the plain refusal', async () => {
+    const sim = host.simulators['org-idp'];
+    const down: OrgIdPPort = { startSso: (...a) => sim.startSso(...a), handleCallback: async () => { throw new OrgIdPError('PROVIDER_UNAVAILABLE', 'down'); }, parseScimEvent: (...a) => sim.parseScimEvent(...a), listDirectory: (...a) => sim.listDirectory(...a) };
+    const svc = mk({ port: () => down });
+    const s = await svc.startSignIn(OHR, { deviceId: 'd', challenge: pair().challenge }, NOW);
+    expect((await svc.callback({ code: 'x', state: rand43() }, undefined, NOW)).location).toBe(`${CONSOLE}#error=refused`);
+    expect((await svc.callback({ code: 'x', state: s.body.state }, s.setCookie.split(';')[0], NOW)).location).toBe(`${CONSOLE}#error=unavailable`);
+  });
+
+  it('refusals are metered under a closed reason and nothing sensitive reaches the metric lines, the markers or the audit rows', async () => {
+    lines.length = 0;
+    const svc = mk();
+    const run = async (code: string) => { const s = await svc.startSignIn(OHR, { deviceId: 'd', challenge: pair().challenge }, NOW); await svc.callback({ code, state: s.body.state }, s.setCookie.split(';')[0], NOW); return s.body.state; };
+    await run('ok:idp-leak-subject:leak-email@example.com');
+    const r = { body: { state: await run('garbage') } };
+    await svc.callback({ code: 'x', state: r.body.state }, undefined, NOW);
+    const wrong = await ex('z'.repeat(43), pair().verifier);
+    await svc.exchange({ code: 'z'.repeat(43), verifier: pair().verifier }, NOW).catch(() => undefined);
+    expect(wrong.status).toBe(401);
+    const reasons = lines.map((l) => (JSON.parse(l) as { reason?: string; 'staff.sso_refused'?: number }).reason).filter(Boolean);
+    expect(reasons).toEqual(expect.arrayContaining(['not_linked', 'idp_refused', 'state_unbound', 'exchange_unknown']));
+    const text = lines.join('\n');
+    for (const secret of ['leak-email', 'idp-leak-subject']) expect(text).not.toContain(secret);
+    const stored = JSON.stringify((await db.query("select value, claim from ops.workflow_marker where kind like 'sso%'")).rows) + JSON.stringify((await db.query('select payload, reason from audit.entry')).rows);
+    for (const secret of ['leak-email', 'idp-leak-subject', 'example.com', (r.body as { state: string }).state]) expect(stored).not.toContain(secret);
+    expect(JSON.stringify(wrong.body)).not.toMatch(/verifier|code not|unknown|expired/i);
+    expect(new DomainError('UNAUTHENTICATED', 'Sign-in refused').message).toBe((wrong.body as { detail?: string; title: string }).detail ?? (wrong.body as { title: string }).title);
+  });
+});
+
+const rand43 = () => randomBytes(32).toString('base64url');
