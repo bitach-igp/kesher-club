@@ -9,15 +9,17 @@ const run = (consoleUrl: string | undefined, callbackUrl: string | undefined, pr
 describe('orgIdp.consoleUrl', () => {
   const ok: [string, boolean][] = [
     [CON, true], [CON, false], ['https://console.kesher.example', true], ['https://console.kesher.example/', true], ['https://console.kesher.example:8443/sso', true],
-    ['HTTPS://Console.Kesher.Example/sso', true], ['https://bücher.example/sso', true], ['https://xn--bcher-kva.example/sso', true],
+    ['HTTPS://Console.Kesher.Example/sso', true], ['https://xn--bcher-kva.example/sso', true], ['https://xn--wgv71a.example/', true],
     ['https://[2001:db8::1]/sso', true], ['https://console.kesher.example/a%20b', true],
     ['http://localhost:5173/sso', false], ['http://127.0.0.1/sso', false], ['http://[::1]:3000/sso', false], ['https://localhost/sso', false], ['HTTP://LOCALHOST/sso', false],
   ];
   it.each(ok)('accepts %s (production %s)', (url, prod) => {
     const cb = url.toLowerCase().startsWith('http:') ? 'http://localhost:3000/v1/sso/callback' : CB;
-    expect(validateOrgIdpConfig({ consoleUrl: url, callbackUrl: cb }, prod)).toEqual({ consoleUrl: url, callbackUrl: cb });
+    const n = (x: string): string => new URL(x).origin + new URL(x).pathname;
+    expect(validateOrgIdpConfig({ consoleUrl: url, callbackUrl: cb }, prod)).toEqual({ consoleUrl: n(url), callbackUrl: n(cb) });
   });
   const bad: [string, string, boolean][] = [
+    ['IDN host (non-ASCII)', 'https://日本.example/', false], ['Latin-1 IDN host', 'https://bücher.example/sso', false], ['non-ASCII path', 'https://console.kesher.example/ü', false], ['non-breaking space', 'https://console.kesher.example/\u00a0', false], ['DEL', 'https://console.kesher.example/\u007f', false],
     ['trailing empty hash', `${CON}#`, false], ['fragment', `${CON}#x=1`, false], ['query', `${CON}?a=1`, false], ['empty query', `${CON}?`, false],
     ['userinfo', 'https://user:pass@console.kesher.example/sso', false], ['empty userinfo', 'https://@console.kesher.example/sso', false], ['user only', 'https://user@console.kesher.example/', false],
     ['javascript scheme', 'javascript://localhost/%0aalert(1)', false], ['javascript no authority', 'javascript:alert(1)', false], ['data', 'data:text/html,hi', false], ['file', 'file://localhost/etc/passwd', false],
@@ -44,7 +46,7 @@ describe('orgIdp.consoleUrl', () => {
 
 describe('orgIdp.callbackUrl', () => {
   it.each([
-    [CB], ['https://api.kesher.example:8443/v1/sso/callback'], ['https://bücher.example/v1/sso/callback'],
+    [CB], ['https://api.kesher.example:8443/v1/sso/callback'], ['https://xn--bcher-kva.example/v1/sso/callback'],
   ])('accepts %s', (cb) => expect(validateOrgIdpConfig({ consoleUrl: CON, callbackUrl: cb }, true)?.callbackUrl).toBe(cb));
   it('accepts a loopback pair outside production only', () => {
     const c = { consoleUrl: 'http://localhost:5173/sso', callbackUrl: 'http://localhost:3000/v1/sso/callback' };
@@ -56,7 +58,7 @@ describe('orgIdp.callbackUrl', () => {
     ['extra segment', `${CB}/x`], ['dot segments', 'https://api.kesher.example/v1/x/../sso/callback'], ['encoded slash', 'https://api.kesher.example/v1%2Fsso/callback'], ['encoded char', 'https://api.kesher.example/v1/sso/call%62ack'],
     ['query', `${CB}?a=1`], ['empty query', `${CB}?`], ['fragment', `${CB}#`], ['userinfo', 'https://u:p@api.kesher.example/v1/sso/callback'],
     ['javascript', 'javascript://localhost/v1/sso/callback'], ['data', 'data:text/plain,x'], ['http remote', 'http://api.kesher.example/v1/sso/callback'], ['space', `${CB} `],
-    ['trailing dot', 'https://api.kesher.example./v1/sso/callback'], ['http localhost in production', 'http://localhost/v1/sso/callback'],
+    ['IDN host', 'https://bücher.example/v1/sso/callback'], ['trailing dot', 'https://api.kesher.example./v1/sso/callback'], ['http localhost in production', 'http://localhost/v1/sso/callback'],
   ])('refuses %s', (_n, cb) => expect(run(CON, cb)).toThrow(/orgIdp\.callbackUrl/));
   it.each([['http://localhost/v1/sso/callback', /callbackUrl must be https in production/], ['https://localhost/v1/sso/callback', /callbackUrl must not be a loopback host in production/]])('refuses %s as callback in production', (cb, re) => {
     expect(run(CON, cb, true)).toThrow(re);
@@ -64,6 +66,23 @@ describe('orgIdp.callbackUrl', () => {
   it('refuses a scheme mismatch between the two (outside production)', () => {
     expect(() => validateOrgIdpConfig({ consoleUrl: 'http://localhost/sso', callbackUrl: CB }, false)).toThrow(/same scheme/);
     expect(() => validateOrgIdpConfig({ consoleUrl: CON, callbackUrl: 'http://localhost/v1/sso/callback' }, false)).toThrow(/same scheme/);
+  });
+});
+
+describe('returned values', () => {
+  it('are pure ASCII, normalised, and writable as a Location header', async () => {
+    const { ServerResponse, IncomingMessage } = await import('node:http');
+    const r = validateOrgIdpConfig({ consoleUrl: 'HTTPS://Console.Kesher.Example:443/sso', callbackUrl: 'HTTPS://Xn--Bcher-Kva.Example:443/v1/sso/callback' }, true)!;
+    expect(r).toEqual({ consoleUrl: 'https://console.kesher.example/sso', callbackUrl: 'https://xn--bcher-kva.example/v1/sso/callback' });
+    for (const v of Object.values(r)) {
+      expect(v).toMatch(/^[\x21-\x7e]+$/);
+      const res = new ServerResponse(new IncomingMessage(null as never));
+      expect(() => res.writeHead(302, { Location: `${v}#code=abc` })).not.toThrow();
+    }
+  });
+  it('refuses a non-Latin-1 host at boot instead of failing the first sign-in', () => {
+    expect(run('https://日本.example/', CB)).toThrow(/orgIdp\.consoleUrl must be ASCII only/);
+    expect(run(CON, 'https://日本.example/v1/sso/callback')).toThrow(/orgIdp\.callbackUrl must be ASCII only/);
   });
 });
 

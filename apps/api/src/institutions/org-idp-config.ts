@@ -2,7 +2,11 @@
 // browser to (with `#code=` appended), `callbackUrl` is the redirect URI registered with the IdP. Both are refused unless they are plain
 // origin-and-path URLs: https (http only for a literal loopback host and never in production), no userinfo, no query, no fragment (not even
 // an empty one: it would give `##code=`), no whitespace, backslash or percent-escape in the authority. Messages name the option and the
-// rule and never echo the value, which may hold a secret.
+// rule and never echo the value, which may hold a secret. Only ASCII is accepted (an IDN host is given in punycode): the value goes into a
+// Location header and a registered redirect URI, and a non-Latin-1 character makes node's writeHead throw while a Latin-1 one is sent as a
+// raw byte. The returned strings are the WHATWG-normalised `origin + pathname`, so what is used is provably what was checked.
+// The production "no loopback" rule is literal only: 127.0.0.2, 0.0.0.0, ::ffff:7f00:1, foo.localhost and private or link-local ranges pass.
+// The URLs are operator-controlled configuration, not user input, so this is a guard against mistakes, not a network-policy check.
 
 /** The only path the callback route is served at (contracts/openapi.yaml `/sso/callback` under the `/v1` server). */
 export const SSO_CALLBACK_PATH = '/v1/sso/callback';
@@ -18,14 +22,14 @@ export interface OrgIdpUrlConfig { consoleUrl?: string | undefined; callbackUrl?
 
 function checkUrl(option: string, raw: string, production: boolean): URL {
   const fail = (rule: string): never => { throw new Error(`orgIdp.${option} ${rule}`); };
-  if (/[\s\\\u007f-\u009f]|[^ -￿]/.test(raw)) fail('must not contain whitespace, control characters or a backslash');
+  if (/[\s\\]|[^\x21-\x7e]/.test(raw)) fail('must be ASCII only (give an IDN host in punycode) with no whitespace, control characters or backslash');
   const m = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)([^]*)$/.exec(raw);
   if (!m) return fail('must be an absolute https URL');
   const [, , authority = '', rest = ''] = m;
   if (!authority) fail('must have a host');
   if (authority.includes('@')) fail('must not contain userinfo');
   if (authority.includes('%')) fail('must not percent-encode its host');
-  if (rest.includes('#') || rest.includes('?') || /[?#]/.test(authority)) fail('must not contain a query or a fragment');
+  if (rest.includes('#') || rest.includes('?')) fail('must not contain a query or a fragment');
   let u: URL;
   try { u = new URL(raw); } catch { return fail('is not a valid URL'); }
   const rawHost = authority.replace(/:\d*$/, '').toLowerCase();
@@ -54,5 +58,5 @@ export function validateOrgIdpConfig(c: OrgIdpUrlConfig | undefined, production:
   const cb = checkUrl('callbackUrl', callbackUrl, production);
   if (callbackUrl.replace(/^[^:]*:\/\/[^/]*/, '') !== SSO_CALLBACK_PATH) throw new Error(`orgIdp.callbackUrl path must be exactly ${SSO_CALLBACK_PATH}`);
   if (cb.protocol !== con.protocol) throw new Error('orgIdp.callbackUrl must use the same scheme as orgIdp.consoleUrl');
-  return { consoleUrl, callbackUrl };
+  return { consoleUrl: con.origin + con.pathname, callbackUrl: cb.origin + cb.pathname };
 }
