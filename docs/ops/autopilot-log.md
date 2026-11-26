@@ -168,7 +168,10 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-25 | T-1026 (T-0771 slice 4) | #417 | built, tests only, nothing moved: an old-vs-new table pins what `app.ts` reads off the funding and billing bindings; owner decision left: the ref provider key cannot become a capability without changing the `ops.external_ref` key space (merged 1050769) | green |
 | 2026-11-25 | T-0790 | #418 | built, the WorkOS directory webhook deprovisions linked staff behind `auth.orgSso`, dark; three review rounds: a lost-finish race fixed; refused events must never stay pending (a first design starved the shared 100-event replay queue and was fixed) (merged 1e151e5) | green |
 | 2026-11-25 | T-0791 | #419 | built, the directory drift sweep, dark; three review rounds: a lost finish after an hour fixed with finished, attempt and abandoned markers; a 24 h grace for a freshly linked member's absence; removal bound to the link id; the flag re-read per removal; head-of-line starvation fixed with keyset paging and abandonment after 20 attempts; terraform stale-job alarms 26 to 28 (merged 6e59d34) | green |
-| 2026-11-25 | T-1116 to T-1119 (cards), log through #419 | this PR | docs, the four WorkOS pre-flag blocker cards (adapter fixes, alarms and RUN-10, production wiring, sweep index), a "Before `auth.orgSso` is turned on" checklist in `specs/tasks/README.md`, T-0789 to T-0791 done; T-0792 not yet built; no review | green |
+| 2026-11-25 | T-1116 to T-1119 (cards), log through #419 | #420 | docs, the four WorkOS pre-flag blocker cards (adapter fixes, alarms and RUN-10, production wiring, sweep index), a "Before `auth.orgSso` is turned on" checklist in `specs/tasks/README.md`, T-0789 to T-0791 done; T-0792 not yet built; no review (merged 9dd64a3) | green |
+| 2026-11-26 | T-1120 | #421 | built, the staff SSO contract and SDK: four operations (`startStaffSso`, `startStaffSsoLink`, `completeStaffSso`, `exchangeStaffSso`), dark; three review rounds: the callback answered tokens in a browser page, now a 302 plus an exchange; an invite accepted at start before any IdP proof, now consumed at the callback; link needed a session, split into an authed link start with StepUp; rate-limit text unimplementable, now edge plus per-party; login CSRF and fragment injection, now a PKCE-style challenge and verifier binding the exchange; an authenticated enumeration oracle on link start fixed; 422 versus the uniform 302 fixed (merged e7c8f03) | green |
+| 2026-11-26 | T-0792 | #422 | built, staff SSO start, callback and exchange behaviour, dark; the reviewer ran 60 mutants and every attack against the real `createApp`: state single-use race, leaked-state burn, CSRF, invite without IdP proof, 16 refusal causes byte-identical and timing-equal at the 400 ms floor, no PII leakage; non-blocking findings carded as T-1121 to T-1126 (merged 0740f14) | green |
+| 2026-11-26 | log through #422, T-1121 to T-1126 (cards) | this PR | docs, log lines for #420 to #422, six SSO follow-up cards from the T-0792 review, T-0792 and T-1120 done, the `auth.orgSso` checklist extended; no task card, no review | green |
 
 ## Carried follow-ups (T-1019 to T-1022)
 
@@ -202,3 +205,7 @@ Non-blocking survivors of the reviews, not fixed; the blockers are carded as T-1
 - C3 and C4: the default per-cycle cap of 500 and `MAX_ATTEMPTS` of 20 are tested only through injection; add a test that pins the defaults.
 - A lone-surrogate event id cannot be audited (the audit write refuses it).
 - T-1026: the ref provider key cannot become a capability without changing the `ops.external_ref` key space (owner decision).
+
+## Carried follow-ups (T-0792, T-1120)
+
+Non-blocking findings of the independent reviews, now carded as T-1121 to T-1126 (T-1121 to T-1123, T-1125 and T-1126 gate `auth.orgSso`; T-1124 does not).
