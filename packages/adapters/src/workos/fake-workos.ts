@@ -11,7 +11,7 @@ export interface FakeWorkOsOptions {
 
 export function fakeWorkOs(opts: FakeWorkOsOptions) {
   const tokenRequests: Record<string, string>[] = [];
-  const directoryUsers = new Map<string, { id: string; idp_id: string; organization_id: string; emails: { primary: boolean; value: string }[]; state: 'active' | 'inactive' }[]>();
+  const directoryUsers = new Map<string, { id: string; idp_id: string; organization_id: string; emails: { primary: boolean; value: string }[]; state: string }[]>();
   let outage = false;
 
   const fetchImpl: typeof globalThis.fetch = async (input: URL | RequestInfo, init?: RequestInit) => {
@@ -49,11 +49,13 @@ export function fakeWorkOs(opts: FakeWorkOsOptions) {
     fetch: fetchImpl,
     tokenRequests,
     setOutage: (on: boolean) => void (outage = on),
-    seedDirectory(directoryId: string, users: { subject: string; email: string; active?: boolean; organizationId?: string }[]) {
-      directoryUsers.set(directoryId, users.map((u, i) => ({ id: `directory_user_${i}`, idp_id: u.subject, organization_id: u.organizationId ?? 'org_workos_yeshiva', emails: [{ primary: true, value: u.email }], state: u.active === false ? 'inactive' : 'active' })));
+    /** `state` sets the raw state string as WorkOS would send it (overrides `active`). */
+    seedDirectory(directoryId: string, users: { subject: string; email: string; active?: boolean; state?: string; organizationId?: string }[]) {
+      directoryUsers.set(directoryId, users.map((u, i) => ({ id: `directory_user_${i}`, idp_id: u.subject, organization_id: u.organizationId ?? 'org_workos_yeshiva', emails: [{ primary: true, value: u.email }], state: u.state ?? (u.active === false ? 'inactive' : 'active') })));
     },
-    sign(rawBody: string, atUnix: number): string {
-      return `t=${atUnix}, v1=${createHmac('sha256', opts.webhookSecret).update(`${atUnix}.${rawBody}`).digest('hex')}`;
+    /** A `WorkOS-Signature` header the way WorkOS sends it: `t` in MILLISECONDS, comma and space, hex `v1` over `${t}.${body}`. */
+    sign(rawBody: string, atMs: number): string {
+      return `t=${atMs}, v1=${createHmac('sha256', opts.webhookSecret).update(`${atMs}.${rawBody}`).digest('hex')}`;
     },
   };
 }

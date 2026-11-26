@@ -45,6 +45,16 @@ export function orgIdPContract(name: string, make: () => OrgIdPPort, opts: OrgId
       await expect(port.handleCallback({ code: opts.codeFor('staff2', 'staff2@yeshiva.example'), state: 'st3' })).rejects.toBeInstanceOf(OrgIdPError);
     });
 
+    it('a deactivation needs no email, and every directory entry carries its raw state (T-1116)', async () => {
+      const port = make();
+      const e = await port.parseScimEvent(opts.orgId, opts.scimBearer, { eventId: 'evt-noemail', op: 'deactivate', subject: 'staff7' });
+      expect(e).toMatchObject({ op: 'deactivate', subject: 'staff7', active: false });
+      await expect(port.parseScimEvent(opts.orgId, opts.scimBearer, { eventId: 'evt-noemail-c', op: 'create', subject: 'staff8' })).rejects.toMatchObject({ code: 'SCIM_MALFORMED' });
+      const entry = (await port.listDirectory(opts.orgId)).find((x) => x.subject === 'staff7');
+      expect(entry).toMatchObject({ active: false, rawState: 'inactive' });
+      for (const d of await port.listDirectory(opts.orgId)) expect(d.rawState).toBe(d.active ? 'active' : 'inactive');
+    });
+
     it('rejects SCIM calls with a wrong bearer or malformed body', async () => {
       const port = make();
       await expect(port.parseScimEvent(opts.orgId, 'wrong', { eventId: 'e', op: 'create', subject: 's', email: 'e' })).rejects.toMatchObject({ code: 'SCIM_UNAUTHORIZED' });

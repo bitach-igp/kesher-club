@@ -10,7 +10,7 @@
 //   an `institution.admin.none` audit row and a notification make that visible.
 import { createHash } from 'node:crypto';
 import { DomainError, guarded, type Metrics } from '@kesher/domain';
-import { OrgIdPError, type NotifyPort, type OrgIdPPort, type ScimEvent } from '@kesher/ports';
+import { OrgIdPError, parseWebhookSignature, webhookTimestampFresh, type NotifyPort, type OrgIdPPort, type ScimEvent } from '@kesher/ports';
 import { AuditService } from '../audit/service.ts';
 import type { TokenService } from '../auth/tokens.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
@@ -24,7 +24,6 @@ import type { InstitutionTeam } from './team.ts';
 export const ORG_SSO_FLAG = 'auth.orgSso';
 export const DEPROVISION_PROVIDER = 'workos';
 const PROMISE_MS = 15 * 60_000;
-const STALE_MS = 5 * 60_000;
 /**
  * The key a removal's markers hang on: the institution and the sha256 of the event id (a signed event id has no length limit and `kind` is a
  * btree key). The SQL twin is `institution || ':' || encode(sha256(convert_to(event_id, 'UTF8')), 'hex')`.
@@ -130,8 +129,9 @@ export class StaffDeprovisioner {
           ok = false;
         }
         if (ok) return { ok, eventId, payload };
-        const t = Number(/t=(\d+)/.exec(header)?.[1]);
-        return { ok: false, eventId, payload, reason: Number.isFinite(t) && Math.abs(now.getTime() - t * 1000) > STALE_MS ? 'stale timestamp' : 'bad signature' };
+        // `t` is in MILLISECONDS (the adapter's reader is the same helper): a well-formed header outside the window is stale, anything else is bad.
+        const sig = parseWebhookSignature(header);
+        return { ok: false, eventId, payload, reason: sig && !webhookTimestampFresh(sig.tMs, now.getTime()) ? 'stale timestamp' : 'bad signature' };
       },
     };
   }

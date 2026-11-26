@@ -4,16 +4,17 @@
 // (`StaffDeprovisioner.remove`: row, audit and unlink in one transaction, then role and sessions). Dark behind `auth.orgSso`.
 // - The institution comes only from the per-organisation record (`directoryInstitutions`), never from directory text.
 // - A read that fails, or a list that cannot be trusted, is never read as "everyone left": any port error changes nothing and fails the
-//   cycle (after every other institution was swept); a malformed entry, or a list with no active entry at all, switches ABSENCE off for
-//   that institution (only a positive `active: false` still counts); and more than half of an institution's links in one cycle is
+//   cycle (after every other institution was swept); a malformed entry, an entry whose raw `rawState` is not exactly `active` or `inactive`
+//   (missing, new, or at odds with `active`: SUSPECT, T-1116), or a list with no active entry at all, switches ABSENCE off for that
+//   institution (only a positive `inactive` still counts, and a suspect subject is never removed); and more than half of an institution's links in one cycle is
 //   refused, with an audit row (once a day per institution) and a metric. The refusal is not an `ops.case`: a new case kind needs the
 //   OpenAPI enum, the SDK and the admin types (T-0788), which is outside this card. `listDirectory` pages internally and throws on
 //   any failed page, so a list it returns is complete; a truncated one cannot reach this code.
 // - One bad institution never starves the others: errors are counted by a closed reason and the loop goes on. Nothing is queued.
 // - A removal whose post-commit steps failed is finished by the next cycles however late (drift audit rows with no `deprovision_finished`
 //   marker; the marker is written once `finish` completes, so a finished one never revokes a newer session).
-// - A link younger than 24 hours is not removed for ABSENCE (SCIM sync lags); a positive inactive is never graced. Known gap: the port
-//   does not expose the raw directory state (the adapter maps anything but 'active' to inactive), so a suspect state cannot be told apart.
+// - A link younger than 24 hours is not removed for ABSENCE (SCIM sync lags); a positive inactive is never graced. The port
+//   exposes the raw directory state (`rawState`), so a suspect state is told apart from a positive inactive.
 // - Audit payloads carry ids and the closed `drift_missing` flag only: no email, no subject.
 import type { AuditService } from '@kesher/api/audit/service';
 import type { FeatureFlags } from '@kesher/api/billing/capabilities';
@@ -30,6 +31,8 @@ const NEW_LINK_GRACE_MS = 24 * 3_600_000;
 const RESUME_BATCH = 100;
 const RESUME_CAP = 500;
 const MAX_ATTEMPTS = 20;
+/** The closed set of `reason` values `staff.drift_refused` carries (an adapter's lower-cased error code, or one of these). */
+export const DRIFT_REFUSAL_REASONS = ['malformed_entry', 'unrecognised_state', 'unreliable_list', 'guard_half', 'removal_failed', 'finish_failed'] as const;
 const SYSTEM = { actorId: '00000000-0000-7000-8000-000000000000', actorRole: 'system' };
 const SOURCE = 'drift';
 
@@ -145,14 +148,18 @@ export class DirectoryDrift {
     out.institutions += 1;
     const read = this.read(await port.listDirectory(institutionId));
     if (read.malformed > 0) this.metrics.put({ 'staff.drift_refused': read.malformed }, { reason: 'malformed_entry' });
+    const suspect = new Set(read.entries.filter((e) => e.suspect).map((e) => e.subject));
+    const suspects = read.entries.filter((e) => e.suspect).length;
+    if (suspects > 0) this.metrics.put({ 'staff.drift_refused': suspects }, { reason: 'unrecognised_state' });
     const bySubject = new Map<string, boolean>();
-    // A subject listed twice counts as active if either entry is: when in doubt, nobody is removed.
-    for (const e of read.entries) bySubject.set(e.subject, (bySubject.get(e.subject) ?? false) || e.active);
-    out.unlinked += [...bySubject.keys()].filter((s) => !links.some((l) => l.subject === s)).length;
-    const trustAbsence = read.malformed === 0 && [...bySubject.values()].some(Boolean);
+    // A subject listed twice counts as active if either entry is: when in doubt, nobody is removed. A suspect entry says nothing either way.
+    for (const e of read.entries) if (!e.suspect) bySubject.set(e.subject, (bySubject.get(e.subject) ?? false) || e.active);
+    out.unlinked += [...new Set([...bySubject.keys(), ...suspect])].filter((s) => !links.some((l) => l.subject === s)).length;
+    const trustAbsence = read.malformed === 0 && suspects === 0 && [...bySubject.values()].some(Boolean);
     const candidates: { link: Link; missing: boolean }[] = [];
     let doubtful = 0;
     for (const link of links) {
+      if (suspect.has(link.subject) && bySubject.get(link.subject) !== true) continue; // an unrecognised state is never a reason to remove (and counted above)
       const active = bySubject.get(link.subject);
       if (active === false) candidates.push({ link, missing: false });
       else if (active === undefined) {
@@ -188,13 +195,13 @@ export class DirectoryDrift {
     return true;
   }
 
-  /** Valid entries (a non-empty subject of at most 255 characters and a boolean `active`); everything else is only counted. */
-  private read(list: unknown): { entries: { subject: string; active: boolean }[]; malformed: number } {
+  /** Valid entries (a non-empty subject of at most 255 characters and a boolean `active`); everything else is only counted. An entry is suspect unless `rawState` is `active` with `active` true, or `inactive` with `active` false. */
+  private read(list: unknown): { entries: { subject: string; active: boolean; suspect: boolean }[]; malformed: number } {
     if (!Array.isArray(list)) throw new OrgIdPError('PROVIDER_UNAVAILABLE', 'The directory list is not a list');
-    const entries: { subject: string; active: boolean }[] = [];
+    const entries: { subject: string; active: boolean; suspect: boolean }[] = [];
     let malformed = 0;
     for (const e of list as unknown[]) {
-      if (isRecord(e) && typeof e['subject'] === 'string' && e['subject'].length > 0 && e['subject'].length <= 255 && typeof e['active'] === 'boolean') entries.push({ subject: e['subject'], active: e['active'] });
+      if (isRecord(e) && typeof e['subject'] === 'string' && e['subject'].length > 0 && e['subject'].length <= 255 && typeof e['active'] === 'boolean') entries.push({ subject: e['subject'], active: e['active'], suspect: !(e['rawState'] === 'active' ? e['active'] : e['rawState'] === 'inactive' && !e['active']) });
       else malformed += 1;
     }
     return { entries, malformed };
