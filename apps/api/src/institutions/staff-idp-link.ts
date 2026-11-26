@@ -37,9 +37,12 @@ const view = (r: LinkRow): StaffIdpLink => ({ id: r.id, institutionId: r.institu
 // eslint-disable-next-line no-control-regex
 const BAD_SUBJECT = /[\u0000-\u001F\u007F]/;
 
+/** The shape rule alone, so a caller can refuse before it writes anything (T-1122): 1 to 255 characters, not blank, no control characters. */
+export const isValidSubject = (subject: unknown): subject is string => typeof subject === 'string' && !!subject.trim() && subject.length <= 255 && !BAD_SUBJECT.test(subject);
+
 /** The subject comes from an IdP: untrusted text, kept exactly as given and only checked for shape. */
-const checkedSubject = (subject: string): string => {
-  if (typeof subject !== 'string' || !subject.trim() || subject.length > 255 || BAD_SUBJECT.test(subject)) throw new DomainError('VALIDATION_FAILED', 'The IdP subject must be 1 to 255 characters, without control characters');
+export const checkedSubject = (subject: string): string => {
+  if (!isValidSubject(subject)) throw new DomainError('VALIDATION_FAILED', 'The IdP subject must be 1 to 255 characters, without control characters');
   return subject;
 };
 
@@ -54,19 +57,20 @@ export class StaffIdpLinks {
     this.d = deps;
   }
 
-  /** Links `subject` to an active staff member of the institution, once; the same link again returns the existing one. */
-  async link(institutionId: string, subject: string, partyId: string, actor: LinkActor, now: Date): Promise<StaffIdpLink> {
+  /** Links `subject` to an active staff member of the institution, once; the same link again returns the existing one. `tx` runs it, audit row included, in the caller's transaction. */
+  async link(institutionId: string, subject: string, partyId: string, actor: LinkActor, now: Date, tx?: Database): Promise<StaffIdpLink> {
     checkedSubject(subject);
-    const staff = await this.d.db.query('select 1 from org.staff where party_id = $1 and institution_id = $2 and active', [partyId, institutionId]);
+    const db = tx ?? this.d.db;
+    const staff = await db.query('select 1 from org.staff where party_id = $1 and institution_id = $2 and active', [partyId, institutionId]);
     if (!staff.rowCount) throw new DomainError('NOT_FOUND', 'Not active staff of this institution');
     const id = uuidv7(now);
-    const inserted = await this.d.db.query<LinkRow>(`insert into org.staff_idp_link (id, institution_id, idp_subject, party_id, linked_at) values ($1, $2, $3, $4, $5) on conflict do nothing returning ${COLUMNS}`, [id, institutionId, subject, partyId, now]);
+    const inserted = await db.query<LinkRow>(`insert into org.staff_idp_link (id, institution_id, idp_subject, party_id, linked_at) values ($1, $2, $3, $4, $5) on conflict do nothing returning ${COLUMNS}`, [id, institutionId, subject, partyId, now]);
     if (inserted.rows[0]) {
-      await this.d.audit.record({ actorId: actor.actorId, actorRole: actor.actorRole, action: 'institution.staff.idp_link', subject: partyId, reason: 'Linked a staff member to an IdP identity', payload: { institutionId, linkId: id } }, now);
+      await this.d.audit.record({ actorId: actor.actorId, actorRole: actor.actorRole, action: 'institution.staff.idp_link', subject: partyId, reason: 'Linked a staff member to an IdP identity', payload: { institutionId, linkId: id } }, now, tx);
       return view(inserted.rows[0]);
     }
     // A live row already holds the subject or the party: the same pair is a repeat, anything else a conflict.
-    const same = await this.d.db.query<LinkRow>(`select ${COLUMNS} from org.staff_idp_link where institution_id = $1 and idp_subject = $2 and party_id = $3 and unlinked_at is null`, [institutionId, subject, partyId]);
+    const same = await db.query<LinkRow>(`select ${COLUMNS} from org.staff_idp_link where institution_id = $1 and idp_subject = $2 and party_id = $3 and unlinked_at is null`, [institutionId, subject, partyId]);
     if (same.rows[0]) return view(same.rows[0]);
     throw new DomainError('IDEMPOTENCY_CONFLICT', 'This IdP subject or staff member is already linked');
   }

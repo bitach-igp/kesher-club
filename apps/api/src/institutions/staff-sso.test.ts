@@ -821,3 +821,212 @@ describe('device registration and the new-device alert (TST-AUTH-008, T-1121)', 
 });
 
 const rand43 = () => randomBytes(32).toString('base64url');
+
+describe('invite path: accept and link are one transaction, the subject is checked first (TST-AUTH-008, T-1122)', () => {
+  let n = 0;
+  /** A signed-in non-staff person holding a pending staff invite, and a link start that carries it. */
+  async function holder(role: 'staff' | 'finance' = 'staff') {
+    const name = `inv${n++}`;
+    await person(name, ['member']);
+    await app.services.team.invite(OHR, people['rivka']!.partyId, { role, email: `${name}@example.com` }, `key-${name}-invite-t1122`, NOW);
+    const token = String(host.simulators.notify.sent.filter((m) => m.to === `${name}@example.com`).at(-1)!.data['inviteUrl']).split('token=')[1]!;
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const party = people[name]!.partyId;
+    const start = async (p = pair()) => {
+      const s = await linkIn(name, OHR, p, { inviteToken: token });
+      return { p, state: (s.body as { state: string }).state, cookie: cookieOf(s) };
+    };
+    const accepted = async () => (await db.query('select 1 from org.staff_invite_acceptance a join org.staff_invite i on i.id = a.invite_id where i.token_hash = $1', [tokenHash])).rows.length;
+    const staffRows = async () => (await db.query('select 1 from org.staff where party_id = $1', [party])).rows.length;
+    const audits = async () => (await db.query("select 1 from audit.entry where subject = $1 and action like 'institution.staff.%'", [party])).rows.length;
+    return { name, token, party, start, accepted, staffRows, audits };
+  }
+  /** The IdP identity the callback sees, with the subject replaced (a control character cannot travel in a simulator code). */
+  async function withSubject<T>(subject: string, fn: () => Promise<T>): Promise<T> {
+    const sim = host.simulators['org-idp'];
+    const orig = sim.handleCallback.bind(sim);
+    sim.handleCallback = async (i) => ({ ...(await orig(i)), subject });
+    try {
+      return await fn();
+    } finally {
+      sim.handleCallback = orig;
+    }
+  }
+  const nothingWritten = async (h: Awaited<ReturnType<typeof holder>>) => {
+    expect(await h.accepted()).toBe(0);
+    expect(await h.staffRows()).toBe(0);
+    expect(await h.audits()).toBe(0);
+    expect(await linkRows(h.party)).toBe(0);
+  };
+  const refusalShape = async () => {
+    const r = await signIn(OHR, idp('idp-nobody-t1122'));
+    return shape(r.res);
+  };
+
+  it('a link that conflicts after a valid invite rolls back: invite pending, no staff row, no acceptance, no audit, the uniform refusal; the invite still works afterwards', async () => {
+    await staffer('t1122-owner', OHR, 'staff', 'idp-t1122-taken');
+    const h = await holder();
+    const s = await h.start();
+    const res = await cb({ code: idp('idp-t1122-taken'), state: s.state }, s.cookie);
+    expect(frag(res)).toBe('error=refused');
+    expect(shape(res)).toBe(await refusalShape());
+    await nothingWritten(h);
+    // the invite is still pending in the team read, and a fresh start with a free subject finishes through it
+    expect((await app.services.team.read(OHR, NOW)).invites.some((i) => i.role === 'staff' && !i.acceptedAt)).toBe(true);
+    const s2 = await h.start(s.p);
+    const ok = await cb({ code: idp('idp-t1122-free'), state: s2.state }, s2.cookie);
+    expect(frag(ok)).toMatch(/^code=/);
+    expect(await h.accepted()).toBe(1);
+    expect(await h.staffRows()).toBe(1);
+    expect(await linkRows(h.party)).toBe(1);
+    expect((await ex(frag(ok).slice(5), s.p.verifier)).status).toBe(200);
+  });
+
+  it.each([
+    ['a control character', 'idp\u0001x'],
+    ['a newline', 'a\nb'],
+    ['DEL', 'a\u007Fb'],
+    ['a blank subject', '   '],
+    ['an empty subject', ''],
+    ['256 characters', 'x'.repeat(256)],
+  ])('%s in the IdP subject is the uniform refusal and the invite is untouched', async (_n, subject) => {
+    const h = await holder();
+    const s = await h.start();
+    const res = await withSubject(subject, () => cb({ code: idp('idp-t1122-shape'), state: s.state }, s.cookie));
+    expect(frag(res)).toBe('error=refused');
+    expect(shape(res)).toBe(await refusalShape());
+    await nothingWritten(h);
+    // and the invite is still usable
+    const s2 = await h.start(s.p);
+    expect(frag(await cb({ code: idp(`idp-t1122-ok-${n}`), state: s2.state }, s2.cookie))).toMatch(/^code=/);
+    expect(await h.accepted()).toBe(1);
+  });
+
+  it('a 255-character subject is accepted (the boundary)', async () => {
+    const h = await holder();
+    const s = await h.start();
+    const res = await withSubject('y'.repeat(255), () => cb({ code: idp('idp-t1122-edge'), state: s.state }, s.cookie));
+    expect(frag(res)).toMatch(/^code=/);
+    expect(await linkRows(h.party)).toBe(1);
+  });
+
+  it('a bad subject for an active staff member (no invite) is the uniform refusal too, not unavailable', async () => {
+    await staffer('t1122-staff', OHR, 'staff');
+    const s = await linkIn('t1122-staff', OHR);
+    const res = await withSubject('a\u0000b', () => cb({ code: idp('idp-t1122-s'), state: (s.body as { state: string }).state }, cookieOf(s)));
+    expect(shape(res)).toBe(await refusalShape());
+    expect(await linkRows(people['t1122-staff']!.partyId)).toBe(0);
+  });
+
+  it('a sign-in whose IdP subject has a control character (NUL included) is the uniform refusal, not unavailable', async () => {
+    for (const subject of ['a\u0000b', 'a\u0001b']) {
+      const start = await startIn(OHR);
+      const res = await withSubject(subject, () => cb({ code: idp('idp-t1122-signin'), state: (start.body as { state: string }).state }, cookieOf(start)));
+      expect(shape(res)).toBe(await refusalShape());
+    }
+  });
+
+  it('a failure inside the transaction after the accept rolls everything back, and answers unavailable for every caller alike', async () => {
+    for (const fail of [() => new Error('connection lost'), () => Object.assign(new Error('serialization'), { code: '40001' })]) {
+      const h = await holder('finance');
+      const boom = mk({ links: { find: (...a) => links.find(...a), link: async (...a) => { await links.link(...a); throw fail(); } } });
+      const s = await boom.startLink({ partyId: h.party, sessionId: people[h.name]!.sessionId, deviceId: 'web' }, OHR, { challenge: pair().challenge, inviteToken: h.token }, NOW);
+      expect((await boom.callback({ code: idp('idp-t1122-boom'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location).toBe(`${CONSOLE}#error=unavailable`);
+      await nothingWritten(h);
+      expect((await db.query("select 1 from ops.approval_request where kind = 'staff_grant' and subject like $1", [`%${h.party}%`])).rows).toHaveLength(0);
+    }
+  });
+
+  it('a NOT_FOUND from the accept or the link is the uniform refusal; a data exception or a lost connection is unavailable (only the integrity class 23 is refused)', async () => {
+    const run = async (err: () => Error) => {
+      const h = await holder();
+      const svc = mk({ links: { find: (...a) => links.find(...a), link: async (...a) => { await links.link(...a); throw err(); } } });
+      const s = await svc.startLink({ partyId: h.party, sessionId: people[h.name]!.sessionId, deviceId: 'web' }, OHR, { challenge: pair().challenge, inviteToken: h.token }, NOW);
+      const out = (await svc.callback({ code: idp('idp-t1122-nf'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location;
+      await nothingWritten(h);
+      return out;
+    };
+    expect(await run(() => new DomainError('NOT_FOUND', 'gone'))).toBe(`${CONSOLE}#error=refused`);
+    expect(await run(() => new DomainError('VALIDATION_FAILED', 'bad'))).toBe(`${CONSOLE}#error=refused`);
+    expect(await run(() => Object.assign(new Error('invalid text'), { code: '22P02' }))).toBe(`${CONSOLE}#error=unavailable`);
+    expect(await run(() => Object.assign(new Error('shutdown'), { code: '57P01' }))).toBe(`${CONSOLE}#error=unavailable`);
+  });
+
+  it('an integrity violation (FK, check, unique) inside the transaction is the uniform refusal, rolled back', async () => {
+    const h = await holder();
+    const bad = mk({ links: { find: (...a) => links.find(...a), link: async (...a) => { await links.link(...a); throw Object.assign(new Error('fk'), { code: '23503' }); } } });
+    const s = await bad.startLink({ partyId: h.party, sessionId: people[h.name]!.sessionId, deviceId: 'web' }, OHR, { challenge: pair().challenge, inviteToken: h.token }, NOW);
+    expect((await bad.callback({ code: idp('idp-t1122-fk'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location).toBe(`${CONSOLE}#error=refused`);
+    await nothingWritten(h);
+  });
+
+  it('the success path is unchanged: one staff row, one link, the invite consumed, the audit rows, the role, and a token on exchange', async () => {
+    const h = await holder();
+    const s = await h.start();
+    const res = await cb({ code: idp('idp-t1122-good'), state: s.state }, s.cookie);
+    expect(frag(res)).toMatch(/^code=/);
+    expect(await h.accepted()).toBe(1);
+    expect(await h.staffRows()).toBe(1);
+    expect(await linkRows(h.party)).toBe(1);
+    const actions = (await db.query<{ action: string }>("select action from audit.entry where subject = $1 order by seq", [h.party])).rows.map((r) => r.action);
+    expect(actions).toEqual(['institution.staff.grant', 'institution.staff.idp_link']);
+    expect((await app.services.identity.findUser(h.party))?.roles).toContain('org_staff');
+    const done = await ex(frag(res).slice(5), s.p.verifier);
+    expect(done.status).toBe(200);
+    expect((await app.services.tokens.verifyAccess((done.body as { tokens: { accessToken: string } }).tokens.accessToken)).roles).toContain('org_staff');
+  });
+
+  it('a finance invite through SSO still opens its grant, after the commit', async () => {
+    const h = await holder('finance');
+    const s = await h.start();
+    expect(frag(await cb({ code: idp('idp-t1122-fin'), state: s.state }, s.cookie))).toMatch(/^code=/);
+    const actions = (await db.query<{ action: string }>('select action from audit.entry where subject = $1', [h.party])).rows.map((r) => r.action);
+    expect(actions).toContain('institution.staff.propose');
+    expect((await app.services.team.read(OHR, NOW)).pendingGrants.some((g) => (g.payload as { partyId?: string }).partyId === h.party)).toBe(true);
+  });
+
+  it('two callbacks for one invite (two states, two parties): exactly one wins, the other is refused, no half state', async () => {
+    const a = await holder();
+    const b = await holder();
+    const sa = await a.start();
+    // b holds a's token: both parties start with the one invite
+    const sb = await (async () => {
+      const s = await linkIn(b.name, OHR, pair(), { inviteToken: a.token });
+      return { state: (s.body as { state: string }).state, cookie: cookieOf(s) };
+    })();
+    const [ra, rb] = await Promise.all([cb({ code: idp('idp-t1122-ca'), state: sa.state }, sa.cookie), cb({ code: idp('idp-t1122-cb'), state: sb.state }, sb.cookie)]);
+    const outcomes = [frag(ra), frag(rb)];
+    expect(outcomes.filter((f) => f.startsWith('code=')).length).toBe(1);
+    expect(outcomes.filter((f) => f === 'error=refused').length).toBe(1);
+    expect(await a.accepted()).toBe(1);
+    const winner = frag(ra).startsWith('code=') ? a : b;
+    const loser = winner === a ? b : a;
+    expect(await winner.staffRows()).toBe(1);
+    expect(await linkRows(winner.party)).toBe(1);
+    expect(await loser.staffRows()).toBe(0);
+    expect(await linkRows(loser.party)).toBe(0);
+    expect(await loser.audits()).toBe(0);
+  });
+
+  it('two states of the same party for one invite: one staff row, one link, never two of anything', async () => {
+    const h = await holder();
+    const s1 = await h.start();
+    const s2 = await h.start();
+    const rs = await Promise.all([cb({ code: idp('idp-t1122-same1'), state: s1.state }, s1.cookie), cb({ code: idp('idp-t1122-same2'), state: s2.state }, s2.cookie)]);
+    expect(rs.map(frag).filter((f) => f.startsWith('code=')).length).toBeGreaterThanOrEqual(1);
+    expect(await h.accepted()).toBe(1);
+    expect(await h.staffRows()).toBe(1);
+    expect(await linkRows(h.party)).toBe(1);
+  });
+
+  it('the #422 properties hold: a leaked state without its cookie cannot burn the state or the invite, and the state claim is taken only after the cookie check', async () => {
+    const h = await holder();
+    const s = await h.start();
+    expect(frag(await cb({ code: idp('idp-t1122-leak'), state: s.state }))).toBe('error=refused');
+    await nothingWritten(h);
+    expect(frag(await cb({ code: idp('idp-t1122-leak'), state: s.state }, s.cookie))).toMatch(/^code=/);
+    // a replay of the claimed state is refused and writes nothing more
+    expect(frag(await cb({ code: idp('idp-t1122-leak'), state: s.state }, s.cookie))).toBe('error=refused');
+    expect(await h.staffRows()).toBe(1);
+  });
+});

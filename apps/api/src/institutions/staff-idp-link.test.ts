@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
 import { AuditService } from '../audit/service.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { StaffIdpLinks } from './staff-idp-link.ts';
+import { StaffIdpLinks, checkedSubject, isValidSubject } from './staff-idp-link.ts';
 
 let db: TestDatabase;
 let links: StaffIdpLinks;
@@ -128,5 +128,14 @@ describe('staff IdP link (TST-AUTH-008, T-0789)', () => {
     await expect(ins(OHR, '', OUTSIDER)).rejects.toThrow(/check/i);
     await expect(ins(OHR, 'x1', OUTSIDER, new Date('2026-11-24T08:00:00Z'))).rejects.toThrow(/check/i);
     await expect(ins(OHR, 'directory_user_01A', OUTSIDER)).rejects.toThrow(/unique|duplicate/i);
+  });
+});
+
+describe('the shared subject rule (T-1122)', () => {
+  it('1 to 255 characters, not blank, no control character; the same rule link() applies', () => {
+    for (const ok of ['a', ' a ', 'x'.repeat(255), 'ünï-コード', 'a b']) expect(isValidSubject(ok), ok).toBe(true);
+    for (const bad of ['', ' ', '\t', 'x'.repeat(256), 'a\u0000b', 'a\nb', 'a\u001Fb', 'a\u007Fb', 5, undefined, null]) expect(isValidSubject(bad), String(bad)).toBe(false);
+    expect(checkedSubject('x'.repeat(255))).toBe('x'.repeat(255));
+    expect(() => checkedSubject('x'.repeat(256))).toThrow(/1 to 255/);
   });
 });

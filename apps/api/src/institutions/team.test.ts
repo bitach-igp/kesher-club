@@ -3,12 +3,14 @@
 // Rivka proposed. Dov cannot approve his own role, nor can Rivka a second time; Avi, the second admin, approves with
 // a step-up and Dov is finance. Staff answer 403 on every team change. Rivka removes Dov: his next call is refused.
 // The last admin cannot be demoted; a single-admin institution's grant waits in the admin console's queue.
+import { createHash } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '@kesher/domain';
 import { SIM_OTP_CODE, SimPasskeyDevice } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { createApp, type App } from '../app.ts';
+import type { Database } from '../db.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { STAFF_INVITE_BASE_URL } from './team.ts';
@@ -119,5 +121,64 @@ describe('team and roles (TST-INS-020, T-0643)', () => {
     expect(accepted.grant).toMatchObject({ status: 'awaiting_second_approval' });
     const queue = await db.query<{ id: string }>(`select id from ops.approval_request where kind = 'staff_grant' and status = 'awaiting_second_approval' and payload->>'institutionId' = $1`, [SOLO]);
     expect(queue.rows.map((x) => x.id)).toEqual([accepted.grant!.id]);
+  });
+});
+
+describe('acceptById inside a transaction (T-1122)', () => {
+  const invite = async (phone: string, role: 'staff' | 'finance') => {
+    await call('rivka', 'POST', `/institutions/${OHR}/staff-invites`, { phone, role }, { key: `t1122-${phone}-${role}` });
+    const hash = createHash('sha256').update(tokenOf(phone)).digest('hex');
+    return (await db.query<{ id: string }>('select id from org.staff_invite where token_hash = $1', [hash])).rows[0]!.id;
+  };
+  const rows = async (party: string) => ({
+    staff: (await db.query('select 1 from org.staff where party_id = $1', [party])).rows.length,
+    accepted: (await db.query('select 1 from org.staff_invite_acceptance where party_id = $1', [party])).rows.length,
+    audit: (await db.query("select 1 from audit.entry where subject = $1", [party])).rows.length,
+  });
+  const inTx = (tx: { query: Database['query'] }): Database => ({ query: tx.query, transaction: async (fn) => fn(tx as never) });
+
+  it('a throw after the accept rolls back the staff row, the acceptance and the audit rows; the invite can be accepted again', async () => {
+    await person('uri', '+972501230011', ['member']);
+    const id = await invite('+972501230011', 'staff');
+    const party = people['uri']!.partyId;
+    await expect(db.transaction(async (raw) => { await app.services.team.acceptById(id, party, NOW, inTx(raw)); throw new Error('boom'); })).rejects.toThrow('boom');
+    expect(await rows(party)).toEqual({ staff: 0, accepted: 0, audit: 0 });
+    const done = await db.transaction(async (raw) => app.services.team.acceptById(id, party, NOW, inTx(raw)));
+    expect(done.staff).toMatchObject({ role: 'staff', active: true });
+    expect(await rows(party)).toMatchObject({ staff: 1, accepted: 1 });
+    // the token role is not written inside the transaction: settle writes it, once the transaction has committed
+    expect((await app.services.identity.findUser(party))?.roles).not.toContain('org_staff');
+    await done.settle!();
+    expect((await app.services.identity.findUser(party))?.roles).toContain('org_staff');
+  });
+
+  it('a finance invite opens its grant only in settle; without a transaction acceptById still returns the grant at once', async () => {
+    await person('vera', '+972501230012', ['member']);
+    const id = await invite('+972501230012', 'finance');
+    const party = people['vera']!.partyId;
+    const done = await db.transaction(async (raw) => app.services.team.acceptById(id, party, NOW, inTx(raw)));
+    expect(done.grant).toBeUndefined();
+    expect((await done.settle!())?.status).toBe('awaiting_second_approval');
+    await person('wolf', '+972501230013', ['member']);
+    const id2 = await invite('+972501230013', 'finance');
+    const direct = await app.services.team.acceptById(id2, people['wolf']!.partyId, NOW);
+    expect(direct.grant?.status).toBe('awaiting_second_approval');
+    expect(direct.settle).toBeUndefined();
+    expect((await app.services.identity.findUser(people['wolf']!.partyId))?.roles).toContain('org_staff');
+  });
+
+  it('a second party cannot take an invite that another party accepted between the read and the insert', async () => {
+    await person('xena', '+972501230014', ['member']);
+    await person('yoav', '+972501230015', ['member']);
+    const id = await invite('+972501230014', 'staff');
+    await app.services.team.acceptById(id, people['xena']!.partyId, NOW);
+    await expect(app.services.team.acceptById(id, people['yoav']!.partyId, NOW)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT' });
+    // the race itself: the read saw no acceptance, the insert finds one
+    await person('zoe', '+972501230016', ['member']);
+    await person('amit', '+972501230017', ['member']);
+    const id2 = await invite('+972501230016', 'staff');
+    const [r1, r2] = await Promise.allSettled([app.services.team.acceptById(id2, people['zoe']!.partyId, NOW), app.services.team.acceptById(id2, people['amit']!.partyId, NOW)]);
+    expect([r1.status, r2.status].sort()).toEqual(['fulfilled', 'rejected']);
+    expect((await db.query('select 1 from org.staff where party_id = any($1)', [[people['zoe']!.partyId, people['amit']!.partyId]])).rows).toHaveLength(1);
   });
 });
