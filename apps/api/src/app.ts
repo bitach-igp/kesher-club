@@ -1,6 +1,7 @@
 // Composition root: builds every service against a Database and a ProviderRegistry (simulators
 // in sim mode) and returns the handler table. The HTTP server (server.ts) and tests call this;
 // nothing here knows about sockets. Secrets arrive through the config loader (T-0004).
+import { validateOrgIdpConfig } from './institutions/org-idp-config.ts';
 import type { Database } from './db.ts';
 import type { AuthPort, BankPort, BillingPort, CardIssuingPort, EventsPort, FederatedIdPPort, FundingPort, FxPort, InstitutionBankingPort, PayoutPort, KycPort, KybPort, NotifyPort, OrgIdPPort, ProviderRegistry, Market } from '@kesher/ports';
 import { ok, requireIdempotencyKey, requirePrincipal, requireRole, route, type Handler, type HttpRequest } from './http.ts';
@@ -164,7 +165,7 @@ export interface AppOptions {
     /** Staff SSO (T-0792): the ONE console URL the callback redirects to (https, no fragment) and the callback URL registered with the IdP. Without both the four SSO operations answer FEATURE_OFF. */
     consoleUrl?: string;
     callbackUrl?: string;
-    /** The least time the callback takes, so a refusal before the IdP call costs the same as one after it (default 400 ms). */
+    /** The least time the callback takes, so a refusal before the IdP call costs the same as one after it (default 400 ms); an integer 0 to 5000, checked at boot. Both URLs are checked at boot by `validateOrgIdpConfig` (T-1123), strictly when `refuseFlagsOnSimulators` marks production. */
     callbackFloorMs?: number;
   };
 }
@@ -260,13 +261,7 @@ function buildServices(o: AppOptions) {
     const dp = deprovision;
     webhooks.bind(DEPROVISION_PROVIDER, { verifier: dp.verifier(), process: (e) => dp.process(e) });
   }
-  const ssoUrls = ((): { consoleUrl: string; callbackUrl: string } | undefined => {
-    const { consoleUrl, callbackUrl } = o.orgIdp ?? {};
-    if (!consoleUrl || !callbackUrl) return undefined;
-    const c = new URL(consoleUrl);
-    if (c.hash || (c.protocol !== 'https:' && c.hostname !== 'localhost') || new URL(callbackUrl).protocol !== c.protocol) throw new Error('orgIdp.consoleUrl must be https without a fragment, and callbackUrl the same scheme');
-    return { consoleUrl, callbackUrl };
-  })();
+  const ssoUrls = validateOrgIdpConfig(o.orgIdp, !!o.refuseFlagsOnSimulators);
   const staffSso = new StaffSso({
     db: o.db, flags, identity, events: passkeys.events, tokens, links: new StaffIdpLinks({ db: o.db, audit }), team, metrics: stdoutMetrics, port: () => o.registry.resolve<OrgIdPPort>('org-idp', o.market),
     configured: () => !!ssoUrls && !!o.registry.bindingFor('org-idp', o.market), orgs: o.orgIdp?.orgs ?? {}, consoleUrl: ssoUrls?.consoleUrl ?? '', callbackUrl: ssoUrls?.callbackUrl ?? '',
