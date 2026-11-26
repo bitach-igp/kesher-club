@@ -9,16 +9,18 @@ const run = (consoleUrl: string | undefined, callbackUrl: string | undefined, pr
 describe('orgIdp.consoleUrl', () => {
   const ok: [string, boolean][] = [
     [CON, true], [CON, false], ['https://console.kesher.example', true], ['https://console.kesher.example/', true], ['https://console.kesher.example:8443/sso', true],
-    ['HTTPS://Console.Kesher.Example/sso', true], ['https://xn--bcher-kva.example/sso', true], ['https://xn--wgv71a.example/', true],
+    ['https://xn--bcher-kva.example/sso', true], ['https://xn--wgv71a.example/', true],
     ['https://[2001:db8::1]/sso', true], ['https://console.kesher.example/a%20b', true],
-    ['http://localhost:5173/sso', false], ['http://127.0.0.1/sso', false], ['http://[::1]:3000/sso', false], ['https://localhost/sso', false], ['HTTP://LOCALHOST/sso', false],
+    ['http://localhost:5173/sso', false], ['http://127.0.0.1/sso', false], ['http://[::1]:3000/sso', false], ['https://localhost/sso', false],
   ];
   it.each(ok)('accepts %s (production %s)', (url, prod) => {
     const cb = url.toLowerCase().startsWith('http:') ? 'http://localhost:3000/v1/sso/callback' : CB;
-    const n = (x: string): string => new URL(x).origin + new URL(x).pathname;
-    expect(validateOrgIdpConfig({ consoleUrl: url, callbackUrl: cb }, prod)).toEqual({ consoleUrl: n(url), callbackUrl: n(cb) });
+    expect(validateOrgIdpConfig({ consoleUrl: url, callbackUrl: cb }, prod)).toEqual({ consoleUrl: url, callbackUrl: cb });
   });
   const bad: [string, string, boolean][] = [
+    ['uppercase host', 'https://Console.Kesher.Example/sso', false], ['uppercase scheme', 'HTTPS://console.kesher.example/sso', false], ['default port', 'https://console.kesher.example:443/sso', false], ['empty port', 'https://console.kesher.example:/sso', false],
+    ['leading-zero port', 'https://console.kesher.example:00443/sso', false], ['uppercase IPv6', 'https://[2001:DB8::1]/sso', false], ['dot segments', 'https://console.kesher.example/a/../b', false],
+    ['uppercase loopback', 'HTTP://LOCALHOST/sso', false], ['http default port', 'http://localhost:80/sso', false],
     ['IDN host (non-ASCII)', 'https://日本.example/', false], ['Latin-1 IDN host', 'https://bücher.example/sso', false], ['non-ASCII path', 'https://console.kesher.example/ü', false], ['non-breaking space', 'https://console.kesher.example/\u00a0', false], ['DEL', 'https://console.kesher.example/\u007f', false],
     ['trailing empty hash', `${CON}#`, false], ['fragment', `${CON}#x=1`, false], ['query', `${CON}?a=1`, false], ['empty query', `${CON}?`, false],
     ['userinfo', 'https://user:pass@console.kesher.example/sso', false], ['empty userinfo', 'https://@console.kesher.example/sso', false], ['user only', 'https://user@console.kesher.example/', false],
@@ -58,7 +60,7 @@ describe('orgIdp.callbackUrl', () => {
     ['extra segment', `${CB}/x`], ['dot segments', 'https://api.kesher.example/v1/x/../sso/callback'], ['encoded slash', 'https://api.kesher.example/v1%2Fsso/callback'], ['encoded char', 'https://api.kesher.example/v1/sso/call%62ack'],
     ['query', `${CB}?a=1`], ['empty query', `${CB}?`], ['fragment', `${CB}#`], ['userinfo', 'https://u:p@api.kesher.example/v1/sso/callback'],
     ['javascript', 'javascript://localhost/v1/sso/callback'], ['data', 'data:text/plain,x'], ['http remote', 'http://api.kesher.example/v1/sso/callback'], ['space', `${CB} `],
-    ['IDN host', 'https://bücher.example/v1/sso/callback'], ['trailing dot', 'https://api.kesher.example./v1/sso/callback'], ['http localhost in production', 'http://localhost/v1/sso/callback'],
+    ['IDN host', 'https://bücher.example/v1/sso/callback'], ['uppercase host', 'https://API.kesher.example/v1/sso/callback'], ['uppercase scheme', 'HTTPS://api.kesher.example/v1/sso/callback'], ['default port', 'https://api.kesher.example:443/v1/sso/callback'], ['empty port', 'https://api.kesher.example:/v1/sso/callback'], ['leading-zero port', 'https://api.kesher.example:00443/v1/sso/callback'], ['uppercase IPv6', 'https://[2001:DB8::1]/v1/sso/callback'], ['trailing dot', 'https://api.kesher.example./v1/sso/callback'], ['http localhost in production', 'http://localhost/v1/sso/callback'],
   ])('refuses %s', (_n, cb) => expect(run(CON, cb)).toThrow(/orgIdp\.callbackUrl/));
   it.each([['http://localhost/v1/sso/callback', /callbackUrl must be https in production/], ['https://localhost/v1/sso/callback', /callbackUrl must not be a loopback host in production/]])('refuses %s as callback in production', (cb, re) => {
     expect(run(CON, cb, true)).toThrow(re);
@@ -70,14 +72,18 @@ describe('orgIdp.callbackUrl', () => {
 });
 
 describe('returned values', () => {
-  it('are pure ASCII, normalised, and writable as a Location header', async () => {
+  it('are the input unchanged, pure ASCII, and writable as a Location header; a bare console origin works with #code=', async () => {
     const { ServerResponse, IncomingMessage } = await import('node:http');
-    const r = validateOrgIdpConfig({ consoleUrl: 'HTTPS://Console.Kesher.Example:443/sso', callbackUrl: 'HTTPS://Xn--Bcher-Kva.Example:443/v1/sso/callback' }, true)!;
-    expect(r).toEqual({ consoleUrl: 'https://console.kesher.example/sso', callbackUrl: 'https://xn--bcher-kva.example/v1/sso/callback' });
-    for (const v of Object.values(r)) {
-      expect(v).toMatch(/^[\x21-\x7e]+$/);
-      const res = new ServerResponse(new IncomingMessage(null as never));
-      expect(() => res.writeHead(302, { Location: `${v}#code=abc` })).not.toThrow();
+    for (const consoleUrl of ['https://console.kesher.example/sso', 'https://console.kesher.example', 'https://console.kesher.example/', 'http://[::1]:3000']) {
+      const cb = consoleUrl.startsWith('http:') ? 'http://[::1]:3000/v1/sso/callback' : 'https://xn--bcher-kva.example/v1/sso/callback';
+      const r = validateOrgIdpConfig({ consoleUrl, callbackUrl: cb }, false)!;
+      expect(r).toEqual({ consoleUrl, callbackUrl: cb });
+      for (const v of Object.values(r)) {
+        expect(v).toMatch(/^[\x21-\x7e]+$/);
+        const res = new ServerResponse(new IncomingMessage(null as never));
+        expect(() => res.writeHead(302, { Location: `${v}#code=abc` })).not.toThrow();
+      }
+      expect(new URL(`${consoleUrl}#code=abc`).hash).toBe('#code=abc');
     }
   });
   it('refuses a non-Latin-1 host at boot instead of failing the first sign-in', () => {
