@@ -412,7 +412,7 @@
 | [T-0789](T-0789.md) | AUTH | Staff IdP link table (`org.staff_idp_link`) mapping an IdP subject to a staff party; migration and desktop apply (security, independent reviewer) | REQ-AUTH-008 | done by #416 · dark, no route or flag read; desktop apply PASS on real PG16 |
 | [T-0790](T-0790.md) | AUTH | Mount the WorkOS webhook behind `auth.orgSso`: `dsync.user.deleted` deprovisions linked staff and revokes sessions; supersedes T-0693 (security, independent reviewer) | REQ-AUTH-008 | done by #418 · dark behind `auth.orgSso`, owner actions listed not done |
 | [T-0791](T-0791.md) | AUTH | Directory drift sweep: worker job compares the WorkOS directory with the staff links and deprovisions drift (security, independent reviewer) | REQ-AUTH-008 | done by #419 · dark behind `auth.orgSso` |
-| [T-0792](T-0792.md) | AUTH | Staff SSO login (`startSso`, `handleCallback`) and link creation; behaviour only, after T-1120 (the contract); build when the first institution asks (security, independent reviewer) | REQ-AUTH-008 | BUILT 2026-11-26 (behaviour, dark) · after T-0790 |
+| [T-0792](T-0792.md) | AUTH | Staff SSO login (`startSso`, `handleCallback`) and link creation; behaviour only, after T-1120 (the contract); build when the first institution asks (security, independent reviewer) | REQ-AUTH-008 | done by #422 · dark behind `auth.orgSso`; follow-ups T-1121 to T-1126 |
 | [T-0793](T-0793.md) | BIL | `DunningService` pre-wire fixes: markers not counted as pending webhooks, real notice recipient (independent reviewer) | — | later · first of T-0793 to T-0795 |
 | [T-0794](T-0794.md) | BIL | Mount `/hooks/stripe` behind `billing.stripe`: adapter verifies and stores; turning on blocked on T-0736 W1-W4 and T-0737 (independent reviewer) | — | later · after T-0793, T-0736 |
 | [T-0795](T-0795.md) | BIL | Worker job `billing-events` feeds `DunningService` from stored Stripe events (independent reviewer) | — | later · after T-0794 |
@@ -454,11 +454,17 @@ Scoped 2026-11-25 from the founder's phase 1 rollout notes; see `docs/ops/phase-
 | [T-1117](T-1117.md) | AUTH | Alarms and RUN-10 for the WorkOS removal path (`unknown_org`, `scim_unauthorized`, `guard_half`, `drift_finish_abandoned`) and a re-drive for an abandoned removal | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
 | [T-1118](T-1118.md) | AUTH | Needs owner or ops decision, then code: production wiring of `orgIdp.orgs` and `staffAlertEmail` in both `main.ts`, with uniqueness and two-source agreement checks (security, independent reviewer) | REQ-AUTH-008 | needs owner decision · dark/before `auth.orgSso` is turned on |
 | [T-1119](T-1119.md) | AUTH | Partial index on the audit table for the drift sweep's resume scan; a migration card with a desktop apply request (scope only) | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
-| [T-1120](T-1120.md) | AUTH | Staff SSO contract and SDK: four operations (`startStaffSso`, `startStaffSsoLink`, `completeStaffSso`, `exchangeStaffSso`), route rows, `HEADER_OPS` row, generated types; first half of T-0792, dark (security, independent reviewer) | REQ-AUTH-008 | later · dark; merge before T-0792's behaviour |
+| [T-1120](T-1120.md) | AUTH | Staff SSO contract and SDK: four operations (`startStaffSso`, `startStaffSsoLink`, `completeStaffSso`, `exchangeStaffSso`), route rows, `HEADER_OPS` row, generated types; first half of T-0792, dark (security, independent reviewer) | REQ-AUTH-008 | done by #421 · dark |
+| [T-1121](T-1121.md) | AUTH | Staff SSO sign-in registers a device and emits `new_device_sign_in` on the exchange success path (security, independent reviewer) | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
+| [T-1122](T-1122.md) | AUTH | SSO invite path: accept and link atomic, IdP subject validated before the invite is consumed (security, independent reviewer) | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
+| [T-1123](T-1123.md) | AUTH | Boot validation of `AppOptions.orgIdp` URLs (trailing `#`, localhost scheme, userinfo, callback) and refusal in production (security, independent reviewer) | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
+| [T-1124](T-1124.md) | AUTH | SSO test gaps that survive mutation (O24, O26, O27, O30, A01, A02, A04, T02 to T04, D24, S9, C3, C4) and the flaky `funding-details` assertion; tests only | REQ-AUTH-008 | later · does not gate `auth.orgSso` |
+| [T-1125](T-1125.md) | AUTH | Needs owner decision, then code: purge or TTL for the SSO marker rows, and a PII-free log line when `callback()` swallows an internal error (security, independent reviewer) | REQ-AUTH-008 | needs owner decision · dark/before `auth.orgSso` is turned on |
+| [T-1126](T-1126.md) | AUTH | OWNER DECISION: link-flow hardening for staff SSO (forced IdP re-authentication, confirmation step with step-up, invite bound to an expected domain or subject) | REQ-AUTH-008 | needs owner decision · dark/before `auth.orgSso` is turned on |
 
 ## Before `auth.orgSso` is turned on
 
-T-0789 (link table), T-0790 (webhook) and T-0791 (drift sweep) are merged and dark. Nothing below is done; do all of it, in this order, before the flag flips:
+T-0789 (link table), T-0790 (webhook), T-0791 (drift sweep), T-1120 (SSO contract) and T-0792 (SSO behaviour) are merged and dark. Nothing below is done; do all of it, in this order, before the flag flips:
 
 1. T-1116, the WorkOS adapter fixes (the signature timestamp unit above all: until it is verified, a real delivery may be refused as stale).
    Includes its item 5: the WorkOS adapter's SSO state and deactivation memory are per process; SSO cannot run on more than one API process until that moves (T-0792 review).
@@ -466,7 +472,14 @@ T-0789 (link table), T-0790 (webhook) and T-0791 (drift sweep) are merged and da
 3. T-1118, production wiring: until `main.ts` passes `orgIdp.orgs` and `staffAlertEmail`, the webhook and the sweep are inert.
 4. T-1119, the sweep index (not blocking, but it bounds the resume scan).
 5. A WorkOS account and contract, with an Organization and a Directory Sync connection per institution; the secrets `workos-client-id`, `workos-api-key` and `workos-webhook-secret` (named in `docs/setup/secrets.md`) put in the secret store and `PROVIDER_ORG_IDP=workos` set.
-6. T-1120 and T-0792 merged, plus an edge rate rule on `/v1/institutions/*/sso/start` and `/v1/sso/*` and the ALB access logs no longer recording the query string of `/v1/sso/callback` (infra follow-ups).
+6. T-1120 and T-0792 are merged (done by #421 and #422); still owed: an edge rate rule on `/v1/institutions/*/sso/start` and `/v1/sso/*` and the ALB access logs no longer recording the query string of `/v1/sso/callback` (infra follow-ups).
+   The T-0792 review's follow-ups that gate the flag:
+   - T-1121, a device row and the `new_device_sign_in` event on SSO sign-in (without it an IdP-account takeover raises no new-device alert).
+   - T-1122, the invite path's accept and link made atomic, and the IdP subject validated before the invite is consumed.
+   - T-1123, boot validation of the `orgIdp` URLs, refused in production when loose.
+   - T-1125, a purge or TTL for the SSO marker rows (owner decision) and a PII-free log line for a swallowed internal error in `callback()`.
+   - T-1126, the link-flow hardening decision (owner decision).
+   - Not gating: T-1124, the test gaps and the flaky `funding-details` test.
 7. The webhook registered in the WorkOS dashboard as `https://<api host>/hooks/workos` for `dsync.user.created`, `dsync.user.updated`, `dsync.user.deleted`.
 8. The per-institution record (WorkOS organisation id, directory id, SCIM bearer) entered as configuration (ADR-004, T-1118).
 9. The flag flipped through the flag service with two approvals, after T-0789 is applied on the real Postgres (done) and the cards above are merged.
@@ -477,3 +490,6 @@ Known limits to carry into the pilot:
 - A one-of-one linked institution is never drift-removable (one of one is more than half, so the guard refuses): the webhook is the only remover there.
 - Subject identity is an assumption until proven: the link stores the SSO profile `idp_id` and the sweep compares it with the directory user's `idp_id`. Verify in the first pilot that the two are the same string for a real user (T-0792 creates the link).
 - A person hired back between the sweep's check and its role strip, a window of milliseconds, is a known race: the removal is bound to the link id the sweep read, but the check and the role strip are not one atomic step. Accepted for the pilot; recheck if staff turnover grows.
+- Residual risk until T-1126 is decided: an insider who fixates a victim's browser into the attacker's IdP session can link the attacker's IdP subject to the victim's staff account (the port cannot force re-authentication at the IdP), and an invite token proves nothing about the invitee's IdP identity (a leaked invite plus a signed-in account becomes staff with the invite's role; admin roles still need the second-admin grant).
+- Residual risk until T-1125: the SSO state, code, attempt and link-start rows are never purged, and an internal error in `callback()` shows only as the `internal` metric reason.
+- Residual risk until T-1121: SSO sessions raise no new-device alert.
