@@ -312,9 +312,17 @@ describe('directory deprovisioning (TST-AUTH-008, T-0790)', () => {
   it('a stale signature is told apart from a forged one (the rejection reason metric)', async () => {
     const v = make({ mode: () => 'sandbox', port: () => ({ verifyWebhookSignature: () => false }) as never }).verifier();
     const raw = JSON.stringify({ id: 'evt-x' });
-    const t = (at: Date) => `t=${Math.floor(at.getTime() / 1000)}, v1=ab`;
+    const hex = 'ab'.repeat(32);
+    const t = (at: Date) => `t=${at.getTime()}, v1=${hex}`;
     expect(await v.verify({ 'WorkOS-Signature': t(new Date(NOW.getTime() - 6 * 60_000)) }, raw, NOW)).toMatchObject({ ok: false, eventId: 'evt-x', reason: 'stale timestamp' });
     expect(await v.verify({ 'WorkOS-Signature': t(NOW) }, raw, NOW)).toMatchObject({ ok: false, reason: 'bad signature' });
+    // future-dated beyond the window is stale too; a header in SECONDS is a 1970 date, hence stale, never accepted as seconds
+    expect(await v.verify({ 'WorkOS-Signature': t(new Date(NOW.getTime() + 6 * 60_000)) }, raw, NOW)).toMatchObject({ ok: false, reason: 'stale timestamp' });
+    expect(await v.verify({ 'WorkOS-Signature': `t=${Math.floor(NOW.getTime() / 1000)}, v1=${hex}` }, raw, NOW)).toMatchObject({ ok: false, reason: 'stale timestamp' });
+    expect(await v.verify({ 'WorkOS-Signature': 't=abc, v1=ab' }, raw, NOW)).toMatchObject({ ok: false, reason: 'bad signature' });
+    // the window edge: exactly 5 minutes is still inside (so the adapter, not this classifier, decides), one ms more is stale
+    expect(await v.verify({ 'WorkOS-Signature': t(new Date(NOW.getTime() - 5 * 60_000)) }, raw, NOW)).toMatchObject({ ok: false, reason: 'bad signature' });
+    expect(await v.verify({ 'WorkOS-Signature': t(new Date(NOW.getTime() - 5 * 60_000 - 1)) }, raw, NOW)).toMatchObject({ ok: false, reason: 'stale timestamp' });
   });
 
   it('N3: an event the adapter refuses moves nothing, is counted by its closed reason and leaves the queue (HTTP 200), never starving replay', async () => {
@@ -427,7 +435,7 @@ describe('directory deprovisioning with the WorkOS verifier (TST-AUTH-008, T-079
   const WOH = uuidv7(NOW);
   const SECRET = 'whsec_directory_test';
   const sign = (raw: string, at: Date) => {
-    const t = Math.floor(at.getTime() / 1000);
+    const t = at.getTime(); // MILLISECONDS, as WorkOS sends it (T-1116)
     return `t=${t}, v1=${createHmac('sha256', SECRET).update(`${t}.${raw}`).digest('hex')}`;
   };
   const dsync = (id: string, event: string, idp: string, state = 'inactive') => ({ id, event, created_at: NOW.toISOString(), data: { id: 'directory_user_1', idp_id: idp, organization_id: 'org_workos_woh', directory_id: 'directory_woh', emails: [{ primary: true, value: `${idp}@example.com` }], state } });
@@ -452,7 +460,11 @@ describe('directory deprovisioning with the WorkOS verifier (TST-AUTH-008, T-079
     const wid = await seedStaff('idp-w1');
     const payload = dsync('evt-w1', 'dsync.user.deleted', 'idp-w1');
     const raw = JSON.stringify(payload);
-    expect((await post(payload, `t=${Math.floor(NOW.getTime() / 1000)}, v1=${'0'.repeat(64)}`)).status).toBe(401);
+    expect((await post(payload, `t=${NOW.getTime()}, v1=${'0'.repeat(64)}`)).status).toBe(401);
+    // a correctly signed header whose t is in SECONDS (a 1970 date) is refused: the unit is not guessed
+    const secs = Math.floor(NOW.getTime() / 1000);
+    expect((await post(payload, `t=${secs}, v1=${createHmac('sha256', SECRET).update(`${secs}.${raw}`).digest('hex')}`)).status).toBe(401);
+    expect((await post(payload, sign(raw, new Date(NOW.getTime() + 6 * 60_000)))).status).toBe(401); // future-dated
     expect((await post(payload, undefined)).status).toBe(401);
     expect((await post(payload, sign(raw, new Date(NOW.getTime() - 6 * 60_000)))).status).toBe(401);
     expect(await staffRow(wid)).toMatchObject({ active: true });
@@ -475,10 +487,37 @@ describe('directory deprovisioning with the WorkOS verifier (TST-AUTH-008, T-079
     expect(await staffRow(wid)).toMatchObject({ active: false });
   });
 
-  it('B1: signed events the adapter cannot use (a group event, a deletion with no email) are processed without error, counted, and never starve the replay queue', async () => {
+  it('(T-1116 2) a deleted and a deactivated user with no emails array, an empty one or null are removed (one audit row each); a created with no email is still refused', async () => {
+    const send = (p: unknown) => post(p, sign(JSON.stringify(p), NOW));
+    // real-shaped directory_user payloads: WorkOS sends `emails: []` for a user with no mailbox, and the removal still arrives
+    const shaped = (id: string, event: string, idp: string, emails: unknown, state: string) => {
+      const data: Record<string, unknown> = { object: 'directory_user', id: 'directory_user_01', directory_id: 'directory_woh', organization_id: 'org_workos_woh', idp_id: idp, first_name: null, last_name: null, state, custom_attributes: {}, raw_attributes: {}, created_at: NOW.toISOString(), updated_at: NOW.toISOString() };
+      if (emails !== 'omit') data['emails'] = emails;
+      return { id, event, created_at: NOW.toISOString(), data };
+    };
+    const cases: [string, string, unknown, string][] = [
+      ['idp-ne1', 'dsync.user.deleted', 'omit', 'inactive'],
+      ['idp-ne2', 'dsync.user.deleted', [], 'inactive'],
+      ['idp-ne3', 'dsync.user.updated', 'omit', 'inactive'],
+      ['idp-ne4', 'dsync.user.updated', [], 'inactive'],
+      ['idp-ne5', 'dsync.user.deleted', null, 'inactive'],
+    ];
+    for (const [idp, event, emails, state] of cases) {
+      const wid = await seedStaff(idp);
+      expect((await send(shaped(`evt-${idp}`, event, idp, emails, state))).status).toBe(200);
+      expect(await staffRow(wid), idp).toMatchObject({ active: false });
+      expect(await audits('institution.staff.deprovision', wid), idp).toHaveLength(1);
+    }
+    const keep = await seedStaff('idp-ne6');
+    expect((await send(shaped('evt-idp-ne6', 'dsync.user.created', 'idp-ne6', [], 'active'))).status).toBe(200);
+    expect((await send(shaped('evt-idp-ne6b', 'dsync.user.updated', 'idp-ne6', [], 'active'))).status).toBe(200);
+    expect(await staffRow(keep)).toMatchObject({ active: true });
+  });
+
+  it('B1: signed events the adapter cannot use (a group event, a creation with no email) are processed without error, counted, and never starve the replay queue', async () => {
     const send = (p: unknown) => post(p, sign(JSON.stringify(p), NOW));
     const group = { id: 'evt-grp', event: 'dsync.group.user_added', created_at: NOW.toISOString(), data: { directory_id: 'directory_woh', organization_id: 'org_workos_woh', user: { idp_id: 'x' }, group: { id: 'g' } } };
-    const noEmail = (i: number) => ({ id: `evt-noemail-${i}`, event: 'dsync.user.deleted', created_at: NOW.toISOString(), data: { id: 'du', idp_id: 'idp-ghost', organization_id: 'org_workos_woh', directory_id: 'directory_woh', emails: [], state: 'inactive' } });
+    const noEmail = (i: number) => ({ id: `evt-noemail-${i}`, event: 'dsync.user.created', created_at: NOW.toISOString(), data: { id: 'du', idp_id: 'idp-ghost', organization_id: 'org_workos_woh', directory_id: 'directory_woh', emails: [], state: 'active' } });
     expect((await send(group)).status).toBe(200);
     for (let i = 0; i < 100; i++) expect((await send(noEmail(i))).status).toBe(200);
     for (const id of ['evt-grp', 'evt-noemail-0', 'evt-noemail-99']) expect((await stored(id))[0]).toMatchObject({ processed_at: expect.any(Date), error: null });

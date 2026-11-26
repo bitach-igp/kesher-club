@@ -7,6 +7,7 @@ interface DirectoryEntry {
   subject: string;
   email: string;
   active: boolean;
+  rawState: 'active' | 'inactive';
 }
 
 export class OrgIdPSimulator implements OrgIdPPort {
@@ -36,7 +37,7 @@ export class OrgIdPSimulator implements OrgIdPPort {
     if (!m) throw new OrgIdPError('INVALID_CODE', 'Code not recognised');
     const [, subject, email, groups] = m;
     const dir = this.directory.get(orgId)!;
-    if (!dir.has(subject!)) dir.set(subject!, { subject: subject!, email: email!, active: true });
+    if (!dir.has(subject!)) dir.set(subject!, { subject: subject!, email: email!, active: true, rawState: 'active' });
     else if (!dir.get(subject!)!.active) throw new OrgIdPError('INVALID_CODE', 'User deactivated');
     return { orgId, subject: subject!, email: email!, displayName: email!.split('@')[0]!, groups: groups ? groups.split(',') : [] };
   }
@@ -44,7 +45,7 @@ export class OrgIdPSimulator implements OrgIdPPort {
   async parseScimEvent(orgId: string, bearer: string, body: unknown): Promise<ScimEvent> {
     if (bearer !== `scim_${orgId}`) throw new OrgIdPError('SCIM_UNAUTHORIZED', 'Bad SCIM bearer');
     const b = body as Partial<ScimEvent> & { eventId?: string };
-    if (!b || typeof b.eventId !== 'string' || typeof b.subject !== 'string' || typeof b.email !== 'string' || !['create', 'update', 'deactivate'].includes(b.op ?? '')) {
+    if (!b || typeof b.eventId !== 'string' || typeof b.subject !== 'string' || (typeof b.email !== 'string' && b.op !== 'deactivate') || !['create', 'update', 'deactivate'].includes(b.op ?? '')) {
       throw new OrgIdPError('SCIM_MALFORMED', 'SCIM event missing fields');
     }
     const prior = this.seenEvents.get(`${orgId}:${b.eventId}`);
@@ -53,14 +54,14 @@ export class OrgIdPSimulator implements OrgIdPPort {
       orgId,
       op: b.op!,
       subject: b.subject,
-      email: b.email,
+      email: b.email ?? '',
       active: b.op !== 'deactivate',
       occurredAt: b.occurredAt ?? this.clock.now().toISOString(),
       eventId: b.eventId,
     };
     const dir = this.directory.get(orgId);
     if (!dir) throw new OrgIdPError('UNKNOWN_ORG', orgId);
-    dir.set(event.subject, { subject: event.subject, email: event.email, active: event.active });
+    dir.set(event.subject, { subject: event.subject, email: event.email || dir.get(event.subject)?.email || '', active: event.active, rawState: event.active ? 'active' : 'inactive' });
     this.seenEvents.set(`${orgId}:${b.eventId}`, event);
     return event;
   }

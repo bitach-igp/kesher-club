@@ -16,7 +16,7 @@ import { dispatch } from '@kesher/api/server';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
 import { directoryInstitutions, removalKey, StaffDeprovisioner } from '@kesher/api/institutions/staff-deprovision';
 import { StaffIdpLinks } from '@kesher/api/institutions/staff-idp-link';
-import { DirectoryDrift, DriftCycleFailed, type DirectoryDriftDeps, type DriftResult } from './directory-drift.ts';
+import { DirectoryDrift, DRIFT_REFUSAL_REASONS, DriftCycleFailed, type DirectoryDriftDeps, type DriftResult } from './directory-drift.ts';
 
 let db: TestDatabase;
 let app: App;
@@ -191,7 +191,7 @@ describe('directory drift sweep (TST-AUTH-008, T-0791)', () => {
     listing = async () => [];
     expect(await job([I]).run()).toMatchObject({ corrected: 0, refused: 0, failed: 0 });
     expect(metric('staff.drift_refused', 'unreliable_list')).toBe(4);
-    listing = async () => [{ subject: 'idp-a', email: '', active: false }];
+    listing = async () => [{ subject: 'idp-a', email: '', active: false, rawState: 'inactive' }];
     expect(await job([I]).run()).toMatchObject({ corrected: 1, refused: 0 }); // the positive inactive counts; b, c, d are absent and stay
     for (const x of ['b', 'c', 'd']) expect(await active(who(I, x))).toEqual([true]);
     expect(await active(who(I, 'a'))).toEqual([false]);
@@ -201,12 +201,12 @@ describe('directory drift sweep (TST-AUTH-008, T-0791)', () => {
     reset();
     const I = await institution(['a', 'b', 'c', 'd', 'e']);
     listing = async () => [
-      { subject: 'idp-a', email: '', active: true }, // active, no email (the adapter's limitation): not missing
-      { subject: 'idp-b', email: '', active: false },
+      { subject: 'idp-a', email: '', active: true, rawState: 'active' }, // active, no email (the adapter's limitation): not missing
+      { subject: 'idp-b', email: '', active: false, rawState: 'inactive' },
       { subject: 'idp-c', email: 'c@x', active: 'yes' }, // malformed
       null,
       { email: 'no-subject', active: true },
-      { subject: 'idp-d', email: '', active: true },
+      { subject: 'idp-d', email: '', active: true, rawState: 'active' },
     ];
     expect(await job([I]).run()).toMatchObject({ corrected: 1 });
     expect(await active(who(I, 'a'))).toEqual([true]);
@@ -216,15 +216,48 @@ describe('directory drift sweep (TST-AUTH-008, T-0791)', () => {
     expect(metric('staff.drift_refused', 'malformed_entry')).toBe(3);
   });
 
+  it('(T-1116 / TST-AUTH-008 4) an unrecognised or missing raw state is suspect: counted, never a removal, absence switched off; a positive inactive still counts', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd', 'e', 'f']);
+    now = new Date(NOW.getTime() + 25 * 3_600_000); // past the new-link grace: an absent link is a real doubt
+    listing = async () => [
+      { subject: 'idp-a', email: '', active: true, rawState: 'active' },
+      { subject: 'idp-b', email: '', active: false, rawState: 'inactive' }, // positive: removed
+      { subject: 'idp-c', email: '', active: false, rawState: 'suspended' }, // a new vendor value
+      { subject: 'idp-d', email: '', active: false }, // no state at all
+      { subject: 'idp-e', email: '', active: true, rawState: 'inactive' }, // at odds with `active`
+    ];
+    expect(await job([I]).run()).toMatchObject({ corrected: 1, failed: 0 });
+    expect(await active(who(I, 'b'))).toEqual([false]);
+    for (const x of ['a', 'c', 'd', 'e', 'f']) expect(await active(who(I, x))).toEqual([true]); // f is absent but the list is not trusted
+    expect(metric('staff.drift_refused', 'unrecognised_state')).toBe(3);
+    expect(metric('staff.drift_refused', 'unreliable_list')).toBe(1); // only f, the absent one: the suspect subjects are not double-counted as absent
+    expect(metric('staff.drift_corrected', 'inactive')).toBe(1);
+    expect(metric('staff.drift_corrected', 'missing')).toBe(0);
+    // every reason the sweep emits is in the closed set
+    const reasons = lines.map((l) => JSON.parse(l) as Record<string, unknown>).filter((m) => 'staff.drift_refused' in m).map((m) => m['reason'] as string);
+    for (const r of reasons) expect(DRIFT_REFUSAL_REASONS as readonly string[]).toContain(r);
+    expect(DRIFT_REFUSAL_REASONS).toContain('unrecognised_state');
+  });
+
+  it('(T-1116) with every state recognised, absence counts again (the suspect switch is per read, not sticky)', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    now = new Date(NOW.getTime() + 25 * 3_600_000);
+    listing = async () => [{ subject: 'idp-a', email: '', active: true, rawState: 'active' }, { subject: 'idp-b', email: '', active: true, rawState: 'active' }, { subject: 'idp-c', email: '', active: true, rawState: 'active' }];
+    expect(await job([I]).run()).toMatchObject({ corrected: 1 });
+    expect(await active(who(I, 'd'))).toEqual([false]);
+  });
+
   it('(4) a subject listed twice counts as active if either entry is; an empty subject is malformed; a non-list answer is a failed read', async () => {
     reset();
     const I = await institution(['a', 'b', 'c', 'd']);
-    listing = async () => [{ subject: 'idp-a', email: '', active: true }, { subject: 'idp-a', email: '', active: false }, { subject: 'idp-b', email: '', active: true }, { subject: 'idp-c', email: '', active: true }];
+    listing = async () => [{ subject: 'idp-a', email: '', active: true, rawState: 'active' }, { subject: 'idp-a', email: '', active: false, rawState: 'inactive' }, { subject: 'idp-b', email: '', active: true, rawState: 'active' }, { subject: 'idp-c', email: '', active: true, rawState: 'active' }];
     expect(await job([I]).run()).toMatchObject({ corrected: 1 }); // only d, absent
     expect(await active(who(I, 'a'))).toEqual([true]);
     expect(await active(who(I, 'd'))).toEqual([false]);
     const J = await institution(['a', 'b', 'c', 'd']);
-    listing = async () => [{ subject: 'idp-a', email: '', active: true }, { subject: '', email: '', active: true }];
+    listing = async () => [{ subject: 'idp-a', email: '', active: true, rawState: 'active' }, { subject: '', email: '', active: true, rawState: 'active' }];
     expect(await job([J]).run()).toMatchObject({ corrected: 0 }); // the empty subject is malformed, so absence is off
     expect(metric('staff.drift_refused', 'malformed_entry')).toBe(1);
     listing = async () => null;
@@ -265,7 +298,7 @@ describe('directory drift sweep (TST-AUTH-008, T-0791)', () => {
       const answer = await sim.listDirectory(org);
       await links.unlink(I, 'idp-a', SYSTEM, NOW);
       await links.link(I, 'idp-a', people[who(I, 'a')]!.partyId, SYSTEM, NOW);
-      return answer.map((e) => (e.subject === 'idp-a' ? { ...e, active: false } : e));
+      return answer.map((e) => (e.subject === 'idp-a' ? { ...e, active: false, rawState: 'inactive' as const } : e));
     };
     expect(await job([I]).run()).toMatchObject({ corrected: 0, failed: 0 });
     expect(await active(who(I, 'a'))).toEqual([true]);
