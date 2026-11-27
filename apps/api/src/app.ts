@@ -24,6 +24,7 @@ import { McpGateway } from './mcp/gateway.ts';
 import { McpHttp, toolContext } from './mcp/http.ts';
 import { lookup } from 'node:dns/promises';
 import { PreferenceService, preferenceHandlers } from './me/preferences.ts';
+import { RecipientProfileService, recipientProfileHandlers } from './identity/recipient-profile.ts';
 import { RateService } from './fx/rates.ts';
 import { cardHandlers } from './cards/handlers.ts';
 import { CardService } from './cards/service.ts';
@@ -301,6 +302,7 @@ function buildServices(o: AppOptions) {
   const preferences = new PreferenceService(o.db);
   const displayNames = new DisplayNameService(o.db, pii);
   const fundingDetails = new FundingDetailsService({ db: o.db, pii, identity, audit });
+  const recipientProfile = new RecipientProfileService({ db: o.db, pii, flags });
   const recipients = new RecipientLookup({ identity, kyc, names: displayNames });
   const oauthConfig: OAuthConfig = { issuer: o.issuer, resource: o.oauth?.resource ?? `${o.issuer.replace(/\/$/, '')}/mcp`, consentUrl: o.oauth?.consentUrl ?? 'kesher://connect' };
   const cimd = new CimdRegistry(o.db, o.cimd?.resolve ?? (async (host) => (await lookup(host, { all: true })).map((a) => a.address)), o.cimd?.fetch ?? ((url, init) => fetch(url, init)), clock.now);
@@ -329,7 +331,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', revoker });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, social, socialLinks, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, fundingDetails, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, deprovision, staffSso, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
+  return { clock, identity, tokens, otp, passkeys, social, socialLinks, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, fundingDetails, recipientProfile, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, deprovision, staffSso, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
 /** T-0043: in prod, the reason a flag cannot be turned on (its port is a simulator), else undefined. */
@@ -446,6 +448,7 @@ export function createApp(o: AppOptions): App {
     ...preferenceHandlers(s.preferences),
     ...displayNameHandlers(s.displayNames),
     ...fundingDetailsHandlers(s.fundingDetails),
+    ...recipientProfileHandlers(s.recipientProfile),
     ...legalHandlers(new LegalService(o.db)),
     ...legalAdminHandlers(new LegalAdmin(o.db, s.approvals, s.audit)),
     ...oauthHandlers({ authorize: s.authorize, cfg: s.oauthConfig, jwks: () => s.tokens.jwks(), flags: s.flags }),
