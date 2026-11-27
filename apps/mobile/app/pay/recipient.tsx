@@ -16,7 +16,9 @@ export function RecipientView({ model }: { model: PayModel }) {
   return (
     <Screen title={t('pay.recipient.title', locale)} testID="screen-pay-recipient" footer={<Button label={t('common.continue', locale)} onPress={model.goAmount} disabled={!s.recipient.trim()} testID="recipient-continue" />}>
       {s.error ? <Banner tone="danger" body={t(s.error.key, locale, s.error.vars)} testID="recipient-error" /> : null}
+      {s.notice ? <Banner tone="success" body={t(s.notice.key, locale, s.notice.vars)} testID="recipient-notice" /> : null}
       <TextField label={t('pay.recipient.label', locale)} helper={t('pay.recipient.helper', locale)} value={s.recipient} onChangeText={model.setRecipient} autoCapitalize="none" autoCorrect={false} testID="recipient-input" />
+      {s.canInvite ? <Button label={t('pay.invite.cta', locale)} variant="secondary" onPress={() => void model.inviteRecipient()} disabled={s.busy} testID="recipient-invite" /> : null}
       <Button label={t('pay.recipient.contacts', locale)} variant="secondary" onPress={() => void model.pickContact()} testID="recipient-contacts" />
       <Button label={t('pay.recipient.scan', locale)} variant="secondary" onPress={() => void model.scan()} testID="recipient-scan" />
     </Screen>

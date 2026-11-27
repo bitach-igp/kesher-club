@@ -3124,6 +3124,50 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/p2p/recipient-invites": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The sender's invites, newest first
+         * @description REQ-PAY-001 (T-1104). Bearer, `p2p.enabled` and `phase1.recipientInvite`. Ends invites past their 14 days and finds numbers that already belonged to a verified member (they become `claimable` here). At most 100, no phone.
+         */
+        readonly get: operations["listRecipientInvites"];
+        readonly put?: never;
+        /**
+         * Invite someone with no account to receive; moves no money
+         * @description REQ-PAY-001 (T-1104, phase 1). Bearer, a sender with T1 approved, and both `p2p.enabled` and `phase1.recipientInvite` (404 FEATURE_OFF when either is off). The sender explicitly asks to invite a phone number; the lookup and the send keep answering their indistinguishable 404 for a non-member, so this is not a way to probe membership and answers the same for a number that already belongs to a member. Nothing here moves or holds money (ADR-018): no journal, hold or transfer is created. It stores the sender, the phone's keyed hash (and a sealed copy until the invite ends, never returned), an optional amount hint and a category from a closed set, lives 14 days, and sends exactly one text (no sender name, note or amount in it). The same sender inviting the same number again returns the live invite (200, no second text). A sender may start 10 new invites in 24 hours; the 11th answers 429 RATE_LIMITED. The sender is told when the invitee has joined and passed T1, and the invite is then `claimable`. No Idempotency-Key: the sender and the phone name the invite. The phone and the category are untrusted input and never logged.
+         */
+        readonly post: operations["createRecipientInvite"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/p2p/recipient-invites/{id}/claim": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Take a claimable invite to the ordinary send; answers who to pay
+         * @description REQ-PAY-001 (T-1104). Bearer, `p2p.enabled` and `phase1.recipientInvite`. Moves nothing: it answers the recipient's member id so the sender can send with POST /transfers, whose limits, new-pair hold and Idempotency-Key are unchanged. Only the invite's sender; any other caller or an unknown id answers the same 404 NOT_FOUND. 409 IDEMPOTENCY_CONFLICT while nobody has joined yet and once the invite has expired (an expired invite cannot be claimed). The same sender claiming again, or twice at once, gets the same answer. No Idempotency-Key: claiming is idempotent by invite.
+         */
+        readonly post: operations["claimRecipientInvite"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/p2p/recipients/resolve": {
         readonly parameters: {
             readonly query?: never;
@@ -5251,6 +5295,35 @@ export interface components {
          * @enum {string}
          */
         readonly RecipientCategory: "soldier" | "lone_soldier" | "yeshiva_student" | "seminary_student" | "university_student" | "rabbi" | "volunteer" | "program_participant" | "other";
+        /** @description An invitation to someone with no account. Never carries the phone. */
+        readonly RecipientInvite: {
+            readonly amountHint?: components["schemas"]["Money"];
+            readonly category?: components["schemas"]["RecipientCategory"];
+            /** Format: date-time */
+            readonly createdAt: string;
+            /** Format: date-time */
+            readonly expiresAt: string;
+            /** Format: uuid */
+            readonly id: string;
+            /**
+             * @description open: waiting for them to join and pass T1; claimable: they have; claimed: the sender took them to the send; expired: 14 days passed
+             * @enum {string}
+             */
+            readonly status: "open" | "claimable" | "claimed" | "expired";
+        };
+        readonly RecipientInviteClaim: {
+            readonly invite: components["schemas"]["RecipientInvite"];
+            readonly recipient: {
+                readonly canReceive: boolean;
+                /** @description The first name and last initial they set; member text */
+                readonly displayName?: string;
+                /**
+                 * Format: uuid
+                 * @description Pass as toPartyId to POST /transfers
+                 */
+                readonly partyId: string;
+            };
+        };
         /** @description The member's own answer. Personal data, readable only by its owner. Every field is `null` until set. */
         readonly RecipientProfile: {
             readonly category: components["schemas"]["RecipientCategory"] | null;
@@ -10567,6 +10640,91 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["OAuthError"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly listRecipientInvites: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Invites */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": {
+                        readonly items: readonly components["schemas"]["RecipientInvite"][];
+                    };
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly createRecipientInvite: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly amountHint?: components["schemas"]["Money"];
+                    readonly category?: components["schemas"]["RecipientCategory"];
+                    /** @description International form */
+                    readonly phone: string;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The sender's live invite for this number, returned again */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RecipientInvite"];
+                };
+            };
+            /** @description A new invite */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RecipientInvite"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly claimRecipientInvite: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly id: components["parameters"]["Id"];
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The recipient to pay */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RecipientInviteClaim"];
                 };
             };
             readonly default: components["responses"]["Problem"];

@@ -280,6 +280,13 @@
     "turnOnTrigger": "Public interop API exists"
   },
   {
+    "key": "phase1.recipientInvite",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Invite a person with no account to receive (no money moves until they have joined)",
+    "turnOnTrigger": "p2p.enabled is on; counsel confirms the invite holds no funds (ADR-018); a cross-sender cap per phone and a STOP/opt-out path for a stranger's number are built; a worker sweep ends expired invites and clears their sealed phones (T-1104 As-built, Before the flag goes on)"
+  },
+  {
     "key": "phase1.recipientProfile",
     "defaultProd": false,
     "owner": "Kathleen",

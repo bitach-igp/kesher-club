@@ -14,6 +14,7 @@ import { legalHandlers } from './legal/routes.ts';
 import { LegalAdmin, legalAdminHandlers } from './legal/admin.ts';
 import { DisplayNameService, displayNameHandlers } from './me/display-name.ts';
 import { FundingDetailsService, fundingDetailsHandlers } from './me/funding-details.ts';
+import { RecipientInviteService, recipientInviteHandlers } from './p2p/recipient-invite.ts';
 import { RecipientLookup } from './p2p/recipients.ts';
 import { CimdRegistry, type Fetcher, type Resolver } from './mcp/cimd.ts';
 import { AuthorizeService, oauthHandlers, type OAuthConfig } from './oauth/authorize.ts';
@@ -284,12 +285,18 @@ function buildServices(o: AppOptions) {
   // leaves the event unprocessed so replay retries it; both steps are idempotent.
   // A roster member who accepted their invite before passing KYC becomes active on that approval (T-0626).
   const invites = new InviteService(o.db, notifyPort, kyc);
+  // Someone invited to receive (T-1104) who has now passed T1 makes the sender's invite claimable and tells the sender; idempotent too.
+  const displayNames = new DisplayNameService(o.db, pii);
+  const recipientInvites = new RecipientInviteService({ db: o.db, pii, identity, kyc, names: displayNames, notify: notifyPort });
   webhooks.bind('kyc', {
     verifier: kyc.webhookVerifier(),
     process: async (e) => {
       const decision = await kyc.applyDecision(e);
       await cards.onKycDecision(e, clock.now());
-      if (decision.status === 'approved') await invites.onIdentityApproved(decision.partyId, clock.now());
+      if (decision.status === 'approved') {
+        await invites.onIdentityApproved(decision.partyId, clock.now());
+        await recipientInvites.onIdentityApproved(decision.partyId, clock.now());
+      }
     },
   });
   // Loads (REQ-WAL-002): the vendor's payment events land on /hooks/funding; the port verifies and parses,
@@ -300,7 +307,6 @@ function buildServices(o: AppOptions) {
   const p2pLimits = new P2pLimitService(o.db, memberships, entitlements, plans);
   const p2pHolds = new P2pHoldService(o.db, ledger, accounts, transfers);
   const preferences = new PreferenceService(o.db);
-  const displayNames = new DisplayNameService(o.db, pii);
   const fundingDetails = new FundingDetailsService({ db: o.db, pii, identity, audit });
   const recipientProfile = new RecipientProfileService({ db: o.db, pii, flags });
   const recipients = new RecipientLookup({ identity, kyc, names: displayNames });
@@ -331,7 +337,7 @@ function buildServices(o: AppOptions) {
   const closure = new ClosureService({ db: o.db, port: o.registry.resolve<FundingPort>('funding', o.market), ledger, accounts, transfers, identity, audit, provider: o.registry.bindingFor('funding', o.market)?.provider ?? 'simulator', revoker });
   const outbound = new OutboundEventsService(o.db, eventsPort);
   if (o.registry.bindingFor('billing', o.market)?.mode === 'sim') webhooks.bind('simulator', { verifier: simulatorVerifier, process: async () => undefined });
-  return { clock, identity, tokens, otp, passkeys, social, socialLinks, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, fundingDetails, recipientProfile, recipients, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, deprovision, staffSso, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
+  return { clock, identity, tokens, otp, passkeys, social, socialLinks, stepUp, recovery, ledger, accounts, plans, entitlements, memberships, transfers, approvals, audit, flags, orders, roster, invites, intents, inbound, webhooks, crowdedWebhook, usBanking, usFunding, usCollections, outbound, kyc, cards, jit, provisioning, settlement, physical, loads, autoReload, closure, p2pLimits, p2p, requests, fx, payouts, collections, rates, preferences, displayNames, fundingDetails, recipientProfile, recipients, recipientInvites, oauthConfig, cimd, authorize, consent, tokenEndpoint, institutionCredit, institutionKyb, kybGate, applications, team, deprovision, staffSso, payoutAccounts, deposits, planCatalogue, funderInvites, households, transactions };
 }
 
 /** T-0043: in prod, the reason a flag cannot be turned on (its port is a simulator), else undefined. */
@@ -359,6 +365,7 @@ export function createApp(o: AppOptions): App {
     ...cardHandlers(s.cards, s.jit, s.provisioning, s.stepUp, s.physical),
     ...walletHandlers(s.loads, s.stepUp, s.flags, s.autoReload, s.closure),
     ...p2pHandlers(s.p2p, s.stepUp, s.flags, s.requests, s.recipients),
+    ...recipientInviteHandlers(s.recipientInvites, s.flags),
     ...fxHandlers(s.fx, s.stepUp),
     ...payoutHandlers(s.payouts, s.stepUp, {
       db: o.db,
