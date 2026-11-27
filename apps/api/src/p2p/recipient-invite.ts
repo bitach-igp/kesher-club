@@ -25,6 +25,7 @@ import type { FeatureFlags } from '../billing/capabilities.ts';
 import type { PiiCipher } from '../crypto/pii.ts';
 import type { Database, SqlClient } from '../db.ts';
 import { created, ok, requirePrincipal, route, type Handler } from '../http.ts';
+import { RECIPIENT_CATEGORIES, type RecipientCategory } from '../identity/recipient-profile.ts';
 import type { KycService } from '../kyc/service.ts';
 import type { DisplayNameService } from '../me/display-name.ts';
 import { normalisePhone } from './recipients.ts';
@@ -43,10 +44,8 @@ export const CLAIMABLE_TEMPLATE = 'p2p.invite_claimable';
 /** The column the phone is sealed and indexed under (T-0024): the same phone indexes differently in another table. */
 const PHONE_COLUMN = 'ops.recipient_invite.phone';
 
-// TODO(T-1101): the recipient categories are the closed set T-1101 defines for the member profile. T-1101 (PR #428) is
-// not merged, so the same list is spelled here; unify with the profile's export once it lands.
-export const INVITE_CATEGORIES = ['soldier', 'lone_soldier', 'yeshiva_student', 'seminary_student', 'university_student', 'rabbi', 'volunteer', 'program_participant', 'other'] as const;
-export type InviteCategory = (typeof INVITE_CATEGORIES)[number];
+export const INVITE_CATEGORIES = RECIPIENT_CATEGORIES;
+export type InviteCategory = RecipientCategory;
 export type InviteStatus = 'open' | 'claimable' | 'claimed' | 'expired';
 
 /** The OpenAPI `RecipientInvite`. Never the phone. */

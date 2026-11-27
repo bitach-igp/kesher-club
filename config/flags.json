@@ -287,6 +287,13 @@
     "turnOnTrigger": "p2p.enabled is on; counsel confirms the invite holds no funds (ADR-018); a cross-sender cap per phone and a STOP/opt-out path for a stranger's number are built; a worker sweep ends expired invites and clears their sealed phones (T-1104 As-built, Before the flag goes on)"
   },
   {
+    "key": "phase1.recipientProfile",
+    "defaultProd": false,
+    "owner": "Kathleen",
+    "gates": "A member states their recipient category and Israel connection (GET/PATCH /me/recipient-profile)",
+    "turnOnTrigger": "Owner confirms phase 1 scope (T-1106) and the identity migration 0009 is applied on real Postgres"
+  },
+  {
     "key": "ui.hebrew",
     "defaultProd": true,
     "owner": "Kathleen",

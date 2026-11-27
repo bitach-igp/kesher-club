@@ -435,10 +435,10 @@ Scoped 2026-11-25 from the founder's phase 1 rollout notes; see `docs/ops/phase-
 
 | Card | Family | Title | REQ | Status |
 |---|---|---|---|---|
-| [T-1101](T-1101.md) | ID | A member can state who they are to Israel: a recipient category and a short 'Israel connection' | — | later · phase 1 gap analysis |
+| [T-1101](T-1101.md) | ID | A member can state who they are to Israel: a recipient category and a short 'Israel connection' | — | built, PR #428 (branch `card/T-1101`; desktop apply of identity 0009 requested, `phase1.recipientProfile` off) · phase 1 gap analysis |
 | [T-1102](T-1102.md) | UX | Mobile: a new member picks their category and writes their Israel connection (English and Hebrew) | — | later · phase 1 gap analysis |
 | [T-1103](T-1103.md) | ADM | Staff review of a recipient's qualification: evidence, a decision, an audit entry | — | later · phase 1 gap analysis |
-| [T-1104](T-1104.md) | PAY | Invite someone to receive: a send to a phone number with no account starts an invite and moves no money until they have joined | — | built, dark behind `phase1.recipientInvite` · PR pending |
+| [T-1104](T-1104.md) | PAY | Invite someone to receive: a send to a phone number with no account starts an invite and moves no money until they have joined | — | built, dark behind `phase1.recipientInvite` · PR #429 |
 | [T-1105](T-1105.md) | PAY | The send flow captures who the recipient is: name, category and the Israel connection, stored beside the transfer | — | later · phase 1 gap analysis |
 | [T-1106](T-1106.md) | BIL | Needs owner and counsel decision: the organization in the middle of the flow, donation classification, receipts and the fallback for a person who fits no category | — | needs owner decision |
 | [T-1107](T-1107.md) | LED | The ledger carries the chain sender, organization, recipient's account, and a send to a qualifying recipient follows it | — | later · phase 1 gap analysis |

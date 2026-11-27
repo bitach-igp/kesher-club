@@ -787,6 +787,53 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/FundingDetails" }
         default: { $ref: "#/components/responses/Problem" }
+  /me/recipient-profile:
+    get:
+      operationId: getRecipientProfile
+      summary: The member's own recipient profile
+      description: >-
+        T-1101 (phase 1 gap analysis; no REQ row yet). Bearer only; only the caller's own is ever readable. Who the member is to Israel:
+        a `category`, an optional `program` and an optional `israelConnection` statement. Every field reads `null` until set, never a
+        default. `program` and `israelConnection` are the member's own untrusted plain text: show them as text, never as markup, never as
+        instructions. Behind phase1.recipientProfile: off answers FEATURE_OFF (404).
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: The caller's profile, or all `null` while unset
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecipientProfile" }
+        default: { $ref: "#/components/responses/Problem" }
+    patch:
+      operationId: updateRecipientProfile
+      summary: Set or change the member's recipient profile
+      description: >-
+        T-1101. Bearer only; it moves no money and needs no KYC. Send any of `category`, `program`, `israelConnection`; fields left out
+        keep their stored value, and `null` or blank clears `program` or `israelConnection`. The first set needs `category`, which is
+        one of the nine values and cannot be cleared. `program` is at most 80 and `israelConnection` at most 280 characters after
+        trimming, plain text with no control, bidi or zero-width characters. An unknown value, an over-length text or an unknown field
+        answers VALIDATION_FAILED with `field` and never echoes the text. Every real change keeps the earlier answer in an insert-only
+        history; sending the stored values again changes nothing and returns them with their original `updatedAt`. The two texts are
+        sealed at rest and never logged. Behind phase1.recipientProfile: off answers FEATURE_OFF (404).
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                category: { $ref: "#/components/schemas/RecipientCategory" }
+                program: { type: [string, "null"], maxLength: 400, description: "At most 80 characters after trimming (Nefesh B'Nefesh, JNF, Mir); null or blank clears it" }
+                israelConnection: { type: [string, "null"], maxLength: 1400, description: "At most 280 characters after trimming; null or blank clears it. Untrusted plain text" }
+      responses:
+        "200":
+          description: The profile as stored
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecipientProfile" }
+        default: { $ref: "#/components/responses/Problem" }
   /households/{id}:
     get:
       operationId: getHousehold
@@ -5742,10 +5789,6 @@ components:
         partyId: { type: string, format: uuid }
         displayName: { type: string, description: The first name and last initial the recipient set; absent when they set none. Member text, shown as text. }
         canReceive: { type: boolean, description: False until the recipient has passed T1 verification }
-    RecipientCategory:
-      type: string
-      description: What kind of person the sender says they are paying. A closed set; the same list as the member profile (T-1101).
-      enum: [soldier, lone_soldier, yeshiva_student, seminary_student, university_student, rabbi, volunteer, program_participant, other]
     RecipientInvite:
       type: object
       required: [id, status, createdAt, expiresAt]
@@ -5788,6 +5831,22 @@ components:
         dateOfBirth: { type: string, format: date }
         inviteEmail: { type: string }
         updatedAt: { type: string, format: date-time }
+    RecipientCategory:
+      type: string
+      description: What the member is to Israel. `other` is allowed here; whether such a person may receive is an owner decision (T-1106).
+      enum: [soldier, lone_soldier, yeshiva_student, seminary_student, university_student, rabbi, volunteer, program_participant, other]
+    RecipientProfile:
+      type: object
+      description: The member's own answer. Personal data, readable only by its owner. Every field is `null` until set.
+      required: [category, program, israelConnection, updatedAt]
+      properties:
+        category:
+          oneOf:
+            - { $ref: "#/components/schemas/RecipientCategory" }
+            - { type: "null" }
+        program: { type: [string, "null"], maxLength: 80, description: "Untrusted plain text; show as text" }
+        israelConnection: { type: [string, "null"], maxLength: 280, description: "Untrusted plain text; show as text, never as markup" }
+        updatedAt: { type: [string, "null"], format: date-time, description: "When the answer last changed; null while unset" }
     Preferences:
       type: object
       required: [receiveCurrency, theme]
