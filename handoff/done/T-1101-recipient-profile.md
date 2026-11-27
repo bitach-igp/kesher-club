@@ -31,3 +31,20 @@ Steps (from repo root, PowerShell on Windows unless stated):
 Expected: step 3 ends with `accepting connections`. Step 5 prints `ok` for every schema, with identity at 9 migrations; step 6 reports none pending; step 7 prints 9 and the latest version. Steps 8 to 11 print `INSERT 0 1`, `INSERT 0 1`, `UPDATE 1` and `INSERT 0 1`. Steps 12 and 13 fail with a check violation (`recipient_profile_category_check`, `recipient_profile_history_category_check`). Step 14 fails with a unique violation on `recipient_profile_history_revision_idx` (revision 2 again). Step 15 fails with the check on `revision` (below 1). Steps 16, 17 and 18 (UPDATE, DELETE, TRUNCATE as club_app) each fail with `permission denied for table recipient_profile_history`. Step 19 prints `lone_soldier`; step 20 prints exactly two rows: `1 | soldier` and `2 | lone_soldier`. Step 21 lists for recipient_profile: INSERT, SELECT, UPDATE; for recipient_profile_history: INSERT, SELECT only.
 The race (steps 22 to 26, the same lock then max + 1 SQL the service runs, in two real sessions; the app itself is not in the loop): job A takes the member's advisory lock, sleeps 4 seconds, then writes the profile (category `rabbi`) and revision 1; job B starts one second later, waits on the lock, then under READ COMMITTED sees A's commit, writes revision 2 and sets the statement on the same row. Step 25 prints exactly two rows: revisions 1 and 2 with ids `...101201` and `...101202`. Step 26 prints `rabbi | t | t` (A's category kept, program still unset, B's statement kept: neither overwrote the other). If B wrote revision 1, or the statement is missing, the lock does not serialise on this server.
 Report back: the console output of steps 3, 5 to 21 and 22 to 26 (the jobs' output included).
+
+## Result
+Outcome: PASS, every step as expected. Run 2026-11-27 14:06 (Asia/Jerusalem) by the desktop checker on Zvi's PC, runner worktree at 7e47aaa, Docker 29.9.3, postgres:16 on port 5433; container removed at the end.
+- Step 3: `127.0.0.1:5432 - accepting connections`.
+- Step 4: roles.sql applied (`ALTER ROLE` …), no errors.
+- Step 5: `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent. Step 6: `No migration files to execute` for every schema, then `ok` for each.
+- Step 7: `identity_migrations 9 | latest 0009`.
+- Steps 8 to 11: `INSERT 0 1`, `INSERT 0 1`, `UPDATE 1`, `INSERT 0 1`.
+- Step 12: `violates check constraint "recipient_profile_category_check"`. Step 13: `violates check constraint "recipient_profile_history_category_check"`.
+- Step 14: `duplicate key value violates unique constraint "recipient_profile_history_revision_idx"`, Key (party_id, revision)=(…101001, 2).
+- Step 15: `violates check constraint "recipient_profile_history_revision_check"`.
+- Steps 16, 17, 18 (UPDATE, DELETE, TRUNCATE as club_app): `permission denied for table recipient_profile_history` each.
+- Step 19: `lone_soldier`. Step 20: two rows, `1 | soldier`, `2 | lone_soldier`.
+- Step 21: recipient_profile INSERT, SELECT, UPDATE; recipient_profile_history INSERT, SELECT (5 rows).
+- Steps 22 to 24: job A: lock, sleep, `INSERT 0 1`, `INSERT 0 1`. Job B: lock (waited), `INSERT 0 1`, `UPDATE 1`.
+- Step 25: `1 | …101201`, `2 | …101202`. Step 26: `rabbi | t | t`.
+- Step 27: `kesher-pg` removed.
