@@ -3,8 +3,8 @@
 // are the member's own words: untrusted plain text, never treated as instructions and never rendered as markup. They are trimmed, NFC
 // normalised, refused when they hold a control, bidi or zero-width character, and sealed at rest by the PII cipher under their column's
 // name (personal data, class P1). They are never logged, audited or echoed in an error. Unset reads as `null` in every field, never a
-// default. One current row per member (`identity.recipient_profile`); every real change appends a row to
-// `identity.recipient_profile_history` (insert-only) in the same transaction, and a PATCH that changes nothing appends nothing.
+// default. Lengths count Unicode code points after NFC normalisation and trimming (an emoji is 1, "e" plus a combining accent is 1). One current row per member (`identity.recipient_profile`); every real change appends a row to
+// `identity.recipient_profile_history` (insert-only, numbered by a per-member `revision`) in the same transaction, under a per-member lock, and a PATCH that changes nothing appends nothing.
 // Behind `phase1.recipientProfile`. Bearer only; it moves no money and needs no KYC. Nothing here reaches a vendor.
 import { DomainError, uuidv7 } from '@kesher/domain';
 import type { FeatureFlags } from '../billing/capabilities.ts';
@@ -114,7 +114,13 @@ export class RecipientProfileService {
    */
   async set(partyId: string, patch: RecipientProfilePatch, now: Date): Promise<RecipientProfile> {
     return this.db.transaction(async (tx) => {
-      const r = await tx.query<Row>('select category, program, israel_connection, updated_at from identity.recipient_profile where party_id = $1 for update', [partyId]);
+      // `for update` locks nothing while the member has no row, so two first PATCHes would both start from "nothing" and the second would
+      // overwrite the first. One advisory lock per member (a bigint key, a different keyspace from the audit chain's two-int4 key) is taken
+      // first and held to the end of the transaction; the read after it is a fresh statement, so under READ COMMITTED it sees whatever
+      // the lock holder committed. Any stronger isolation level would keep an older snapshot, so it is refused rather than trusted.
+      const lock = await tx.query<{ level: string }>(`select current_setting('transaction_isolation') as level from (select pg_advisory_xact_lock(hashtextextended('recipient-profile:' || $1::text, 0))) l`, [partyId]);
+      if (lock.rows[0]?.level !== 'read committed') throw new Error('recipient profile writes need READ COMMITTED');
+      const r = await tx.query<Row>('select category, program, israel_connection, updated_at from identity.recipient_profile where party_id = $1', [partyId]);
       const before = r.rows[0] ? this.view(r.rows[0]) : undefined;
       const category = patch.category ?? before?.category;
       if (!category) throw bad('category', 'category is required the first time');
@@ -128,7 +134,8 @@ export class RecipientProfileService {
         [partyId, category, seal(program, COL.program), seal(israelConnection, COL.connection), now],
       );
       await tx.query(
-        'insert into identity.recipient_profile_history (id, party_id, category, program, israel_connection, recorded_at) values ($1, $2, $3, $4, $5, $6)',
+        `insert into identity.recipient_profile_history (id, party_id, revision, category, program, israel_connection, recorded_at)
+         select $1::uuid, $2::uuid, coalesce(max(revision), 0) + 1, $3::text, $4::bytea, $5::bytea, $6::timestamptz from identity.recipient_profile_history where party_id = $2`,
         [uuidv7(now), partyId, category, seal(program, COL.hProgram), seal(israelConnection, COL.hConnection), now],
       );
       return { category, program, israelConnection, updatedAt: now.toISOString() };

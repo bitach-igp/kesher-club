@@ -17,13 +17,16 @@ create table identity.recipient_profile (
 create table identity.recipient_profile_history (
   id                 uuid primary key,
   party_id           uuid not null,
+  revision           integer not null check (revision >= 1),
   category           text not null check (category in ('soldier', 'lone_soldier', 'yeshiva_student', 'seminary_student', 'university_student', 'rabbi', 'volunteer', 'program_participant', 'other')),
   program            bytea,
   israel_connection  bytea,
   recorded_at        timestamptz not null
 );
 
-create index recipient_profile_history_party_idx on identity.recipient_profile_history (party_id, recorded_at);
+-- `revision` is the member's own 1, 2, 3 ... : the app takes a per-member advisory lock, then writes max + 1, and the unique
+-- index refuses a duplicate even if that ever failed. Readers order by it, never by time or id (uuidv7 ids tie within a millisecond).
+create unique index recipient_profile_history_revision_idx on identity.recipient_profile_history (party_id, revision);
 
 grant select, insert, update on identity.recipient_profile to club_app;
 grant select, insert on identity.recipient_profile_history to club_app;

@@ -1,4 +1,4 @@
-h1:sSUrIijlMjgABp3KW61i/cvCHP587YhzhMTmzLQqhDc=
+h1:sxBr6QBdh0EawtFrFTfKRX3/y9G1HdnvYLX6jHEl+Mo=
 0001_kyc.sql h1:FpvIGeWI6qULwIcRVQsX2b0iWZH2NQNoChGmS/7+b74=
 0002_member_preference.sql h1:YIyQ9EcJSY/sXcRG+pkWoTZghqAK8VU9PIuD8PqRjM8=
 0003_accounts_and_sessions.sql h1:KOfIoCFz2Rlp+SauWFZJbEn8yNpaJ4EPtwTZJQPw5Tg=
@@ -7,4 +7,4 @@ h1:sSUrIijlMjgABp3KW61i/cvCHP587YhzhMTmzLQqhDc=
 0006_federated_token.sql h1:ApTuxv6REwduTArI/B2hyNn21fWFlqBSYCivFjpvhs4=
 0007_member_funding_details.sql h1:WxZXZezqT+ATHfcqhNLogqDgVSJ+/qLVbHkNpvDhtXk=
 0008_member_theme.sql h1:dgD7Iu5i+uIdb43E/RSHT/aiKI4xHTzw4PzDw1t/7zs=
-0009_recipient_profile.sql h1:q91uSThPrzIuvIXJuHBOcdnthz0/UUDRNrQjQZihWBc=
+0009_recipient_profile.sql h1:teAh2nSB0luf62aIfVMxw3/t50KrsKr6Zgg7zScVdFc=

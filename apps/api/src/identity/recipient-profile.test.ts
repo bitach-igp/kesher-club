@@ -3,14 +3,16 @@
 // row per member; every real change appends a history row that is never updated or deleted; an unchanged PATCH adds nothing. The two
 // free-text fields are sealed at rest and never logged. Fixture data only.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { uuidv7 } from '@kesher/domain';
+import { Secret, uuidv7 } from '@kesher/domain';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { createApp, type App } from '../app.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
-import { RECIPIENT_CATEGORIES } from './recipient-profile.ts';
+import { RECIPIENT_CATEGORIES, RecipientProfileService } from './recipient-profile.ts';
+import { createPiiCipher } from '../crypto/pii.ts';
+import { randomBytes } from 'node:crypto';
 
 let db: TestDatabase;
 let app: App;
@@ -26,7 +28,7 @@ const offTokens: Record<string, string> = {};
 const call = (who: string | undefined, method: string, body?: unknown, now: Date = T0, target: App = app) =>
   dispatch(target, { method, url: '/v1/me/recipient-profile', headers: who ? { authorization: `Bearer ${(target === app ? tokens : offTokens)[who]}` } : {}, rawBody: body === undefined ? '' : JSON.stringify(body), now });
 const current = async (who: string) => (await db.query<{ category: string; program: Uint8Array | null; israel_connection: Uint8Array | null }>('select category, program, israel_connection from identity.recipient_profile where party_id = $1', [ids[who]])).rows;
-const history = async (who: string) => (await db.query<{ category: string; recorded_at: string | Date }>('select category, recorded_at from identity.recipient_profile_history where party_id = $1 order by recorded_at', [ids[who]])).rows;
+const history = async (who: string) => (await db.query<{ category: string; revision: number; recorded_at: string | Date }>('select category, revision, recorded_at from identity.recipient_profile_history where party_id = $1 order by revision', [ids[who]])).rows;
 const cats = async (who: string) => (await history(who)).map((r) => r.category);
 
 beforeAll(async () => {
@@ -111,10 +113,10 @@ describe('T-1101: setting', () => {
 });
 
 describe('T-1101: refusing', () => {
-  const refused = async (who: string, body: unknown) => {
+  const refused = async (who: string, body: unknown, label = '') => {
     const before = [await current(who), await history(who)];
     const r = await call(who, 'PATCH', body, at(30));
-    expect(r.status).toBe(422);
+    expect([label, r.status]).toEqual([label, 422]);
     expect(r.body).toMatchObject({ code: 'VALIDATION_FAILED' });
     expect([await current(who), await history(who)]).toEqual(before);
     return JSON.stringify(r.body);
@@ -139,13 +141,45 @@ describe('T-1101: refusing', () => {
     expect(await refused('hod', { category: 'soldier', israelConnection: ['x'] })).toBeTruthy();
   });
 
-  it('control, bidi and zero-width characters in the free text are refused; a request body that is not an object too', async () => {
-    for (const bad of ['a\u0000b', 'a\u0007b', 'line\nbreak', 'tab\there', 'a‮b', 'a​b', 'a b', 'a\u007Fb']) {
-      await refused('hod', { category: 'soldier', israelConnection: bad });
-      await refused('hod', { category: 'soldier', program: bad });
+  it('control characters and separators in the free text are refused, each on its own, in both fields', async () => {
+    const controls: Record<string, string> = { NUL: '\u0000', BEL: '\u0007', LF: '\n', CR: '\r', TAB: '\t', DEL: '\u007F', NEL: '\u0085', LS: '\u2028', PS: '\u2029' };
+    for (const [name, ch] of Object.entries(controls)) {
+      await refused('hod', { category: 'soldier', israelConnection: `a${ch}b` }, name);
+      await refused('hod', { category: 'soldier', program: `a${ch}b` }, name);
     }
+  });
+
+  const formats: [string, string][] = [['LRM', '\u200E'], ['RLM', '\u200F'], ['LRE', '\u202A'], ['RLE', '\u202B'], ['PDF', '\u202C'], ['LRO', '\u202D'], ['RLO', '\u202E'], ['LRI', '\u2066'], ['RLI', '\u2067'], ['FSI', '\u2068'], ['PDI', '\u2069'], ['ZWSP', '\u200B'], ['ZWNJ', '\u200C'], ['ZWJ', '\u200D'], ['BOM', '\uFEFF'], ['WORD JOINER', '\u2060']];
+  it.each(formats)('the invisible format character %s is refused inside the statement and the program', async (name, ch) => {
+    await refused('hod', { category: 'soldier', israelConnection: `a${ch}b` }, name);
+    await refused('hod', { category: 'soldier', program: `a${ch}b` }, name);
+  });
+
+  it('a request body that is not an object is refused', async () => {
     expect((await call('hod', 'PATCH', [1, 2], at(30))).status).toBe(422);
     expect((await call('hod', 'PATCH', 'soldier', at(30))).status).toBe(422);
+  });
+
+  // Decision: lengths count Unicode code points after NFC normalisation and trimming. An emoji is one; "e" + U+0301 composes to one.
+  const limits: [string, string, number][] = [['program', 'program', 80], ['statement', 'israelConnection', 280]];
+  describe.each(limits)('the %s limit counts code points after NFC', (_label, field, max) => {
+    const put = (who: string, text: string) => call(who, 'PATCH', { category: 'other', [field]: text }, at(40));
+    it('astral characters (emoji) count once each: max passes, max + 1 is refused', async () => {
+      const ok = await put('gil', '\u{1F600}'.repeat(max));
+      expect(ok).toMatchObject({ status: 200, body: { [field]: '\u{1F600}'.repeat(max) } });
+      expect([...(ok.body as Record<string, string>)[field]!]).toHaveLength(max);
+      expect((await put('gil', '\u{1F600}'.repeat(max + 1))).status).toBe(422);
+      expect((await put('gil', '\u{1F600}'.repeat(max - 1))).status).toBe(200);
+    });
+    it('a letter plus a combining accent composes under NFC to one code point', async () => {
+      const r = await put('gil', 'e\u0301'.repeat(max));
+      expect(r).toMatchObject({ status: 200, body: { [field]: '\u00E9'.repeat(max) } });
+      expect((await put('gil', 'e\u0301'.repeat(max + 1))).status).toBe(422);
+    });
+    it('a mark with no precomposed form stays two code points: half the limit passes, one more is refused', async () => {
+      expect((await put('gil', 'x\u0301'.repeat(max / 2))).status).toBe(200);
+      expect((await put('gil', 'x\u0301'.repeat(max / 2 + 1))).status).toBe(422);
+    });
   });
 });
 
@@ -167,12 +201,13 @@ describe('T-1101: the trail', () => {
     await call('ivy', 'PATCH', { program: null }, at(12));
     await call('ivy', 'PATCH', { program: null }, at(13));
     expect(await cats('ivy')).toEqual(['lone_soldier', 'soldier', 'soldier']);
+    expect((await history('ivy')).map((h) => h.revision)).toEqual([1, 2, 3]);
     expect(await current('ivy')).toHaveLength(1);
     expect((await call('ivy', 'GET')).body).toMatchObject({ category: 'soldier', program: null, israelConnection: CONNECTION, updatedAt: at(12).toISOString() });
   });
 
   it('the history keeps what each earlier answer was, and the app role can only read and add to it', async () => {
-    const rows = await db.query<{ category: string; program: Uint8Array | null }>('select category, program from identity.recipient_profile_history where party_id = $1 order by recorded_at', [ids.ivy]);
+    const rows = await db.query<{ category: string; program: Uint8Array | null }>('select category, program from identity.recipient_profile_history where party_id = $1 order by revision', [ids.ivy]);
     expect(rows.rows.map((r) => [r.category, r.program !== null])).toEqual([['lone_soldier', true], ['soldier', true], ['soldier', false]]);
     for (const sql of ['update identity.recipient_profile_history set category = \'other\'', 'delete from identity.recipient_profile_history', 'truncate identity.recipient_profile_history']) {
       await expect(db.asRole('club_app', (c) => c.query(sql))).rejects.toThrow(/permission denied/);
@@ -183,7 +218,7 @@ describe('T-1101: the trail', () => {
 
   it('the database refuses an unknown category in both tables', async () => {
     await expect(db.query(`insert into identity.recipient_profile (party_id, category, updated_at) values ($1, 'astronaut', now())`, [uuidv7(T0)])).rejects.toThrow();
-    await expect(db.query(`insert into identity.recipient_profile_history (id, party_id, category, recorded_at) values ($1, $2, 'astronaut', now())`, [uuidv7(T0), uuidv7(T0)])).rejects.toThrow();
+    await expect(db.query(`insert into identity.recipient_profile_history (id, party_id, revision, category, recorded_at) values ($1, $2, 1, 'astronaut', now())`, [uuidv7(T0), uuidv7(T0)])).rejects.toThrow();
   });
 
   it('the profile and its history row are written together: a failed history insert leaves the profile unchanged', async () => {
@@ -197,6 +232,71 @@ describe('T-1101: the trail', () => {
     expect(r.status).toBeGreaterThanOrEqual(500);
     expect(await current('zed')).toEqual([]);
     expect(await history('zed')).toEqual([]);
+  });
+});
+
+describe('T-1101: two writers for one member', () => {
+  const fresh = async (key: string) => {
+    ids[key] = uuidv7(T0);
+    tokens[key] = (await app.services.tokens.issue({ partyId: ids[key], deviceId: `phone-${key}`, roles: ['member'] })).accessToken;
+  };
+
+  it('two simultaneous first PATCHes with different fields keep both fields and write revisions 1 and 2', async () => {
+    await fresh('r1');
+    const [a, b] = await Promise.all([call('r1', 'PATCH', { category: 'rabbi', program: 'Mir' }, at(1)), call('r1', 'PATCH', { israelConnection: 'a statement' }, at(2))]);
+    // Whichever ran second needed the category the first one set, so one of them is refused as a first set without a category, or both succeed in order.
+    const [okA, okB] = [a.status === 200, b.status === 200];
+    expect(okA || okB).toBe(true);
+    const rows = await history('r1');
+    expect(rows.map((h) => h.revision)).toEqual(rows.map((_, i) => i + 1));
+    const now = (await call('r1', 'GET')).body as Record<string, unknown>;
+    expect(now).toMatchObject({ category: 'rabbi', program: 'Mir' });
+    if (okB) expect(now.israelConnection).toBe('a statement');
+    expect(rows).toHaveLength(okB ? 2 : 1);
+  });
+
+  it('two simultaneous first PATCHes that each carry a category never lose a field the other set', async () => {
+    await fresh('r2');
+    await Promise.all([call('r2', 'PATCH', { category: 'soldier', program: 'Michve' }, at(1)), call('r2', 'PATCH', { category: 'soldier', israelConnection: 'a statement' }, at(2))]);
+    expect((await call('r2', 'GET')).body).toMatchObject({ category: 'soldier', program: 'Michve', israelConnection: 'a statement' });
+    expect((await history('r2')).map((h) => h.revision)).toEqual([1, 2]);
+  });
+
+  it('the member lock is taken before the profile is read, and is a held advisory lock while the transaction runs', async () => {
+    await fresh('r3');
+    const seen: { sql: string; held?: number }[] = [];
+    const spy: typeof db = {
+      ...db,
+      query: db.query.bind(db),
+      transaction: (fn) => db.transaction((tx) => fn({
+        ...tx,
+        query: (async (text: string, params?: readonly unknown[]) => {
+          const res = await tx.query(text, params);
+          const entry: { sql: string; held?: number } = { sql: text };
+          if (text.includes('pg_advisory_xact_lock')) entry.held = Number((await tx.query<{ n: string }>(`select count(*) as n from pg_locks where locktype = 'advisory' and pid = pg_backend_pid() and granted`)).rows[0]!.n);
+          seen.push(entry);
+          return res;
+        }) as typeof tx.query,
+      })),
+    };
+    const svc = new RecipientProfileService({ db: spy, pii: createPiiCipher({ dataKey: new Secret(randomBytes(32).toString('base64')), indexKey: new Secret(randomBytes(32).toString('base64')) }), flags: new StaticFlags() });
+    await svc.set(ids.r3!, { category: 'other' }, at(1));
+    const lockAt = seen.findIndex((e) => e.sql.includes('pg_advisory_xact_lock'));
+    const readAt = seen.findIndex((e) => e.sql.includes('from identity.recipient_profile where'));
+    const writeAt = seen.findIndex((e) => e.sql.includes('insert into identity.recipient_profile '));
+    expect(lockAt).toBe(0);
+    expect(readAt).toBeGreaterThan(lockAt);
+    expect(writeAt).toBeGreaterThan(readAt);
+    expect(seen[lockAt]!.held).toBe(1);
+  });
+
+  it('the database refuses a second history row with the same revision, and a revision below 1', async () => {
+    const p = uuidv7(T0);
+    const ins = (rev: number) => db.query(`insert into identity.recipient_profile_history (id, party_id, revision, category, recorded_at) values ($1, $2, $3, 'other', now())`, [uuidv7(T0), p, rev]);
+    await ins(1);
+    await expect(ins(1)).rejects.toThrow();
+    await expect(ins(0)).rejects.toThrow();
+    await ins(2);
   });
 });
 
