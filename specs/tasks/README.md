@@ -435,7 +435,7 @@ Scoped 2026-11-25 from the founder's phase 1 rollout notes; see `docs/ops/phase-
 
 | Card | Family | Title | REQ | Status |
 |---|---|---|---|---|
-| [T-1101](T-1101.md) | ID | A member can state who they are to Israel: a recipient category and a short 'Israel connection' | — | later · phase 1 gap analysis |
+| [T-1101](T-1101.md) | ID | A member can state who they are to Israel: a recipient category and a short 'Israel connection' | — | built, PR pending (branch `card/T-1101`; desktop apply of identity 0009 requested, `phase1.recipientProfile` off) · phase 1 gap analysis |
 | [T-1102](T-1102.md) | UX | Mobile: a new member picks their category and writes their Israel connection (English and Hebrew) | — | later · phase 1 gap analysis |
 | [T-1103](T-1103.md) | ADM | Staff review of a recipient's qualification: evidence, a decision, an audit entry | — | later · phase 1 gap analysis |
 | [T-1104](T-1104.md) | PAY | Invite someone to receive: a send to a phone number with no account starts an invite and moves no money until they have joined | — | later · phase 1 gap analysis |

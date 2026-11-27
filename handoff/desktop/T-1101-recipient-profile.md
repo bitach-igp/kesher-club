@@ -1,0 +1,24 @@
+Task: T-1101 · Branch: card/T-1101 · Needs: docker
+Why: Migration identity/0009 creates identity.recipient_profile (current row per member) and identity.recipient_profile_history (insert-only trail), with a category check and the grants (club_app: select, insert, update on the first; select, insert only on the history). PGlite passes the tests; the real Postgres 16 apply, the grants (UPDATE and DELETE on the history refused) and the category check must be seen once on a fresh postgres:16 (roles.sql, migrate twice) before merge. Each statement whose success another depends on is its own `-c` (one `-c` is one transaction, so a deliberate failure would roll back its predecessors).
+Steps (from repo root, PowerShell on Windows unless stated):
+1. docker run --name kesher-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=club -p 5433:5432 -d postgres:16
+2. Start-Sleep -Seconds 8
+3. do { docker exec kesher-pg pg_isready -h 127.0.0.1 -U postgres -d club; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep -Seconds 2 } while ($true)
+4. Get-Content -Raw db/roles.sql | docker exec -i kesher-pg psql -U postgres -d club -v ON_ERROR_STOP=1
+5. node db/migrate.mjs --docker --url "postgres://postgres:postgres@localhost:5433/club?sslmode=disable"
+6. node db/migrate.mjs --docker --url "postgres://postgres:postgres@localhost:5433/club?sslmode=disable"
+7. docker exec -i kesher-pg psql -U postgres -d club -c "select count(*) as identity_migrations, max(version) as latest from atlas_identity.atlas_schema_revisions"
+8. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into identity.recipient_profile (party_id, category, updated_at) values ('00000000-0000-7000-8000-000001101001', 'soldier', now())"
+9. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into identity.recipient_profile_history (id, party_id, category, recorded_at) values ('00000000-0000-7000-8000-000001101101', '00000000-0000-7000-8000-000001101001', 'soldier', now())"
+10. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; update identity.recipient_profile set category = 'lone_soldier', updated_at = now() where party_id = '00000000-0000-7000-8000-000001101001'"
+11. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into identity.recipient_profile_history (id, party_id, category, program, israel_connection, recorded_at) values ('00000000-0000-7000-8000-000001101102', '00000000-0000-7000-8000-000001101001', 'lone_soldier', '\x01', '\x02', now())"
+12. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into identity.recipient_profile (party_id, category, updated_at) values ('00000000-0000-7000-8000-000001101002', 'astronaut', now())"
+13. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; insert into identity.recipient_profile_history (id, party_id, category, recorded_at) values ('00000000-0000-7000-8000-000001101103', '00000000-0000-7000-8000-000001101001', 'astronaut', now())"
+14. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; update identity.recipient_profile_history set category = 'other' where party_id = '00000000-0000-7000-8000-000001101001'"
+15. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; delete from identity.recipient_profile_history where party_id = '00000000-0000-7000-8000-000001101001'"
+16. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; select category from identity.recipient_profile where party_id = '00000000-0000-7000-8000-000001101001'"
+17. docker exec -i kesher-pg psql -U postgres -d club -c "set role club_app; select id, category from identity.recipient_profile_history where party_id = '00000000-0000-7000-8000-000001101001' order by id"
+18. docker exec -i kesher-pg psql -U postgres -d club -c "select grantee, table_name, privilege_type from information_schema.role_table_grants where table_schema = 'identity' and table_name like 'recipient_profile%' and grantee = 'club_app' order by table_name, privilege_type"
+19. docker rm -f kesher-pg
+Expected: step 3 ends with `accepting connections`. Step 5 prints `ok` for every schema, with identity at 9 migrations; step 6 reports none pending; step 7 prints 9 and the latest version. Steps 8, 9, 10 and 11 print `INSERT 0 1`, `INSERT 0 1`, `UPDATE 1` and `INSERT 0 1`. Steps 12 and 13 fail with a check violation (`recipient_profile_category_check` and `recipient_profile_history_category_check`). Steps 14 and 15 fail with `permission denied for table recipient_profile_history`. Step 16 prints `lone_soldier`; step 17 prints exactly two rows (`...101101 soldier`, `...101102 lone_soldier`). Step 18 lists for recipient_profile: INSERT, SELECT, UPDATE; for recipient_profile_history: INSERT, SELECT only.
+Report back: the console output of steps 3 and 5 to 18.
