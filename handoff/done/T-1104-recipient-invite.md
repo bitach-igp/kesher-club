@@ -53,3 +53,22 @@ Steps (from repo root, PowerShell on Windows unless stated):
 29. docker rm -f kesher-pg
 Expected: step 4 prints `ok` for every schema, ledger at 35 migrations; step 5 reports no pending migrations. Step 6 prints 35 and 0035. Step 7 prints `read committed`. Steps 8 and 9 print `INSERT 0 1`. Step 10 fails with `duplicate key value violates unique constraint "recipient_invite_live"` (one live invite per sender and phone). Step 11 fails with a check constraint violation (a hint needs both an amount and a currency). Step 12 fails with a check constraint violation on category. Step 13 fails with a check constraint violation (a claimable invite needs a recipient). Steps 14 and 14a print `UPDATE 1` (the app role may set the status, the recipient, the sealed phone, the notice and the check time). Steps 15, 16 and 17 fail with `permission denied for table recipient_invite` (who, which phone and deleting are never granted). Steps 18 and 19 fail with `permission denied for table recipient_invite_event`. Step 20 prints `INSERT 0 1` and step 21 fails with `duplicate key value violates unique constraint` (a state is entered once). Step 22 prints `read committed`, one row with an empty `pg_advisory_xact_lock`, and `COMMIT`. Step 23: both sessions print `read committed`; the job that took the lock first prints `INSERT 0 1`, the other waits about four seconds and prints `INSERT 0 0`; step 24 prints 1. Step 25: the first job prints `COMMIT`, the second fails with `duplicate key value violates unique constraint "recipient_invite_live"`. Step 26a prints `INSERT 0 1`; in 26b both sessions print `read committed`, one prints `INSERT 0 1`, the other `INSERT 0 0`; step 27 prints one row, `claimed | 1`; step 28 prints `claimed | t`.
 Report back: the console output of steps 4, 6, 7, 10 to 14a and 15 to 28.
+
+## Result
+Outcome: PASS, every step as expected. Run 2026-11-27 14:09 (Asia/Jerusalem) by the desktop checker on Zvi's PC, runner worktree at 7b86604, Docker 29.9.3, postgres:16 on port 5433; container removed at the end.
+- Step 4: `Migrating to version 0035 (35 migrations in total)` for ledger; `ok` for ledger, identity, org, billing, legal, addons, notify, audit, agent. Step 5: `No migration files to execute`, `ok` for each.
+- Step 6: `35 | 0035`. Step 7: `read committed`.
+- Steps 8, 9: `INSERT 0 1`.
+- Step 10: `duplicate key value violates unique constraint "recipient_invite_live"`.
+- Step 11: `violates check constraint "recipient_invite_check"` (amount without currency).
+- Step 12: `violates check constraint "recipient_invite_category_check"`.
+- Step 13: `violates check constraint "recipient_invite_check1"` (claimable without recipient).
+- Steps 14, 14a: `UPDATE 1`.
+- Steps 15, 16, 17: `permission denied for table recipient_invite`. Steps 18, 19: `permission denied for table recipient_invite_event`.
+- Step 20: `INSERT 0 1`. Step 21: `duplicate key value violates unique constraint "recipient_invite_event_invite_id_to_status_key"`.
+- Step 22: `read committed`, empty `pg_advisory_xact_lock` row, `COMMIT`.
+- Step 23: both `read committed`; job A `INSERT 0 1`, `COMMIT`; job B (waited on the lock) `INSERT 0 0`, `COMMIT`. Step 24: `live_invites 1`.
+- Step 25: job A `INSERT 0 1`, `COMMIT`; job B `duplicate key value violates unique constraint "recipient_invite_live"`.
+- Step 26a: `INSERT 0 1`. Step 26b: both `read committed`; job A `INSERT 0 1`, `COMMIT`; job B `INSERT 0 0`, `COMMIT`.
+- Step 27: `claimed | 1`. Step 28: `claimed | t`.
+- Step 29: `kesher-pg` removed.
