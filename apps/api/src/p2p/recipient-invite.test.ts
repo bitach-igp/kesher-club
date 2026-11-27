@@ -8,7 +8,7 @@
 // finds the open invite. The phone is never in a log, a response or a plain column.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { money, uuidv7 } from '@kesher/domain';
-import type { NotifySimulator } from '@kesher/ports';
+import { NotifyError, type NotifySimulator } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { generateSigningKey } from '../auth/tokens.ts';
 import { StaticFlags } from '../billing/capabilities.ts';
@@ -16,12 +16,13 @@ import { createApp, type App } from '../app.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { runLoad } from '../wallet/loads.ts';
-import { INVITE_CATEGORIES, INVITE_TTL_MS, INVITES_PER_DAY, type RecipientInviteView } from './recipient-invite.ts';
+import { INVITE_CATEGORIES, INVITE_TTL_MS, INVITES_PER_DAY, RECONCILE_EVERY_MS, RECONCILE_PER_CALL, type RecipientInviteView } from './recipient-invite.ts';
 
 let db: TestDatabase;
 let app: App;
 let off: App;
 let host: SimulatorHost;
+let signingKey: Awaited<ReturnType<typeof generateSigningKey>>;
 const T0 = new Date('2026-11-10T09:00:00Z');
 let now = T0;
 const DAY = 86_400_000;
@@ -35,6 +36,11 @@ const S2 = mk('+15555550205');
 const S2B = mk('+15555550206');
 const S3 = mk('+15555550207');
 const CAT = mk('+15555550208');
+const S4 = mk('+15555550209');
+const S5 = mk('+15555550210');
+const S6 = mk('+15555550211');
+const S7 = mk('+15555550212');
+const HELD = mk('+15555550213');
 const EXISTING = mk('+972501119999');
 
 const sim = () => host.simulators.notify as NotifySimulator;
@@ -43,6 +49,7 @@ const call = async (who: { id: string } | undefined, method: string, url: string
   dispatch(a, { method, url, headers: who ? { authorization: `Bearer ${await bearer(who)}` } : {}, rawBody: body === undefined ? '' : JSON.stringify(body), now });
 const invite = (who: { id: string }, body: unknown, a: App = app) => call(who, 'POST', '/v1/p2p/recipient-invites', body, a);
 const list = async (who: { id: string }) => ((await call(who, 'GET', '/v1/p2p/recipient-invites')).body as { items: RecipientInviteView[] }).items;
+const list0 = (who: { id: string }) => call(who, 'GET', '/v1/p2p/recipient-invites');
 const claim = (who: { id: string }, id: string) => call(who, 'POST', `/v1/p2p/recipient-invites/${id}/claim`);
 const problem = (r: { body?: unknown }) => { const { traceId: _t, ...rest } = r.body as Record<string, unknown>; return rest; };
 const texts = (to: string, template?: string) => sim().sent.filter((n) => n.to === to && (template === undefined || n.template === template));
@@ -66,10 +73,11 @@ async function join(m: { id: string; phone: string }, approve = true) {
 beforeAll(async () => {
   db = await createTestDatabase();
   host = new SimulatorHost();
-  const opts = { db, registry: host.registry, market: 'IL' as const, signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => now };
+  signingKey = await generateSigningKey();
+  const opts = { db, registry: host.registry, market: 'IL' as const, signingKey, issuer: 'https://api.kesher.example', clock: () => now };
   app = createApp({ ...opts, flags: new StaticFlags(undefined, { 'p2p.enabled': true, 'wallet.enabled': true, 'phase1.recipientInvite': true }) });
   off = createApp({ ...opts, identity: app.services.identity, flags: new StaticFlags(undefined, { 'p2p.enabled': true, 'phase1.recipientInvite': false }) });
-  for (const m of [SENDER, OTHER, RATE, S2, S2B, S3, CAT, EXISTING]) await member(m);
+  for (const m of [SENDER, OTHER, RATE, S2, S2B, S3, CAT, S4, S5, S6, S7, HELD, EXISTING]) await member(m);
   await member(NOT_T1, false);
   await app.services.displayNames.set(EXISTING.id, { firstName: 'Dana', lastName: 'Example' }, T0);
 }, 60_000);
@@ -290,5 +298,115 @@ describe('T-1104 the state machine and the flag', () => {
     const b = await claim(OTHER, uuidv7(T0));
     expect(a.status).toBe(404);
     expect(problem(a)).toEqual(problem(b));
+  });
+});
+
+describe('T-1104 review round 1', () => {
+  const unavailable = () => new NotifyError('PROVIDER_UNAVAILABLE', 'Simulated channel outage');
+
+  it('a failing notice to the sender at the KYC webhook never fails the invitee\'s event: the decision is applied once, the invite is claimable, and the next list tells the sender exactly once', async () => {
+    const invitee = mk('+972501110060');
+    const inv = (await invite(S4, { phone: invitee.phone })).body as RecipientInviteView;
+    await join(invitee, false);
+    const kyc = await app.services.kyc.start(invitee.id, 'T1', `kyc-join-${invitee.id}`, now);
+    const apply = vi.spyOn(app.services.kyc, 'applyDecision');
+    const cards = vi.spyOn(app.services.cards, 'onKycDecision');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const told0 = texts(S4.phone, 'p2p.invite_claimable').length;
+    const send = vi.spyOn(sim(), 'send').mockRejectedValue(unavailable());
+    const hook = { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: `evt-${invitee.id}`, sessionId: kyc.sessionId, status: 'approved' }), now };
+    expect((await dispatch(app, hook)).status).toBeLessThan(300);
+    expect((await dispatch(app, hook)).status).toBeLessThan(300); // a replay does not re-run the decision
+    expect([apply.mock.calls.length, cards.mock.calls.length]).toEqual([1, 1]);
+    expect(warn.mock.calls.map((c) => String(c[0])).join('')).toContain(inv.id);
+    expect(warn.mock.calls.map((c) => String(c[0])).join('')).not.toContain('1110060');
+    send.mockRestore();
+    expect(await count(`select count(*) as n from ops.recipient_invite where id = '${inv.id}' and status = 'claimable' and sender_told_at is null`)).toBe(1);
+    expect(texts(S4.phone, 'p2p.invite_claimable')).toHaveLength(told0);
+    expect((await list(S4)).find((i) => i.id === inv.id)?.status).toBe('claimable'); // the retry: told now
+    await list(S4);
+    await claim(S4, inv.id);
+    expect(texts(S4.phone, 'p2p.invite_claimable')).toHaveLength(told0 + 1);
+    expect(await count(`select count(*) as n from ops.recipient_invite where id = '${inv.id}' and sender_told_at is not null`)).toBe(1);
+  });
+
+  it('one invite whose notice fails does not stall the others for the same invitee', async () => {
+    const invitee = mk('+972501110061');
+    const a = (await invite(S5, { phone: invitee.phone })).body as RecipientInviteView;
+    const b = (await invite(S6, { phone: invitee.phone })).body as RecipientInviteView;
+    await join(invitee, false);
+    const real = sim().send.bind(sim());
+    vi.spyOn(sim(), 'send').mockImplementation(async (n, k) => (n.to === S5.phone ? Promise.reject(unavailable()) : real(n, k)));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const kyc = await app.services.kyc.start(invitee.id, 'T1', `kyc-join-${invitee.id}`, now);
+    const r = await dispatch(app, { method: 'POST', url: '/v1/hooks/kyc', headers: { 'x-sim-signature': 'sim' }, rawBody: JSON.stringify({ eventId: `evt-${invitee.id}`, sessionId: kyc.sessionId, status: 'approved' }), now });
+    expect(r.status).toBeLessThan(300);
+    expect(await count(`select count(*) as n from ops.recipient_invite where id in ('${a.id}', '${b.id}') and status = 'claimable'`)).toBe(2);
+    expect(await count(`select count(*) as n from ops.recipient_invite where id = '${b.id}' and sender_told_at is not null`)).toBe(1);
+  });
+
+  it('a text that fails on create answers 503 and leaves an open invite; asking again sends the text exactly once', async () => {
+    vi.spyOn(sim(), 'send').mockRejectedValueOnce(unavailable());
+    const first = await invite(S7, { phone: '+972501110062' });
+    expect(first).toMatchObject({ status: 503, body: { code: 'PROVIDER_UNAVAILABLE' } });
+    expect(texts('+972501110062')).toHaveLength(0);
+    expect((await list(S7)).map((i) => i.status)).toEqual(['open']);
+    const again = await invite(S7, { phone: '+972501110062' });
+    const third = await invite(S7, { phone: '+972501110062' });
+    expect([again.status, third.status]).toEqual([200, 200]);
+    expect(texts('+972501110062')).toHaveLength(1);
+    expect(await count(`select count(*) as n from ops.recipient_invite where sender_party_id = '${S7.id}'`)).toBe(1);
+  });
+
+  it('the daily cap is judged while the sender\'s advisory lock (hashtextextended, one bigint key) is held, and under READ COMMITTED', async () => {
+    const seen: { locked: boolean; level: string }[] = [];
+    const spy = {
+      query: db.query,
+      transaction: <T,>(fn: Parameters<typeof db.transaction<T>>[0]) =>
+        db.transaction(async (tx) => {
+          const out = await fn(tx);
+          const l = await tx.query<{ locked: boolean; level: string }>(
+            `select exists (select 1 from pg_locks where locktype = 'advisory' and granted and ((classid::bigint << 32) | objid::bigint) = hashtextextended('recipient-invite:' || $1::text, 0)) as locked, current_setting('transaction_isolation') as level`,
+            [S7.id],
+          );
+          seen.push(l.rows[0]!);
+          return out;
+        }),
+    };
+    const locked = createApp({ db: spy, registry: host.registry, market: 'IL', signingKey, issuer: 'https://api.kesher.example', clock: () => now, identity: app.services.identity, flags: new StaticFlags(undefined, { 'p2p.enabled': true, 'phase1.recipientInvite': true }) });
+    expect((await invite(S7, { phone: '+972501110063' }, locked)).status).toBe(201);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen.every((x) => x.level === 'read committed')).toBe(true);
+    expect(seen[0]!.locked).toBe(true);
+  });
+
+  it('list and claim look a number up at most RECONCILE_PER_CALL at a time and each invite at most once a minute; a claim of one invite always checks it', async () => {
+    expect(RECONCILE_PER_CALL).toBeGreaterThanOrEqual(1);
+    const lookups = vi.spyOn(app.services.identity, 'findUserByPhone');
+    const open = (await list(S5)).filter((i) => i.status === 'open').length; // S5 has none open: its invitee joined
+    expect(open).toBe(0);
+    const sender = S6;
+    for (let i = 0; i < 4; i++) await invite(sender, { phone: `+97250113${String(1000 + i)}` });
+    lookups.mockClear();
+    await list(sender);
+    const first = lookups.mock.calls.length;
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThanOrEqual(RECONCILE_PER_CALL);
+    await list(sender);
+    await list(sender);
+    expect(lookups.mock.calls.length).toBe(first); // checked a moment ago: not again
+    now = new Date(T0.getTime() + RECONCILE_EVERY_MS + 1000);
+    await list(sender);
+    expect(lookups.mock.calls.length).toBe(first * 2);
+    const one = ((await list(sender)).find((i) => i.status === 'open'))!;
+    lookups.mockClear();
+    await claim(sender, one.id); // a claim checks its own invite whatever the throttle says
+    expect(lookups.mock.calls.length).toBe(1);
+  });
+
+  it('a sender in the 24-hour recovery hold is refused on create, list and claim alike', async () => {
+    await app.services.identity.setRestriction(HELD.id, new Date(now.getTime() + 24 * 3_600_000).toISOString(), 'otp_recovery');
+    const refused = [await invite(HELD, { phone: '+972501110064' }), await list0(HELD), await claim(HELD, uuidv7(T0))];
+    for (const r of refused) expect(r).toMatchObject({ status: 403, body: { code: 'RECOVERY_HOLD' } });
   });
 });

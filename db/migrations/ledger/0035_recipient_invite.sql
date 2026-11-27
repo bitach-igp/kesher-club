@@ -20,6 +20,8 @@ create table ops.recipient_invite (
   category              text check (category in ('soldier','lone_soldier','yeshiva_student','seminary_student','university_student','rabbi','volunteer','program_participant','other')),
   status                text not null default 'open' check (status in ('open','claimable','claimed','expired')),
   recipient_party_id    uuid,
+  sender_told_at        timestamptz,        -- the sender's 'they joined' notice went out; null while it is still owed
+  reconciled_at         timestamptz,        -- when an open invite's number was last checked against the members (bounds the lazy check)
   created_at            timestamptz not null,
   expires_at            timestamptz not null,
   updated_at            timestamptz not null,
@@ -46,5 +48,5 @@ create table ops.recipient_invite_event (
 );
 
 grant select, insert on ops.recipient_invite to club_app;
-grant update (status, recipient_party_id, phone_sealed, updated_at) on ops.recipient_invite to club_app;
+grant update (status, recipient_party_id, phone_sealed, updated_at, sender_told_at, reconciled_at) on ops.recipient_invite to club_app;
 grant select, insert on ops.recipient_invite_event to club_app;

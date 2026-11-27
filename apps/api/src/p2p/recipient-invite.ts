@@ -35,6 +35,9 @@ export const INVITE_TTL_MS = 14 * 24 * 60 * 60_000;
 export const INVITES_PER_DAY = 10;
 const DAY_MS = 24 * 60 * 60_000;
 const LIST_LIMIT = 100;
+/** Most sealed phones one list or claim opens (and so most directory lookups it makes), and the least time before one invite is looked at again. */
+export const RECONCILE_PER_CALL = 25;
+export const RECONCILE_EVERY_MS = 60_000;
 export const INVITE_TEMPLATE = 'p2p.invite';
 export const CLAIMABLE_TEMPLATE = 'p2p.invite_claimable';
 /** The column the phone is sealed and indexed under (T-0024): the same phone indexes differently in another table. */
@@ -73,6 +76,7 @@ interface Row {
   recipient_party_id: string | null;
   created_at: string | Date;
   expires_at: string | Date;
+  sender_told_at: string | Date | null;
 }
 
 interface Deps {
@@ -170,9 +174,16 @@ export class RecipientInviteService {
     if (!user || user.status !== 'active' || !(await this.d.kyc.isApproved(partyId, 'T1'))) return 0;
     const rows = await this.d.db.query<Row>(`select * from ops.recipient_invite where phone_index = $1 and status in ('open','claimable') and expires_at > $2 and sender_party_id <> $3 order by created_at, id`, [this.d.pii.index(user.phone, PHONE_COLUMN), now, partyId]);
     let moved = 0;
+    // Best effort per invite: this runs inside the KYC webhook, which must acknowledge the invitee's own decision. A failure
+    // is logged by invite id (never the phone) and left for the sender's next list or claim, which finds a claimable invite
+    // whose sender has not been told (sender_told_at is null) and tells them then, once.
     for (const row of rows.rows) {
-      if (row.status === 'open' && (await this.promote(row, partyId, now))) moved += 1;
-      await this.tellSender(row.id, row.sender_party_id);
+      try {
+        if (row.status === 'open' && (await this.promote(row, partyId, now))) moved += 1;
+        if (!row.sender_told_at) await this.tellSender(row.id, row.sender_party_id, now);
+      } catch {
+        warn('recipient_invite.hook_failed', row.id);
+      }
     }
     return moved;
   }
@@ -201,14 +212,30 @@ export class RecipientInviteService {
    */
   private async reconcile(senderPartyId: string, now: Date, onlyId?: string): Promise<void> {
     const open = await this.d.db.query<Row>(
-      `select * from ops.recipient_invite where sender_party_id = $1 and status = 'open' and phone_sealed is not null and expires_at > $2 and ($3::uuid is null or id = $3::uuid) order by created_at, id limit 200`,
-      [senderPartyId, now, onlyId ?? null],
+      `select * from ops.recipient_invite where sender_party_id = $1 and status = 'open' and phone_sealed is not null and expires_at > $2
+          and ($3::uuid is null or id = $3::uuid) and ($3::uuid is not null or reconciled_at is null or reconciled_at <= $4)
+        order by coalesce(reconciled_at, created_at), id limit $5`,
+      [senderPartyId, now, onlyId ?? null, new Date(now.getTime() - RECONCILE_EVERY_MS), RECONCILE_PER_CALL],
     );
     for (const row of open.rows) {
       const user = await this.d.identity.findUserByPhone(this.d.pii.open(row.phone_sealed!, PHONE_COLUMN));
-      if (!user || user.status !== 'active' || user.partyId === senderPartyId || !(await this.d.kyc.isApproved(user.partyId, 'T1'))) continue;
+      if (!user || user.status !== 'active' || user.partyId === senderPartyId || !(await this.d.kyc.isApproved(user.partyId, 'T1'))) {
+        await this.d.db.query(`update ops.recipient_invite set reconciled_at = $2 where id = $1 and status = 'open'`, [row.id, now]);
+        continue;
+      }
       await this.promote(row, user.partyId, now);
-      await this.tellSender(row.id, senderPartyId);
+    }
+    // A sender not yet told (the join hook's notice failed, or the invite was found just now): told here, once, never failing the call.
+    const pending = await this.d.db.query<Row>(
+      `select * from ops.recipient_invite where sender_party_id = $1 and status = 'claimable' and sender_told_at is null and expires_at > $2 and ($3::uuid is null or id = $3::uuid) order by created_at, id limit $4`,
+      [senderPartyId, now, onlyId ?? null, RECONCILE_PER_CALL],
+    );
+    for (const row of pending.rows) {
+      try {
+        await this.tellSender(row.id, senderPartyId, now);
+      } catch {
+        warn('recipient_invite.notice_failed', row.id);
+      }
     }
   }
 
@@ -234,11 +261,17 @@ export class RecipientInviteService {
   }
 
   /** Tells the sender their invitee has joined. Keyed by the invite: told once however often this runs. */
-  private async tellSender(inviteId: string, senderPartyId: string): Promise<void> {
+  private async tellSender(inviteId: string, senderPartyId: string, now: Date): Promise<void> {
     const sender = await this.d.identity.findUser(senderPartyId);
     if (!sender) return;
     await this.d.notify.send({ channel: 'sms', to: sender.phone, template: CLAIMABLE_TEMPLATE, locale: 'en', data: { inviteId }, category: 'service' }, `invite:${inviteId}:claimable`);
+    await this.d.db.query('update ops.recipient_invite set sender_told_at = $2 where id = $1 and sender_told_at is null', [inviteId, now]);
   }
+}
+
+/** One structured line naming only the event and the invite id: never the phone, a name or the error text. */
+function warn(event: string, inviteId: string): void {
+  console.warn(JSON.stringify({ level: 'warn', event, inviteId }));
 }
 
 /**
@@ -298,7 +331,7 @@ function view(r: Row): RecipientInviteView {
 
 /**
  * The three invite routes. Each needs the bearer, a sender not in the 24-hour recovery hold (a text costs money and
- * reaches a stranger), and both `p2p.enabled` and `phase1.recipientInvite`; none moves money, so none needs a step-up.
+ * reaches a stranger; list and claim open sealed phones and look numbers up, so the hold covers them too), and both `p2p.enabled` and `phase1.recipientInvite`; none moves money, so none needs a step-up.
  */
 export function recipientInviteHandlers(invites: RecipientInviteService, flags: FeatureFlags): Record<string, Handler> {
   const gate = async () => {
@@ -314,11 +347,13 @@ export function recipientInviteHandlers(invites: RecipientInviteService, flags: 
     }),
     listRecipientInvites: route(async (req) => {
       const p = requirePrincipal(req);
+      assertNotRestricted(p, 'p2p_send', req.now);
       await gate();
       return ok(await invites.list(p.partyId, req.now));
     }),
     claimRecipientInvite: route(async (req) => {
       const p = requirePrincipal(req);
+      assertNotRestricted(p, 'p2p_send', req.now);
       await gate();
       return ok(await invites.claim(p.partyId, req.params['id'] ?? '', req.now));
     }),
