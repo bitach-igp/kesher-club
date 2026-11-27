@@ -20,8 +20,11 @@ const tokens: Record<string, string> = {};
 const MOBILE = '+14155550123';
 const OWNER = { firstName: 'Sarah', lastName: 'Cohen', email: 'sarah.cohen@example.test', dateOfBirth: '1991-04-17' };
 
-const call = (who: string | undefined, method: string, body?: unknown) =>
-  dispatch(app, { method, url: '/v1/me/funding-details', headers: who ? { authorization: `Bearer ${tokens[who]}` } : {}, rawBody: body === undefined ? '' : JSON.stringify(body), now: NOW });
+const call = (who: string | undefined, method: string, body?: unknown, extra: Record<string, string> = {}) =>
+  dispatch(app, { method, url: '/v1/me/funding-details', headers: { ...(who ? { authorization: `Bearer ${tokens[who]}` } : {}), ...extra }, rawBody: body === undefined ? '' : JSON.stringify(body), now: NOW });
+/** A W3C traceparent whose trace id (the problem body's `traceId`) contains the digits 1991: the shape a random id has about once in 600 runs. */
+const TRACE_1991 = '4bf9219917a8b3c2d1e0f9a8b7c6d5e4';
+const TRACEPARENT = { traceparent: `00-${TRACE_1991}-00f067aa0ba902b7-01` };
 const stored = async (id: string) => (await db.query<Record<string, Uint8Array | null>>('select first_name, last_name, email, date_of_birth from identity.member_funding_details where party_id = $1', [id])).rows[0]!;
 const bytes = (row: Record<string, Uint8Array | null>) => Object.values(row).map((v) => (v ? Buffer.from(v).toString('latin1') : '')).join('|');
 
@@ -100,9 +103,13 @@ describe('TST-WAL-002: the funding details', () => {
       [{}, 'firstName'],
     ];
     for (const [body, field] of cases) {
-      const r = await call('sarah', 'PATCH', body);
+      const r = await call('sarah', 'PATCH', body, TRACEPARENT);
       expect(r, JSON.stringify(Object.keys(body))).toMatchObject({ status: 422, body: { code: 'VALIDATION_FAILED', field } });
-      expect(JSON.stringify(r.body)).not.toMatch(/Cohen|example\.test|1991|2021/);
+      // The trace id is random data (a UUID, or the caller's traceparent): it is not part of what must not echo a value, so it is taken out
+      // of the body first. Every other field is held to the same pattern as before.
+      const { traceId, ...echoed } = r.body as { traceId?: string };
+      expect(traceId, 'the problem body names the trace').toBe(TRACE_1991);
+      expect(JSON.stringify(echoed)).not.toMatch(/Cohen|example\.test|1991|2021/);
     }
     expect((await call('sarah', 'GET')).body).toMatchObject({ ...OWNER });
   });

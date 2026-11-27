@@ -182,3 +182,102 @@ describe('acceptById inside a transaction (T-1122)', () => {
     expect((await db.query('select 1 from org.staff where party_id = any($1)', [[people['zoe']!.partyId, people['amit']!.partyId]])).rows).toHaveLength(1);
   });
 });
+
+describe('accept guards the reviewers proved survive mutation (T-1124: T02, T03, T04, T13, T14)', () => {
+  const DAY = 86_400_000;
+  /** A pending invite of Ohr by phone: its token, id and the expiry instant stored. */
+  const invite = async (phone: string, role: 'staff' | 'finance' = 'staff') => {
+    await call('rivka', 'POST', `/institutions/${OHR}/staff-invites`, { phone, role }, { key: `t1124-${phone}-${role}` });
+    const token = tokenOf(phone);
+    const row = (await db.query<{ id: string; expires_at: Date }>('select id, expires_at from org.staff_invite where token_hash = $1', [createHash('sha256').update(token).digest('hex')])).rows[0]!;
+    return { token, id: row.id, expires: row.expires_at };
+  };
+  const staffAt = async (name: string, inst: string, active = true) => db.query('insert into org.staff (party_id, institution_id, role, active) values ($1, $2, $3, $4)', [people[name]!.partyId, inst, 'staff', active]);
+  const acceptances = async (inviteId: string) => (await db.query<{ party_id: string }>('select party_id from org.staff_invite_acceptance where invite_id = $1', [inviteId])).rows.map((r) => r.party_id);
+  const staffRowsAt = async (name: string, inst: string) => (await db.query('select 1 from org.staff where party_id = $1 and institution_id = $2', [people[name]!.partyId, inst])).rows.length;
+
+  it('T02: an invite accepted by someone else is refused as ALREADY ACCEPTED, even for a party who is also staff elsewhere (the message tells which guard answered), and the owner may accept again', async () => {
+    await person('t02-owner', '+972501230021', ['member']);
+    await person('t02-other', '+972501230022', ['member']);
+    await staffAt('t02-other', SOLO);
+    const inv = await invite('+972501230023');
+    expect((await app.services.team.accept(inv.token, people['t02-owner']!.partyId, NOW)).staff).toMatchObject({ role: 'staff', active: true });
+    await expect(app.services.team.accept(inv.token, people['t02-other']!.partyId, NOW)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', message: 'This invite was already accepted' });
+    await expect(app.services.team.acceptById(inv.id, people['t02-other']!.partyId, NOW)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', message: 'This invite was already accepted' });
+    expect(await acceptances(inv.id)).toEqual([people['t02-owner']!.partyId]);
+    expect(await staffRowsAt('t02-other', OHR)).toBe(0);
+    // the owner repeating the acceptance is idempotent: the same staff row, no second acceptance
+    expect((await app.services.team.accept(inv.token, people['t02-owner']!.partyId, NOW)).staff).toMatchObject({ partyId: people['t02-owner']!.partyId, role: 'staff', active: true });
+    expect(await acceptances(inv.id)).toHaveLength(1);
+    // over HTTP the same answer is a 409
+    expect((await call('t02-other', 'POST', `/staff-invites/${inv.token}/accept`)).status).toBe(409);
+  });
+
+  it('T03: an expired invite is refused as EXPIRED and nothing is written; an invite accepted in time can still be repeated by its owner after the expiry', async () => {
+    await person('t03-late', '+972501230024', ['member']);
+    await person('t03-late-staffed', '+972501230025', ['member']);
+    await staffAt('t03-late-staffed', SOLO);
+    await person('t03-owner', '+972501230026', ['member']);
+    const inv = await invite('+972501230027');
+    const after = new Date(inv.expires.getTime() + DAY);
+    await expect(app.services.team.accept(inv.token, people['t03-late']!.partyId, after)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', message: expect.stringContaining('expired') });
+    // a party who is staff elsewhere is told it expired, not that they are staff elsewhere: the expiry guard answers first
+    await expect(app.services.team.accept(inv.token, people['t03-late-staffed']!.partyId, after)).rejects.toMatchObject({ message: expect.stringContaining('expired') });
+    expect(await acceptances(inv.id)).toEqual([]);
+    expect(await staffRowsAt('t03-late', OHR)).toBe(0);
+    // accepted in time, then repeated after the expiry: the expiry only ends an invite nobody has taken
+    await app.services.team.accept(inv.token, people['t03-owner']!.partyId, NOW);
+    expect((await app.services.team.accept(inv.token, people['t03-owner']!.partyId, after)).staff).toMatchObject({ partyId: people['t03-owner']!.partyId, active: true });
+  });
+
+  it('T14: the expiry instant itself is expired: accept at expires_at is refused, one millisecond earlier it is taken; the team read lists an invite until that same instant', async () => {
+    await person('t14-edge', '+972501230028', ['member']);
+    await person('t14-early', '+972501230029', ['member']);
+    const edge = await invite('+972501230030');
+    const early = await invite('+972501230031');
+    expect(edge.expires.getTime()).toBe(NOW.getTime() + 7 * DAY);
+    await expect(app.services.team.accept(edge.token, people['t14-edge']!.partyId, edge.expires)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', message: expect.stringContaining('expired') });
+    expect(await acceptances(edge.id)).toEqual([]);
+    expect((await app.services.team.accept(early.token, people['t14-early']!.partyId, new Date(early.expires.getTime() - 1))).staff).toMatchObject({ active: true });
+    const listed = (when: Date) => app.services.team.read(OHR, when).then((t) => t.invites.some((i) => i.id === edge.id));
+    expect(await listed(new Date(edge.expires.getTime() - 1))).toBe(true);
+    expect(await listed(edge.expires)).toBe(false);
+  });
+
+  it('T04: a party who is ACTIVE staff of another institution cannot take the invite: refused, and the invite is NOT burnt (no acceptance row, no staff row)', async () => {
+    await person('t04', '+972501230032', ['member']);
+    await staffAt('t04', SOLO);
+    const inv = await invite('+972501230033');
+    await expect(app.services.team.accept(inv.token, people['t04']!.partyId, NOW)).rejects.toMatchObject({ code: 'IDEMPOTENCY_CONFLICT', message: 'Already staff of another institution' });
+    expect(await acceptances(inv.id)).toEqual([]);
+    expect(await staffRowsAt('t04', OHR)).toBe(0);
+    expect((await call('t04', 'POST', `/staff-invites/${inv.token}/accept`)).status).toBe(409);
+    expect(await acceptances(inv.id)).toEqual([]);
+    // the invite is still good for someone else
+    await person('t04-free', '+972501230034', ['member']);
+    expect((await app.services.team.accept(inv.token, people['t04-free']!.partyId, NOW)).staff).toMatchObject({ active: true });
+  });
+
+  it('T13: the elsewhere check is about ANOTHER institution and an ACTIVE row: active staff of this institution accept without a second row, and a deactivated member of another one moves over', async () => {
+    // already active staff here: accepted, the row is theirs as it was (no demotion, no second row), the finance grant still opens
+    await person('t13-here', '+972501230035', ['member']);
+    await db.query(`insert into org.staff (party_id, institution_id, role) values ($1, $2, 'admin')`, [people['t13-here']!.partyId, OHR]);
+    const fin = await invite('+972501230036', 'finance');
+    const r = await app.services.team.accept(fin.token, people['t13-here']!.partyId, NOW);
+    expect(r.staff).toMatchObject({ partyId: people['t13-here']!.partyId, role: 'admin', active: true });
+    expect(r.grant?.status).toBe('awaiting_second_approval');
+    expect((await db.query('select 1 from org.staff where party_id = $1', [people['t13-here']!.partyId])).rows).toHaveLength(1);
+    // the same inside a transaction (the SSO path): no role write is queued for a party who already holds one
+    await person('t13-here-tx', '+972501230037', ['member']);
+    await db.query(`insert into org.staff (party_id, institution_id, role) values ($1, $2, 'staff')`, [people['t13-here-tx']!.partyId, OHR]);
+    const staffInv = await invite('+972501230038');
+    const inTx = await db.transaction(async (raw) => app.services.team.acceptById(staffInv.id, people['t13-here-tx']!.partyId, NOW, { query: raw.query, transaction: async (fn) => fn(raw) } as Database));
+    expect(inTx.staff).toMatchObject({ role: 'staff', active: true });
+    // a DEACTIVATED row at another institution does not block: the party moves to this one
+    await person('t13-moved', '+972501230039', ['member']);
+    await staffAt('t13-moved', SOLO, false);
+    const mv = await invite('+972501230040');
+    expect((await app.services.team.accept(mv.token, people['t13-moved']!.partyId, NOW)).staff).toMatchObject({ role: 'staff', active: true });
+    expect((await db.query<{ institution_id: string; active: boolean }>('select institution_id, active from org.staff where party_id = $1', [people['t13-moved']!.partyId])).rows).toEqual([{ institution_id: OHR, active: true }]);
+  });
+});
