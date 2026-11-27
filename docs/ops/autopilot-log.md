@@ -174,6 +174,7 @@ threshold with VALIDATION_FAILED); no finance approval route. T-0659 keeps CROWD
 | 2026-11-26 | log through #422, T-1121 to T-1126 (cards) | this PR | docs, log lines for #420 to #422, six SSO follow-up cards from the T-0792 review, T-0792 and T-1120 done, the `auth.orgSso` checklist extended; no task card, no review | green |
 | 2026-11-26 | T-1116 | this PR | built, WorkOS adapter fixes: signature `t` read as milliseconds (shared helper for the adapter and the inbound verifier, the unit per the owner-provided WorkOS docs, to verify on a staging delivery), removal without an email, bounded fail-closed directory reads, raw `rawState` and the suspect-state rule in the drift sweep, injectable SSO state store (shared store still a gate); 46 mutants; awaiting the independent review |  |
 | 2026-11-27 | T-1101 | PR #428 | built, `GET/PATCH /me/recipient-profile` behind `phase1.recipientProfile` (off), identity migration 0009 (current row plus insert-only history, free text sealed), desktop apply requested; awaiting the independent review |  |
+| 2026-11-26 | T-1122 | this PR | built, SSO invite path: the IdP subject is shape-checked before anything is written and accept plus link are one transaction (invite unconsumed on any failure), uniform refusal for every caller-provoked cause, `unavailable` for transient errors; dark behind `auth.orgSso`; independent review pending |
 
 ## Carried follow-ups (T-1019 to T-1022)
 

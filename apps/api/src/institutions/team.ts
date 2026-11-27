@@ -125,13 +125,19 @@ export class InstitutionTeam {
     return this.acceptWhere('i.token_hash = $1', sha256(token), partyId, now);
   }
 
-  /** The same acceptance by invite id: the SSO link flow (T-0792) keeps the id, never the token, between its start and its callback. */
-  async acceptById(inviteId: string, partyId: string, now: Date): Promise<{ staff: TeamMember; grant?: ApprovalRequest }> {
-    return this.acceptWhere('i.id = $1', inviteId, partyId, now);
+  /**
+   * The same acceptance by invite id: the SSO link flow (T-0792) keeps the id, never the token, between its start and its callback.
+   * With `tx` (T-1122) every row, audit row included, is written inside the caller's transaction, so a failure there leaves none of it.
+   * The two steps that live outside SQL (the token role in the identity repository, the grant proposal on the shared approvals) cannot
+   * join it: they come back as `settle`, which the caller runs after the commit. Both are idempotent, so a repeat finishes them.
+   */
+  async acceptById(inviteId: string, partyId: string, now: Date, tx?: Database): Promise<{ staff: TeamMember; grant?: ApprovalRequest; settle?: () => Promise<ApprovalRequest | undefined> }> {
+    return this.acceptWhere('i.id = $1', inviteId, partyId, now, tx);
   }
 
-  private async acceptWhere(where: 'i.token_hash = $1' | 'i.id = $1', key: string, partyId: string, now: Date): Promise<{ staff: TeamMember; grant?: ApprovalRequest }> {
-    const r = await this.d.db.query<{ id: string; institution_id: string; role: StaffRole; invited_by: string; expires_at: string | Date; party_id: string | null }>(
+  private async acceptWhere(where: 'i.token_hash = $1' | 'i.id = $1', key: string, partyId: string, now: Date, tx?: Database): Promise<{ staff: TeamMember; grant?: ApprovalRequest; settle?: () => Promise<ApprovalRequest | undefined> }> {
+    const db = tx ?? this.d.db;
+    const r = await db.query<{ id: string; institution_id: string; role: StaffRole; invited_by: string; expires_at: string | Date; party_id: string | null }>(
       `select i.id, i.institution_id, i.role, i.invited_by, i.expires_at, a.party_id from org.staff_invite i left join org.staff_invite_acceptance a on a.invite_id = i.id where ${where}`,
       [key],
     );
@@ -139,14 +145,30 @@ export class InstitutionTeam {
     if (!inv) throw new DomainError('NOT_FOUND', 'Invite not found');
     if (inv.party_id && inv.party_id !== partyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This invite was already accepted');
     if (!inv.party_id && new Date(inv.expires_at).getTime() <= now.getTime()) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This invite has expired; ask for a new one');
-    const elsewhere = await this.d.db.query<{ institution_id: string }>('select institution_id from org.staff where party_id = $1 and active', [partyId]);
+    const elsewhere = await db.query<{ institution_id: string }>('select institution_id from org.staff where party_id = $1 and active', [partyId]);
     if (elsewhere.rows[0] && elsewhere.rows[0].institution_id !== inv.institution_id) throw new DomainError('IDEMPOTENCY_CONFLICT', 'Already staff of another institution');
-    if (!inv.party_id) await this.d.db.query('insert into org.staff_invite_acceptance (invite_id, party_id, accepted_at) values ($1, $2, $3) on conflict do nothing', [inv.id, partyId, now]);
-    const current = elsewhere.rows[0] ? await this.member(inv.institution_id, partyId) : undefined;
-    const staff = current ?? (await this.apply(inv.institution_id, partyId, 'staff', { partyId, role: 'org_staff' }, 'Accepted a staff invite', now));
+    if (!inv.party_id) {
+      const claimed = await db.query('insert into org.staff_invite_acceptance (invite_id, party_id, accepted_at) values ($1, $2, $3) on conflict do nothing', [inv.id, partyId, now]);
+      // A concurrent acceptance committed between the read and the insert: it wins, and only its own party may carry on.
+      if (!claimed.rowCount) {
+        const won = await db.query<{ party_id: string }>('select party_id from org.staff_invite_acceptance where invite_id = $1', [inv.id]);
+        if (won.rows[0]?.party_id !== partyId) throw new DomainError('IDEMPOTENCY_CONFLICT', 'This invite was already accepted');
+      }
+    }
+    const current = elsewhere.rows[0] ? await this.member(inv.institution_id, partyId, tx) : undefined;
+    const staff = current ?? (await this.apply(inv.institution_id, partyId, 'staff', { partyId, role: 'org_staff' }, 'Accepted a staff invite', now, undefined, tx));
+    const grant = () => this.propose(inv.institution_id, partyId, inv.role, { partyId: inv.invited_by, role: 'org_admin' }, `invite:${inv.id}`, 'Invited with this role', now);
+    if (tx) {
+      return {
+        staff,
+        settle: async () => {
+          if (!current) await this.setOrgRole(partyId, 'staff');
+          return inv.role === 'staff' ? undefined : grant();
+        },
+      };
+    }
     if (inv.role === 'staff') return { staff };
-    const grant = await this.propose(inv.institution_id, partyId, inv.role, { partyId: inv.invited_by, role: 'org_admin' }, `invite:${inv.id}`, 'Invited with this role', now);
-    return { staff, grant };
+    return { staff, grant: await grant() };
   }
 
   /** An admin's change: a role, or removal. Staff applies at once; finance and admin open a grant. */
@@ -207,8 +229,8 @@ export class InstitutionTeam {
   }
 
   /** Writes the staff row and the token role; nobody moves between institutions. */
-  private async apply(institutionId: string, partyId: string, role: StaffRole, actor: Approver, reason: string, now: Date, grantId?: string): Promise<TeamMember> {
-    const r = await this.d.db.query(
+  private async apply(institutionId: string, partyId: string, role: StaffRole, actor: Approver, reason: string, now: Date, grantId?: string, tx?: Database): Promise<TeamMember> {
+    const r = await (tx ?? this.d.db).query(
       `insert into org.staff (party_id, institution_id, role, active, created_at) values ($1, $2, $3, true, $4)
        on conflict (party_id) do update set institution_id = excluded.institution_id, role = excluded.role, active = true
          where org.staff.institution_id = excluded.institution_id or not org.staff.active
@@ -216,9 +238,9 @@ export class InstitutionTeam {
       [partyId, institutionId, role, now],
     );
     if (!r.rowCount) throw new DomainError('IDEMPOTENCY_CONFLICT', 'Already staff of another institution');
-    await this.setOrgRole(partyId, role);
-    await this.d.audit.record({ actorId: actor.partyId, actorRole: actor.role, action: 'institution.staff.grant', subject: partyId, reason, after: { institutionId, role, active: true }, payload: { institutionId, role, ...(grantId ? { grantId } : {}) } }, now);
-    return (await this.member(institutionId, partyId))!;
+    if (!tx) await this.setOrgRole(partyId, role); // inside a transaction the caller settles the role after the commit (`acceptById`)
+    await this.d.audit.record({ actorId: actor.partyId, actorRole: actor.role, action: 'institution.staff.grant', subject: partyId, reason, after: { institutionId, role, active: true }, payload: { institutionId, role, ...(grantId ? { grantId } : {}) } }, now, tx);
+    return (await this.member(institutionId, partyId, tx))!;
   }
 
   /** The last active admin stays: someone must be able to approve and manage the team. */
@@ -235,8 +257,8 @@ export class InstitutionTeam {
     await this.d.identity.setUserRoles(partyId, role ? [...kept, ORG_ROLE[role]] : kept);
   }
 
-  private async member(institutionId: string, partyId: string): Promise<TeamMember | undefined> {
-    const r = await this.d.db.query<{ party_id: string; role: StaffRole; active: boolean; created_at: string | Date }>('select party_id, role, active, created_at from org.staff where party_id = $1 and institution_id = $2', [partyId, institutionId]);
+  private async member(institutionId: string, partyId: string, tx?: Database): Promise<TeamMember | undefined> {
+    const r = await (tx ?? this.d.db).query<{ party_id: string; role: StaffRole; active: boolean; created_at: string | Date }>('select party_id, role, active, created_at from org.staff where party_id = $1 and institution_id = $2', [partyId, institutionId]);
     const s = r.rows[0];
     return s ? { partyId: s.party_id, role: s.role, active: s.active, since: iso(s.created_at) } : undefined;
   }
