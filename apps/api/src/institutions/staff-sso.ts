@@ -10,6 +10,8 @@
 // - The institution comes only from the stored state; the IdP's email, name and groups are never read. A link is made only for a party who
 //   proved control at start (a fresh step-up as active staff, or a valid pending invite, which is consumed here, after the IdP identity is
 //   verified), never by email match. Sign-in needs a live link to an ACTIVE staff row; the token carries the user's own stored roles.
+// - The invite path (T-1122): the IdP subject is shape-checked first, then accept and link run as ONE transaction (a failure of either leaves the
+//   invite unconsumed, no staff row, no acceptance, no audit row); the token role and a finance/admin grant settle right after the commit.
 // - Every refusal is the same 302 `#error=refused` (an IdP outage `#error=unavailable`) padded to one latency floor, with the same reads.
 //   The one write of a refusal after the claim is the consumed state. Reasons go to the closed metric `staff.sso_refused` only.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
@@ -20,11 +22,11 @@ import type { IdentityRepository } from '../auth/repository.ts';
 import { requireStepUp, type StepUpService } from '../auth/step-up.ts';
 import type { TokenPair, TokenService } from '../auth/tokens.ts';
 import type { FeatureFlags } from '../billing/capabilities.ts';
-import type { Database } from '../db.ts';
+import { isPgError, type Database, type SqlClient } from '../db.ts';
 import { ok, requirePrincipal, route, type Handler, type HttpRequest } from '../http.ts';
 import { getMarker, getMarkers, putMarker } from '../ops/workflow-marker.ts';
 import { ORG_SSO_FLAG } from './staff-deprovision.ts';
-import type { StaffIdpLinks } from './staff-idp-link.ts';
+import { isValidSubject, type StaffIdpLinks } from './staff-idp-link.ts';
 import type { InstitutionTeam } from './team.ts';
 
 export const SIGN_IN_TTL_MS = 10 * 60_000;
@@ -44,6 +46,7 @@ const rand = (): string => randomBytes(32).toString('base64url');
 const CHALLENGE = /^[A-Za-z0-9_-]{43}$/;
 const VERIFIER = /^[A-Za-z0-9_-]{43,128}$/;
 const STATE = /^[A-Za-z0-9_-]{43,128}$/;
+const inTx = (tx: SqlClient): Database => ({ query: tx.query, transaction: async (fn) => fn(tx) });
 const refused = (): DomainError => new DomainError('UNAUTHENTICATED', 'Sign-in refused');
 const cookieName = (state: string): string => `__Host-sso-${hex(state).slice(0, 24)}`;
 const cookie = (name: string, value: string, maxAge: number): string => `${name}=${value}; Max-Age=${maxAge}; Path=/; Secure; HttpOnly; SameSite=Lax`;
@@ -199,7 +202,7 @@ export class StaffSso {
     if (!claimed) identity = undefined;
     const inst = rec?.inst ?? ZERO;
     const orgOk = !!rec && !!identity && identity.orgId === inst && Object.hasOwn(this.d.orgs, inst);
-    const linked = await this.d.links.find(inst, orgOk ? identity!.subject : '');
+    const linked = await this.d.links.find(inst, orgOk && isValidSubject(identity!.subject) ? identity!.subject : '');
     const staff = await this.activeStaff(inst, (rec?.mode === 'link' ? rec.party : linked) ?? ZERO);
     if (reason || !rec) return { fragment: 'error=refused', reason: reason ?? 'state_invalid' };
     if (outage) return { fragment: 'error=unavailable', reason: 'idp_unavailable' };
@@ -220,16 +223,27 @@ export class StaffSso {
     const user = await this.d.identity.findUser(party);
     if (!session || session.revokedAt || session.partyId !== party || !user || user.status === 'closed' || linked) return undefined;
     if ((await this.d.db.query('select 1 from org.staff_idp_link where party_id = $1 and unlinked_at is null', [party])).rowCount) return undefined;
+    // The subject's shape is checked before anything is written (the link store's own rule), so a subject that could never link neither
+    // answers differently nor burns an invite: the same refusal as every other cause.
+    if (!isValidSubject(subject)) return undefined;
+    if (!staff && (!rec.invite || !(await this.pendingInvite('i.id = $1', rec.invite, rec.inst, now)))) return undefined;
+    // Accept and link are ONE transaction (T-1122): a failure of either leaves the invite unconsumed, no staff row, no acceptance, no audit row.
+    let settle: (() => Promise<unknown>) | undefined;
     try {
-      if (!staff) {
-        if (!rec.invite || !(await this.pendingInvite('i.id = $1', rec.invite, rec.inst, now))) return undefined;
-        await this.d.team.acceptById(rec.invite, party, now);
-      }
-      await this.d.links.link(rec.inst, subject, party, { actorId: party, actorRole: 'org_staff' }, now);
+      await this.d.db.transaction(async (raw) => {
+        const tx = inTx(raw);
+        if (!staff) settle = (await this.d.team.acceptById(rec.invite!, party, now, tx)).settle;
+        await this.d.links.link(rec.inst, subject, party, { actorId: party, actorRole: 'org_staff' }, now, tx);
+      });
     } catch (e) {
-      if (e instanceof DomainError && (e.code === 'IDEMPOTENCY_CONFLICT' || e.code === 'NOT_FOUND')) return undefined;
+      // A refusal the caller could provoke (a taken subject, a party or invite that moved, a constraint the data cannot satisfy) is the
+      // uniform one; anything else, a dropped connection or a serialization failure included, is `unavailable` for every caller alike.
+      if (e instanceof DomainError && (e.code === 'IDEMPOTENCY_CONFLICT' || e.code === 'NOT_FOUND' || e.code === 'VALIDATION_FAILED')) return undefined;
+      if (isPgError(e) && typeof e.code === 'string' && e.code.startsWith('23')) return undefined;
       throw e;
     }
+    // After the commit: the token role and the grant of a finance or admin invite live outside SQL; both are idempotent.
+    await settle?.();
     return party;
   }
 
