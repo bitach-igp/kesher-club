@@ -14,6 +14,16 @@ export const LOOKUPS_PER_MINUTE = 30;
 const WINDOW_MS = 60_000;
 const E164 = /^\+[1-9]\d{7,14}$/;
 
+/**
+ * A phone as typed ("+972 50-123-4567") to its international form, or VALIDATION_FAILED. The one reading of a phone
+ * the lookup and the invite (T-1104) share, so both refuse the same input the same way.
+ */
+export function normalisePhone(raw: string): string {
+  const phone = raw.replace(/[\s()-]/g, '');
+  if (!E164.test(phone)) throw new DomainError('VALIDATION_FAILED', 'phone must be in international form, like +972501234567', { field: 'phone' });
+  return phone;
+}
+
 export interface ResolvedRecipient {
   partyId: string;
   /** "Avi E.", or absent while the recipient has set no name. Member text: shown as text. */
@@ -35,10 +45,10 @@ export class RecipientLookup {
   }
 
   async resolve(byPartyId: string, input: { phone?: unknown; memberId?: unknown }, now: Date): Promise<ResolvedRecipient> {
-    const phone = typeof input.phone === 'string' ? input.phone.replace(/[\s()-]/g, '') : undefined;
+    const rawPhone = typeof input.phone === 'string' ? input.phone : undefined;
     const memberId = typeof input.memberId === 'string' ? input.memberId.trim() : undefined;
-    if ((phone === undefined) === (memberId === undefined)) throw new DomainError('VALIDATION_FAILED', 'Send exactly one of phone or memberId');
-    if (phone !== undefined && !E164.test(phone)) throw new DomainError('VALIDATION_FAILED', 'phone must be in international form, like +972501234567', { field: 'phone' });
+    if ((rawPhone === undefined) === (memberId === undefined)) throw new DomainError('VALIDATION_FAILED', 'Send exactly one of phone or memberId');
+    const phone = rawPhone !== undefined ? normalisePhone(rawPhone) : undefined;
     if (memberId !== undefined && !isUuidShape(memberId)) throw new DomainError('VALIDATION_FAILED', 'memberId must be a member id', { field: 'memberId' });
     this.count(byPartyId, now);
     const user = phone !== undefined ? await this.d.identity.findUserByPhone(phone) : await this.d.identity.findUser(memberId!);

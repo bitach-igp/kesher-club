@@ -280,6 +280,13 @@
     "turnOnTrigger": "Public interop API exists"
   },
   {
+    "key": "phase1.recipientInvite",
+    "defaultProd": false,
+    "owner": "Zvi",
+    "gates": "Invite a person with no account to receive (no money moves until they have joined)",
+    "turnOnTrigger": "p2p.enabled is on and counsel confirms the invite holds no funds (ADR-018)"
+  },
+  {
     "key": "ui.hebrew",
     "defaultProd": true,
     "owner": "Kathleen",

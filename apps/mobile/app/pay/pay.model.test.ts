@@ -440,6 +440,73 @@ describe('requests, splits and the inbox (M16–M18)', () => {
   });
 });
 
+describe('inviting a number with no account (T-1104)', () => {
+  it('offers the invite only after a typed phone answered "not a member" and the screen can invite; nothing is offered for a member or a member id', async () => {
+    const { api } = fakePay();
+    const invites: { phone: string }[] = [];
+    const inviteRecipient = async (i: { phone: string }) => void invites.push(i);
+    const { m, router } = model(api, { inviteRecipient });
+    await m.load();
+    m.setRecipient('+972 50-000-0099');
+    await m.goAmount();
+    expect(m.store.get()).toMatchObject({ canInvite: true, error: { key: 'pay.recipient.notMember' } });
+    expect(router.current()).toBe('/pay'); // the 404 still stops the send
+    m.setRecipient('+972 50-000-0002');
+    expect(m.store.get().canInvite).toBe(false); // typing again withdraws the offer
+    await m.goAmount();
+    expect(m.store.get().canInvite).toBe(false);
+    const plain = model(api);
+    await plain.m.load();
+    plain.m.setRecipient('+972500000099');
+    await plain.m.goAmount();
+    expect(plain.m.store.get().canInvite).toBe(false); // a screen with no invite wiring offers nothing
+    expect(invites).toEqual([]);
+  });
+
+  it('inviting sends the number as typed in international form, once, and says so; it moves to no amount and sends no money', async () => {
+    const { api, sends } = fakePay();
+    const invites: { phone: string }[] = [];
+    const { m, router } = model(api, { inviteRecipient: async (i) => void invites.push(i) });
+    await m.load();
+    m.setRecipient('+972 50-000-0099');
+    await m.goAmount();
+    await m.inviteRecipient();
+    expect(invites).toEqual([{ phone: '+972500000099' }]);
+    expect(m.store.get()).toMatchObject({ canInvite: false, busy: false, notice: { key: 'pay.invite.sent' } });
+    expect(m.store.get().error).toBeUndefined();
+    expect(router.current()).toBe('/pay');
+    expect(sends).toEqual([]);
+    await m.inviteRecipient(); // nothing offered any more: nothing sent
+    expect(invites).toHaveLength(1);
+  });
+
+  it('too many invites today and a switched-off feature read as such, and the offer goes away only for the latter', async () => {
+    const { api } = fakePay();
+    const attempt = async (e: unknown) => {
+      const { m } = model(api, { inviteRecipient: async () => { throw e; } });
+      await m.load();
+      m.setRecipient('+972500000099');
+      await m.goAmount();
+      await m.inviteRecipient();
+      return m.store.get();
+    };
+    expect(await attempt(problem('RATE_LIMITED', 429))).toMatchObject({ error: { key: 'pay.invite.tooMany' }, canInvite: true, busy: false });
+    expect(await attempt(problem('FEATURE_OFF', 404))).toMatchObject({ error: { key: 'common.error.unavailable' }, canInvite: false });
+    expect(await attempt(problem('PROVIDER_UNAVAILABLE', 503))).toMatchObject({ error: { key: 'common.error.unavailable' }, canInvite: true });
+  });
+
+  it('a phone that is only a member id or malformed is never invited', async () => {
+    const { api } = fakePay();
+    const invites: unknown[] = [];
+    const { m } = model(api, { inviteRecipient: async (i) => void invites.push(i) });
+    m.setRecipient(BOB);
+    await m.inviteRecipient();
+    m.setRecipient('0501234567');
+    await m.inviteRecipient();
+    expect(invites).toEqual([]);
+  });
+});
+
 describe('the recipient, resolved (T-0530)', () => {
   const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 

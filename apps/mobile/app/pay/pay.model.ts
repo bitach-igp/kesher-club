@@ -38,6 +38,8 @@ export interface PayState {
   /** M15: the server's preview of what the recipient receives; refreshed each time the sheet opens. */
   preview?: TransferPreview | undefined;
   previewing: boolean;
+  /** M13 (T-1104): a typed phone answered "not a member" and this screen can invite them; the 404 itself still stops the send. */
+  canInvite: boolean;
   split: { totalText: string; participants: string[]; created?: Split | undefined };
   qrAmountText: string;
   error?: Problem | undefined;
@@ -53,6 +55,8 @@ export interface PayDeps {
   me: string;
   camera?: Camera | undefined;
   contacts?: Contacts | undefined;
+  /** Texts an invitation to a phone with no account (POST /p2p/recipient-invites, T-1104). Absent: the screen offers no invite. */
+  inviteRecipient?: ((input: { phone: string }) => Promise<unknown>) | undefined;
   /** Resolves a picked contact to a member id; defaults to the API's lookup (T-0530). None → unresolved. */
   resolveContact?: (phone: string) => Promise<string | undefined>;
   locale?: Locale;
@@ -211,6 +215,8 @@ export interface PayModel {
   /** M13 → M14 → M15: validates the step and moves on with the flow in the URL. */
   /** M13 → M14; a typed phone number is resolved to the member first (T-0530). */
   goAmount(): Promise<void>;
+  /** M13 (T-1104): after "not a member", asks the API to text the typed number an invitation. Moves no money and goes nowhere else. */
+  inviteRecipient(): Promise<void>;
   /** M15: asks the API who the recipient is, for the name on the sheet and whether they can receive (T-0530). */
   resolveRecipient(): Promise<void>;
   goConfirm(): void;
@@ -250,6 +256,7 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
     busy: false,
     needsStepUp: false,
     previewing: false,
+    canInvite: false,
     split: { totalText: '', participants: [] },
     qrAmountText: '',
   });
@@ -311,7 +318,7 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
       store.patch({ currency: c, error: undefined, preview: undefined });
     },
     setRecipient(v) {
-      store.patch({ recipient: v, error: undefined });
+      store.patch({ recipient: v, error: undefined, canInvite: false });
     },
     setAmount(v) {
       store.patch({ amountText: v, error: undefined });
@@ -350,10 +357,25 @@ export function createPayModel(deps: PayDeps, initial: Partial<Pick<PayState, 'r
           const r = await deps.pay.resolveRecipient({ phone: typed.replace(/[\s()-]/g, '') });
           store.patch({ recipient: r.partyId, recipientName: r.displayName });
         } catch (e) {
-          return store.patch({ error: errorIs(e, { code: 'NOT_FOUND' }) ? { key: 'pay.recipient.notMember' } : errorIs(e, { code: 'RATE_LIMITED' }) ? { key: 'pay.recipient.tooMany' } : { key: 'common.error.generic' } });
+          if (errorIs(e, { code: 'NOT_FOUND' })) return store.patch({ error: { key: 'pay.recipient.notMember' }, canInvite: deps.inviteRecipient !== undefined });
+          return store.patch({ error: errorIs(e, { code: 'RATE_LIMITED' }) ? { key: 'pay.recipient.tooMany' } : { key: 'common.error.generic' } });
         }
       }
       if (recipientOk()) deps.router.push(href('/pay/amount', flowParams()));
+    },
+    async inviteRecipient() {
+      const s = store.get();
+      const phone = s.recipient.trim().replace(/[\s()-]/g, '');
+      if (!s.canInvite || !deps.inviteRecipient || !isPhone(phone)) return;
+      store.patch({ busy: true, error: undefined, notice: undefined });
+      try {
+        await deps.inviteRecipient({ phone });
+        store.patch({ busy: false, canInvite: false, notice: { key: 'pay.invite.sent' } });
+      } catch (e) {
+        if (errorIs(e, { code: 'RATE_LIMITED' })) return store.patch({ busy: false, error: { key: 'pay.invite.tooMany' } });
+        const off = errorIs(e, { code: 'FEATURE_OFF' });
+        store.patch({ busy: false, ...(off ? { canInvite: false } : {}), error: { key: off || errorIs(e, { code: 'PROVIDER_UNAVAILABLE' }) || errorIs(e, { status: 503 }) ? 'common.error.unavailable' : 'common.error.generic' } });
+      }
     },
     async resolveRecipient() {
       const id = store.get().recipient.trim();
