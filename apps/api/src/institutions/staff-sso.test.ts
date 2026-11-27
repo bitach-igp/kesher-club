@@ -14,6 +14,7 @@ import type { HttpResponse } from '../http.ts';
 import { dispatch } from '../server.ts';
 import { createTestDatabase, type TestDatabase } from '../test-db.ts';
 import { StaffIdpLinks } from './staff-idp-link.ts';
+import type { AuthEvent } from '../auth/passkeys.ts';
 import { StaffSso, type StaffSsoDeps } from './staff-sso.ts';
 
 // The lifetimes are written out, not imported: a changed constant must fail here.
@@ -1028,5 +1029,179 @@ describe('invite path: accept and link are one transaction, the subject is check
     // a replay of the claimed state is refused and writes nothing more
     expect(frag(await cb({ code: idp('idp-t1122-leak'), state: s.state }, s.cookie))).toBe('error=refused');
     expect(await h.staffRows()).toBe(1);
+  });
+});
+
+describe('mutation gaps the reviewers proved survive (TST-AUTH-008, T-1124)', () => {
+  let k = 0;
+  const events = () => app.services.passkeys.events;
+  const deviceRows = async (party: string) => app.services.identity.listDevices(party);
+  /** A sign-in that reached the exchange: the code and the verifier, for a linked staff member of OHR. */
+  async function minted(deviceId = 'web-t1124') {
+    const name = `t1124-${k++}`;
+    const party = await staffer(name, OHR, 'staff', `idp-${name}`);
+    const p = pair();
+    const start = await post(`/institutions/${OHR}/sso/start`, { deviceId, challenge: p.challenge });
+    const res = await cb({ code: idp(`idp-${name}`), state: (start.body as { state: string }).state }, cookieOf(start));
+    return { name, party, p, code: frag(res).slice(5), deviceId };
+  }
+  const spyTx = () => {
+    const n = { tx: 0 };
+    return { n, db: { query: (t: string, p?: readonly unknown[]) => db.query(t, p), transaction: ((fn: Parameters<Database['transaction']>[0]) => { n.tx += 1; return db.transaction(fn); }) as Database['transaction'] } as Database };
+  };
+  const uniform = `${CONSOLE}#error=refused`;
+
+  it('O24: a user closed after the callback is refused at the exchange: the uniform 401, no token, no device row, no alert; the code is not burnt by it', async () => {
+    const m = await minted('sso-o24');
+    const before = events().length;
+    await app.services.identity.setUserStatus(m.party, 'closed');
+    const res = await ex(m.code, m.p.verifier);
+    expect(res.status).toBe(401);
+    expect(JSON.stringify(res.body)).not.toContain('tokens');
+    expect((await deviceRows(m.party)).map((d) => d.deviceId)).not.toContain('sso-o24');
+    expect(events().length).toBe(before);
+    // the refusal is metered as the stale case, and a user who is not closed is let through (the guard is the status, not the call)
+    lines.length = 0;
+    await expect(mk().exchange({ code: m.code, verifier: m.p.verifier }, NOW)).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    expect(lines.map((l) => (JSON.parse(l) as { reason?: string }).reason)).toContain('exchange_stale');
+    await app.services.identity.setUserStatus(m.party, 'active');
+    expect((await ex(m.code, m.p.verifier)).status).toBe(200);
+  });
+
+  it('O26: at link completion the session must belong to the party who started: a live session of ANOTHER party links nothing', async () => {
+    const a = await staffer('t1124-o26a', OHR, 'staff');
+    await staffer('t1124-o26b', OHR, 'staff');
+    const svc = mk();
+    // the start is handed a live session that is not a's (the handler never does; the state is the proof the callback re-checks)
+    const s = await svc.startLink({ partyId: a, sessionId: people['t1124-o26b']!.sessionId, deviceId: 'web' }, OHR, { challenge: pair().challenge }, NOW);
+    expect((await svc.callback({ code: idp('idp-t1124-o26'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location).toBe(uniform);
+    expect(await linkRows(a)).toBe(0);
+    expect(await links.find(OHR, 'idp-t1124-o26')).toBeUndefined();
+    // the same start with the party's own session links (so the refusal above is the session, not the setup)
+    const ok = await svc.startLink({ partyId: a, sessionId: people['t1124-o26a']!.sessionId, deviceId: 'web' }, OHR, { challenge: pair().challenge }, NOW);
+    expect((await svc.callback({ code: idp('idp-t1124-o26'), state: ok.body.state }, ok.setCookie.split(';')[0], NOW)).location).toMatch(/#code=/);
+    expect(await linkRows(a)).toBe(1);
+  });
+
+  it('O27: a user closed between the link start and the callback links nothing, and no code is made', async () => {
+    const party = await staffer('t1124-o27', OHR, 'staff');
+    const s = await linkIn('t1124-o27', OHR);
+    await app.services.identity.setUserStatus(party, 'closed');
+    const codes = await markerCount('sso_code');
+    expect(frag(await cb({ code: idp('idp-t1124-o27'), state: (s.body as { state: string }).state }, cookieOf(s)))).toBe('error=refused');
+    expect(await linkRows(party)).toBe(0);
+    expect(await links.find(OHR, 'idp-t1124-o27')).toBeUndefined();
+    expect(await markerCount('sso_code')).toBe(codes);
+  });
+
+  it('O30: link completion does not swallow what it cannot explain: a failing session or user read is `unavailable` (metered `internal`), never the refusal, and links nothing', async () => {
+    for (const which of ['findSession', 'findUser'] as const) {
+      const party = await staffer(`t1124-o30-${which}`, OHR, 'staff');
+      const id = app.services.identity;
+      const svc = mk({ identity: { findSession: which === 'findSession' ? async () => { throw new Error('identity store down'); } : (i) => id.findSession(i), findUser: which === 'findUser' ? async () => { throw new Error('identity store down'); } : (i) => id.findUser(i), upsertDevice: (d) => id.upsertDevice(d) } });
+      const s = await svc.startLink({ partyId: party, sessionId: people[`t1124-o30-${which}`]!.sessionId, deviceId: 'web' }, OHR, { challenge: pair().challenge }, NOW);
+      lines.length = 0;
+      expect((await svc.callback({ code: idp(`idp-t1124-o30-${which}`), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location, which).toBe(`${CONSOLE}#error=unavailable`);
+      expect(lines.map((l) => (JSON.parse(l) as { reason?: string }).reason)).toContain('internal');
+      expect(await linkRows(party)).toBe(0);
+    }
+  });
+
+  it('A01: with no org-idp binding the four operations answer FEATURE_OFF even with the flag on and both URLs set, and store nothing', async () => {
+    const noIdp = new SimulatorHost();
+    (noIdp.registry as unknown as { bindings: Map<string, unknown> }).bindings.delete('org-idp@IL');
+    expect(noIdp.registry.bindingFor('org-idp', 'IL')).toBeUndefined();
+    expect(host.registry.bindingFor('org-idp', 'IL')).toBeDefined();
+    const bare = createApp({ db, registry: noIdp.registry, market: 'IL', signingKey: await generateSigningKey(), issuer: 'https://api.kesher.example', clock: () => NOW, flags, orgIdp: { orgs: ORGS, consoleUrl: CONSOLE, callbackUrl: CALLBACK, callbackFloorMs: 0 } });
+    const token = (await bare.services.tokens.issue({ partyId: people['rivka']!.partyId, deviceId: 'web-a01', roles: ['member', 'org_admin'] })).accessToken;
+    const p = pair();
+    const before = await allMarkers();
+    const call = (method: string, url: string, body: unknown, headers: Record<string, string> = {}) => dispatch(bare, { method, url: `/v1${url}`, headers, rawBody: body === undefined ? '' : JSON.stringify(body), now: NOW });
+    const rs = [
+      await call('POST', `/institutions/${OHR}/sso/start`, { deviceId: 'web-a01', challenge: p.challenge }),
+      await call('POST', `/institutions/${OHR}/sso/link/start`, { challenge: p.challenge }, { authorization: `Bearer ${token}`, 'x-step-up': 'su_x' }),
+      await call('GET', `/sso/callback?${new URLSearchParams({ code: idp('idp-a01'), state: rand43() })}`, undefined),
+      await call('POST', '/sso/exchange', { code: 'c'.repeat(43), verifier: p.verifier }),
+    ];
+    for (const r of rs) {
+      expect(r.status).toBe(404);
+      expect(r.body).toMatchObject({ code: 'FEATURE_OFF' });
+      expect(r.headers?.['set-cookie']).toBeUndefined();
+      expect(r.headers?.['location']).toBeUndefined();
+    }
+    expect(await allMarkers()).toBe(before);
+    // the same four on the bound app are alive, so the answers above are the missing binding and nothing else
+    expect((await startIn(OHR, p)).status).toBe(200);
+  });
+
+  it('S17: a subject already linked to someone else is refused BEFORE any transaction opens (the unique index would refuse it later with the same answer)', async () => {
+    await staffer('t1124-s17owner', OHR, 'staff', 'idp-t1124-s17');
+    const party = await staffer('t1124-s17', OHR, 'staff');
+    const spy = spyTx();
+    const svc = mk({ db: spy.db });
+    const s = await svc.startLink({ partyId: party, sessionId: people['t1124-s17']!.sessionId, deviceId: 'web' }, OHR, { challenge: pair().challenge }, NOW);
+    expect((await svc.callback({ code: idp('idp-t1124-s17'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location).toBe(uniform);
+    expect(spy.n.tx).toBe(0);
+    expect(await linkRows(party)).toBe(0);
+    expect(await links.find(OHR, 'idp-t1124-s17')).toBe(people['t1124-s17owner']!.partyId);
+  });
+
+  it('S18: a party who got a live link after the start is refused BEFORE any transaction opens; a clean link opens exactly one', async () => {
+    const party = await staffer('t1124-s18', OHR, 'staff');
+    const spy = spyTx();
+    const svc = mk({ db: spy.db });
+    const s = await svc.startLink({ partyId: party, sessionId: people['t1124-s18']!.sessionId, deviceId: 'web' }, OHR, { challenge: pair().challenge }, NOW);
+    await links.link(OHR, 'idp-t1124-s18-other', party, SYSTEM, NOW);
+    expect((await svc.callback({ code: idp('idp-t1124-s18'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location).toBe(uniform);
+    expect(spy.n.tx).toBe(0);
+    expect(await links.find(OHR, 'idp-t1124-s18')).toBeUndefined();
+    const clean = await staffer('t1124-s18b', OHR, 'staff');
+    const s2 = await svc.startLink({ partyId: clean, sessionId: people['t1124-s18b']!.sessionId, deviceId: 'web' }, OHR, { challenge: pair().challenge }, NOW);
+    expect((await svc.callback({ code: idp('idp-t1124-s18b'), state: s2.body.state }, s2.setCookie.split(';')[0], NOW)).location).toMatch(/#code=/);
+    expect(spy.n.tx).toBe(1);
+  });
+
+  it('T14: an invite is pending until its expiry INSTANT: a link start at expires_at is the one NOT_FOUND, one millisecond earlier it starts', async () => {
+    await person('t1124-t14', ['member']);
+    await app.services.team.invite(OHR, people['rivka']!.partyId, { role: 'staff', email: 't1124-t14@example.com' }, 'key-t1124-t14-invite', NOW);
+    const token = String(host.simulators.notify.sent.filter((n) => n.to === 't1124-t14@example.com').at(-1)!.data['inviteUrl']).split('token=')[1]!;
+    const expires = (await db.query<{ expires_at: Date }>('select expires_at from org.staff_invite where token_hash = $1', [createHash('sha256').update(token).digest('hex')])).rows[0]!.expires_at;
+    const principal = { partyId: people['t1124-t14']!.partyId, sessionId: people['t1124-t14']!.sessionId, deviceId: 'web' };
+    const svc = mk();
+    await expect(svc.startLink(principal, OHR, { challenge: pair().challenge, inviteToken: token }, new Date(expires.getTime()))).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(svc.startLink(principal, OHR, { challenge: pair().challenge, inviteToken: token }, new Date(expires.getTime() + 1))).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect((await svc.startLink(principal, OHR, { challenge: pair().challenge, inviteToken: token }, new Date(expires.getTime() - 1))).body.state).toHaveLength(43);
+  });
+
+  it('M16: the device row of a first SSO sign-in carries firstSeenAt = lastSeenAt = the exchange time; a later sign-in moves lastSeenAt only', async () => {
+    const m = await minted('sso-m16');
+    expect((await ex(m.code, m.p.verifier)).status).toBe(200);
+    const row = () => deviceRows(m.party).then((rows) => rows.find((d) => d.deviceId === 'sso-m16'));
+    expect(await row()).toMatchObject({ partyId: m.party, firstSeenAt: NOW.toISOString(), lastSeenAt: NOW.toISOString() });
+    const later = at(60_000);
+    const p = pair();
+    const start = await post(`/institutions/${OHR}/sso/start`, { deviceId: 'sso-m16', challenge: p.challenge });
+    const res = await cb({ code: idp(`idp-${m.name}`), state: (start.body as { state: string }).state }, cookieOf(start), later);
+    expect((await ex(frag(res).slice(5), p.verifier, later)).status).toBe(200);
+    expect(await row()).toMatchObject({ firstSeenAt: NOW.toISOString(), lastSeenAt: later.toISOString() });
+  });
+
+  it('M29 (KNOWN GAP, no durable outbox yet): when the event sink throws AFTER the device write, the exchange fails and releases the claim, the retry succeeds, and the alert is LOST', async () => {
+    // Pinned as it is today. When an outbox lands, flip DELIVERED_AFTER_RETRY to 1 and rename this test: the alert must then survive the retry.
+    const DELIVERED_AFTER_RETRY = 0;
+    const party = await staffer('t1124-m29', OHR, 'staff', 'idp-t1124-m29');
+    const delivered: AuthEvent[] = [];
+    let fail = true;
+    const svc = mk({ events: { push: (...items: AuthEvent[]) => { if (fail) { fail = false; throw new Error('event sink down'); } delivered.push(...items); return delivered.length; } } });
+    const p = pair();
+    const s = await svc.startSignIn(OHR, { deviceId: 'sso-m29', challenge: p.challenge }, NOW);
+    const code = (await svc.callback({ code: idp('idp-t1124-m29'), state: s.body.state }, s.setCookie.split(';')[0], NOW)).location.split('#code=')[1]!;
+    const released = await markerCount('sso_code_released');
+    await expect(svc.exchange({ code, verifier: p.verifier }, NOW)).rejects.toThrow('event sink down');
+    expect(await markerCount('sso_code_released')).toBe(released + 1);
+    expect((await deviceRows(party)).map((d) => d.deviceId)).toContain('sso-m29'); // the device write was not rolled back
+    expect((await svc.exchange({ code, verifier: p.verifier }, NOW)).institutionId).toBe(OHR); // the retry redeems
+    expect(delivered).toHaveLength(DELIVERED_AFTER_RETRY);
+    await expect(svc.exchange({ code, verifier: p.verifier }, NOW)).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
   });
 });

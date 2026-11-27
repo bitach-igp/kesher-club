@@ -6,7 +6,7 @@
 // the link's. The org IdP is the simulator, except the signature checks, which run the WorkOS adapter's own verifier.
 import { createHmac } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { createMetrics, Secret, uuidv7 } from '@kesher/domain';
+import { createMetrics, DomainError, Secret, uuidv7, webhookRejectReason } from '@kesher/domain';
 import { fixedClock, OrgIdPSimulator, SIM_OTP_CODE, SimPasskeyDevice, type AdvanceableClock } from '@kesher/ports';
 import { SimulatorHost } from '@kesher/simulators';
 import { AuditService } from '../audit/service.ts';
@@ -535,4 +535,49 @@ describe('directory deprovisioning with the WorkOS verifier (TST-AUTH-008, T-079
     expect(await wapp.services.webhooks.replay({ provider: 'workos', now: NOW })).toMatchObject({ attempted: 1, succeeded: 1 });
     expect(await staffRow(wid)).toMatchObject({ active: false });
   }, 60_000);
+});
+
+describe('the webhook verifier names its refusals, and the counter reads them (TST-AUTH-008, T-1124: S9)', () => {
+  const HEX = 'ab'.repeat(32);
+  type Stub = { verifyWebhookSignature?: (h: string, raw: string) => boolean };
+  const verifier = (port: Stub) => make({ mode: () => 'sandbox', port: () => port as never }).verifier();
+  const refuse = { verifyWebhookSignature: () => false };
+  const fresh = `t=${NOW.getTime()}, v1=${HEX}`;
+  const body = JSON.stringify({ id: 'evt-s9', event: 'dsync.user.deleted' });
+
+  it('each refusal carries its exact reason text, and `webhook.rejected` maps it to its own closed value: missing, stale, bad, other', async () => {
+    const v = verifier(refuse);
+    const cases: [string, Record<string, string>, string, string, string, string][] = [
+      ['no header', {}, body, 'missing signature', 'missing_signature', 'evt-s9'],
+      ['an empty header', { 'WorkOS-Signature': '' }, body, 'missing signature', 'missing_signature', 'evt-s9'],
+      ['a stale header', { 'workos-signature': `t=${NOW.getTime() - 6 * 60_000}, v1=${HEX}` }, body, 'stale timestamp', 'stale', 'evt-s9'],
+      ['a forged header', { 'WorkOS-Signature': fresh }, body, 'bad signature', 'bad_signature', 'evt-s9'],
+      ['a header that does not parse', { 'WorkOS-Signature': 'garbage' }, body, 'bad signature', 'bad_signature', 'evt-s9'],
+      ['a body that is not JSON', { 'WorkOS-Signature': fresh }, '{ not json', 'malformed json', 'other', ''],
+      ['an event id of the wrong type', { 'WorkOS-Signature': fresh }, JSON.stringify({ id: 7 }), 'bad signature', 'bad_signature', ''],
+      ['the alternative eventId field', { 'WorkOS-Signature': fresh }, JSON.stringify({ eventId: 'evt-alt' }), 'bad signature', 'bad_signature', 'evt-alt'],
+    ];
+    for (const [name, headers, raw, reason, mapped, eventId] of cases) {
+      const r = await v.verify(headers, raw, NOW);
+      expect(r, name).toMatchObject({ ok: false, reason, eventId });
+      expect(webhookRejectReason(r.reason), name).toBe(mapped);
+    }
+    // a port that cannot verify at all, or one that throws, refuses as a bad signature (never an error, never a pass)
+    for (const port of [{}, { verifyWebhookSignature: () => { throw new Error('boom'); } }]) {
+      expect(await verifier(port).verify({ 'WorkOS-Signature': fresh }, body, NOW)).toMatchObject({ ok: false, reason: 'bad signature', eventId: 'evt-s9' });
+    }
+  });
+
+  it('a verified delivery carries no reason; with the flag off the verifier answers NOT_FOUND before it reads anything', async () => {
+    const ok = await verifier({ verifyWebhookSignature: () => true }).verify({ 'WorkOS-Signature': fresh }, body, NOW);
+    expect(ok).toMatchObject({ ok: true, eventId: 'evt-s9' });
+    expect(ok.reason).toBeUndefined();
+    flagState.on = false;
+    try {
+      await expect(verifier(refuse).verify({ 'WorkOS-Signature': fresh }, '{ not json', NOW)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+      await expect(verifier(refuse).verify({}, body, NOW)).rejects.toBeInstanceOf(DomainError);
+    } finally {
+      flagState.on = true;
+    }
+  });
 });
