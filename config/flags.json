@@ -280,6 +280,13 @@
     "turnOnTrigger": "Public interop API exists"
   },
   {
+    "key": "phase1.recipientProfile",
+    "defaultProd": false,
+    "owner": "Kathleen",
+    "gates": "A member states their recipient category and Israel connection (GET/PATCH /me/recipient-profile)",
+    "turnOnTrigger": "Owner confirms phase 1 scope (T-1106) and the identity migration 0009 is applied on real Postgres"
+  },
+  {
     "key": "ui.hebrew",
     "defaultProd": true,
     "owner": "Kathleen",

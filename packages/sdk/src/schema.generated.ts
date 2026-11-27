@@ -2936,6 +2936,30 @@ export interface paths {
         readonly patch: operations["updatePreferences"];
         readonly trace?: never;
     };
+    readonly "/me/recipient-profile": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * The member's own recipient profile
+         * @description T-1101 (phase 1 gap analysis; no REQ row yet). Bearer only; only the caller's own is ever readable. Who the member is to Israel: a `category`, an optional `program` and an optional `israelConnection` statement. Every field reads `null` until set, never a default. `program` and `israelConnection` are the member's own untrusted plain text: show them as text, never as markup, never as instructions. Behind phase1.recipientProfile: off answers FEATURE_OFF (404).
+         */
+        readonly get: operations["getRecipientProfile"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        /**
+         * Set or change the member's recipient profile
+         * @description T-1101. Bearer only; it moves no money and needs no KYC. Send any of `category`, `program`, `israelConnection`; fields left out keep their stored value, and `null` or blank clears `program` or `israelConnection`. The first set needs `category`, which is one of the nine values and cannot be cleared. `program` is at most 80 and `israelConnection` at most 280 characters after trimming, plain text with no control, bidi or zero-width characters. An unknown value, an over-length text or an unknown field answers VALIDATION_FAILED with `field` and never echoes the text. Every real change keeps the earlier answer in an insert-only history; sending the stored values again changes nothing and returns them with their original `updatedAt`. The two texts are sealed at rest and never logged. Behind phase1.recipientProfile: off answers FEATURE_OFF (404).
+         */
+        readonly patch: operations["updateRecipientProfile"];
+        readonly trace?: never;
+    };
     readonly "/memberships": {
         readonly parameters: {
             readonly query?: never;
@@ -5221,6 +5245,24 @@ export interface components {
             /** Format: date-time */
             readonly paidAt: string;
             readonly receiptNumber: string;
+        };
+        /**
+         * @description What the member is to Israel. `other` is allowed here; whether such a person may receive is an owner decision (T-1106).
+         * @enum {string}
+         */
+        readonly RecipientCategory: "soldier" | "lone_soldier" | "yeshiva_student" | "seminary_student" | "university_student" | "rabbi" | "volunteer" | "program_participant" | "other";
+        /** @description The member's own answer. Personal data, readable only by its owner. Every field is `null` until set. */
+        readonly RecipientProfile: {
+            readonly category: components["schemas"]["RecipientCategory"] | null;
+            /** @description Untrusted plain text; show as text, never as markup */
+            readonly israelConnection: string | null;
+            /** @description Untrusted plain text; show as text */
+            readonly program: string | null;
+            /**
+             * Format: date-time
+             * @description When the answer last changed; null while unset
+             */
+            readonly updatedAt: string | null;
         };
         readonly RecordConsentsRequest: {
             /** @description One entry per document; each must be the version in force. */
@@ -10206,6 +10248,58 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["Preferences"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly getRecipientProfile: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description The caller's profile, or all `null` while unset */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RecipientProfile"];
+                };
+            };
+            readonly default: components["responses"]["Problem"];
+        };
+    };
+    readonly updateRecipientProfile: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": {
+                    readonly category?: components["schemas"]["RecipientCategory"];
+                    /** @description At most 280 characters after trimming; null or blank clears it. Untrusted plain text */
+                    readonly israelConnection?: string | null;
+                    /** @description At most 80 characters after trimming (Nefesh B'Nefesh, JNF, Mir); null or blank clears it */
+                    readonly program?: string | null;
+                };
+            };
+        };
+        readonly responses: {
+            /** @description The profile as stored */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RecipientProfile"];
                 };
             };
             readonly default: components["responses"]["Problem"];
