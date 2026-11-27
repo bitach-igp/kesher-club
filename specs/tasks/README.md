@@ -450,17 +450,25 @@ Scoped 2026-11-25 from the founder's phase 1 rollout notes; see `docs/ops/phase-
 | [T-1113](T-1113.md) | UX | Home: a 'What do you want to do today?' choice that starts a send or a receive | — | later · phase 1 gap analysis |
 | [T-1114](T-1114.md) | SETUP | Needs owner decision: what ships in phase 1 and what must be true before the first member sends a dollar | — | needs owner decision |
 | [T-1115](T-1115.md) | SETUP | Put the phase 1 questions to Crowded and record the answers | — | needs owner action |
-| [T-1116](T-1116.md) | AUTH | WorkOS adapter fixes before `auth.orgSso` is on: signature timestamp unit, removal without an email, a directory read that fails closed, raw directory state (security, independent reviewer) | REQ-AUTH-008 | built, in review · dark; the shared SSO state store stays a gate on `auth.orgSso` |
+| [T-1116](T-1116.md) | AUTH | WorkOS adapter fixes before `auth.orgSso` is on: signature timestamp unit, removal without an email, a directory read that fails closed, raw directory state (security, independent reviewer) | REQ-AUTH-008 | done by #426 · dark; the shared SSO state store stays a gate on `auth.orgSso` (T-1133 and T-1118) |
 | [T-1117](T-1117.md) | AUTH | Alarms and RUN-10 for the WorkOS removal path (`unknown_org`, `scim_unauthorized`, `guard_half`, `drift_finish_abandoned`) and a re-drive for an abandoned removal | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
 | [T-1118](T-1118.md) | AUTH | Needs owner or ops decision, then code: production wiring of `orgIdp.orgs` and `staffAlertEmail` in both `main.ts`, with uniqueness and two-source agreement checks (security, independent reviewer) | REQ-AUTH-008 | needs owner decision · dark/before `auth.orgSso` is turned on |
 | [T-1119](T-1119.md) | AUTH | Partial index on the audit table for the drift sweep's resume scan; a migration card with a desktop apply request (scope only) | REQ-AUTH-008 | later · dark/before `auth.orgSso` is turned on |
 | [T-1120](T-1120.md) | AUTH | Staff SSO contract and SDK: four operations (`startStaffSso`, `startStaffSsoLink`, `completeStaffSso`, `exchangeStaffSso`), route rows, `HEADER_OPS` row, generated types; first half of T-0792, dark (security, independent reviewer) | REQ-AUTH-008 | done by #421 · dark |
-| [T-1121](T-1121.md) | AUTH | Staff SSO sign-in registers a device and emits `new_device_sign_in` on the exchange success path (security, independent reviewer) | REQ-AUTH-008 | done · dark behind `auth.orgSso` |
-| [T-1122](T-1122.md) | AUTH | SSO invite path: accept and link atomic, IdP subject validated before the invite is consumed (security, independent reviewer) | REQ-AUTH-008 | done · dark/before `auth.orgSso` is turned on |
-| [T-1123](T-1123.md) | AUTH | Boot validation of `AppOptions.orgIdp` URLs (trailing `#`, localhost scheme, userinfo, callback) and refusal in production (security, independent reviewer) | REQ-AUTH-008 | in review · dark/before `auth.orgSso` is turned on |
-| [T-1124](T-1124.md) | AUTH | SSO test gaps that survive mutation (O24, O26, O27, O30, A01, A02, A04, T02 to T04, D24, S9, C3, C4) and the flaky `funding-details` assertion; tests only | REQ-AUTH-008 | later · does not gate `auth.orgSso` |
+| [T-1121](T-1121.md) | AUTH | Staff SSO sign-in registers a device and emits `new_device_sign_in` on the exchange success path (security, independent reviewer) | REQ-AUTH-008 | done by #425 · dark behind `auth.orgSso` |
+| [T-1122](T-1122.md) | AUTH | SSO invite path: accept and link atomic, IdP subject validated before the invite is consumed (security, independent reviewer) | REQ-AUTH-008 | done by #427 · dark/before `auth.orgSso` is turned on |
+| [T-1123](T-1123.md) | AUTH | Boot validation of `AppOptions.orgIdp` URLs (trailing `#`, localhost scheme, userinfo, callback) and refusal in production (security, independent reviewer) | REQ-AUTH-008 | done by #424 · dark/before `auth.orgSso` is turned on |
+| [T-1124](T-1124.md) | AUTH | SSO test gaps that survive mutation (O24, O26, O27, O30, A01, A02, A04, T02 to T04, D24, S9, C3, C4) and the flaky `funding-details` assertion; tests only | REQ-AUTH-008 | done by #430 · does not gate `auth.orgSso` |
 | [T-1125](T-1125.md) | AUTH | Needs owner decision, then code: purge or TTL for the SSO marker rows, and a PII-free log line when `callback()` swallows an internal error (security, independent reviewer) | REQ-AUTH-008 | needs owner decision · dark/before `auth.orgSso` is turned on |
 | [T-1126](T-1126.md) | AUTH | OWNER DECISION: link-flow hardening for staff SSO (forced IdP re-authentication, confirmation step with step-up, invite bound to an expected domain or subject) | REQ-AUTH-008 | needs owner decision · dark/before `auth.orgSso` is turned on |
+| [T-1127](T-1127.md) | AUTH | Durable auth-event outbox and a consumer, so `new_device_sign_in` reaches the member (security, independent reviewer; probably a migration and a desktop apply request, SCOPE ONLY) | REQ-AUTH-008 | open · dark/before `auth.orgSso` is turned on |
+| [T-1128](T-1128.md) | AUTH | SSO half-state heal: a member with a staff row and link but no `org_staff` role, and the wording that claims otherwise (security, independent reviewer) | REQ-AUTH-008 | open · dark/before `auth.orgSso` is turned on |
+| [T-1129](T-1129.md) | AUTH | SSO subject and device hygiene: lone surrogates in an IdP subject, control characters in a `deviceId` (security, small) | REQ-AUTH-008 | open · dark/before `auth.orgSso` is turned on |
+| [T-1130](T-1130.md) | AUTH | Duplicate `idp_id` order-dependence in `listDirectory`: make 'in doubt, do not remove' win in both orders (security, independent reviewer) | REQ-AUTH-008 | open · dark/before `auth.orgSso` is turned on |
+| [T-1131](T-1131.md) | AUTH | Lock-order deadlock between two concurrent SSO flows from one IdP subject, error mapping and lock-hold time (security, independent reviewer; real Postgres) | REQ-AUTH-008 | open · dark/before `auth.orgSso` is turned on |
+| [T-1132](T-1132.md) | AUTH | Test gap: `completeLink` can drop its `pendingInvite` call and every test still passes (tests only) | REQ-AUTH-008 | open · dark/before `auth.orgSso` is turned on |
+| [T-1133](T-1133.md) | AUTH | Login-start flood: unauthenticated SSO starts evict a legitimate in-flight login from the adapter's state store (security, independent reviewer) | REQ-AUTH-008 | open · dark/before `auth.orgSso` is turned on |
+| [T-1134](T-1134.md) | AUTH | WorkOS adapter clock and total read bound: a boot assertion for the clock and a total deadline over directory pages (security, independent reviewer) | REQ-AUTH-008 | open · dark/before `auth.orgSso` is turned on |
 
 ## Before `auth.orgSso` is turned on
 
@@ -479,6 +487,14 @@ T-0789 (link table), T-0790 (webhook), T-0791 (drift sweep), T-1120 (SSO contrac
    - T-1123, boot validation of the `orgIdp` URLs, refused in production when loose.
    - T-1125, a purge or TTL for the SSO marker rows (owner decision) and a PII-free log line for a swallowed internal error in `callback()`.
    - T-1126, the link-flow hardening decision (owner decision).
+   - T-1127, a durable auth-event outbox and consumer: `new_device_sign_in` goes to an in-memory array nobody drains, for every sign-in method.
+   - T-1128, the SSO half-state heal (a staff row and link but no `org_staff` role after a failed `settle()`) and the wording that claims a repeat finishes it.
+   - T-1129, subject hygiene (lone surrogates in an IdP subject) and a clean 422 for control characters in a `deviceId`.
+   - T-1130, `listDirectory` duplicate `idp_id` order-dependence: in doubt, do not remove, in both orders.
+   - T-1131, the lock-order deadlock between two concurrent SSO flows from one IdP subject, the class-23 error mapping and the audit lock hold time.
+   - T-1132, the `completeLink` `pendingInvite` test gap (one test).
+   - T-1133, the login-start flood: an edge rate rule, a per-institution cap and the shared store (with T-1117 and T-1118).
+   - T-1134, the WorkOS adapter's real-clock boot assertion and a total deadline over directory pages.
    - Not gating: T-1124, the test gaps and the flaky `funding-details` test.
 7. The webhook registered in the WorkOS dashboard as `https://<api host>/hooks/workos` for `dsync.user.created`, `dsync.user.updated`, `dsync.user.deleted`.
 8. The per-institution record (WorkOS organisation id, directory id, SCIM bearer) entered as configuration (ADR-004, T-1118).
@@ -492,4 +508,5 @@ Known limits to carry into the pilot:
 - A person hired back between the sweep's check and its role strip, a window of milliseconds, is a known race: the removal is bound to the link id the sweep read, but the check and the role strip are not one atomic step. Accepted for the pilot; recheck if staff turnover grows.
 - Residual risk until T-1126 is decided: an insider who fixates a victim's browser into the attacker's IdP session can link the attacker's IdP subject to the victim's staff account (the port cannot force re-authentication at the IdP), and an invite token proves nothing about the invitee's IdP identity (a leaked invite plus a signed-in account becomes staff with the invite's role; admin roles still need the second-admin grant).
 - Residual risk until T-1125: the SSO state, code, attempt and link-start rows are never purged, and an internal error in `callback()` shows only as the `internal` metric reason.
-- Residual risk until T-1121: SSO sessions raise no new-device alert.
+- Residual risk until T-1127: no sign-in method (passkey, social, SSO) delivers a new-device alert, because the event sink is an in-memory array nobody drains (T-1121 made SSO emit the event).
+- The link-flow residual risks above (fixation into the attacker's IdP session, an invite that proves nothing about the invitee's IdP identity) are decided in T-1126.

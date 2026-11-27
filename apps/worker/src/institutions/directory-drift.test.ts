@@ -15,6 +15,7 @@ import type { FeatureFlags } from '@kesher/api/billing/capabilities';
 import { dispatch } from '@kesher/api/server';
 import { createTestDatabase, type TestDatabase } from '@kesher/api/test-db';
 import { directoryInstitutions, removalKey, StaffDeprovisioner } from '@kesher/api/institutions/staff-deprovision';
+import { putMarker } from '@kesher/api/ops/workflow-marker';
 import { StaffIdpLinks } from '@kesher/api/institutions/staff-idp-link';
 import { DirectoryDrift, DRIFT_REFUSAL_REASONS, DriftCycleFailed, type DirectoryDriftDeps, type DriftResult } from './directory-drift.ts';
 
@@ -611,4 +612,116 @@ describe('directory drift sweep (TST-AUTH-008, T-0791)', () => {
     expect((await kinds(a)).sort()).toEqual([`deprovision_finished:${removalKey(I, long)}`, `deprovision_finished:${removalKey(J, long)}`].sort());
     expect(removalKey(I, long)).not.toBe(removalKey(J, long));
   });
+});
+
+describe('mutation gaps the reviewers proved survive (TST-AUTH-008, T-1124: D24, m44, m46, C3, C4)', () => {
+  const entry = (name: string, isActive: boolean, rawState: unknown) => ({ subject: `idp-${name}`, email: '', active: isActive, rawState });
+
+  it('D24: the unlinked count is the directory users WITHOUT a live link, in the nightly report and in the sweep, with more linked users than unlinked ones (an inverted filter counts the linked)', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd', 'e']);
+    listing = async () => [...['a', 'b', 'c', 'd', 'e'].map((x) => entry(x, true, 'active')), entry('ghost1', true, 'active'), entry('ghost2', false, 'inactive'), entry('ghost3', false, 'suspended')];
+    expect(await job([I]).report()).toMatchObject({ institutions: 1, unlinked: 3, failed: 0 });
+    expect(metric('staff.directory_unlinked')).toBe(3);
+    lines.length = 0;
+    expect(await job([I]).run()).toMatchObject({ unlinked: 3, corrected: 0, failed: 0 });
+    // nobody linked is unlinked: a directory of exactly the linked users counts zero
+    listing = async () => ['a', 'b', 'c', 'd', 'e'].map((x) => entry(x, true, 'active'));
+    expect(await job([I]).report()).toMatchObject({ unlinked: 0 });
+    expect(await job([I]).run()).toMatchObject({ unlinked: 0 });
+    // a user whose link ended is unlinked again (the count is about LIVE links)
+    await links.unlink(I, 'idp-e', SYSTEM, NOW);
+    expect(await job([I]).report()).toMatchObject({ unlinked: 1 });
+  });
+
+  it('m44: an entry whose rawState is `active` but whose `active` is false is SUSPECT: counted, never a removal, and absence is switched off for the read', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    now = new Date(NOW.getTime() + 25 * 3_600_000);
+    listing = async () => [entry('a', false, 'active'), entry('b', true, 'active'), entry('c', true, 'active'), entry('d', true, 'active')];
+    expect(await job([I]).run()).toMatchObject({ corrected: 0, refused: 0, failed: 0 });
+    expect(await active(who(I, 'a'))).toEqual([true]);
+    expect(metric('staff.drift_refused', 'unrecognised_state')).toBe(1);
+    // the mirror image is the positive inactive that does count: `inactive` with `active` false
+    listing = async () => [entry('a', false, 'inactive'), entry('b', true, 'active'), entry('c', true, 'active'), entry('d', true, 'active')];
+    expect(await job([I]).run()).toMatchObject({ corrected: 1 });
+    expect(await active(who(I, 'a'))).toEqual([false]);
+  });
+
+  it('m46: ONE suspect entry is enough to switch absence off (a linked member who is not listed stays), and so is ONE malformed entry', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd', 'e']);
+    now = new Date(NOW.getTime() + 25 * 3_600_000); // past the new-link grace: e is genuinely absent
+    const base = ['a', 'b', 'c', 'd'].map((x) => entry(x, true, 'active'));
+    listing = async () => [...base.slice(0, 3), entry('d', false, 'suspended')];
+    expect(await job([I]).run()).toMatchObject({ corrected: 0, failed: 0 });
+    expect(await active(who(I, 'e'))).toEqual([true]);
+    expect(metric('staff.drift_refused', 'unrecognised_state')).toBe(1);
+    expect(metric('staff.drift_refused', 'unreliable_list')).toBe(1);
+    lines.length = 0;
+    listing = async () => [...base, null];
+    expect(await job([I]).run()).toMatchObject({ corrected: 0, failed: 0 });
+    expect(await active(who(I, 'e'))).toEqual([true]);
+    expect(metric('staff.drift_refused', 'malformed_entry')).toBe(1);
+    expect(metric('staff.drift_refused', 'unreliable_list')).toBe(1);
+    // with the list clean again the same absent member goes (so the two refusals above were the single bad entry and nothing else)
+    listing = async () => base;
+    expect(await job([I]).run()).toMatchObject({ corrected: 1 });
+    expect(await active(who(I, 'e'))).toEqual([false]);
+  });
+
+  it('a subject listed twice with one suspect entry is never removed, in either order (the duplicate at the sweep: pinned as it is today)', async () => {
+    reset();
+    for (const order of ['suspended-then-inactive', 'inactive-then-suspended'] as const) {
+      const I = await institution(['a', 'b', 'c', 'd']);
+      const dup = order === 'suspended-then-inactive' ? [entry('a', false, 'suspended'), entry('a', false, 'inactive')] : [entry('a', false, 'inactive'), entry('a', false, 'suspended')];
+      listing = async () => [...dup, entry('b', true, 'active'), entry('c', true, 'active'), entry('d', true, 'active')];
+      expect(await job([I]).run(), order).toMatchObject({ corrected: 0, failed: 0 });
+      expect(await active(who(I, 'a')), order).toEqual([true]);
+    }
+  });
+
+  it('C4: a failing finish is abandoned after exactly 20 failed attempts by default: the 19th leaves it retrying, the 20th abandons it, the 21st cycle does not try again', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    const fake = uuidv7(NOW);
+    await app.services.audit.record({ ...SYSTEM, action: 'institution.staff.deprovision', subject: fake, reason: 'test', payload: { institutionId: I, eventId: 'drift:c4-fake', source: 'drift', removed: true, adminNone: false } }, NOW);
+    let attempts = 0;
+    const dp = deprovisioner([I], { tokens: { revokeAll: async (p, r) => { if (p === fake) { attempts += 1; throw new Error('simulated failure'); } return app.services.tokens.revokeAll(p, r); } } });
+    const drift = job([I], { deprovision: dp }); // default resume settings: nothing injected
+    const abandoned = async () => (await auditRows('institution.staff.drift_finish_abandoned')).filter((r) => r.subject === fake).length;
+    const results: DriftResult[] = [];
+    for (let i = 1; i <= 19; i += 1) results.push(await drift.run().catch((e: unknown) => (e as DriftCycleFailed).result));
+    expect(attempts).toBe(19);
+    expect(await abandoned()).toBe(0);
+    expect(results.reduce((n, r) => n + (r.abandoned ?? 0), 0)).toBe(0);
+    results.push(await drift.run().catch((e: unknown) => (e as DriftCycleFailed).result));
+    expect(attempts).toBe(20);
+    expect(await abandoned()).toBe(1);
+    expect(results.at(-1)).toMatchObject({ abandoned: 1 });
+    expect(metric('staff.drift_finish_abandoned')).toBe(1);
+    expect(await drift.run()).toMatchObject({ failed: 0 });
+    expect(attempts).toBe(20);
+  });
+
+  it('C3: one cycle makes at most 500 resume attempts by default: with 501 failing finishes waiting, the 501st is left for the next cycle', async () => {
+    reset();
+    const I = await institution(['a', 'b', 'c', 'd']);
+    const fakes: string[] = [];
+    for (let i = 0; i < 501; i += 1) {
+      const party = uuidv7(NOW);
+      fakes.push(party);
+      await app.services.audit.record({ ...SYSTEM, action: 'institution.staff.deprovision', subject: party, reason: 'test', payload: { institutionId: I, eventId: `drift:c3-${i}`, source: 'drift', removed: true, adminNone: false } }, NOW);
+    }
+    const hit: string[] = [];
+    const set = new Set(fakes);
+    const dp = deprovisioner([I], { tokens: { revokeAll: async (p, r) => { if (set.has(p)) { hit.push(p); throw new Error('simulated failure'); } return app.services.tokens.revokeAll(p, r); } } });
+    await expect(job([I], { deprovision: dp }).run()).rejects.toBeInstanceOf(DriftCycleFailed); // default resume settings: nothing injected
+    expect(hit).toHaveLength(500);
+    expect(hit).toEqual(fakes.slice(0, 500));
+    expect(hit).not.toContain(fakes[500]);
+    // settle: abandon them all so the cycles of later tests are untouched
+    for (const [i, party] of fakes.entries()) await putMarker(db, { kind: `deprovision_abandoned:${removalKey(I, `drift:c3-${i}`)}`, subjectId: party, value: 'abandoned' });
+    expect(await job([I]).run()).toMatchObject({ failed: 0 });
+  }, 180_000);
 });

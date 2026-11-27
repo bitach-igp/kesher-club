@@ -156,6 +156,33 @@ describe('verifyWebhookSignature: WorkOS-Signature t is MILLISECONDS (T-1116, TS
     expect(adapter.verifyWebhookSignature(`t=${nowMs}, v1=${good}`, undefined as never)).toBe(false);
   });
 
+  it('T-1124 m05: the header cap is 2048 characters: a valid header of exactly 2048 verifies, one more character is refused', () => {
+    const { adapter, nowMs } = env();
+    const base = `t=${nowMs}, v1=${hmacHex(nowMs, RAW)}`;
+    const padded = (n: number) => base + ' '.repeat(n - base.length);
+    expect(padded(2048)).toHaveLength(2048);
+    expect(adapter.verifyWebhookSignature(padded(2048), RAW)).toBe(true);
+    expect(adapter.verifyWebhookSignature(padded(2049), RAW)).toBe(false);
+    expect(adapter.verifyWebhookSignature(padded(5000), RAW)).toBe(false);
+    // a long list of candidates is the same rule (a valid one among 21 stays under the cap)
+    const many = `t=${nowMs}, ${Array.from({ length: 20 }, () => `v1=${hmacHex(nowMs, 'other')}`).join(', ')}, v1=${hmacHex(nowMs, RAW)}`;
+    expect(many.length).toBeLessThanOrEqual(2048);
+    expect(adapter.verifyWebhookSignature(many, RAW)).toBe(true);
+    expect(adapter.verifyWebhookSignature(`${many}${' '.repeat(2049 - many.length)}`, RAW)).toBe(false);
+  });
+
+  it('T-1124 m06: a part with an EMPTY key (`=abc`, `=`, `==x`) is refused, never skipped as an unknown key, even beside a valid t and v1', () => {
+    const { adapter, nowMs } = env();
+    const good = hmacHex(nowMs, RAW);
+    expect(adapter.verifyWebhookSignature(`t=${nowMs}, v1=${good}`, RAW)).toBe(true); // the control
+    for (const extra of ['=abc', '=', '==x', ' =abc']) {
+      expect(adapter.verifyWebhookSignature(`t=${nowMs}, v1=${good}, ${extra}`, RAW), extra).toBe(false);
+      expect(adapter.verifyWebhookSignature(`${extra}, t=${nowMs}, v1=${good}`, RAW), extra).toBe(false);
+    }
+    // an unknown but NAMED key is still skipped
+    expect(adapter.verifyWebhookSignature(`t=${nowMs}, v1=${good}, v0=abc`, RAW)).toBe(true);
+  });
+
   it('hashes the raw body exactly: a re-serialised or altered body fails, UTF-8 bodies verify, a wrong or missing secret fails', () => {
     const { adapter, nowMs, } = env();
     const raw = '{ "id" : "event_01",  "note": "שלום ✓" }';
@@ -321,6 +348,17 @@ describe('listDirectory fails closed (T-1116, TST-AUTH-008 3 and 4)', () => {
     const dir = await adapter.listDirectory(ORG);
     expect(dir.find((d) => d.subject === 'u2')).toMatchObject({ active: false, rawState: 'inactive' });
     expect(dir.find((d) => d.subject === 'u1')).toMatchObject({ active: true, rawState: 'active' }); // listed active, then inactive
+  });
+
+  it('PINNED CURRENT BEHAVIOUR (T-1124, the fix is a separate card): a user listed twice with [suspended, inactive] reads inactive, with [inactive, suspended] reads suspended: the answer depends on the ORDER of the pages', async () => {
+    const read = async (states: string[]) => (await reading(() => ok(states.map((s) => user(1, s)))).adapter.listDirectory(ORG)).map((d) => [d.subject, d.active, d.rawState]);
+    expect(await read(['suspended', 'inactive'])).toEqual([['u1', false, 'inactive']]); // the later non-active entry replaces the earlier one
+    expect(await read(['inactive', 'suspended'])).toEqual([['u1', false, 'suspended']]);
+    // what is NOT order dependent: an active entry anywhere wins
+    expect(await read(['suspended', 'active'])).toEqual([['u1', true, 'active']]);
+    expect(await read(['active', 'suspended'])).toEqual([['u1', true, 'active']]);
+    expect(await read(['inactive', 'active'])).toEqual([['u1', true, 'active']]);
+    expect(await read(['active', 'inactive'])).toEqual([['u1', true, 'active']]);
   });
 
   it('an entry with no usable idp_id is passed on as an unusable entry (the sweep counts it as malformed), not dropped', async () => {
